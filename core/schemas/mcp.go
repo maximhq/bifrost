@@ -1,33 +1,21 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
 
-// MCPServerInstance represents an MCP server instance for InProcess connections.
-// This should be a *github.com/mark3labs/mcp-go/server.MCPServer instance.
-// We use interface{} to avoid creating a dependency on the mcp-go package in schemas.
-type MCPServerInstance interface{}
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/server"
+)
 
-// MCPManager defines the interface for MCP (Model Context Protocol) management operations.
-// It provides methods for client management, tool registration and execution, and agent mode functionality.
-type MCPManager interface {
-	// Client Management
-	GetClients() ([]MCPClient, error)
-	AddClient(config MCPClientConfig) error
-	RemoveClient(id string) error
-	EditClient(id string, updatedConfig MCPClientConfig) error
-	ReconnectClient(id string) error
-
-	// Tool Management
-	RegisterTool(name, description string, handler func(args any) (string, error), toolSchema ChatTool) error
-	ExecuteTool(ctx context.Context, toolCall ChatAssistantMessageToolCall) (*ChatMessage, error)
-	AddMCPToolsToBifrostRequest(ctx context.Context, req *BifrostRequest) *BifrostRequest
-
-	// Agent Mode
-	CheckAndExecuteAgentMode(ctx *context.Context, originalReq *BifrostChatRequest, initialResponse *BifrostChatResponse, llmCaller BifrostLLMCaller) (*BifrostChatResponse, *BifrostError)
-
-	// Lifecycle Management
-	Cleanup() error
+type MCPToolHandler interface {
+	SetupCompleted() bool                                                                                                                                   // Returns true if the handler is fully setup and ready to use
+	ParseAndAddToolsToRequest(ctx context.Context, req *BifrostRequest) *BifrostRequest                                                                     // Parse the available tools and add them to the Bifrost request
+	ExecuteTool(ctx context.Context, toolCall ChatAssistantMessageToolCall) (*ChatMessage, error)                                                           // Execute a tool call and return the result as a tool message, It DOES NOT check if the tool is allowed to be executed by the client, so it is the responsibility of the caller to check if the tool is allowed to be executed by the client.
+	ExecuteAgent(ctx context.Context, req *BifrostChatRequest, resp *BifrostChatResponse, llmCaller BifrostLLMCaller) (*BifrostChatResponse, *BifrostError) // Execute an agent mode tool call and return the result as a chat response
+	SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) []ChatTool)                                                                              // Set the function to get the available tools
+	SetClientForToolFetcherFunc(clientForToolFetcherFunc func(toolName string) *MCPClientState)                                                             // Set the function to get the client for a tool
+	SetFetchNewRequestIDFunc(fetchNewRequestIDFunc func(ctx context.Context) string)                                                                        // Set the function to get a new request ID
 }
 
 // BifrostLLMCaller defines the interface for making LLM calls from the agent mode.
@@ -58,7 +46,7 @@ type MCPClientConfig struct {
 	ConnectionString *string           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
 	Headers          map[string]string `json:"headers,omitempty"`           // Headers to send with the request
-	InProcessServer  MCPServerInstance `json:"-"`                           // MCP server instance for in-process connections (Go package only)
+	InProcessServer  *server.MCPServer `json:"-"`                           // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
@@ -99,9 +87,27 @@ const (
 	MCPConnectionStateError        MCPConnectionState = "error"        // Client is in an error state, and cannot be used
 )
 
+// MCPClientState represents a connected MCP client with its configuration and tools.
+// It is used internally by the MCP manager to track the state of a connected MCP client.
+type MCPClientState struct {
+	Name            string                  // Unique name for this client
+	Conn            *client.Client          // Active MCP client connection
+	ExecutionConfig MCPClientConfig         // Tool filtering settings
+	ToolMap         map[string]ChatTool     // Available tools mapped by name
+	ConnectionInfo  MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	CancelFunc      context.CancelFunc      `json:"-"`               // Cancel function for SSE connections (not serialized)
+}
+
+// MCPClientConnectionInfo stores metadata about how a client is connected.
+type MCPClientConnectionInfo struct {
+	Type               MCPConnectionType `json:"type"`                           // Connection type (HTTP, STDIO, SSE, or InProcess)
+	ConnectionURL      *string           `json:"connection_url,omitempty"`       // HTTP/SSE endpoint URL (for HTTP/SSE connections)
+	StdioCommandString *string           `json:"stdio_command_string,omitempty"` // Command string for display (for STDIO connections)
+}
+
 // MCPClient represents a connected MCP client with its configuration and tools,
 // and connection information, after it has been initialized.
-// It is returned by GetMCPClients() method.
+// It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
 	Config MCPClientConfig    `json:"config"` // Tool filtering settings
 	Tools  []ChatToolFunction `json:"tools"`  // Available tools

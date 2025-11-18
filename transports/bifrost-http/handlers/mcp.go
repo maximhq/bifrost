@@ -189,6 +189,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
 		return
 	}
+	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
+		return
+	}
 	if err := h.mcpManager.AddMCPClient(ctx, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err))
 		return
@@ -216,6 +220,12 @@ func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
 	// Validate tools_to_execute
 	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
+		return
+	}
+
+	// Validate tools_to_auto_execute
+	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
 
@@ -275,6 +285,51 @@ func validateToolsToExecute(toolsToExecute []string) error {
 				return fmt.Errorf("invalid tools_to_execute: duplicate tool name '%s'", tool)
 			}
 			seen[tool] = true
+		}
+	}
+
+	return nil
+}
+
+func validateToolsToAutoExecute(toolsToAutoExecute []string, toolsToExecute []string) error {
+	if len(toolsToAutoExecute) > 0 {
+		// Check if wildcard "*" is combined with other tool names
+		hasWildcard := slices.Contains(toolsToAutoExecute, "*")
+		if hasWildcard && len(toolsToAutoExecute) > 1 {
+			return fmt.Errorf("wildcard '*' cannot be combined with other tool names")
+		}
+
+		// Check for duplicate entries
+		seen := make(map[string]bool)
+		for _, tool := range toolsToAutoExecute {
+			if seen[tool] {
+				return fmt.Errorf("duplicate tool name '%s'", tool)
+			}
+			seen[tool] = true
+		}
+
+		// Check that all tools in ToolsToAutoExecute are also in ToolsToExecute
+		// Create a set of allowed tools from ToolsToExecute
+		allowedTools := make(map[string]bool)
+		hasWildcardInExecute := slices.Contains(toolsToExecute, "*")
+		if hasWildcardInExecute {
+			// If "*" is in ToolsToExecute, all tools are allowed
+			return nil
+		}
+		for _, tool := range toolsToExecute {
+			allowedTools[tool] = true
+		}
+
+		// Validate each tool in ToolsToAutoExecute
+		for _, tool := range toolsToAutoExecute {
+			if tool == "*" {
+				// Wildcard is allowed if "*" is in ToolsToExecute
+				if !hasWildcardInExecute {
+					return fmt.Errorf("tool '%s' in tools_to_auto_execute is not in tools_to_execute", tool)
+				}
+			} else if !allowedTools[tool] {
+				return fmt.Errorf("tool '%s' in tools_to_auto_execute is not in tools_to_execute", tool)
+			}
 		}
 	}
 

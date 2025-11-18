@@ -75,13 +75,13 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 	// Check for unique constraint violations
 	// SQLite format: "UNIQUE constraint failed: table_name.column_name"
 	// PostgreSQL format: "ERROR: duplicate key value violates unique constraint"
-	
-	if strings.Contains(errMsg, "UNIQUE constraint failed") || 
-	   strings.Contains(errMsg, "duplicate key value violates unique constraint") {
-		
+
+	if strings.Contains(errMsg, "UNIQUE constraint failed") ||
+		strings.Contains(errMsg, "duplicate key value violates unique constraint") {
+
 		// Extract column name from error message
 		var columnName string
-		
+
 		// SQLite: extract from "UNIQUE constraint failed: table.column"
 		if strings.Contains(errMsg, "UNIQUE constraint failed") {
 			parts := strings.Split(errMsg, "UNIQUE constraint failed:")
@@ -98,7 +98,7 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 			// PostgreSQL: try to extract from constraint name or detail
 			// Example: duplicate key value violates unique constraint "idx_key_name"
 			// Detail: Key (name)=(value) already exists.
-			
+
 			// First try to extract from Detail
 			if strings.Contains(errMsg, "Key (") {
 				startIdx := strings.Index(errMsg, "Key (")
@@ -109,7 +109,7 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 						columnName = rest[:endIdx]
 					}
 				}
-			}			
+			}
 			// If not found, try to parse from constraint name
 			if columnName == "" {
 				// Extract constraint name
@@ -130,17 +130,17 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 					}
 				}
 			}
-		}		
+		}
 		// Clean up column name (remove underscores, convert to readable format)
 		if columnName != "" {
 			// Convert snake_case to space-separated words
 			columnName = strings.ReplaceAll(columnName, "_", " ")
 			return fmt.Errorf("a record with this %s already exists. Please use a different value", columnName)
-		}		
+		}
 		// Fallback message if we couldn't parse the column name
 		return fmt.Errorf("a record with this value already exists. Please use a different value")
 	}
-	
+
 	// For other errors, return the original error
 	// Future: add handling for foreign key violations, not null constraints, etc.
 	return err
@@ -207,16 +207,16 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			}
 
-		// Upsert provider (create or update if exists)
-		if err := tx.WithContext(ctx).Clauses(
-			clause.OnConflict{
-				Columns:   []clause.Column{{Name: "name"}},
-				UpdateAll: true,
-			},
-			clause.Returning{Columns: []clause.Column{{Name: "id"}}},
-		).Create(&dbProvider).Error; err != nil {
-			return s.parseGormError(err)
-		}
+			// Upsert provider (create or update if exists)
+			if err := tx.WithContext(ctx).Clauses(
+				clause.OnConflict{
+					Columns:   []clause.Column{{Name: "name"}},
+					UpdateAll: true,
+				},
+				clause.Returning{Columns: []clause.Column{{Name: "id"}}},
+			).Create(&dbProvider).Error; err != nil {
+				return s.parseGormError(err)
+			}
 
 			// Create keys for this provider
 			dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
@@ -266,13 +266,13 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				var existingKey tables.TableKey
 				result := tx.WithContext(ctx).Where("key_id = ?", dbKey.KeyID).First(&existingKey)
 
-			if result.Error == nil {
-				// Update existing key with new data
-				dbKey.ID = existingKey.ID             // Keep the same database ID
-				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
-				if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
-					return s.parseGormError(err)
-				}
+				if result.Error == nil {
+					// Update existing key with new data
+					dbKey.ID = existingKey.ID                 // Keep the same database ID
+					dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
+					if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
+						return s.parseGormError(err)
+					}
 				} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 					// Create new key
 					if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
@@ -651,13 +651,14 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		}
 
 		clientConfigs[i] = schemas.MCPClientConfig{
-			ID:               dbClient.ClientID,
-			Name:             dbClient.Name,
-			ConnectionType:   schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString: processedConnectionString,
-			StdioConfig:      dbClient.StdioConfig,
-			ToolsToExecute:   dbClient.ToolsToExecute,
-			Headers:          processedHeaders,
+			ID:                 dbClient.ClientID,
+			Name:               dbClient.Name,
+			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:   processedConnectionString,
+			StdioConfig:        dbClient.StdioConfig,
+			ToolsToExecute:     dbClient.ToolsToExecute,
+			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+			Headers:            processedHeaders,
 		}
 	}
 	return &schemas.MCPConfig{
@@ -691,13 +692,14 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 
 		// Create new client
 		dbClient := tables.TableMCPClient{
-			ClientID:         clientConfigCopy.ID,
-			Name:             clientConfigCopy.Name,
-			ConnectionType:   string(clientConfigCopy.ConnectionType),
-			ConnectionString: clientConfigCopy.ConnectionString,
-			StdioConfig:      clientConfigCopy.StdioConfig,
-			ToolsToExecute:   clientConfigCopy.ToolsToExecute,
-			Headers:          clientConfigCopy.Headers,
+			ClientID:           clientConfigCopy.ID,
+			Name:               clientConfigCopy.Name,
+			ConnectionType:     string(clientConfigCopy.ConnectionType),
+			ConnectionString:   clientConfigCopy.ConnectionString,
+			StdioConfig:        clientConfigCopy.StdioConfig,
+			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
+			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
+			Headers:            clientConfigCopy.Headers,
 		}
 
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
@@ -734,6 +736,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		existingClient.ConnectionString = clientConfigCopy.ConnectionString
 		existingClient.StdioConfig = clientConfigCopy.StdioConfig
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
+		existingClient.ToolsToAutoExecute = clientConfigCopy.ToolsToAutoExecute
 		existingClient.Headers = clientConfigCopy.Headers
 
 		if err := tx.WithContext(ctx).Updates(&existingClient).Error; err != nil {

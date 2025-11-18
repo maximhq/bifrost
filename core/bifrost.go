@@ -518,7 +518,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 
 	// Check if we should enter agent mode
 	if bifrost.mcpManager != nil {
-		return bifrost.mcpManager.CheckAndExecuteAgentMode(&ctx, req, response.ChatResponse, bifrost)
+		return bifrost.mcpManager.CheckAndExecuteAgent(ctx, req, response.ChatResponse, bifrost)
 	}
 
 	//TODO: Release the response
@@ -1143,10 +1143,7 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		return nil, fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}
 
-	clients, err := bifrost.mcpManager.GetClients()
-	if err != nil {
-		return nil, err
-	}
+	clients := bifrost.mcpManager.GetClients()
 
 	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
 	for _, client := range clients {
@@ -1770,7 +1767,7 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 		req.RequestType != schemas.SpeechRequest &&
 		req.RequestType != schemas.TranscriptionRequest &&
 		bifrost.mcpManager != nil {
-		req = bifrost.mcpManager.AddMCPToolsToBifrostRequest(ctx, req)
+		req = bifrost.mcpManager.AddToolsToRequest(ctx, req)
 	}
 
 	pipeline := bifrost.getPluginPipeline()
@@ -1856,7 +1853,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx context.Context, req *schemas.Bifro
 
 	// Add MCP tools to request if MCP is configured and requested
 	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.mcpManager != nil {
-		req = bifrost.mcpManager.AddMCPToolsToBifrostRequest(ctx, req)
+		req = bifrost.mcpManager.AddToolsToRequest(ctx, req)
 	}
 
 	pipeline := bifrost.getPluginPipeline()
