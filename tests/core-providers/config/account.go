@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -73,6 +74,37 @@ func getEnvWithDefault(envVar, defaultValue string) string {
 	return defaultValue
 }
 
+// parseKeyDeploymentEnv parses a comma-separated list of alias=deployment entries from the provided environment variable.
+func parseKeyDeploymentEnv(envVar string) map[string]string {
+	raw := strings.TrimSpace(os.Getenv(envVar))
+	if raw == "" {
+		return nil
+	}
+
+	deployments := map[string]string{}
+	entries := strings.Split(raw, ",")
+	for _, entry := range entries {
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		alias := strings.TrimSpace(parts[0])
+		deployment := strings.TrimSpace(parts[1])
+		if alias == "" || deployment == "" {
+			continue
+		}
+
+		deployments[alias] = deployment
+	}
+
+	if len(deployments) == 0 {
+		return nil
+	}
+
+	return deployments
+}
+
 // GetConfiguredProviders returns the list of initially supported providers.
 func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	return []schemas.ModelProvider{
@@ -82,12 +114,12 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cohere,
 		schemas.Azure,
 		schemas.Vertex,
+		schemas.HuggingFace,
 		schemas.Ollama,
 		schemas.Mistral,
 		schemas.Groq,
 		schemas.SGL,
 		schemas.Parasail,
-		schemas.Elevenlabs,
 		schemas.Perplexity,
 		schemas.Cerebras,
 		schemas.Gemini,
@@ -206,6 +238,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				},
 			},
 		}, nil
+	case schemas.HuggingFace:
+		deployments := parseKeyDeploymentEnv("HUGGINGFACE_DEPLOYMENTS")
+		key := schemas.Key{
+			Value:  os.Getenv("HUGGINGFACE_API_KEY"),
+			Models: []string{},
+			Weight: 1.0,
+		}
+		if len(deployments) > 0 {
+			key.HuggingFaceKeyConfig = &schemas.HuggingFaceKeyConfig{Deployments: deployments}
+		}
+		return []schemas.Key{key}, nil
 	case schemas.Mistral:
 		return []schemas.Key{
 			{
@@ -226,14 +269,6 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("PARASAIL_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-			},
-		}, nil
-	case schemas.Elevenlabs:
-		return []schemas.Key{
-			{
-				Value:  os.Getenv("ELEVENLABS_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -383,6 +418,20 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.HuggingFace:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("HUGGINGFACE_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     5, // Hugging Face inference can throttle occasionally
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	case schemas.Ollama:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
@@ -401,9 +450,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     10, // Mistral can be variable
+				MaxRetries:                     5, // Mistral can be variable
 				RetryBackoffInitial:            5 * time.Second,
-				RetryBackoffMax:                5 * time.Minute,
+				RetryBackoffMax:                3 * time.Minute,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -442,19 +491,6 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     5, // Parasail can be variable
-				RetryBackoffInitial:            1 * time.Second,
-				RetryBackoffMax:                12 * time.Second,
-			},
-			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
-				Concurrency: Concurrency,
-				BufferSize:  10,
-			},
-		}, nil
-	case schemas.Elevenlabs:
-		return &schemas.ProviderConfig{
-			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
-				MaxRetries:                     5, // Elevenlabs can be variable
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
 			},

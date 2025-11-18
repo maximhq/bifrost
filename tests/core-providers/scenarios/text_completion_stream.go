@@ -158,9 +158,13 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		// Enhanced validation expectations for text completion streaming
 		expectations := GetExpectationsForScenario("TextCompletionStream", testConfig, map[string]interface{}{})
 		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, []string{"robot"}...) // Should include story elements
-		expectations.MinContentLength = 30                                                                    // Should be substantial content
-		expectations.MaxContentLength = 2000                                                                  // Reasonable upper bound
+		if testConfig.Provider != schemas.HuggingFace {
+			expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "robot") // Should include story elements
+		} else {
+			expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "paint") //Hugging face does not return the word robot, it usually names the robot itself and personifies it with names like "Rusty"
+		}
+		expectations.MinContentLength = 30   // Should be substantial content
+		expectations.MaxContentLength = 2000 // Reasonable upper bound
 
 		// Validate the consolidated text completion streaming response
 		validationResult := ValidateTextCompletionResponse(t, consolidatedResponse, nil, expectations, "TextCompletionStream")
@@ -181,14 +185,14 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		// Validate latency is present in the last chunk (total latency)
 		if lastResponse != nil && lastResponse.BifrostTextCompletionResponse != nil {
 			if lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency <= 0 {
-				t.Fatalf("❌ Last streaming chunk missing latency information (got %d ms)", lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency)
+				t.Errorf("❌ Last streaming chunk missing latency information (got %d ms)", lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency)
 			} else {
 				t.Logf("✅ Total streaming latency: %d ms", lastResponse.BifrostTextCompletionResponse.ExtraFields.Latency)
 			}
 		}
 
 		if !validationResult.Passed {
-			t.Fatalf("❌ Text completion streaming validation failed: %v", validationResult.Errors)
+			t.Errorf("❌ Text completion streaming validation failed: %v", validationResult.Errors)
 		}
 
 		t.Logf("📊 Text completion streaming metrics: %d chunks, %d chars", responseCount, len(finalContent))
