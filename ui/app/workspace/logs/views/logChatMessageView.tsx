@@ -116,7 +116,7 @@ export default function LogChatMessageView({ message }: LogChatMessageViewProps)
 
 			{/* Handle content */}
 			{message.content && (
-				<div className="border-b last:border-b-0">
+				<div className="border-b break-words last:border-b-0">
 					{typeof message.content === "string" ? (
 						<>
 							{isJson(message.content) ? (

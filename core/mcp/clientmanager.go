@@ -557,7 +557,9 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 	// after the server is ready using NewInProcessClient
 	return &schemas.MCPClientState{
 		ExecutionConfig: schemas.MCPClientConfig{
-			Name: BifrostMCPClientName,
+			ID:             BifrostMCPClientKey,
+			Name:           BifrostMCPClientName,
+			ToolsToExecute: []string{"*"}, // Allow all tools for internal client
 		},
 		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: schemas.MCPClientConnectionInfo{
