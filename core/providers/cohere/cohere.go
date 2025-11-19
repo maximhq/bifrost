@@ -458,6 +458,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 						RequestType:    schemas.ChatCompletionStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
@@ -683,6 +684,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 					RequestType:    schemas.ResponsesStreamRequest,
 					Provider:       providerName,
 					ModelRequested: request.Model,
+					RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)

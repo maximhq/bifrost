@@ -554,6 +554,7 @@ func HandleAnthropicChatCompletionStreaming(
 					RequestType:    schemas.ChatCompletionStreamRequest,
 					Provider:       providerType,
 					ModelRequested: modelName,
+					RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
@@ -800,6 +801,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 					RequestType:    schemas.ResponsesStreamRequest,
 					Provider:       provider.GetProviderKey(),
 					ModelRequested: request.Model,
+					RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)

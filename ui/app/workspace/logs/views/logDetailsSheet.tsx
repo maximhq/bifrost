@@ -393,6 +393,30 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 								</div>
 							</>
 						)}
+						{log.error_details?.extra_fields?.raw_request && (
+							<>
+								<div className="mt-4 w-full text-left text-sm font-medium">
+									Raw Request to <span className="font-medium capitalize">{log.provider}</span>
+								</div>
+								<div className="w-full rounded-sm border">
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={450}
+										wrap={true}
+										code={JSON.stringify(log.error_details.extra_fields.raw_request, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{
+											scrollBeyondLastLine: false,
+											collapsibleBlocks: true,
+											lineNumbers: "off",
+											alwaysConsumeMouseWheel: false,
+										}}
+									/>
+								</div>
+							</>
+						)}
 					</>
 				)}
 			</SheetContent>

@@ -735,6 +735,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						RequestType:    schemas.ChatCompletionStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
@@ -958,6 +959,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 						RequestType:    schemas.ResponsesStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)

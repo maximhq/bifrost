@@ -94,7 +94,9 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx context.Context, key sch
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(providerName, resp)
+		bifrostErr := parseElevenlabsError(providerName, resp)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	var elevenlabsResponse ElevenlabsListModelsResponse
@@ -226,7 +228,9 @@ func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key,
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(providerName, resp)
+		bifrostErr := parseElevenlabsError(providerName, resp)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	// Get the response body
@@ -346,7 +350,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseElevenlabsError(providerName, resp)
+		bifrostErr := parseElevenlabsError(providerName, resp)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	// Create response channel
@@ -483,7 +489,9 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(providerName, resp)
+		bifrostErr := parseElevenlabsError(providerName, resp)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)

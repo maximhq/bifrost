@@ -92,6 +92,7 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
 		return nil, bifrostErr
 	}
 

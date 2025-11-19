@@ -291,6 +291,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType: schemas.ListModelsRequest,
 			Provider:    req.Provider,
+			RawRequest:  schemas.GetRawRequestFromContext(&ctx),
 		}
 		return nil, bifrostErr
 	}
@@ -1589,6 +1590,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 		return nil, err
 	}
@@ -1622,6 +1624,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 				RequestType:    req.RequestType,
 				Provider:       provider,
 				ModelRequested: model,
+				RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 			}
 		}
 		return primaryResult, primaryErr
@@ -1652,6 +1655,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,
 				ModelRequested: fallback.Model,
+				RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 			}
 			return nil, fallbackErr
 		}
@@ -1662,6 +1666,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 	}
 
@@ -1683,6 +1688,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 		return nil, err
 	}
@@ -1704,6 +1710,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 				RequestType:    req.RequestType,
 				Provider:       provider,
 				ModelRequested: model,
+				RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 			}
 		}
 		return primaryResult, primaryErr
@@ -1732,6 +1739,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,
 				ModelRequested: fallback.Model,
+				RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 			}
 			return nil, fallbackErr
 		}
@@ -1742,6 +1750,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 	}
 
@@ -2094,13 +2103,17 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 			if err != nil {
 				bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
-				req.Err <- schemas.BifrostError{
+				bifrostErr := schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
 						Message: err.Error(),
 						Error:   err,
 					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						RawRequest: schemas.GetRawRequestFromContext(&req.Context),
+					},
 				}
+				req.Err <- bifrostErr
 				continue
 			}
 			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
@@ -2140,6 +2153,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				Provider:       provider.GetProviderKey(),
 				ModelRequested: model,
 				RequestType:    req.RequestType,
+				RawRequest:     schemas.GetRawRequestFromContext(&req.Context),
 			}
 
 			// Send error with context awareness to prevent deadlock

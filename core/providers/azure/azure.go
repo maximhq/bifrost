@@ -104,7 +104,9 @@ func (provider *AzureProvider) completeRequest(ctx context.Context, jsonData []b
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, deployment, latency, openai.ParseOpenAIError(resp, requestType, provider.GetProviderKey(), model)
+		bifrostErr := openai.ParseOpenAIError(resp, requestType, provider.GetProviderKey(), model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, deployment, latency, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -168,7 +170,9 @@ func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, provider.GetProviderKey(), "")
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -477,7 +481,9 @@ func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, r
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, openai.ParseOpenAIError(resp, schemas.ResponsesRequest, provider.GetProviderKey(), request.Model)
+		bifrostErr := openai.ParseOpenAIError(resp, schemas.ResponsesRequest, provider.GetProviderKey(), request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	response := &schemas.BifrostResponsesResponse{}
