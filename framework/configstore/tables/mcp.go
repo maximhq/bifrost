@@ -79,7 +79,6 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.HeadersJSON = "{}"
 	}
-
 	return nil
 }
 

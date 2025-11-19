@@ -31,6 +31,7 @@ type AccumulatedData struct {
 	Status              string
 	Stream              bool
 	Latency             int64 // in milliseconds
+	TimeToFirstToken    int64 // Time to first token in milliseconds (streaming only)
 	StartTimestamp      time.Time
 	EndTimestamp        time.Time
 	OutputMessage       *schemas.ChatMessage
@@ -102,6 +103,7 @@ type ResponsesStreamChunk struct {
 type StreamAccumulator struct {
 	RequestID                 string
 	StartTimestamp            time.Time
+	FirstChunkTimestamp       time.Time // Timestamp when the first chunk was received (for TTFT calculation)
 	ChatStreamChunks          []*ChatStreamChunk
 	ResponsesStreamChunks     []*ResponsesStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk

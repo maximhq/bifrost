@@ -10,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 // KeyPair represents an ID-Name pair for keys
@@ -223,4 +224,77 @@ func getIntFromContext(ctx context.Context, key any) int {
 		}
 	}
 	return 0
+}
+
+// convertToProcessedStreamResponse converts a StreamAccumulatorResult to ProcessedStreamResponse
+// for use with the logging plugin's streaming log update functionality.
+func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, requestType schemas.RequestType) *streaming.ProcessedStreamResponse {
+	if result == nil {
+		return nil
+	}
+
+	// Determine stream type from request type
+	var streamType streaming.StreamType
+	switch requestType {
+	case schemas.TextCompletionStreamRequest:
+		streamType = streaming.StreamTypeText
+	case schemas.ChatCompletionStreamRequest:
+		streamType = streaming.StreamTypeChat
+	case schemas.ResponsesStreamRequest:
+		streamType = streaming.StreamTypeResponses
+	case schemas.SpeechStreamRequest:
+		streamType = streaming.StreamTypeAudio
+	case schemas.TranscriptionStreamRequest:
+		streamType = streaming.StreamTypeTranscription
+	default:
+		streamType = streaming.StreamTypeChat
+	}
+
+	// Determine response type
+	var responseType streaming.StreamResponseType
+	if result.IsFinal {
+		responseType = streaming.StreamResponseTypeFinal
+	} else {
+		responseType = streaming.StreamResponseTypeDelta
+	}
+
+	// Build accumulated data
+	data := &streaming.AccumulatedData{
+		RequestID:           result.RequestID,
+		Model:               result.Model,
+		Status:              result.Status,
+		Stream:              true,
+		Latency:             result.Latency,
+		TimeToFirstToken:    result.TimeToFirstToken,
+		OutputMessage:       result.OutputMessage,
+		OutputMessages:      result.OutputMessages,
+		ErrorDetails:        result.ErrorDetails,
+		TokenUsage:          result.TokenUsage,
+		Cost:                result.Cost,
+		AudioOutput:         result.AudioOutput,
+		TranscriptionOutput: result.TranscriptionOutput,
+		FinishReason:        result.FinishReason,
+		RawResponse:         result.RawResponse,
+	}
+
+	// Handle tool calls if present
+	if result.OutputMessage != nil && result.OutputMessage.ChatAssistantMessage != nil {
+		data.ToolCalls = result.OutputMessage.ChatAssistantMessage.ToolCalls
+	}
+
+	resp := &streaming.ProcessedStreamResponse{
+		Type:       responseType,
+		RequestID:  result.RequestID,
+		StreamType: streamType,
+		Provider:   result.Provider,
+		Model:      result.Model,
+		Data:       data,
+	}
+
+	if result.RawRequest != nil {
+		rawReq := result.RawRequest
+		resp.RawRequest = &rawReq
+	}
+
+	return resp
 }

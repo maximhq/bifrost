@@ -335,9 +335,9 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-func (plugin *Plugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportMiddleware is not used for this plugin
+func (plugin *Plugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return nil
 }
 
 // PreHook is called before a request is processed by Bifrost.
@@ -377,7 +377,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	ctx.SetValue(requestIDKey, requestID)
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
-	
+
 	performDirectSearch, performSemanticSearch := true, true
 	if (*ctx).Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := (*ctx).Value(CacheTypeKey).(CacheType)

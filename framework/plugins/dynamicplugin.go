@@ -21,11 +21,11 @@ type DynamicPlugin struct {
 	filename string
 	plugin   *plugin.Plugin
 
-	getName              func() string
-	transportInterceptor func(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
-	preHook              func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
-	postHook             func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
-	cleanup              func() error
+	getName                 func() string
+	httpTransportMiddleware func() schemas.BifrostHTTPMiddleware
+	preHook                 func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	postHook                func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	cleanup                 func() error
 }
 
 // GetName returns the name of the plugin
@@ -33,9 +33,9 @@ func (dp *DynamicPlugin) GetName() string {
 	return dp.getName()
 }
 
-// TransportInterceptor is not used for dynamic plugins
-func (dp *DynamicPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return dp.transportInterceptor(ctx, url, headers, body)
+// HTTPTransportMiddleware returns the HTTP transport middleware function for this plugin
+func (dp *DynamicPlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return dp.httpTransportMiddleware()
 }
 
 // PreHook is not used for dynamic plugins
@@ -137,13 +137,13 @@ func loadDynamicPlugin(path string, config any) (schemas.Plugin, error) {
 	if dp.getName, ok = getNameSym.(func() string); !ok {
 		return nil, fmt.Errorf("failed to cast GetName to func() string")
 	}
-	// Looking up for TransportInterceptor method
-	transportInterceptorSym, err := plugin.Lookup("TransportInterceptor")
+	// Looking up for HTTPTransportMiddleware method
+	httpTransportMiddlewareSym, err := plugin.Lookup("HTTPTransportMiddleware")
 	if err != nil {
 		return nil, err
 	}
-	if dp.transportInterceptor, ok = transportInterceptorSym.(func(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)); !ok {
-		return nil, fmt.Errorf("failed to cast TransportInterceptor to func(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)")
+	if dp.httpTransportMiddleware, ok = httpTransportMiddlewareSym.(func() schemas.BifrostHTTPMiddleware); !ok {
+		return nil, fmt.Errorf("failed to cast HTTPTransportMiddleware to func(next fasthttp.RequestHandler) fasthttp.RequestHandler")
 	}
 	// Looking up for PreHook method
 	preHookSym, err := plugin.Lookup("PreHook")

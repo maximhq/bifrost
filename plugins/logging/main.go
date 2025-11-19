@@ -105,10 +105,9 @@ type LoggerPlugin struct {
 	logger                schemas.Logger
 	logCallback           LogCallback
 	droppedRequests       atomic.Int64
-	cleanupTicker         *time.Ticker           // Ticker for cleaning up old processing logs
-	logMsgPool            sync.Pool              // Pool for reusing LogMessage structs
-	updateDataPool        sync.Pool              // Pool for reusing UpdateLogData structs
-	accumulator           *streaming.Accumulator // Accumulator for streaming chunks
+	cleanupTicker         *time.Ticker // Ticker for cleaning up old processing logs
+	logMsgPool            sync.Pool    // Pool for reusing LogMessage structs
+	updateDataPool        sync.Pool    // Pool for reusing UpdateLogData structs
 }
 
 // Init creates new logger plugin with given log store
@@ -140,7 +139,6 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 				return &UpdateLogData{}
 			},
 		},
-		accumulator: streaming.NewAccumulator(pricingManager, logger),
 	}
 
 	// Prewarm the pools for better performance at startup
@@ -193,19 +191,9 @@ func (p *LoggerPlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-// Parameters:
-//   - ctx: The Bifrost context
-//   - url: The URL of the request
-//   - headers: The request headers
-//   - body: The request body
-//
-// Returns:
-//   - map[string]string: The updated request headers
-//   - map[string]any: The updated request body
-//   - error: Any error that occurred during processing
-func (p *LoggerPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportMiddleware is not used for this plugin
+func (p *LoggerPlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return nil
 }
 
 // PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
@@ -234,9 +222,14 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 
 	createdTimestamp := time.Now().UTC()
 
-	// If request type is streaming we create a stream accumulator
+	// If request type is streaming we create a stream accumulator via the tracer
 	if bifrost.IsStreamRequestType(req.RequestType) {
-		p.accumulator.CreateStreamAccumulator(requestID, createdTimestamp)
+		if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+			// Use traceID for the central accumulator
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				tracer.CreateStreamAccumulator(traceID, createdTimestamp)
+			}
+		}
 	}
 
 	provider, model, _ := req.GetRequestFields()
@@ -273,7 +266,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input		
+			initialData.TranscriptionInput = req.TranscriptionRequest.Input
 		}
 	}
 
@@ -388,10 +381,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 
 		// If response is nil, and there is an error, we update log with error
 		if result == nil && bifrostErr != nil {
-			// If request type is streaming, then we trigger cleanup as well
-			if bifrost.IsStreamRequestType(requestType) {
-				p.accumulator.CleanupStreamAccumulator(requestID)
-			}
+			// Note: Stream accumulator cleanup is handled by the tracing middleware
 			logMsg.Operation = LogOperationUpdate
 			logMsg.UpdateData = &UpdateLogData{
 				Status:       "error",
@@ -430,10 +420,22 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 		if bifrost.IsStreamRequestType(requestType) {
 			p.logger.Debug("[logging] processing streaming response")
 
-			streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
-			if err != nil {
-				p.logger.Debug("failed to process streaming response: %v", err)
-			} else if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
+			// Process streaming response via tracer's central accumulator
+			var streamResponse *streaming.ProcessedStreamResponse
+			if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+				if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					// Pass the context so the accumulator can detect final chunks via StreamEndIndicator
+					accResult := tracer.ProcessStreamingChunk(ctx, traceID, result, bifrostErr)
+					if accResult != nil {
+						// Convert StreamAccumulatorResult to ProcessedStreamResponse
+						streamResponse = convertToProcessedStreamResponse(accResult, requestType)
+					}
+				}
+			}
+
+			if streamResponse == nil {
+				p.logger.Debug("failed to process streaming response: tracer or traceID not available")
+			} else if streamResponse.Type == streaming.StreamResponseTypeFinal {
 				// Prepare final log data
 				logMsg.Operation = LogOperationStreamUpdate
 				logMsg.StreamResponse = streamResponse
@@ -464,6 +466,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					}
 					p.mu.Unlock()
 				}
+				// Note: Stream accumulator cleanup is handled by the tracing middleware
 			}
 		} else {
 			// Handle regular response
@@ -618,7 +621,7 @@ func (p *LoggerPlugin) Cleanup() error {
 	close(p.done)
 	// Wait for the background worker to finish processing remaining items
 	p.wg.Wait()
-	p.accumulator.Cleanup()
+	// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
 	// GORM handles connection cleanup automatically
 	return nil
 }

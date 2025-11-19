@@ -83,24 +83,16 @@ func (p *JsonParserPlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-// Parameters:
-//   - ctx: The Bifrost context
-//   - url: The URL of the request
-//   - headers: The request headers
-//   - body: The request body
-// Returns:
-//   - map[string]string: The updated request headers
-//   - map[string]any: The updated request body
-//   - error: Any error that occurred during processing
-func (p *JsonParserPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportMiddleware is not used for this plugin
+func (p *JsonParserPlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return nil
 }
 
 // PreHook is not used for this plugin as we only process responses
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request
+//
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
@@ -114,6 +106,7 @@ func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
 //   - err: The Bifrost error to be processed
+//
 // Returns:
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error

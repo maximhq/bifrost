@@ -62,6 +62,70 @@ require github.com/maximhq/bifrost/core v1.2.38
 
 Create `main.go` with the required plugin functions. Here's the complete hello-world example:
 
+<Tabs>
+  <Tab title="v1.4.x+">
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// Init is called when the plugin is loaded
+// config contains the plugin configuration from config.json
+func Init(config any) error {
+	fmt.Println("Init called")
+	// Initialize your plugin here (database connections, API clients, etc.)
+	return nil
+}
+
+// GetName returns the plugin's unique identifier
+func GetName() string {
+	return "Hello World Plugin"
+}
+
+// HTTPTransportMiddleware returns a middleware for HTTP transport
+// Only called when using HTTP transport (bifrost-http)
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			fmt.Println("HTTPTransportMiddleware called")
+			// Modify request headers/body via ctx.Request before calling next
+			// Call next handler in the chain
+			next(ctx)
+			// Can also modify response via ctx.Response after next returns
+		}
+	}
+}
+
+// PreHook is called before the request is sent to the provider
+// This is where you can modify requests or short-circuit the flow
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+	fmt.Println("PreHook called")
+	// Modify the request or return a short-circuit to skip provider call
+	return req, nil, nil
+}
+
+// PostHook is called after receiving a response from the provider
+// This is where you can modify responses or handle errors
+func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostHook called")
+	// Modify the response or error before returning to caller
+	return resp, bifrostErr, nil
+}
+
+// Cleanup is called when Bifrost shuts down
+func Cleanup() error {
+	fmt.Println("Cleanup called")
+	// Clean up resources (close connections, flush buffers, etc.)
+	return nil
+}
+```
+  </Tab>
+  <Tab title="v1.3.x">
 ```go
 package main
 
@@ -115,6 +179,8 @@ func Cleanup() error {
 	return nil
 }
 ```
+  </Tab>
+</Tabs>
 
 ### Understanding Each Function
 
@@ -144,6 +210,23 @@ func Init(config any) error {
 
 Returns a unique identifier for your plugin. This name appears in logs and status reports.
 
+<Tabs>
+  <Tab title="v1.4.x+">
+#### `HTTPTransportMiddleware()`
+
+**HTTP transport only.** Returns a middleware that wraps the HTTP request handler chain. Use this to:
+- Intercept and modify requests before they enter Bifrost core
+- Intercept and modify responses before they're returned to clients
+- Implement authentication or logging at the transport layer
+- Access raw `*fasthttp.RequestCtx` for full HTTP control
+
+The middleware pattern requires calling `next(ctx)` to pass control to subsequent handlers.
+
+<Warning>
+This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.
+</Warning>
+  </Tab>
+  <Tab title="v1.3.x">
 #### `TransportInterceptor(...)`
 
 **HTTP transport only.** Called before requests enter Bifrost core. Use this to:
@@ -154,6 +237,8 @@ Returns a unique identifier for your plugin. This name appears in logs and statu
 <Warning>
 This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.
 </Warning>
+  </Tab>
+</Tabs>
 
 #### `PreHook(...)`
 
@@ -341,11 +426,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 Check the logs for plugin hook calls:
 
+<Tabs>
+  <Tab title="v1.4.x+">
+```
+HTTPTransportMiddleware called
+PreHook called
+PostHook called
+```
+  </Tab>
+  <Tab title="v1.3.x">
 ```
 TransportInterceptor called
 PreHook called
 PostHook called
 ```
+  </Tab>
+</Tabs>
 
 ## Advanced Plugin Patterns
 

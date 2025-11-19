@@ -358,7 +358,12 @@ echo "✅ Transport build validation successful"
 
 # Commit and push changes if any
 # First, pull latest changes to avoid conflicts
-git pull origin main
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+  # In detached HEAD state (common in CI), use GITHUB_REF_NAME or default to main
+  CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+fi
+git pull origin "$CURRENT_BRANCH"
 
 # Stage any changes made to transports/
 git add transports/

@@ -412,7 +412,7 @@ const (
 )
 
 // RegisterRoutes registers all completion-related routes
-func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 
@@ -1195,11 +1195,25 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		return
 	}
 
+	// Signal to tracing middleware that trace completion should be deferred
+	// The streaming callback will complete the trace after the stream ends
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
+	// Get the trace completer function for use in the streaming callback
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+
 	var includeEventType bool
 
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
-		defer w.Flush()
+		defer func() {
+			w.Flush()
+			// Complete the trace after streaming finishes
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			if traceCompleter != nil {
+				traceCompleter()
+			}
+		}()
 
 		// Process streaming responses
 		for chunk := range stream {

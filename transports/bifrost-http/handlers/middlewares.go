@@ -3,21 +3,22 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
-func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
+func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			logger.Debug("CorsMiddleware: %s", string(ctx.Path()))
@@ -45,104 +46,25 @@ func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	}
 }
 
-// TransportInterceptorMiddleware collects all plugin interceptors and calls them one by one
-func TransportInterceptorMiddleware(config *lib.Config, enterpriseOverrides lib.EnterpriseOverrides) lib.BifrostHTTPMiddleware {
+// TransportInterceptorMiddleware collects all plugin HTTP transport middleware and chains them.
+func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			// Get plugins from config - lock-free read
 			plugins := config.GetLoadedPlugins()
 			if len(plugins) == 0 {
 				next(ctx)
 				return
 			}
-			if enterpriseOverrides == nil {
-				next(ctx)
-				return
+			pluginsMiddlewareChain := []schemas.BifrostHTTPMiddleware{}
+			for _, plugin := range plugins {
+				middleware := plugin.HTTPTransportMiddleware()
+				// Collect plugin HTTP transport middleware
+				if middleware == nil {
+					continue
+				}
+				pluginsMiddlewareChain = append(pluginsMiddlewareChain, middleware)
 			}
-			// If governance plugin is not loaded, skip interception
-			hasGovernance := false
-			for _, p := range plugins {
-				if p.GetName() == enterpriseOverrides.GetGovernancePluginName() {
-					hasGovernance = true
-					break
-				}
-			}
-			if !hasGovernance {
-				next(ctx)
-				return
-			}
-
-			// Parse headers
-			headers := make(map[string]string)
-			originalHeaderNames := make([]string, 0, 16)
-			ctx.Request.Header.All()(func(key, value []byte) bool {
-				name := string(key)
-				headers[name] = string(value)
-				originalHeaderNames = append(originalHeaderNames, name)
-
-				return true
-			})
-			requestBody := make(map[string]any)
-			// Only read body if Content-Type is JSON to avoid consuming multipart/form-data streams
-			contentType := string(ctx.Request.Header.Peek("Content-Type"))
-			isJSONRequest := strings.HasPrefix(contentType, "application/json")
-
-			// Only run interceptors for JSON requests
-			if isJSONRequest {
-				bodyBytes := ctx.Request.Body()
-				if len(bodyBytes) > 0 {
-					if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
-						// If body is not valid JSON, log warning and continue without interception
-						logger.Warn(fmt.Sprintf("[transportInterceptor]: Failed to unmarshal request body: %v, skipping interceptor", err))
-						next(ctx)
-						return
-					}
-				}
-				for _, plugin := range plugins {
-					// Call TransportInterceptor on all plugins
-					pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
-					modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
-					cancel()
-					if err != nil {
-						logger.Warn(fmt.Sprintf("TransportInterceptor: Plugin '%s' returned error: %v", plugin.GetName(), err))
-						// Continue with unmodified headers/body
-						continue
-					}
-					// Update headers and body with modifications
-					if modifiedHeaders != nil {
-						headers = modifiedHeaders
-					}
-					if modifiedBody != nil {
-						requestBody = modifiedBody
-					}
-					// Capturing plugin ctx values and putting them in the request context
-					for k, v := range pluginCtx.GetUserValues() {
-						ctx.SetUserValue(k, v)
-					}
-				}
-
-				// Marshal the body back to JSON
-				updatedBody, err := json.Marshal(requestBody)
-				if err != nil {
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("TransportInterceptor: Failed to marshal request body: %v", err))
-					return
-				}
-				ctx.Request.SetBody(updatedBody)
-
-				// Remove headers that were present originally but removed by plugins
-				for _, name := range originalHeaderNames {
-					if _, exists := headers[name]; !exists {
-						ctx.Request.Header.Del(name)
-					}
-				}
-
-				// Set modified headers back on the request
-				for key, value := range headers {
-					ctx.Request.Header.Set(key, value)
-				}
-			}
-
-			next(ctx)
+			lib.ChainMiddlewares(next, pluginsMiddlewareChain...)(ctx)
 		}
 	}
 }
@@ -163,7 +85,7 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // This uses basic auth style username + password based authentication
 // No session tracking is used, so this is not suitable for production environments
 // These basicauth routes are only used for the dashboard and API routes
-func AuthMiddleware(store configstore.ConfigStore) lib.BifrostHTTPMiddleware {
+func AuthMiddleware(store configstore.ConfigStore) schemas.BifrostHTTPMiddleware {
 	if store == nil {
 		logger.Info("auth middleware is disabled because store is not present")
 		return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -264,4 +186,144 @@ func AuthMiddleware(store configstore.ConfigStore) lib.BifrostHTTPMiddleware {
 			SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 		}
 	}
+}
+
+// TracingMiddleware creates distributed traces for requests and forwards completed traces
+// to observability plugins after the response has been written.
+//
+// The middleware:
+// 1. Extracts parent trace ID from incoming W3C traceparent header (if present)
+// 2. Creates a new trace in the store (only the lightweight trace ID is stored in context)
+// 3. Calls the next handler to process the request
+// 4. After response is written, asynchronously completes the trace and forwards it to observability plugins
+//
+// This middleware should be placed early in the middleware chain to capture the full request lifecycle.
+type TracingMiddleware struct {
+	tracer     atomic.Pointer[tracing.Tracer]
+	obsPlugins atomic.Pointer[[]schemas.ObservabilityPlugin]
+}
+
+// NewTracingMiddleware creates a new tracing middleware
+func NewTracingMiddleware(tracer *tracing.Tracer, obsPlugins []schemas.ObservabilityPlugin) *TracingMiddleware {
+	tm := &TracingMiddleware{
+		tracer:     atomic.Pointer[tracing.Tracer]{},
+		obsPlugins: atomic.Pointer[[]schemas.ObservabilityPlugin]{},
+	}
+	tm.tracer.Store(tracer)
+	tm.obsPlugins.Store(&obsPlugins)
+	return tm
+}
+
+// SetObservabilityPlugins sets the observability plugins for the tracing middleware
+func (m *TracingMiddleware) SetObservabilityPlugins(obsPlugins []schemas.ObservabilityPlugin) {
+	m.obsPlugins.Store(&obsPlugins)
+}
+
+// SetTracer sets the tracer for the tracing middleware
+func (m *TracingMiddleware) SetTracer(tracer *tracing.Tracer) {
+	m.tracer.Store(tracer)
+}
+
+// Middleware returns the middleware function that creates distributed traces for requests and forwards completed traces
+func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// Skip if store is nil
+			if m.tracer.Load() == nil {
+				next(ctx)
+				return
+			}
+			// Extract parent trace ID from W3C headers (if present)
+			parentID := tracing.ExtractParentID(&ctx.Request.Header)
+			// Create trace in store - only ID returned (trace data stays in store)
+			traceID := m.tracer.Load().CreateTrace(parentID)
+			// Only trace ID goes into context (lightweight, no bloat)
+			ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+			// Store a trace completion callback for streaming handlers to use
+			ctx.SetUserValue(schemas.BifrostContextKeyTraceCompleter, func() {
+				m.completeAndFlushTrace(traceID)
+			})
+			// Create root span for the HTTP request
+			spanCtx, rootSpan := m.tracer.Load().StartSpan(ctx, string(ctx.RequestURI()), schemas.SpanKindHTTPRequest)
+			if rootSpan != nil {
+				m.tracer.Load().SetAttribute(rootSpan, "http.method", string(ctx.Method()))
+				m.tracer.Load().SetAttribute(rootSpan, "http.url", string(ctx.RequestURI()))
+				m.tracer.Load().SetAttribute(rootSpan, "http.user_agent", string(ctx.Request.Header.UserAgent()))
+				// Set root span ID in context for child span creation
+				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+					ctx.SetUserValue(schemas.BifrostContextKeySpanID, spanID)
+				}
+			}
+			defer func() {
+				// Record response status on the root span
+				if rootSpan != nil {
+					m.tracer.Load().SetAttribute(rootSpan, "http.status_code", ctx.Response.StatusCode())
+					if ctx.Response.StatusCode() >= 400 {
+						m.tracer.Load().EndSpan(rootSpan, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", ctx.Response.StatusCode()))
+					} else {
+						m.tracer.Load().EndSpan(rootSpan, schemas.SpanStatusOk, "")
+					}
+				}
+				// Check if trace completion is deferred (for streaming requests)
+				// If deferred, the streaming handler will complete the trace after stream ends
+				if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
+					return
+				}
+				// After response written - async flush
+				m.completeAndFlushTrace(traceID)
+			}()
+
+			next(ctx)
+		}
+	}
+}
+
+// completeAndFlushTrace completes the trace and forwards it to observability plugins.
+// This is called either by the middleware defer (for non-streaming) or by streaming handlers.
+func (m *TracingMiddleware) completeAndFlushTrace(traceID string) {
+	go func() {
+		// Clean up the stream accumulator for this trace
+		// This must happen before EndTrace to ensure all accumulated data is available
+		m.tracer.Load().CleanupStreamAccumulator(traceID)
+
+		// Get completed trace from store
+		completedTrace := m.tracer.Load().EndTrace(traceID)
+		if completedTrace == nil {
+			return
+		}
+		// Forward to all observability plugins
+		for _, plugin := range *m.obsPlugins.Load() {
+			if plugin == nil {
+				continue
+			}
+			// Call inject with a background context (request context is done)
+			if err := plugin.Inject(context.Background(), completedTrace); err != nil {
+				logger.Warn("observability plugin %s failed to inject trace: %v", plugin.GetName(), err)
+			}
+		}
+		// Return trace to pool for reuse
+		m.tracer.Load().ReleaseTrace(completedTrace)
+	}()
+}
+
+// GetTracer returns the tracer instance for use by streaming handlers
+func (m *TracingMiddleware) GetTracer() *tracing.Tracer {
+	return m.tracer.Load()
+}
+
+// GetObservabilityPlugins filters and returns only observability plugins from a list of plugins.
+// Uses Go type assertion to identify plugins implementing the ObservabilityPlugin interface.
+func GetObservabilityPlugins(plugins []schemas.Plugin) []schemas.ObservabilityPlugin {
+	if len(plugins) == 0 {
+		return nil
+	}
+
+	obsPlugins := make([]schemas.ObservabilityPlugin, 0)
+	for _, plugin := range plugins {
+		if obsPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			obsPlugins = append(obsPlugins, obsPlugin)
+		}
+	}
+
+	return obsPlugins
 }

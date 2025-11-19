@@ -23,6 +23,7 @@ var reservedKeys = []any{
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyExtraHeaders,
 	BifrostContextKeyURLPath,
+	BifrostContextKeyDeferTraceCompletion,
 }
 
 // BifrostContext is a custom context.Context implementation that tracks user-set values.
