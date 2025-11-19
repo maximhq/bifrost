@@ -16,7 +16,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 <Note>You can also use `Authorization` and `x-api-key` headers to pass direct keys to the provider. Read more about it in [Direct Key Bypass](../keys-management#direct-key-bypass).</Note>
 
 **Key Features:**
-- **Access Control** - Model and provider filtering
+- **Access Control** - Model and provider filtering (applies to `/v1/models` endpoint and inference requests)
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
@@ -497,6 +497,34 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "model": "gpt-4o-mini",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+```
+
+The virtual key can also filter which models are returned by the `/v1/models` endpoint:
+
+```bash
+# List models allowed for a specific virtual key
+curl -X GET http://localhost:8080/v1/models \
+  -H "x-bf-vk: vk-engineering-main"
+```
+
+**How it works:**
+- **With `x-bf-vk` header**: Returns only models specified in the virtual key's `provider_configs`
+- **Without `x-bf-vk` header**: Returns all available models
+- **Empty `provider_configs`**: Returns all models (no filtering)
+- **Empty `allowed_models` for a provider**: Returns all models from that provider
+
+**Example:**
+```json
+{
+  "provider_configs": [
+    {
+      "provider": "openai",
+      "allowed_models": ["gpt-4o", "gpt-4o-mini"],
+      "weight": 1.0
+    }
+  ]
+}
+// GET /v1/models with x-bf-vk header returns only openai/gpt-4o and openai/gpt-4o-mini
 ```
 
 By default governance is optional, meaning that if the `x-bf-vk` header is not present, the request will be allowed but without any governance checks/routing. But you can make it mandatory by enforcing the governance header.

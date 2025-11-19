@@ -48,6 +48,14 @@ This test suite provides extensive coverage of the Bifrost governance system inc
    - Reset functionality
    - Debug and health endpoints
 
+5. **`test_virtual_keys_access.py`** - Virtual Key Model Filtering
+   - `/v1/models` endpoint filtering based on virtual key `provider_configs`
+   - Specific models via `allowed_models` list
+   - Empty `allowed_models` returns all models from that provider
+   - Empty `provider_configs` returns all models
+   - Multiple provider configurations
+   - Invalid and inactive virtual key handling
+
 ### Configuration Files
 
 - **`conftest.py`** - Test fixtures, utilities, and configuration
@@ -162,6 +170,7 @@ The test suite uses pytest markers for categorization:
 - `@pytest.mark.concurrency` - Concurrency tests
 - `@pytest.mark.slow` - Slow running tests (>5s)
 - `@pytest.mark.smoke` - Quick smoke tests
+- `@pytest.mark.access_control` - Access control and filtering tests
 
 ## API Endpoints Tested
 
@@ -195,6 +204,11 @@ The test suite uses pytest markers for categorization:
 
 ### Integration Endpoints
 - `POST /v1/chat/completions` - Chat completion with governance headers
+- `GET /v1/models` - List available models with optional virtual key filtering
+
+#### Model Filtering (`/v1/models`)
+- **With `x-bf-vk` header**: Returns models specified in the virtual key's `provider_configs`
+- **Without `x-bf-vk` header**: Returns all available models
 
 ## Test Data and Schemas
 

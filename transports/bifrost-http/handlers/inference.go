@@ -18,23 +18,26 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client       *bifrost.Bifrost
-	handlerStore lib.HandlerStore
-	config       *lib.Config
+	client          *bifrost.Bifrost
+	handlerStore    lib.HandlerStore
+	config          *lib.Config
+	governanceStore *governance.GovernanceStore
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config, governanceStore *governance.GovernanceStore) *CompletionHandler {
 	return &CompletionHandler{
-		client:       client,
-		handlerStore: config,
-		config:       config,
+		client:          client,
+		handlerStore:    config,
+		config:          config,
+		governanceStore: governanceStore,
 	}
 }
 
@@ -255,6 +258,66 @@ func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]in
 	return extraParams, nil
 }
 
+// FilterModelsByVirtualKey filters models based on virtual key governance rules.
+func filterModelsByVirtualKey(governanceStore *governance.GovernanceStore, bifrostCtx *context.Context, models []schemas.Model) []schemas.Model {
+	if governanceStore == nil || bifrostCtx == nil {
+		return models
+	}
+
+	vkValue := (*bifrostCtx).Value(schemas.BifrostContextKeyVirtualKey)
+	if vkValue == nil {
+		return models
+	}
+
+	vkString, ok := vkValue.(string)
+	if !ok || vkString == "" {
+		return models
+	}
+
+	vk, exists := governanceStore.GetVirtualKey(vkString)
+	if !exists || !vk.IsActive {
+		return models
+	}
+
+	filteredModels := []schemas.Model{}
+
+	for _, model := range models {
+		modelProvider, modelName := schemas.ParseModelString(model.ID, "")
+
+		providerAllowed := len(vk.ProviderConfigs) == 0 
+		var allowedModelsForProvider []string
+
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == string(modelProvider) {
+				providerAllowed = true
+				allowedModelsForProvider = pc.AllowedModels
+				break
+			}
+		}
+
+		if !providerAllowed {
+			continue
+		}
+
+		if len(allowedModelsForProvider) > 0 {
+			modelAllowed := false
+			for _, allowedModel := range allowedModelsForProvider {
+				if allowedModel == modelName || allowedModel == model.ID {
+					modelAllowed = true
+					break
+				}
+			}
+			if !modelAllowed {
+				continue
+			}
+		}
+
+		filteredModels = append(filteredModels, model)
+	}
+
+	return filteredModels
+}
+
 const (
 	// Maximum file size (25MB)
 	MaxFileSize = 25 * 1024 * 1024
@@ -337,6 +400,11 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
+	}
+
+	// Filter models based on virtual key
+	if h.config.ClientConfig.EnableGovernance {
+		resp.Data = filterModelsByVirtualKey(h.governanceStore, bifrostCtx, resp.Data)
 	}
 
 	// Add pricing data to the response

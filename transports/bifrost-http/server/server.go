@@ -842,7 +842,13 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
-	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
+	var governanceStore *governance.GovernanceStore
+	governancePlugin, _ := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if governancePlugin != nil {
+		governanceStore = governancePlugin.GetGovernanceStore()
+	}
+
+	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config, governanceStore)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1077,7 +1083,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.CorsMiddleware(s.Config)(handlers.TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     1024 * 16, // 16kb		
+		ReadBufferSize:     1024 * 16, // 16kb
 	}
 	return nil
 }
