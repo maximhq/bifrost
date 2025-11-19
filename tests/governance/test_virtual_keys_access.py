@@ -317,7 +317,7 @@ class TestModelsFiltering:
 
     @pytest.mark.virtual_keys
     @pytest.mark.integration
-    def test_list_models_without_vk_header_returns_all(self, governance_client):
+    def test_list_models_without_vk_header_returns_all(self):
         """Test that requesting models without VK header returns all models"""
         response = requests.get(f"{BIFROST_BASE_URL}/v1/models")
         assert_response_success(response, 200)
@@ -327,7 +327,7 @@ class TestModelsFiltering:
 
     @pytest.mark.virtual_keys
     @pytest.mark.integration
-    def test_list_models_with_invalid_vk_header(self, governance_client):
+    def test_list_models_with_invalid_vk_header(self):
         """Test that invalid VK header returns error or all models without filtering"""
         response_without_vk = requests.get(f"{BIFROST_BASE_URL}/v1/models")
         assert_response_success(response_without_vk, 200)
@@ -460,7 +460,6 @@ class TestModelsFiltering:
         assert_response_success(response, 200)
 
         filtered_models = response.json().get("data", [])
-        filtered_ids = [m["id"] for m in filtered_models]
 
         expected_count = 1 + len(provider2_all_models)
         assert len(filtered_models) == expected_count, (
