@@ -273,7 +273,7 @@ func (c *Config) initializeEncryption(configKey string) error {
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
-func LoadConfig(ctx context.Context, configDirPath string, EnterpriseOverrides EnterpriseOverrides) (*Config, error) {
+func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// Initialize separate database connections for optimal performance at scale
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
@@ -296,7 +296,7 @@ func LoadConfig(ctx context.Context, configDirPath string, EnterpriseOverrides E
 		// If config file doesn't exist, we will directly use the config store (create one if it doesn't exist)
 		if os.IsNotExist(err) {
 			logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
-			return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath, EnterpriseOverrides)
+			return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath)
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -352,12 +352,12 @@ func LoadConfig(ctx context.Context, configDirPath string, EnterpriseOverrides E
 	}
 	// If config file exists, we will use it to bootstrap config tables
 	logger.Info("loading configuration from: %s", absConfigFilePath)
-	return loadConfigFromFile(ctx, config, data, EnterpriseOverrides)
+	return loadConfigFromFile(ctx, config, data)
 }
 
 // loadConfigFromFile initializes configuration from a JSON config file.
 // It merges config file data with existing database config, with store taking priority.
-func loadConfigFromFile(ctx context.Context, config *Config, data []byte, EnterpriseOverrides EnterpriseOverrides) (*Config, error) {
+func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Config, error) {
 	var configData ConfigData
 	if err := json.Unmarshal(data, &configData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
@@ -398,7 +398,7 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte, Enterp
 	loadEnvKeysFromFile(ctx, config)
 
 	// Initialize framework config and pricing manager
-	initFrameworkConfigFromFile(ctx, config, &configData, EnterpriseOverrides)
+	initFrameworkConfigFromFile(ctx, config, &configData)
 
 	// Initialize encryption
 	if err = initEncryptionFromFile(config, &configData); err != nil {
@@ -1506,7 +1506,7 @@ func loadEnvKeysFromFile(ctx context.Context, config *Config) {
 }
 
 // initFrameworkConfigFromFile initializes framework config and pricing manager from file
-func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData, EnterpriseOverrides EnterpriseOverrides) {
+func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	pricingConfig := &modelcatalog.Config{}
 	if config.ConfigStore != nil {
 		frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
@@ -1533,18 +1533,10 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 	var pricingManager *modelcatalog.ModelCatalog
 	var err error
 
-	// Check if EnterpriseOverrides is provided, otherwise use default initialization
-	if EnterpriseOverrides != nil {
-		pricingManager, err = EnterpriseOverrides.LoadPricingManager(ctx, pricingConfig, config.ConfigStore)
-		if err != nil {
-			logger.Warn("failed to load pricing manager: %v", err)
-		}
-	} else {
-		// Use default modelcatalog initialization when no enterprise overrides are provided
-		pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
-		if err != nil {
-			logger.Warn("failed to initialize pricing manager: %v", err)
-		}
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
+	if err != nil {
+		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
 	config.PricingManager = pricingManager
 }
@@ -1577,7 +1569,7 @@ func initEncryptionFromFile(config *Config, configData *ConfigData) error {
 
 // loadConfigFromDefaults initializes configuration when no config file exists.
 // It creates a default SQLite config store and loads/creates default configurations.
-func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, logsDBPath string, EnterpriseOverrides EnterpriseOverrides) (*Config, error) {
+func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, logsDBPath string) (*Config, error) {
 	var err error
 
 	// Initialize default config store
@@ -1619,7 +1611,7 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	}
 
 	// Initialize framework config and pricing manager
-	if err = initDefaultFrameworkConfig(ctx, config, EnterpriseOverrides); err != nil {
+	if err = initDefaultFrameworkConfig(ctx, config); err != nil {
 		return nil, err
 	}
 
@@ -1867,7 +1859,7 @@ func loadDefaultEnvKeys(ctx context.Context, config *Config) error {
 }
 
 // initDefaultFrameworkConfig initializes framework configuration and pricing manager
-func initDefaultFrameworkConfig(ctx context.Context, config *Config, EnterpriseOverrides EnterpriseOverrides) error {
+func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
 	if err != nil {
 		logger.Warn("failed to get framework config from store: %v", err)
@@ -1913,19 +1905,10 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config, EnterpriseO
 
 	// Initialize pricing manager
 	var pricingManager *modelcatalog.ModelCatalog
-
-	// Check if EnterpriseOverrides is provided, otherwise use default initialization
-	if EnterpriseOverrides != nil {
-		pricingManager, err = EnterpriseOverrides.LoadPricingManager(ctx, pricingConfig, config.ConfigStore)
-		if err != nil {
-			logger.Warn("failed to initialize pricing manager: %v", err)
-		}
-	} else {
-		// Use default modelcatalog initialization when no enterprise overrides are provided
-		pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
-		if err != nil {
-			logger.Warn("failed to initialize pricing manager: %v", err)
-		}
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
+	if err != nil {
+		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
 	config.PricingManager = pricingManager
 	return nil

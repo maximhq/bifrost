@@ -205,7 +205,7 @@ const SidebarItemView = ({
 	return (
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
-				className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
 					isActive || isAnySubItemActive
 						? "bg-sidebar-accent text-primary border-primary/20"
 						: isAllowed && item.hasAccess
@@ -240,7 +240,7 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									className={`h-7 cursor-pointer rounded-md px-2 transition-all duration-200 ${
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 										isSubItemActive
 											? "bg-sidebar-accent text-primary font-medium"
 											: subItem.hasAccess === false

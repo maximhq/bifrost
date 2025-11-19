@@ -13,13 +13,13 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { Clipboard, DollarSign, FileText, Timer, Trash2 } from "lucide-react";
+import { Clipboard, DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import { CodeEditor } from "./codeEditor";
@@ -168,7 +168,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8" expandable>
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -178,44 +178,45 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							</Badge>
 						</SheetTitle>
 					</div>
-					<div className="flex items-center gap-2">
-						<TooltipProvider>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button variant="outline" size="icon" onClick={copyRequestBody}>
-										<Clipboard className="h-4 w-4" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									<p>Copy request body JSON</p>
-								</TooltipContent>
-							</Tooltip>
-						</TooltipProvider>
-						<AlertDialog>
-							<AlertDialogTrigger asChild>
-								<Button variant="outline" className="ml-auto">
-									<Trash2 />
+					<AlertDialog>
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button variant="ghost" size="icon">
+									<MoreVertical className="h-3 w-3" />
 								</Button>
-							</AlertDialogTrigger>
-							<AlertDialogContent>
-								<AlertDialogHeader>
-									<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-									<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
-								</AlertDialogHeader>
-								<AlertDialogFooter>
-									<AlertDialogCancel>Cancel</AlertDialogCancel>
-									<AlertDialogAction
-										onClick={() => {
-											handleDelete(log);
-											onOpenChange(false);
-										}}
-									>
-										Delete
-									</AlertDialogAction>
-								</AlertDialogFooter>
-							</AlertDialogContent>
-						</AlertDialog>
-					</div>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuItem onClick={copyRequestBody}>
+									<Clipboard className="h-4 w-4" />
+									Copy request body
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<AlertDialogTrigger asChild>
+									<DropdownMenuItem variant="destructive">
+										<Trash2 className="h-4 w-4" />
+										Delete log
+									</DropdownMenuItem>
+								</AlertDialogTrigger>
+							</DropdownMenuContent>
+						</DropdownMenu>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
+								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel>Cancel</AlertDialogCancel>
+								<AlertDialogAction
+									onClick={() => {
+										handleDelete(log);
+										onOpenChange(false);
+									}}
+								>
+									Delete
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
 				</SheetHeader>
 				<div className="space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">

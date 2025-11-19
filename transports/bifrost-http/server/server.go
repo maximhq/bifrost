@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -936,7 +937,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 }
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
-func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
 
@@ -946,7 +947,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 }
 
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, EnterpriseOverrides lib.EnterpriseOverrides, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
@@ -955,7 +956,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
 	}
 	var governanceHandler *handlers.GovernanceHandler
-	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, EnterpriseOverrides.GetGovernancePluginName())
+	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
 	if governancePlugin != nil {
 		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
@@ -1032,7 +1033,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 }
 
 // RegisterUIRoutes registers the UI handler with the specified router
-func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...lib.BifrostHTTPMiddleware) {
+func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
@@ -1092,8 +1093,8 @@ func (s *BifrostHTTPServer) LoadPricingManager(ctx context.Context, pricingConfi
 }
 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
-func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []lib.BifrostHTTPMiddleware {
-	commonMiddlewares := []lib.BifrostHTTPMiddleware{}
+func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
+	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
@@ -1128,7 +1129,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
-	s.Config, err = lib.LoadConfig(ctx, configDir, s)
+	s.Config, err = lib.LoadConfig(ctx, configDir)
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
@@ -1227,7 +1228,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		apiMiddlewares = append(apiMiddlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
 	}
 	// Register routes
-	err = s.RegisterAPIRoutes(s.ctx, s, s, apiMiddlewares...)
+	err = s.RegisterAPIRoutes(s.ctx, s, apiMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1236,7 +1237,31 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		inferenceMiddlewares = append(inferenceMiddlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
 	}
 	// Registering inference middlewares
-	inferenceMiddlewares = append([]lib.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config, s)}, inferenceMiddlewares...)
+	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
+	// Curating observability plugins
+	observabilityPlugins := []schemas.ObservabilityPlugin{}
+	for _, plugin := range s.Plugins {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+		}
+	}
+	// Check if logging plugin is enabled
+	loggingPluginEnabled := false
+	if _, err := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName); err == nil {
+		loggingPluginEnabled = true
+	}
+	// Initialize tracer when observability plugins OR logging plugin is enabled
+	// This enables the central streaming accumulator for both use cases
+	if len(observabilityPlugins) > 0 || loggingPluginEnabled {
+		// Initializing tracer with embedded streaming accumulator
+		traceStore := tracing.NewTraceStore(60*time.Minute, logger)
+		tracer := tracing.NewTracer(traceStore, s.Config.PricingManager, logger)
+		s.Client.SetTracer(tracer)
+		// Always add tracing middleware when tracer is enabled - it creates traces and sets traceID in context
+		// The observability plugins are optional (can be empty if only logging is enabled)
+		tracingMiddleware := handlers.NewTracingMiddleware(tracer, observabilityPlugins)
+		inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{tracingMiddleware.Middleware()}, inferenceMiddlewares...)
+	}
 	err = s.RegisterInferenceRoutes(s.ctx, inferenceMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize inference routes: %v", err)

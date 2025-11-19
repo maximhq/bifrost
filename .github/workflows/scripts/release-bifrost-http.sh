@@ -358,7 +358,8 @@ echo "✅ Transport build validation successful"
 
 # Commit and push changes if any
 # First, pull latest changes to avoid conflicts
-git pull origin main
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git pull origin "$CURRENT_BRANCH"
 
 # Stage any changes made to transports/
 git add transports/

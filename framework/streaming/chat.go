@@ -153,20 +153,28 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		accumulator.mu.Unlock()
 	}()
+
+	// Calculate Time to First Token (TTFT) in milliseconds
+	var ttft int64
+	if !accumulator.StartTimestamp.IsZero() && !accumulator.FirstChunkTimestamp.IsZero() {
+		ttft = accumulator.FirstChunkTimestamp.Sub(accumulator.StartTimestamp).Nanoseconds() / 1e6
+	}
+
 	// Initialize accumulated data
 	data := &AccumulatedData{
-		RequestID:      requestID,
-		Status:         "success",
-		Stream:         true,
-		StartTimestamp: accumulator.StartTimestamp,
-		EndTimestamp:   accumulator.FinalTimestamp,
-		Latency:        0,
-		OutputMessage:  nil,
-		ToolCalls:      nil,
-		ErrorDetails:   nil,
-		TokenUsage:     nil,
-		CacheDebug:     nil,
-		Cost:           nil,
+		RequestID:        requestID,
+		Status:           "success",
+		Stream:           true,
+		StartTimestamp:   accumulator.StartTimestamp,
+		EndTimestamp:     accumulator.FinalTimestamp,
+		Latency:          0,
+		TimeToFirstToken: ttft,
+		OutputMessage:    nil,
+		ToolCalls:        nil,
+		ErrorDetails:     nil,
+		TokenUsage:       nil,
+		CacheDebug:       nil,
+		Cost:             nil,
 	}
 	// Build complete message from accumulated chunks
 	completeMessage := a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)

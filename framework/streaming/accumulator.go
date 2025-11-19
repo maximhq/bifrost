@@ -101,14 +101,17 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	a.responsesStreamChunkPool.Put(chunk)
 }
 
-// CreateStreamAccumulator creates a new stream accumulator for a request
+// createStreamAccumulator creates a new stream accumulator for a request
+// StartTimestamp is set to current time if not provided via CreateStreamAccumulator
 func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulator {
+	now := time.Now()
 	sc := &StreamAccumulator{
 		RequestID:             requestID,
 		ChatStreamChunks:      make([]*ChatStreamChunk, 0),
 		ResponsesStreamChunks: make([]*ResponsesStreamChunk, 0),
 		IsComplete:            false,
-		Timestamp:             time.Now(),
+		Timestamp:             now,
+		StartTimestamp:        now, // Set default StartTimestamp for proper TTFT/latency calculation
 	}
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
@@ -132,6 +135,10 @@ func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChun
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.ChatStreamChunks = append(accumulator.ChatStreamChunks, chunk)
 	// Check if this is the final chunk
@@ -151,6 +158,10 @@ func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *Trans
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
+	}
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.TranscriptionStreamChunks = append(accumulator.TranscriptionStreamChunks, chunk)
@@ -172,6 +183,10 @@ func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamCh
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.AudioStreamChunks = append(accumulator.AudioStreamChunks, chunk)
 	// Check if this is the final chunk
@@ -191,6 +206,10 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	defer accumulator.mu.Unlock()
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
+	}
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
 	}
 	// Add chunk to the list (chunks arrive in order)
 	accumulator.ResponsesStreamChunks = append(accumulator.ResponsesStreamChunks, chunk)

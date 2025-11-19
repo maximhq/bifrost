@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -25,7 +26,7 @@ func NewUIHandler(uiContent embed.FS) *UIHandler {
 }
 
 // RegisterRoutes registers the UI routes with the provided router.
-func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *UIHandler) RegisterRoutes(router *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	router.GET("/", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 	router.GET("/{filepath:*}", lib.ChainMiddlewares(h.serveDashboard, middlewares...))
 }

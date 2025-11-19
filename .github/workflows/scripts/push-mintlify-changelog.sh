@@ -236,7 +236,8 @@ if ! grep -q "\"$route\"" docs/docs.json; then
 fi
 
 # Pulling again before committing
-git pull origin main
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+git pull origin "$CURRENT_BRANCH"
 # Commit and push changes
 git add docs/changelogs/$VERSION.mdx
 git add docs/docs.json
@@ -247,4 +248,4 @@ done
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git commit -m "Adds changelog for $VERSION --skip-pipeline"
-git push origin main
+git push origin "$CURRENT_BRANCH"

@@ -68,6 +68,8 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			schemas.DefaultTracer(),
+			nil,
 		)
 
 		if callCount != 1 {
@@ -101,6 +103,8 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			schemas.DefaultTracer(),
+			nil,
 		)
 
 		if callCount != 3 {
@@ -134,6 +138,8 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			schemas.DefaultTracer(),
+			nil,
 		)
 
 		// Should try: initial + 2 retries = 3 total attempts
@@ -196,6 +202,8 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
+				schemas.DefaultTracer(),
+				nil,
 			)
 
 			if callCount != 1 {
@@ -268,6 +276,8 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
+				schemas.DefaultTracer(),
+				nil,
 			)
 
 			// Should try: initial + 1 retry = 2 total attempts
@@ -496,6 +506,8 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 		schemas.ChatCompletionRequest,
 		schemas.OpenAI,
 		"gpt-4",
+		schemas.DefaultTracer(),
+		nil,
 	)
 
 	// Verify call progression
