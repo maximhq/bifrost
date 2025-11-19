@@ -368,7 +368,7 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 }
 
 // createResourceSpan creates a new resource span for a Bifrost request
-func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
+func (p *OtelPlugin) createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
 	provider, model, _ := req.GetRequestFields()
 
 	// preparing parameters
@@ -401,8 +401,8 @@ func createResourceSpan(traceID, spanID string, timestamp time.Time, req *schema
 	return &ResourceSpan{
 		Resource: &resourcepb.Resource{
 			Attributes: []*commonpb.KeyValue{
-				kvStr("service.name", "bifrost"),
-				kvStr("service.version", "1.0.0"),
+				kvStr("service.name", p.serviceName),
+				kvStr("service.version", p.bifrostVersion),
 			},
 		},
 		ScopeSpans: []*ScopeSpan{
@@ -439,6 +439,10 @@ func completeResourceSpan(
 	selectedKeyName string,
 	numberOfRetries int,
 	fallbackIndex int,
+	teamID string,
+	teamName string,
+	customerID string,
+	customerName string,
 ) *ResourceSpan {
 	params := []*KeyValue{}
 
@@ -671,7 +675,7 @@ func completeResourceSpan(
 		}
 		params = append(params, kvStr("gen_ai.error", bifrostErr.Error.Message))
 	}
-	// Adding request metadata to the span
+	// Adding request metadata to the span for backward compatibility
 	if virtualKeyID != "" {
 		params = append(params, kvStr("gen_ai.virtual_key_id", virtualKeyID))
 		params = append(params, kvStr("gen_ai.virtual_key_name", virtualKeyName))
@@ -680,10 +684,29 @@ func completeResourceSpan(
 		params = append(params, kvStr("gen_ai.selected_key_id", selectedKeyID))
 		params = append(params, kvStr("gen_ai.selected_key_name", selectedKeyName))
 	}
+	if teamID != "" {
+		params = append(params, kvStr("gen_ai.team_id", teamID))
+		params = append(params, kvStr("gen_ai.team_name", teamName))
+	}
+	if customerID != "" {
+		params = append(params, kvStr("gen_ai.customer_id", customerID))
+		params = append(params, kvStr("gen_ai.customer_name", customerName))
+	}
 	params = append(params, kvInt("gen_ai.number_of_retries", int64(numberOfRetries)))
 	params = append(params, kvInt("gen_ai.fallback_index", int64(fallbackIndex)))
 	span.ScopeSpans[0].Spans[0].Attributes = append(span.ScopeSpans[0].Spans[0].Attributes, params...)
 	span.ScopeSpans[0].Spans[0].Status = &tracepb.Status{Code: status}
 	span.ScopeSpans[0].Spans[0].EndTimeUnixNano = uint64(timestamp.UnixNano())
+	// Attaching virtual keys as resource attributes as well
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_id", virtualKeyID))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_name", virtualKeyName))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("selected_key_id", selectedKeyID))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("selected_key_name", selectedKeyName))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("team_id", teamID))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("team_name", teamName))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_id", customerID))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_name", customerName))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvInt("number_of_retries", int64(numberOfRetries)))
+	span.Resource.Attributes = append(span.Resource.Attributes, kvInt("fallback_index", int64(fallbackIndex)))
 	return span
 }

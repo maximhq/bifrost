@@ -1,0 +1,651 @@
+---
+title: "Helm"
+description: "Deploy Bifrost on Kubernetes using Helm charts with flexible configuration options"
+icon: "helicopter-symbol"
+---
+
+Deploy Bifrost on Kubernetes using the official Helm chart. This is the recommended way to deploy Bifrost on Kubernetes with production-ready defaults and flexible configuration.
+
+## Prerequisites
+
+- Kubernetes cluster (v1.19+)
+- `kubectl` configured
+- Helm 3.2.0+ installed
+- (Optional) Persistent Volume provisioner
+- (Optional) Ingress controller
+
+## Quick Start
+
+### Add Helm Repository
+
+```bash
+helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo update
+```
+
+### Install Bifrost
+
+```bash
+helm install bifrost bifrost/bifrost
+```
+
+This deploys Bifrost with:
+- SQLite storage (10Gi PVC)
+- Single replica
+- ClusterIP service
+
+### Access Bifrost
+
+```bash
+kubectl port-forward svc/bifrost 8080:8080
+curl http://localhost:8080/metrics
+```
+
+## Deployment Patterns
+
+<Tabs>
+<Tab title="Development">
+
+### Development Setup
+
+Simple setup for local testing and development.
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set bifrost.providers.openai.keys[0].value="sk-your-key" \
+  --set bifrost.providers.openai.keys[0].weight=1
+```
+
+**Features:**
+- SQLite storage
+- Single replica
+- No auto-scaling
+- ClusterIP service
+
+**Access:**
+```bash
+kubectl port-forward svc/bifrost 8080:8080
+```
+
+</Tab>
+
+<Tab title="Production">
+
+### Production Setup
+
+High-availability setup with PostgreSQL and auto-scaling.
+
+```yaml
+# production.yaml
+replicaCount: 3
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    password: "your-secure-password"
+  primary:
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: bifrost.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.yourdomain.com
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+bifrost:
+  encryptionKey: "your-32-byte-encryption-key"
+  logLevel: info
+  
+  client:
+    dropExcessRequests: true
+    enableLogging: true
+    enableGovernance: true
+  
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 1
+  
+  plugins:
+    telemetry:
+      enabled: true
+    logging:
+      enabled: true
+    governance:
+      enabled: true
+```
+
+**Install:**
+```bash
+helm install bifrost bifrost/bifrost -f production.yaml
+```
+
+**Features:**
+- 3 initial replicas (scales 3-10)
+- PostgreSQL database
+- Ingress with TLS
+- Monitoring enabled
+
+</Tab>
+
+<Tab title="AI Workloads">
+
+### AI Workloads with Semantic Caching
+
+Optimized for high-volume AI inference with caching.
+
+```yaml
+# ai-workload.yaml
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    password: "secure-password"
+  primary:
+    persistence:
+      size: 50Gi
+
+vectorStore:
+  enabled: true
+  type: weaviate
+
+vectorStore:
+  weaviate:
+    enabled: true
+    persistence:
+      size: 50Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
+
+bifrost:
+  encryptionKey: "your-encryption-key"
+  
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 1
+  
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        embeddingModel: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"
+        cacheByModel: true
+        cacheByProvider: true
+```
+
+**Install:**
+```bash
+helm install bifrost bifrost/bifrost -f ai-workload.yaml
+```
+
+**Features:**
+- PostgreSQL for config/logs
+- Weaviate for vector storage
+- Semantic caching enabled
+- Optimized for AI workloads
+
+</Tab>
+
+<Tab title="Multi-Provider">
+
+### Multi-Provider Setup
+
+Support multiple LLM providers with load balancing.
+
+```yaml
+# multi-provider.yaml
+bifrost:
+  encryptionKey: "your-encryption-key"
+  
+  client:
+    enableLogging: true
+    allowDirectKeys: false
+  
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 2
+    anthropic:
+      keys:
+        - value: "sk-ant-..."
+          weight: 1
+    gemini:
+      keys:
+        - value: "..."
+          weight: 1
+    cohere:
+      keys:
+        - value: "..."
+          weight: 1
+  
+  plugins:
+    telemetry:
+      enabled: true
+    logging:
+      enabled: true
+```
+
+**Install:**
+```bash
+helm install bifrost bifrost/bifrost -f multi-provider.yaml
+```
+
+**Features:**
+- Multiple provider support
+- Weighted load balancing
+- Request/response logging
+- Telemetry enabled
+
+</Tab>
+
+<Tab title="External Database">
+
+### External Database
+
+Use existing PostgreSQL instance.
+
+```yaml
+# external-db.yaml
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: false
+  external:
+    enabled: true
+    host: "postgres.example.com"
+    port: 5432
+    user: "bifrost"
+    password: "your-password"
+    database: "bifrost"
+    sslMode: "require"
+
+bifrost:
+  encryptionKey: "your-encryption-key"
+  
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 1
+```
+
+**Install:**
+```bash
+helm install bifrost bifrost/bifrost -f external-db.yaml
+```
+
+**Features:**
+- Uses external PostgreSQL
+- No embedded database
+- SSL connection support
+
+</Tab>
+</Tabs>
+
+## Configuration
+
+### Key Parameters
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `replicaCount` | Number of replicas | `1` |
+| `storage.mode` | Storage backend (sqlite/postgres) | `sqlite` |
+| `storage.persistence.size` | PVC size for SQLite | `10Gi` |
+| `postgresql.enabled` | Deploy PostgreSQL | `false` |
+| `vectorStore.enabled` | Enable vector store | `false` |
+| `vectorStore.type` | Vector store type (weaviate/redis) | `none` |
+| `bifrost.encryptionKey` | Encryption key | `""` |
+| `ingress.enabled` | Enable ingress | `false` |
+| `autoscaling.enabled` | Enable HPA | `false` |
+
+### Provider Configuration
+
+Add provider keys via values file:
+
+```yaml
+bifrost:
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 1
+    anthropic:
+      keys:
+        - value: "sk-ant-..."
+          weight: 1
+```
+
+Or via command line:
+
+```bash
+helm install bifrost bifrost/bifrost \
+  --set bifrost.providers.openai.keys[0].value="sk-..." \
+  --set bifrost.providers.openai.keys[0].weight=1
+```
+
+### Plugin Configuration
+
+Enable and configure plugins:
+
+```yaml
+bifrost:
+  plugins:
+    telemetry:
+      enabled: true
+      config: {}
+    
+    logging:
+      enabled: true
+      config: {}
+    
+    governance:
+      enabled: true
+      config:
+        isVkMandatory: false
+    
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        embeddingModel: "text-embedding-3-small"
+        threshold: 0.8
+        ttl: "5m"
+```
+
+## Operations
+
+### Upgrade
+
+```bash
+# Update repository
+helm repo update
+
+# Upgrade with same values
+helm upgrade bifrost bifrost/bifrost --reuse-values
+
+# Upgrade with new values
+helm upgrade bifrost bifrost/bifrost -f your-values.yaml
+```
+
+### Rollback
+
+```bash
+# View release history
+helm history bifrost
+
+# Rollback to previous version
+helm rollback bifrost
+
+# Rollback to specific revision
+helm rollback bifrost 2
+```
+
+### Uninstall
+
+```bash
+# Uninstall release
+helm uninstall bifrost
+
+# Delete PVCs (if you want to remove data)
+kubectl delete pvc -l app.kubernetes.io/instance=bifrost
+```
+
+### Scale
+
+```bash
+# Scale manually
+kubectl scale deployment bifrost --replicas=5
+
+# Or update via Helm
+helm upgrade bifrost bifrost/bifrost \
+  --set replicaCount=5 \
+  --reuse-values
+```
+
+## Monitoring
+
+### Prometheus Metrics
+
+Bifrost exposes Prometheus metrics at `/metrics`.
+
+Enable ServiceMonitor for automatic scraping:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+```
+
+### Health Checks
+
+Check pod health:
+
+```bash
+# View pod status
+kubectl get pods -l app.kubernetes.io/name=bifrost
+
+# Check logs
+kubectl logs -l app.kubernetes.io/name=bifrost --tail=100
+
+# Describe pod
+kubectl describe pod -l app.kubernetes.io/name=bifrost
+```
+
+### Metrics Endpoints
+
+```bash
+# Port forward
+kubectl port-forward svc/bifrost 8080:8080
+
+# Check metrics
+curl http://localhost:8080/metrics
+
+# Check health
+curl http://localhost:8080/health
+```
+
+## Troubleshooting
+
+### Pod Not Starting
+
+```bash
+# Check events
+kubectl describe pod -l app.kubernetes.io/name=bifrost
+
+# Check logs
+kubectl logs -l app.kubernetes.io/name=bifrost
+
+# Common issues:
+# - Image pull errors: Check repository access
+# - PVC binding: Check PVC status
+# - Config errors: Validate ConfigMap
+```
+
+### Database Connection Issues
+
+```bash
+# For embedded PostgreSQL
+kubectl exec -it deployment/bifrost-postgresql -- psql -U bifrost
+
+# Check connectivity from pod
+kubectl exec -it deployment/bifrost -- nc -zv bifrost-postgresql 5432
+
+# Check secret
+kubectl get secret bifrost-config -o yaml
+```
+
+### High Memory Usage
+
+```bash
+# Check resource usage
+kubectl top pods -l app.kubernetes.io/name=bifrost
+
+# Increase limits
+helm upgrade bifrost bifrost/bifrost \
+  --set resources.limits.memory=4Gi \
+  --reuse-values
+```
+
+### Ingress Not Working
+
+```bash
+# Check ingress status
+kubectl describe ingress bifrost
+
+# Check ingress controller logs
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
+
+# Verify DNS
+nslookup bifrost.yourdomain.com
+```
+
+## Advanced Configuration
+
+### Custom Values File
+
+Create `my-values.yaml`:
+
+```yaml
+replicaCount: 3
+
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    password: "secure-password"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: bifrost.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+bifrost:
+  encryptionKey: "your-32-byte-key"
+  providers:
+    openai:
+      keys:
+        - value: "sk-..."
+          weight: 1
+```
+
+Install:
+
+```bash
+helm install bifrost bifrost/bifrost -f my-values.yaml
+```
+
+### Environment Variables
+
+Add custom environment variables:
+
+```yaml
+env:
+  - name: CUSTOM_VAR
+    value: "custom-value"
+
+envFrom:
+  - secretRef:
+      name: bifrost-secrets
+  - configMapRef:
+      name: bifrost-config
+```
+
+### Node Affinity
+
+Deploy to specific nodes:
+
+```yaml
+nodeSelector:
+  node-type: ai-workload
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: bifrost
+        topologyKey: kubernetes.io/hostname
+
+tolerations:
+  - key: "gpu"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+```
+
+## Resources
+
+- [Helm Chart Repository](https://github.com/maximhq/bifrost/tree/main/helm-charts)
+- [Complete Installation Guide](https://github.com/maximhq/bifrost/blob/main/helm-charts/INSTALL.md)
+- [Example Configurations](https://github.com/maximhq/bifrost/tree/main/helm-charts/bifrost/values-examples)
+- [GitHub Issues](https://github.com/maximhq/bifrost/issues)
+
+## Next Steps
+
+1. Configure [provider keys](/docs/providers)
+2. Enable [plugins](/docs/plugins)
+3. Set up [monitoring](/docs/monitoring)
+4. Configure [ingress and TLS](/docs/security)

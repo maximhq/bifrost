@@ -180,48 +180,11 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
 						/>
-
-						{isEditing && customer?.budget && (
-							<div>
-								<div className="border-accent mb-2 flex w-full flex-row items-center gap-2 border-b pb-2 font-medium">
-									<div className="flex w-[300px] flex-row items-center gap-2">
-										<DollarSign className="h-4 w-4" />
-										Current Budget
-									</div>
-									<div className="ml-auto h-2 w-full rounded-full bg-gray-200">
-										<div
-											className="h-2 rounded-full bg-blue-600"
-											style={{
-												width: `${Math.min((customer.budget.current_usage / customer.budget.max_limit) * 100, 100)}%`,
-											}}
-										></div>
-									</div>
-								</div>
-								<div className="space-y-2 text-sm">
-									<div className="flex justify-between">
-										<span>Current Usage:</span>
-										<span className="font-mono">{formatCurrency(customer.budget.current_usage)}</span>
-									</div>
-									<div className="flex justify-between">
-										<span>Budget Limit:</span>
-										<span className="font-mono">{formatCurrency(customer.budget.max_limit)}</span>
-									</div>
-									<div className="flex justify-between">
-										<span>Reset Period:</span>
-										<span className="font-mono">{customer.budget.reset_duration}</span>
-									</div>
-								</div>
-								<div className="text-muted-foreground bg-accent border-accent mt-3 rounded-md border p-2 text-sm">
-									Budget management for existing customers should be done through the budget edit dialog.
-								</div>
-							</div>
-						)}
-
 						{isEditing && customer?.budget && (
 							<div className="space-y-2">
 								<div className="flex items-center gap-2">
 									<span className="text-sm">Current Usage:</span>
-									<div className="flex items-center gap-2 mt-0.5">
+									<div className="mt-0.5 flex items-center gap-2">
 										<span className="font-mono text-sm">
 											{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
 										</span>
@@ -235,7 +198,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 								</div>
 								<div className="flex items-center gap-2">
 									<span className="text-sm">Last Reset:</span>
-									<div className="flex items-center gap-2 mt-0.5">
+									<div className="mt-0.5 flex items-center gap-2">
 										<span className="font-mono text-sm">
 											{formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
 										</span>

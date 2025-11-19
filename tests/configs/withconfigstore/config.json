@@ -6,6 +6,5 @@
     "config": {
       "path": "../../tests/configs/withconfigstore/config.db"
     }
-  }
-  
+  }  
 }

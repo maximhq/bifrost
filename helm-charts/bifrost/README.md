@@ -389,9 +389,9 @@ bifrost:
 
 ## Support
 
-- Documentation: https://www.getbifrost.ai/docs
-- GitHub: https://github.com/maxim-ai/bifrost
-- Issues: https://github.com/maxim-ai/bifrost/issues
+- Documentation: [Bifrost Docs](https://www.getbifrost.ai/docs)
+- GitHub: [maximhq/bifrost](https://github.com/maximhq/bifrost)
+- Issues: [GitHub Issues](https://github.com/maximhq/bifrost/issues)
 
 ## License
 

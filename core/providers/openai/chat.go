@@ -10,14 +10,13 @@ import (
 func (request *OpenAIChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
-	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: provider,
-		Model:    model,
-		Input:    request.Messages,
-		Params:   &request.ChatParameters,
+	return &schemas.BifrostChatRequest{
+		Provider:  provider,
+		Model:     model,
+		Input:     request.Messages,
+		Params:    &request.ChatParameters,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
-
-	return bifrostReq
 }
 
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format

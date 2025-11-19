@@ -25,6 +25,9 @@ type AnthropicTextRequest struct {
 	TopK              *int     `json:"top_k,omitempty"`
 	Stream            *bool    `json:"stream,omitempty"`
 	StopSequences     []string `json:"stop_sequences,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -48,6 +51,9 @@ type AnthropicMessageRequest struct {
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 type AnthropicMetaData struct {

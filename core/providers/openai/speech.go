@@ -6,14 +6,13 @@ import "github.com/maximhq/bifrost/core/schemas"
 func (request *OpenAISpeechRequest) ToBifrostSpeechRequest() *schemas.BifrostSpeechRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
-	bifrostReq := &schemas.BifrostSpeechRequest{
-		Provider: provider,
-		Model:    model,
-		Input:    &schemas.SpeechInput{Input: request.Input},
-		Params:   &request.SpeechParameters,
+	return &schemas.BifrostSpeechRequest{
+		Provider:  provider,
+		Model:     model,
+		Input:     &schemas.SpeechInput{Input: request.Input},
+		Params:    &request.SpeechParameters,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
-
-	return bifrostReq
 }
 
 // ToOpenAISpeechRequest converts a Bifrost speech request to OpenAI format

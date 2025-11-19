@@ -94,6 +94,7 @@
             "icon": "puzzle-piece",
             "pages": [
               "plugins/getting-started",
+              "plugins/building-dynamic-binary",
               "plugins/writing-plugin"              
             ]
           },
@@ -185,6 +186,7 @@
             "pages": [
                "deployment-guides/k8s",
               "deployment-guides/ecs",
+              "deployment-guides/helm",
               "deployment-guides/fly"
             ]
           },
@@ -249,6 +251,9 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
+          "changelogs/v1.3.31",
+          "changelogs/v1.3.30",
+          "changelogs/v1.3.29",
           "changelogs/v1.3.28",
           "changelogs/v1.3.27",
           "changelogs/v1.3.26",

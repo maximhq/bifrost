@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -15,6 +15,7 @@ import { useForm, type Resolver } from "react-hook-form";
 interface OtelFormFragmentProps {
 	currentConfig?: {
 		enabled?: boolean;
+		service_name?: string;
 		collector_url?: string;
 		headers?: Record<string, string>;
 		trace_type?: "otel" | "genai_extension" | "vercel" | "arize_otel";
@@ -33,6 +34,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		defaultValues: {
 			enabled: initialConfig?.enabled ?? false,
 			otel_config: {
+				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url ?? "",
 				headers: initialConfig?.headers ?? {},
 				trace_type: initialConfig?.trace_type ?? "otel",
@@ -59,6 +61,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 		form.reset({
 			enabled: initialConfig?.enabled || false,
 			otel_config: {
+				service_name: initialConfig?.service_name ?? "bifrost",
 				collector_url: initialConfig?.collector_url || "",
 				headers: initialConfig?.headers || {},
 				trace_type: initialConfig?.trace_type || "otel",
@@ -81,6 +84,20 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 				{/* OTEL Configuration */}
 				<div className="space-y-4">
 					<div className="flex flex-col gap-4">
+						<FormField
+							control={form.control}
+							name="otel_config.service_name"
+							render={({ field }) => (
+								<FormItem className="w-full">
+									<FormLabel>Service Name</FormLabel>
+									<FormDescription>If kept empty, the service name will be set to "bifrost"</FormDescription>
+									<FormControl>
+										<Input placeholder="bifrost" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="otel_config.collector_url"
@@ -116,7 +133,6 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								</FormItem>
 							)}
 						/>
-
 						<div className="flex flex-row gap-4">
 							<FormField
 								control={form.control}

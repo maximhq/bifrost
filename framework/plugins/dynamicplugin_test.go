@@ -328,17 +328,23 @@ func buildHelloWorldPlugin(t *testing.T) string {
 		pluginExt = ".dll"
 	}
 
-	// Build the plugin using make
-	cmd := exec.Command("make", "build")
+	// Create build directory
+	buildDir := filepath.Join(absPluginDir, "build")
+	err = os.MkdirAll(buildDir, 0755)
+	require.NoError(t, err, "Failed to create build directory")
+
+	// Build the plugin directly with go build
+	pluginPath := filepath.Join(buildDir, "hello-world"+pluginExt)
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", pluginPath, "main.go")
 	cmd.Dir = absPluginDir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Logf("Make output: %s", string(output))
+		t.Logf("Build output: %s", string(output))
 		require.NoError(t, err, "Failed to build hello-world plugin")
 	}
 
 	// Verify the plugin was built
-	pluginPath := filepath.Join(absPluginDir, "build", "hello-world"+pluginExt)
 	_, err = os.Stat(pluginPath)
 	require.NoError(t, err, "Plugin file should exist after build")
 
@@ -493,12 +499,18 @@ func buildHelloWorldPluginForBenchmark(b *testing.B) string {
 		return pluginPath
 	}
 
-	// Build the plugin
-	cmd := exec.Command("make", "build")
+	// Create build directory
+	buildDir := filepath.Join(absPluginDir, "build")
+	err = os.MkdirAll(buildDir, 0755)
+	require.NoError(b, err, "Failed to create build directory")
+
+	// Build the plugin directly with go build
+	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", pluginPath, "main.go")
 	cmd.Dir = absPluginDir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		b.Logf("Make output: %s", string(output))
+		b.Logf("Build output: %s", string(output))
 		require.NoError(b, err, "Failed to build hello-world plugin")
 	}
 

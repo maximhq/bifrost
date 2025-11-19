@@ -135,6 +135,99 @@ export const ModelsCatalog = () => {
     fetchModels()
   }, [])
 
+  useEffect(() => {
+    const styleId = 'custom-scrollbar-styles'
+    if (document.getElementById(styleId)) return
+
+    const style = document.createElement('style')
+    style.id = styleId
+    style.textContent = `
+      /* Firefox overlay scrollbar - always visible */
+      .custom-scrollbar {
+        overflow: auto !important;
+        scrollbar-gutter: auto !important;
+        scrollbar-width: thin !important;
+        scrollbar-color: rgba(228, 228, 231, 0.6) rgba(241, 245, 249, 0.5) !important;
+      }
+
+      .custom-scrollbar:hover {
+        scrollbar-color: rgba(228, 228, 231, 1) rgba(241, 245, 249, 0.7) !important;
+      }
+
+      .dark .custom-scrollbar {
+        scrollbar-color: rgba(113, 113, 122, 0.6) rgba(39, 39, 42, 0.5) !important;
+      }
+
+      .dark .custom-scrollbar:hover {
+        scrollbar-color: rgba(113, 113, 122, 1) rgba(39, 39, 42, 0.7) !important;
+      }
+
+      /* WebKit overlay scrollbar - always visible */
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 8px !important;
+        height: 8px !important;
+        background: transparent !important;
+      }
+
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background-color: rgba(241, 245, 249, 0.5) !important;
+        margin: 0 !important;
+        border: none !important;
+        border-radius: 8px !important;
+      }
+
+      .dark .custom-scrollbar::-webkit-scrollbar-track {
+        background-color: rgba(39, 39, 42, 0.5) !important;
+      }
+
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background-color: rgba(228, 228, 231, 0.6) !important;
+        border-radius: 8px !important;
+        border: 2px solid transparent !important;
+        background-clip: padding-box !important;
+        transition: background-color 0.2s !important;
+      }
+
+      .custom-scrollbar:hover::-webkit-scrollbar-thumb {
+        background-color: rgba(228, 228, 231, 1) !important;
+      }
+
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background-color: rgba(82, 82, 91, 1) !important;
+      }
+
+      .dark .custom-scrollbar::-webkit-scrollbar-thumb {
+        background-color: rgba(113, 113, 122, 0.6) !important;
+      }
+
+      .dark .custom-scrollbar:hover::-webkit-scrollbar-thumb {
+        background-color: rgba(113, 113, 122, 1) !important;
+      }
+
+      .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background-color: rgba(161, 161, 170, 1) !important;
+      }
+
+      /* Make scrollbar overlay by extending table into scrollbar area */
+      .custom-scrollbar {
+        overflow-x: hidden !important;
+      }
+
+      .custom-scrollbar > table {
+        width: calc(100% + 8px) !important;
+        margin-right: -8px !important;
+      }
+    `
+    document.head.appendChild(style)
+
+    return () => {
+      const existingStyle = document.getElementById(styleId)
+      if (existingStyle) {
+        existingStyle.remove()
+      }
+    }
+  }, [])
+
   const providers = useMemo(() => {
     const uniqueProviders = new Set()
     models.forEach(model => {
@@ -239,17 +332,17 @@ export const ModelsCatalog = () => {
         </div>
       </div>
 
-      <div className="overflow-auto border border-zinc-950/20 dark:border-white/20 rounded-lg bg-white dark:bg-zinc-950" style={{ maxHeight: '600px' }}>
-        <table className="w-full border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
+      <div className="overflow-y-auto custom-scrollbar border border-zinc-950/20 dark:border-white/20 rounded-lg" style={{ maxHeight: '600px', padding: 0, margin: 0, overflowX: 'hidden' }}>
+        <table className="w-full text-sm bg-white dark:bg-zinc-950" style={{ borderCollapse: 'collapse', tableLayout: 'fixed', margin: 0, padding: 0 }}>
+          <thead className="sticky bg-zinc-50 dark:bg-zinc-900" style={{ top: 0, zIndex: 10 }}>
             <tr>
-              <th className="px-4 py-3 text-left font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20" style={{ width: '200px' }}>
+              <th className="px-6 py-3 text-left font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20" style={{ width: '200px' }}>
                 Provider
               </th>
-              <th className="px-4 py-3 text-left font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20">
+              <th className="px-6 py-3 text-left font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20">
                 Model
               </th>
-              <th className="px-4 py-3 text-center font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20" style={{ width: '150px' }}>
+              <th className="px-6 py-3 text-center font-semibold text-zinc-950 dark:text-white whitespace-nowrap border-b-2 border-zinc-950/20 dark:border-white/20" style={{ width: '150px' }}>
                 Details
               </th>
             </tr>
@@ -257,7 +350,7 @@ export const ModelsCatalog = () => {
           <tbody>
             {filteredModels.length === 0 && searchTerm ? (
               <tr>
-                <td colSpan={3} className="px-4 py-10 text-center text-zinc-950/70 dark:text-white/70">
+                <td colSpan={3} className="px-6 py-10 text-center text-zinc-950/70 dark:text-white/70">
                   No models found matching "{searchTerm}"
                 </td>
               </tr>
@@ -267,13 +360,13 @@ export const ModelsCatalog = () => {
                   key={`${model.provider}-${model.model}`}
                   className="transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900"
                 >
-                  <td className="px-4 py-3 text-zinc-950/80 dark:text-white/80 border-b border-zinc-950/10 dark:border-white/10 capitalize">
+                  <td className="px-6 py-3 text-zinc-950/80 dark:text-white/80 border-b border-zinc-950/10 dark:border-white/10 capitalize">
                     {model.provider || '—'}
                   </td>
-                  <td className="px-4 py-3 text-zinc-950/80 dark:text-white/80 border-b border-zinc-950/10 dark:border-white/10 font-mono">
+                  <td className="px-6 py-3 text-zinc-950/80 dark:text-white/80 border-b border-zinc-950/10 dark:border-white/10 font-mono">
                     {model.model || '—'}
                   </td>
-                  <td className="px-4 py-3 border-b border-zinc-950/10 dark:border-white/10 text-center">
+                  <td className="px-6 py-3 border-b border-zinc-950/10 dark:border-white/10 text-center">
                     <button
                       onClick={() => handleRowClick(model)}
                       className="text-[#0C3B43] dark:text-[#07C983] hover:underline font-medium text-sm"
@@ -292,6 +385,7 @@ export const ModelsCatalog = () => {
     </div>
   )
 }
+
 
 <ModelsCatalog />
 

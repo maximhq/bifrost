@@ -21,10 +21,11 @@ func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest() *schemas.Bifr
 	}
 
 	return &schemas.BifrostResponsesRequest{
-		Provider: provider,
-		Model:    model,
-		Input:    input,
-		Params:   &request.ResponsesParameters,
+		Provider:  provider,
+		Model:     model,
+		Input:     input,
+		Params:    &request.ResponsesParameters,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 }
 

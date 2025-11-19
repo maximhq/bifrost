@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/migrator"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // RDBConfigStore represents a configuration store that uses a relational database.
@@ -55,6 +56,94 @@ func (s *RDBConfigStore) Ping(ctx context.Context) error {
 // DB returns the underlying database connection.
 func (s *RDBConfigStore) DB() *gorm.DB {
 	return s.db
+}
+
+// parseGormError parses GORM errors to provide user-friendly error messages.
+// Currently handles unique constraint violations and is designed to be extended
+// for other error types in the future (e.g., foreign key violations, not null constraints).
+func (s *RDBConfigStore) parseGormError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	}
+
+	errMsg := err.Error()
+
+	// Check for unique constraint violations
+	// SQLite format: "UNIQUE constraint failed: table_name.column_name"
+	// PostgreSQL format: "ERROR: duplicate key value violates unique constraint"
+	
+	if strings.Contains(errMsg, "UNIQUE constraint failed") || 
+	   strings.Contains(errMsg, "duplicate key value violates unique constraint") {
+		
+		// Extract column name from error message
+		var columnName string
+		
+		// SQLite: extract from "UNIQUE constraint failed: table.column"
+		if strings.Contains(errMsg, "UNIQUE constraint failed") {
+			parts := strings.Split(errMsg, "UNIQUE constraint failed:")
+			if len(parts) > 1 {
+				tableColumn := strings.TrimSpace(parts[1])
+				// Extract column name after the last dot
+				if dotIndex := strings.LastIndex(tableColumn, "."); dotIndex != -1 {
+					columnName = tableColumn[dotIndex+1:]
+				} else {
+					columnName = tableColumn
+				}
+			}
+		} else if strings.Contains(errMsg, "duplicate key value violates unique constraint") {
+			// PostgreSQL: try to extract from constraint name or detail
+			// Example: duplicate key value violates unique constraint "idx_key_name"
+			// Detail: Key (name)=(value) already exists.
+			
+			// First try to extract from Detail
+			if strings.Contains(errMsg, "Key (") {
+				startIdx := strings.Index(errMsg, "Key (")
+				if startIdx != -1 {
+					rest := errMsg[startIdx+5:]
+					endIdx := strings.Index(rest, ")")
+					if endIdx != -1 {
+						columnName = rest[:endIdx]
+					}
+				}
+			}			
+			// If not found, try to parse from constraint name
+			if columnName == "" {
+				// Extract constraint name
+				if strings.Contains(errMsg, `"`) {
+					parts := strings.Split(errMsg, `"`)
+					if len(parts) >= 2 {
+						constraintName := parts[1]
+						// Remove idx_ prefix and try to extract column name
+						if strings.HasPrefix(constraintName, "idx_") {
+							constraintName = constraintName[4:]
+							// Find the last underscore to get column name
+							if lastUnderscore := strings.LastIndex(constraintName, "_"); lastUnderscore != -1 {
+								columnName = constraintName[lastUnderscore+1:]
+							} else {
+								columnName = constraintName
+							}
+						}
+					}
+				}
+			}
+		}		
+		// Clean up column name (remove underscores, convert to readable format)
+		if columnName != "" {
+			// Convert snake_case to space-separated words
+			columnName = strings.ReplaceAll(columnName, "_", " ")
+			return fmt.Errorf("a record with this %s already exists. Please use a different value", columnName)
+		}		
+		// Fallback message if we couldn't parse the column name
+		return fmt.Errorf("a record with this value already exists. Please use a different value")
+	}
+	
+	// For other errors, return the original error
+	// Future: add handling for foreign key violations, not null constraints, etc.
+	return err
 }
 
 // UpdateFrameworkConfig updates the framework configuration in the database.
@@ -108,14 +197,6 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 // UpdateProvidersConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Delete all existing providers (cascades to keys)
-		if err := tx.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableProvider{}).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
-		}
-
 		for providerName, providerConfig := range providers {
 			dbProvider := tables.TableProvider{
 				Name:                     string(providerName),
@@ -126,10 +207,16 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			}
 
-			// Create provider first
-			if err := tx.WithContext(ctx).Create(&dbProvider).Error; err != nil {
-				return err
-			}
+		// Upsert provider (create or update if exists)
+		if err := tx.WithContext(ctx).Clauses(
+			clause.OnConflict{
+				Columns:   []clause.Column{{Name: "name"}},
+				UpdateAll: true,
+			},
+			clause.Returning{Columns: []clause.Column{{Name: "id"}}},
+		).Create(&dbProvider).Error; err != nil {
+			return s.parseGormError(err)
+		}
 
 			// Create keys for this provider
 			dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
@@ -179,16 +266,17 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				var existingKey tables.TableKey
 				result := tx.WithContext(ctx).Where("key_id = ?", dbKey.KeyID).First(&existingKey)
 
-				if result.Error == nil {
-					// Update existing key with new data
-					dbKey.ID = existingKey.ID // Keep the same database ID
-					if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
-						return err
-					}
+			if result.Error == nil {
+				// Update existing key with new data
+				dbKey.ID = existingKey.ID             // Keep the same database ID
+				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
+				if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
+					return s.parseGormError(err)
+				}
 				} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 					// Create new key
 					if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
-						return err
+						return s.parseGormError(err)
 					}
 				} else {
 					// Other error occurred
@@ -229,7 +317,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 
 		// Save the updated provider
 		if err := tx.WithContext(ctx).Save(&dbProvider).Error; err != nil {
-			return err
+			return s.parseGormError(err)
 		}
 
 		// Get existing keys for this provider
@@ -290,14 +378,14 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 				// Update existing key - preserve the database ID
 				dbKey.ID = existingKey.ID
 				if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
-					return err
+					return s.parseGormError(err)
 				}
 				// Remove from map to track which keys are still in use
 				delete(existingKeysMap, key.ID)
 			} else {
 				// Create new key
 				if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
-					return err
+					return s.parseGormError(err)
 				}
 			}
 		}
@@ -319,14 +407,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 // AddProvider creates a new provider configuration in the database.
 func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Check if provider already exists
-		var existingProvider tables.TableProvider
-		if err := tx.WithContext(ctx).Where("name = ?", string(provider)).First(&existingProvider).Error; err == nil {
-			return fmt.Errorf("provider %s already exists", provider)
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-
 		// Create a deep copy of the config to avoid modifying the original
 		configCopy, err := deepCopy(config)
 		if err != nil {
@@ -347,7 +427,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 
 		// Create the provider
 		if err := tx.WithContext(ctx).Create(&dbProvider).Error; err != nil {
-			return err
+			return s.parseGormError(err)
 		}
 
 		// Create keys for this provider
@@ -390,7 +470,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 
 			// Create the key
 			if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
-				return err
+				return s.parseGormError(err)
 			}
 		}
 
@@ -600,14 +680,6 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
 func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig, envKeys map[string][]EnvKeyInfo) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Check if client already exists
-		var existingClient tables.TableMCPClient
-		if err := tx.WithContext(ctx).Where("name = ?", clientConfig.Name).First(&existingClient).Error; err == nil {
-			return fmt.Errorf("MCP client with name '%s' already exists", clientConfig.Name)
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
-
 		// Create a deep copy to avoid modifying the original
 		clientConfigCopy, err := deepCopy(clientConfig)
 		if err != nil {
@@ -628,7 +700,10 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			Headers:          clientConfigCopy.Headers,
 		}
 
-		return tx.WithContext(ctx).Create(&dbClient).Error
+		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
+			return s.parseGormError(err)
+		}
+		return nil
 	})
 }
 
@@ -661,7 +736,10 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
 		existingClient.Headers = clientConfigCopy.Headers
 
-		return tx.WithContext(ctx).Updates(&existingClient).Error
+		if err := tx.WithContext(ctx).Updates(&existingClient).Error; err != nil {
+			return s.parseGormError(err)
+		}
+		return nil
 	})
 }
 
@@ -854,7 +932,10 @@ func (s *RDBConfigStore) CreateModelPrices(ctx context.Context, pricing *tables.
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(pricing).Error
+	if err := txDB.WithContext(ctx).Create(pricing).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteModelPrices deletes all model pricing records from the database.
@@ -902,7 +983,10 @@ func (s *RDBConfigStore) CreatePlugin(ctx context.Context, plugin *tables.TableP
 	} else {
 		plugin.IsCustom = false
 	}
-	return txDB.WithContext(ctx).Create(plugin).Error
+	if err := txDB.WithContext(ctx).Create(plugin).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error {
@@ -935,7 +1019,7 @@ func (s *RDBConfigStore) UpdatePlugin(ctx context.Context, plugin *tables.TableP
 		if localTx {
 			txDB.Rollback()
 		}
-		return err
+		return s.parseGormError(err)
 	}
 
 	if localTx {
@@ -979,7 +1063,9 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 	var virtualKeys []tables.TableVirtualKey
 
 	// Preload all relationships for complete information
-	if err := s.db.WithContext(ctx).Preload("Team").
+	if err := s.db.WithContext(ctx).
+		Preload("Team").
+		Preload("Team.Customer").
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
@@ -1000,7 +1086,9 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 // GetVirtualKey retrieves a virtual key from the database.
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := s.db.WithContext(ctx).Preload("Team").
+	if err := s.db.WithContext(ctx).
+		Preload("Team").
+		Preload("Team.Customer").
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
@@ -1009,9 +1097,9 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 		Preload("ProviderConfigs.RateLimit").
 		Preload("MCPConfigs").
 		Preload("MCPConfigs.MCPClient").
-	Preload("Keys", func(db *gorm.DB) *gorm.DB {
-		return db.Select("id, name, key_id, models_json, provider")
-	}).First(&virtualKey, "id = ?", id).Error; err != nil {
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, name, key_id, models_json, provider")
+		}).First(&virtualKey, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1023,7 +1111,9 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 // GetVirtualKeyByValue retrieves a virtual key by its value
 func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey
-	if err := s.db.WithContext(ctx).Preload("Team").
+	if err := s.db.WithContext(ctx).
+		Preload("Team").
+		Preload("Team.Customer").
 		Preload("Customer").
 		Preload("Budget").
 		Preload("RateLimit").
@@ -1032,9 +1122,9 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 		Preload("ProviderConfigs.RateLimit").
 		Preload("MCPConfigs").
 		Preload("MCPConfigs.MCPClient").
-	Preload("Keys", func(db *gorm.DB) *gorm.DB {
-		return db.Select("id, name, key_id, models_json, provider")
-	}).First(&virtualKey, "value = ?", value).Error; err != nil {
+		Preload("Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, name, key_id, models_json, provider")
+		}).First(&virtualKey, "value = ?", value).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1050,13 +1140,9 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	} else {
 		txDB = s.db
 	}
-	// Check if virtual key already exists with the same value or name
-	if err := txDB.WithContext(ctx).Where("value = ? OR name = ?", virtualKey.Value, virtualKey.Name).First(&tables.TableVirtualKey{}).Error; err == nil {
-		return fmt.Errorf("virtual key already exists with the same value or name")
-	}
 	// Create virtual key first
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
-		return err
+		return s.parseGormError(err)
 	}
 	// Create key associations after the virtual key has an ID
 	if len(virtualKey.Keys) > 0 {
@@ -1075,22 +1161,13 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		txDB = s.db
 	}
 
-	// Check if virtual key already exists with the same value or name
-	var existingVirtualKey tables.TableVirtualKey
-	if err := txDB.WithContext(ctx).
-		Where("id <> ? AND (value = ? OR name = ?)", virtualKey.ID, virtualKey.Value, virtualKey.Name).
-		First(&existingVirtualKey).Error; err == nil {
-		return fmt.Errorf("virtual key already exists with the same value or name")
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
 	// Store the keys before Save() clears them
 	keysToAssociate := virtualKey.Keys
 	// Update virtual key first (this will clear the Keys field)
 	// Use Select() to explicitly update all fields, including nil pointer fields
 	// This ensures TeamID gets set to NULL when switching from team to customer association
 	if err := txDB.WithContext(ctx).Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "updated_at").Updates(virtualKey).Error; err != nil {
-		return err
+		return s.parseGormError(err)
 	}
 	// Clear existing key associations
 	if err := txDB.WithContext(ctx).Model(virtualKey).Association("Keys").Clear(); err != nil {
@@ -1175,7 +1252,10 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(virtualKeyProviderConfig).Error
+	if err := txDB.WithContext(ctx).Create(virtualKeyProviderConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateVirtualKeyProviderConfig updates a virtual key provider config in the database.
@@ -1186,7 +1266,10 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(virtualKeyProviderConfig).Error
+	if err := txDB.WithContext(ctx).Save(virtualKeyProviderConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteVirtualKeyProviderConfig deletes a virtual key provider config from the database.
@@ -1227,7 +1310,10 @@ func (s *RDBConfigStore) CreateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error
+	if err := txDB.WithContext(ctx).Create(virtualKeyMCPConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateVirtualKeyMCPConfig updates a virtual key provider config in the database.
@@ -1238,7 +1324,10 @@ func (s *RDBConfigStore) UpdateVirtualKeyMCPConfig(ctx context.Context, virtualK
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(virtualKeyMCPConfig).Error
+	if err := txDB.WithContext(ctx).Save(virtualKeyMCPConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteVirtualKeyMCPConfig deletes a virtual key provider config from the database.
@@ -1290,7 +1379,10 @@ func (s *RDBConfigStore) CreateTeam(ctx context.Context, team *tables.TableTeam,
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(team).Error
+	if err := txDB.WithContext(ctx).Create(team).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateTeam updates an existing team in the database.
@@ -1301,7 +1393,10 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(team).Error
+	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteTeam deletes a team from the database.
@@ -1341,7 +1436,10 @@ func (s *RDBConfigStore) CreateCustomer(ctx context.Context, customer *tables.Ta
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(customer).Error
+	if err := txDB.WithContext(ctx).Create(customer).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateCustomer updates an existing customer in the database.
@@ -1352,7 +1450,10 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(customer).Error
+	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // DeleteCustomer deletes a customer from the database.
@@ -1380,7 +1481,10 @@ func (s *RDBConfigStore) CreateRateLimit(ctx context.Context, rateLimit *tables.
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(rateLimit).Error
+	if err := txDB.WithContext(ctx).Create(rateLimit).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateRateLimit updates a rate limit in the database.
@@ -1391,7 +1495,10 @@ func (s *RDBConfigStore) UpdateRateLimit(ctx context.Context, rateLimit *tables.
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(rateLimit).Error
+	if err := txDB.WithContext(ctx).Save(rateLimit).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateRateLimits updates multiple rate limits in the database.
@@ -1404,7 +1511,7 @@ func (s *RDBConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*tab
 	}
 	for _, rl := range rateLimits {
 		if err := txDB.WithContext(ctx).Save(rl).Error; err != nil {
-			return err
+			return s.parseGormError(err)
 		}
 	}
 	return nil
@@ -1448,7 +1555,10 @@ func (s *RDBConfigStore) CreateBudget(ctx context.Context, budget *tables.TableB
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Create(budget).Error
+	if err := txDB.WithContext(ctx).Create(budget).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // UpdateBudgets updates multiple budgets in the database.
@@ -1462,7 +1572,7 @@ func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.Ta
 	s.logger.Debug("updating budgets: %+v", budgets)
 	for _, b := range budgets {
 		if err := txDB.WithContext(ctx).Save(b).Error; err != nil {
-			return err
+			return s.parseGormError(err)
 		}
 	}
 	return nil
@@ -1476,7 +1586,10 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 	} else {
 		txDB = s.db
 	}
-	return txDB.WithContext(ctx).Save(budget).Error
+	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
 }
 
 // GetGovernanceConfig retrieves the governance configuration from the database.

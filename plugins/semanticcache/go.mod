@@ -1,14 +1,12 @@
 module github.com/maximhq/bifrost/plugins/semanticcache
 
-go 1.24.1
-
-toolchain go1.24.3
+go 1.24.3
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.2.25
-	github.com/maximhq/bifrost/framework v1.1.31
+	github.com/maximhq/bifrost/core v1.2.27
+	github.com/maximhq/bifrost/framework v1.1.34
 	github.com/maximhq/bifrost/plugins/mocker v1.3.20
 )
 

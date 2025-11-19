@@ -15,7 +15,7 @@ RUN node scripts/fix-paths.js
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.24-alpine3.22 AS builder
+FROM golang:1.24.3-alpine3.22 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -38,7 +38,7 @@ COPY --from=ui-builder /app/out ./bifrost-http/ui
 ENV GOWORK=off
 ARG VERSION=unknown
 RUN go build \
-    -ldflags="-w -s -extldflags '-static' -X main.Version=v${VERSION}" \
+    -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
     -a -trimpath \
     -tags "sqlite_static" \
     -o /app/main \
@@ -53,6 +53,12 @@ RUN test -f /app/main || (echo "Build failed" && exit 1)
 # --- Runtime Stage: Minimal runtime image ---
 FROM alpine:3.22
 WORKDIR /app
+
+# Install runtime dependencies for CGO-enabled binary
+# musl: C standard library (required for CGO binaries)
+# libgcc: GCC runtime library
+# ca-certificates: For HTTPS connections
+RUN apk add --no-cache musl libgcc ca-certificates
 
 # Create data directory and set up user
 COPY --from=builder /app/main .

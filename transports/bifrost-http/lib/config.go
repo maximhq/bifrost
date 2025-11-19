@@ -564,17 +564,64 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 
 	if clientConfig != nil {
 		config.ClientConfig = *clientConfig
-
 		// For backward compatibility, we need to handle cases where config is already present but max request body size is not set
 		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
 			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+		}
+		
+		// Merge with config file if present
+		if configData.Client != nil {
+			logger.Debug("merging client config from config file with store")
+			// DB takes priority, but fill in empty/zero values from config file
+			if config.ClientConfig.InitialPoolSize == 0 && configData.Client.InitialPoolSize != 0 {
+				config.ClientConfig.InitialPoolSize = configData.Client.InitialPoolSize
+			}
+			if len(config.ClientConfig.PrometheusLabels) == 0 && len(configData.Client.PrometheusLabels) > 0 {
+				config.ClientConfig.PrometheusLabels = configData.Client.PrometheusLabels
+			}
+			if len(config.ClientConfig.AllowedOrigins) == 0 && len(configData.Client.AllowedOrigins) > 0 {
+				config.ClientConfig.AllowedOrigins = configData.Client.AllowedOrigins
+			}
+			if config.ClientConfig.MaxRequestBodySizeMB == 0 && configData.Client.MaxRequestBodySizeMB != 0 {
+				config.ClientConfig.MaxRequestBodySizeMB = configData.Client.MaxRequestBodySizeMB
+			}
+			// Boolean fields: only override if DB has false and config file has true
+			if !config.ClientConfig.DropExcessRequests && configData.Client.DropExcessRequests {
+				config.ClientConfig.DropExcessRequests = configData.Client.DropExcessRequests
+			}
+			if !config.ClientConfig.EnableLogging && configData.Client.EnableLogging {
+				config.ClientConfig.EnableLogging = configData.Client.EnableLogging
+			}
+			if !config.ClientConfig.DisableContentLogging && configData.Client.DisableContentLogging {
+				config.ClientConfig.DisableContentLogging = configData.Client.DisableContentLogging
+			}
+			if !config.ClientConfig.EnableGovernance && configData.Client.EnableGovernance {
+				config.ClientConfig.EnableGovernance = configData.Client.EnableGovernance
+			}
+			if !config.ClientConfig.EnforceGovernanceHeader && configData.Client.EnforceGovernanceHeader {
+				config.ClientConfig.EnforceGovernanceHeader = configData.Client.EnforceGovernanceHeader
+			}
+			if !config.ClientConfig.AllowDirectKeys && configData.Client.AllowDirectKeys {
+				config.ClientConfig.AllowDirectKeys = configData.Client.AllowDirectKeys
+			}
+			if !config.ClientConfig.EnableLiteLLMFallbacks && configData.Client.EnableLiteLLMFallbacks {
+				config.ClientConfig.EnableLiteLLMFallbacks = configData.Client.EnableLiteLLMFallbacks
+			}
+			
+			// Update store with merged config
+			if config.ConfigStore != nil {
+				logger.Debug("updating merged client config in store")
+				err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig)
+				if err != nil {
+					logger.Warn("failed to update merged client config: %v", err)
+				}
+			}
 		}
 	} else {
 		logger.Debug("client config not found in store, using config file")
 		// Process core configuration if present, otherwise use defaults
 		if configData.Client != nil {
 			config.ClientConfig = *configData.Client
-
 			// For backward compatibility, we need to handle cases where config is already present but max request body size is not set
 			if config.ClientConfig.MaxRequestBodySizeMB == 0 {
 				config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
@@ -582,7 +629,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		} else {
 			config.ClientConfig = DefaultClientConfig
 		}
-
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
 			err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig)
@@ -602,99 +648,111 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Warn("failed to get providers config from store: %v", err)
 		}
 	}
-
-	if processedProviders != nil {
-		config.Providers = processedProviders
-	} else {
-		// If we don't have any data in the store, we will process the data from the config file
-		logger.Debug("no providers config found in store, processing from config file")
+	// If we don't have any data in the store, we will process the data from the config file
+	logger.Debug("no providers config found in store, processing from config file")
+	if processedProviders == nil {
 		processedProviders = make(map[schemas.ModelProvider]configstore.ProviderConfig)
-		// Process provider configurations
-		if configData.Providers != nil {
-			// Process each provider configuration
-			for providerName, cfg := range configData.Providers {
-				newEnvKeys := make(map[string]struct{})
-				provider := schemas.ModelProvider(strings.ToLower(providerName))
-
-				// Process environment variables in keys (including key-level configs)
-				for i, key := range cfg.Keys {
-					if key.ID == "" {
-						cfg.Keys[i].ID = uuid.NewString()
+	}
+	// Process provider configurations
+	if configData.Providers != nil {
+		// Process each provider configuration
+		for providerName, cfg := range configData.Providers {
+			newEnvKeys := make(map[string]struct{})
+			provider := schemas.ModelProvider(strings.ToLower(providerName))
+			// Process environment variables in keys (including key-level configs)
+			for i, key := range cfg.Keys {
+				if key.ID == "" {
+					cfg.Keys[i].ID = uuid.NewString()
+				}
+				// Process API key value
+				processedValue, envVar, err := config.processEnvValue(key.Value)
+				if err != nil {
+					config.cleanupEnvKeys(provider, "", newEnvKeys)
+					if strings.Contains(err.Error(), "not found") {
+						logger.Info("%s: %v", provider, err)
+					} else {
+						logger.Warn("failed to process env vars in keys for %s: %v", provider, err)
 					}
-
-					// Process API key value
-					processedValue, envVar, err := config.processEnvValue(key.Value)
-					if err != nil {
+					continue
+				}
+				cfg.Keys[i].Value = processedValue
+				// Track environment key if it came from env
+				if envVar != "" {
+					newEnvKeys[envVar] = struct{}{}
+					config.EnvKeys[envVar] = append(config.EnvKeys[envVar], configstore.EnvKeyInfo{
+						EnvVar:     envVar,
+						Provider:   provider,
+						KeyType:    "api_key",
+						ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, key.ID),
+						KeyID:      key.ID,
+					})
+				}
+				// Process Azure key config if present
+				if key.AzureKeyConfig != nil {
+					if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
 						config.cleanupEnvKeys(provider, "", newEnvKeys)
-						if strings.Contains(err.Error(), "not found") {
-							logger.Info("%s: %v", provider, err)
-						} else {
-							logger.Warn("failed to process env vars in keys for %s: %v", provider, err)
-						}
+						logger.Warn("failed to process Azure key config env vars for %s: %v", provider, err)
 						continue
 					}
-					cfg.Keys[i].Value = processedValue
-
-					// Track environment key if it came from env
-					if envVar != "" {
-						newEnvKeys[envVar] = struct{}{}
-						config.EnvKeys[envVar] = append(config.EnvKeys[envVar], configstore.EnvKeyInfo{
-							EnvVar:     envVar,
-							Provider:   provider,
-							KeyType:    "api_key",
-							ConfigPath: fmt.Sprintf("providers.%s.keys[%s]", provider, key.ID),
-							KeyID:      key.ID,
-						})
-					}
-
-					// Process Azure key config if present
-					if key.AzureKeyConfig != nil {
-						if err := config.processAzureKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
-							config.cleanupEnvKeys(provider, "", newEnvKeys)
-							logger.Warn("failed to process Azure key config env vars for %s: %v", provider, err)
-							continue
-						}
-					}
-
-					// Process Vertex key config if present
-					if key.VertexKeyConfig != nil {
-						if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
-							config.cleanupEnvKeys(provider, "", newEnvKeys)
-							logger.Warn("failed to process Vertex key config env vars for %s: %v", provider, err)
-							continue
-						}
-					}
-
-					// Process Bedrock key config if present
-					if key.BedrockKeyConfig != nil {
-						if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
-							config.cleanupEnvKeys(provider, "", newEnvKeys)
-							logger.Warn("failed to process Bedrock key config env vars for %s: %v", provider, err)
-							continue
-						}
+				}
+				// Process Vertex key config if present
+				if key.VertexKeyConfig != nil {
+					if err := config.processVertexKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
+						config.cleanupEnvKeys(provider, "", newEnvKeys)
+						logger.Warn("failed to process Vertex key config env vars for %s: %v", provider, err)
+						continue
 					}
 				}
+				// Process Bedrock key config if present
+				if key.BedrockKeyConfig != nil {
+					if err := config.processBedrockKeyConfigEnvVars(&cfg.Keys[i], provider, newEnvKeys); err != nil {
+						config.cleanupEnvKeys(provider, "", newEnvKeys)
+						logger.Warn("failed to process Bedrock key config env vars for %s: %v", provider, err)
+						continue
+					}
+				}
+			}
+			if _, exists := processedProviders[provider]; !exists {
 				processedProviders[provider] = cfg
-			}
-			// Store processed configurations in memory
-			config.Providers = processedProviders
-		} else {
-			config.autoDetectProviders(ctx)
+			} else {
+				// Here we will merge the keys
+				existingCfg := processedProviders[provider]
+				// Here we will check if the key is already present
+				keysToAdd := make([]schemas.Key, 0)
+				for _, newKey := range cfg.Keys {
+					found := false
+					for _, existingKey := range existingCfg.Keys {
+						if existingKey.Name == newKey.Name || existingKey.ID == newKey.ID || existingKey.Value == newKey.Value {
+							// Here we will skip the key
+							found = true
+							break
+						}				
+					}
+					if !found {
+						keysToAdd = append(keysToAdd, newKey)	
+					}					
+				}
+				existingCfg.Keys = append(existingCfg.Keys, keysToAdd...)
+				processedProviders[provider] = existingCfg
+			}			
 		}
-		if config.ConfigStore != nil {
-			logger.Debug("updating providers config in store")
-			err = config.ConfigStore.UpdateProvidersConfig(ctx, processedProviders)
-			if err != nil {
-				logger.Warn("failed to update providers config: %v", err)
-			}
-			if err := config.ConfigStore.UpdateEnvKeys(ctx, config.EnvKeys); err != nil {
-				logger.Warn("failed to update env keys: %v", err)
-			}
+		// Store processed configurations in memory
+		config.Providers = processedProviders
+	} else {
+		config.autoDetectProviders(ctx)
+	}
+	if config.ConfigStore != nil {
+		logger.Debug("updating providers config in store")
+		err = config.ConfigStore.UpdateProvidersConfig(ctx, processedProviders)
+		if err != nil {
+			logger.Fatal("failed to update providers config: %v", err)
+		}
+		if err := config.ConfigStore.UpdateEnvKeys(ctx, config.EnvKeys); err != nil {
+			logger.Fatal("failed to update env keys: %v", err)
 		}
 	}
-
+	config.Providers = processedProviders
 	// 3. Check for MCP Config
-
 	var mcpConfig *schemas.MCPConfig
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
@@ -703,9 +761,53 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Warn("failed to get MCP config from store: %v", err)
 		}
 	}
-
 	if mcpConfig != nil {
 		config.MCPConfig = mcpConfig
+		
+		// Merge with config file if present
+		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
+			logger.Debug("merging MCP config from config file with store")
+			
+			// Process env vars for config file MCP configs
+			tempMCPConfig := configData.MCP
+			originalMCPConfig := config.MCPConfig
+			config.MCPConfig = tempMCPConfig
+			if err := config.processMCPEnvVars(); err != nil {
+				logger.Warn("failed to process MCP env vars: %v", err)
+				config.MCPConfig = originalMCPConfig
+			} else {
+				// Merge ClientConfigs arrays by ID or Name
+				clientConfigsToAdd := make([]schemas.MCPClientConfig, 0)
+				for _, newClientConfig := range tempMCPConfig.ClientConfigs {
+					found := false
+					for _, existingClientConfig := range mcpConfig.ClientConfigs {
+						// Check by ID first, then by Name
+						if (newClientConfig.ID != "" && existingClientConfig.ID == newClientConfig.ID) ||
+							(newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						clientConfigsToAdd = append(clientConfigsToAdd, newClientConfig)
+					}
+				}
+				
+				// Add new client configs to existing ones
+				config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
+				
+				// Update store with merged config
+				if config.ConfigStore != nil && len(clientConfigsToAdd) > 0 {
+					logger.Debug("updating MCP config in store with %d new client configs", len(clientConfigsToAdd))
+					for _, clientConfig := range clientConfigsToAdd {
+						if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig, config.EnvKeys); err != nil {
+							logger.Warn("failed to create MCP client config: %v", err)
+							continue
+						}
+					}
+				}
+			}
+		}
 	} else if configData.MCP != nil {
 		// If MCP config is not present in the store, we will use the config file
 		logger.Debug("no MCP config found in store, processing from config file")
@@ -725,7 +827,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 
 	// 4. Check for Governance Config
-
 	var governanceConfig *configstore.GovernanceConfig
 	if config.ConfigStore != nil {
 		logger.Debug("getting governance config from store")
@@ -734,9 +835,157 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			logger.Warn("failed to get governance config from store: %v", err)
 		}
 	}
-
 	if governanceConfig != nil {
 		config.GovernanceConfig = governanceConfig
+		
+		// Merge with config file if present
+		if configData.Governance != nil {
+			logger.Debug("merging governance config from config file with store")
+			
+			// Merge Budgets by ID
+			budgetsToAdd := make([]configstoreTables.TableBudget, 0)
+			for _, newBudget := range configData.Governance.Budgets {
+				found := false
+				for _, existingBudget := range governanceConfig.Budgets {
+					if existingBudget.ID == newBudget.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					budgetsToAdd = append(budgetsToAdd, newBudget)
+				}
+			}
+			
+			// Merge RateLimits by ID
+			rateLimitsToAdd := make([]configstoreTables.TableRateLimit, 0)
+			for _, newRateLimit := range configData.Governance.RateLimits {
+				found := false
+				for _, existingRateLimit := range governanceConfig.RateLimits {
+					if existingRateLimit.ID == newRateLimit.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					rateLimitsToAdd = append(rateLimitsToAdd, newRateLimit)
+				}
+			}
+			
+			// Merge Customers by ID
+			customersToAdd := make([]configstoreTables.TableCustomer, 0)
+			for _, newCustomer := range configData.Governance.Customers {
+				found := false
+				for _, existingCustomer := range governanceConfig.Customers {
+					if existingCustomer.ID == newCustomer.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					customersToAdd = append(customersToAdd, newCustomer)
+				}
+			}
+			
+			// Merge Teams by ID
+			teamsToAdd := make([]configstoreTables.TableTeam, 0)
+			for _, newTeam := range configData.Governance.Teams {
+				found := false
+				for _, existingTeam := range governanceConfig.Teams {
+					if existingTeam.ID == newTeam.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					teamsToAdd = append(teamsToAdd, newTeam)
+				}
+			}
+			
+			// Merge VirtualKeys by ID
+			virtualKeysToAdd := make([]configstoreTables.TableVirtualKey, 0)
+			for _, newVirtualKey := range configData.Governance.VirtualKeys {
+				found := false
+				for _, existingVirtualKey := range governanceConfig.VirtualKeys {
+					if existingVirtualKey.ID == newVirtualKey.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					virtualKeysToAdd = append(virtualKeysToAdd, newVirtualKey)
+				}
+			}
+			
+			// Add merged items to config
+			config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
+			config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
+			config.GovernanceConfig.Customers = append(governanceConfig.Customers, customersToAdd...)
+			config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
+			config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
+			
+			// Update store with merged config items
+			if config.ConfigStore != nil && (len(budgetsToAdd) > 0 || len(rateLimitsToAdd) > 0 || len(customersToAdd) > 0 || len(teamsToAdd) > 0 || len(virtualKeysToAdd) > 0) {
+				logger.Debug("updating governance config in store with merged items")
+				if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+					// Create budgets
+					for _, budget := range budgetsToAdd {
+						if err := config.ConfigStore.CreateBudget(ctx, &budget, tx); err != nil {
+							return fmt.Errorf("failed to create budget %s: %w", budget.ID, err)
+						}
+					}
+
+					// Create rate limits
+					for _, rateLimit := range rateLimitsToAdd {
+						if err := config.ConfigStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+							return fmt.Errorf("failed to create rate limit %s: %w", rateLimit.ID, err)
+						}
+					}
+
+					// Create customers
+					for _, customer := range customersToAdd {
+						if err := config.ConfigStore.CreateCustomer(ctx, &customer, tx); err != nil {
+							return fmt.Errorf("failed to create customer %s: %w", customer.ID, err)
+						}
+					}
+
+					// Create teams
+					for _, team := range teamsToAdd {
+						if err := config.ConfigStore.CreateTeam(ctx, &team, tx); err != nil {
+							return fmt.Errorf("failed to create team %s: %w", team.ID, err)
+						}
+					}
+
+					// Create virtual keys
+					for _, virtualKey := range virtualKeysToAdd {
+						// Look up existing provider keys by key_id and populate the Keys field
+						var existingKeys []configstoreTables.TableKey
+						for _, keyRef := range virtualKey.Keys {
+							if keyRef.KeyID != "" {
+								var existingKey configstoreTables.TableKey
+								if err := tx.Where("key_id = ?", keyRef.KeyID).First(&existingKey).Error; err != nil {
+									if errors.Is(err, gorm.ErrRecordNotFound) {
+										logger.Warn("referenced key %s not found for virtual key %s", keyRef.KeyID, virtualKey.ID)
+										continue
+									}
+									return fmt.Errorf("failed to lookup key %s for virtual key %s: %w", keyRef.KeyID, virtualKey.ID, err)
+								}
+								existingKeys = append(existingKeys, existingKey)
+							}
+						}
+						virtualKey.Keys = existingKeys
+
+						if err := config.ConfigStore.CreateVirtualKey(ctx, &virtualKey, tx); err != nil {
+							return fmt.Errorf("failed to create virtual key %s: %w", virtualKey.ID, err)
+						}
+					}
+
+					return nil
+				}); err != nil {
+					logger.Warn("failed to update governance config: %v", err)
+				}
+			}
+		}
 	} else if configData.Governance != nil {
 		logger.Debug("no governance config found in store, processing from config file")
 		config.GovernanceConfig = configData.Governance
@@ -778,13 +1027,13 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					var existingKeys []configstoreTables.TableKey
 					for _, keyRef := range virtualKey.Keys {
 						if keyRef.KeyID != "" {
-						var existingKey configstoreTables.TableKey
-						if err := tx.Where("key_id = ?", keyRef.KeyID).First(&existingKey).Error; err != nil {
-							if errors.Is(err, gorm.ErrRecordNotFound) {
-								logger.Warn("referenced key %s not found for virtual key %s", keyRef.KeyID, virtualKey.ID)
-								continue
-							}
-							return fmt.Errorf("failed to lookup key %s for virtual key %s: %w", keyRef.KeyID, virtualKey.ID, err)
+							var existingKey configstoreTables.TableKey
+							if err := tx.Where("key_id = ?", keyRef.KeyID).First(&existingKey).Error; err != nil {
+								if errors.Is(err, gorm.ErrRecordNotFound) {
+									logger.Warn("referenced key %s not found for virtual key %s", keyRef.KeyID, virtualKey.ID)
+									continue
+								}
+								return fmt.Errorf("failed to lookup key %s for virtual key %s: %w", keyRef.KeyID, virtualKey.ID, err)
 							}
 							existingKeys = append(existingKeys, existingKey)
 						}
@@ -802,7 +1051,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}
 		}
 	}
-
 	if configData.AuthConfig != nil {
 		if config.ConfigStore != nil {
 			configStoreAuthConfig, err := config.ConfigStore.GetAuthConfig(ctx)
@@ -828,9 +1076,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			}
 		}
 	}
-
 	// 5. Check for Plugins
-
 	if config.ConfigStore != nil {
 		logger.Debug("getting plugins from store")
 		plugins, err := config.ConfigStore.GetPlugins(ctx)
@@ -1471,8 +1717,6 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		}
 	}
 
-	c.Providers[provider] = config
-
 	if c.ConfigStore != nil {
 		if err := c.ConfigStore.UpdateProvider(ctx, provider, config, c.EnvKeys); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
@@ -1487,6 +1731,8 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 			logger.Warn("failed to update env keys: %v", err)
 		}
 	}
+
+	c.Providers[provider] = config
 
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil

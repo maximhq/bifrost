@@ -13,7 +13,9 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - `Authorization` - Authorization header, eg. `Bearer sk-bf-*` (OpenAI style)
 - `x-api-key` - API key header, eg. `sk-bf-*` (Anthropic style)
 
-<Note>You can also use `Authorization` and `x-api-key` headers to pass direct keys to the provider. Read more about it in [Direct Key Bypass](../keys-management#direct-key-bypass).</Note>
+<Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
+
+<Info>You can also use `Authorization` and `x-api-key` headers to pass direct keys to the provider. Read more about it in [Direct Key Bypass](../keys-management#direct-key-bypass).</Info>
 
 **Key Features:**
 - **Access Control** - Model and provider filtering
@@ -545,8 +547,6 @@ Include additional headers for enhanced tracking and audit trails:
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "x-bf-vk: vk-engineering-main" \
-  -H "x-bf-team: team-eng-001" \
-  -H "x-bf-customer: customer-acme-corp" \
   -H "x-bf-user-id: user-alice" \
   -d '{
     "model": "gpt-4o-mini", 
@@ -556,9 +556,6 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Header Definitions:**
 - `x-bf-vk` - **Required** virtual key for access control
-- `x-bf-team` - Optional team identifier for audit trails
-- `x-bf-customer` - Optional customer identifier for audit trails  
-- `x-bf-user-id` - Optional user identifier for detailed tracking
 
 ### Error Responses
 

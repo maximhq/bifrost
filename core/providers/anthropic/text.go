@@ -65,6 +65,7 @@ func (request *AnthropicTextRequest) ToBifrostTextCompletionRequest() *schemas.B
 			TopP:        request.TopP,
 			Stop:        request.StopSequences,
 		},
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	// Add extra params if present

@@ -2,28 +2,47 @@
 
 Official Helm charts for deploying [Bifrost](https://www.getbifrost.ai) on Kubernetes.
 
+> 📚 **[Complete Installation Guide](./INSTALL.md)** - Detailed setup instructions, examples, and troubleshooting
+
 ## Available Charts
 
 - **bifrost**: Main application chart with support for multiple storage backends
 
 ## Quick Start
 
+### Add Helm Repository
+
+```bash
+helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo update
+```
+
 ### Install with Default Configuration (SQLite)
 
 ```bash
-helm install bifrost ./bifrost
+helm install bifrost bifrost/bifrost
 ```
 
 ### Install with PostgreSQL
 
 ```bash
-helm install bifrost ./bifrost -f bifrost/values-examples/postgres-only.yaml
+helm install bifrost bifrost/bifrost -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml
 ```
 
 ### Install with PostgreSQL + Weaviate
 
 ```bash
-helm install bifrost ./bifrost -f bifrost/values-examples/postgres-weaviate.yaml
+helm install bifrost bifrost/bifrost -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/postgres-weaviate.yaml
+```
+
+### Install from Source
+
+If you prefer to install from source:
+
+```bash
+git clone https://github.com/maximhq/bifrost.git
+cd bifrost/helm-charts
+helm install bifrost ./bifrost
 ```
 
 ## Available Configurations
@@ -84,7 +103,7 @@ helm-charts/
 
 ```bash
 # Simple SQLite setup for local development
-helm install bifrost ./bifrost \
+helm install bifrost bifrost/bifrost \
   --set bifrost.providers.openai.keys[0].value="sk-..." \
   --set bifrost.providers.openai.keys[0].weight=1
 ```
@@ -93,8 +112,8 @@ helm install bifrost ./bifrost \
 
 ```bash
 # High-availability setup with PostgreSQL and monitoring
-helm install bifrost ./bifrost \
-  -f bifrost/values-examples/production-ha.yaml \
+helm install bifrost bifrost/bifrost \
+  -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/production-ha.yaml \
   --set bifrost.encryptionKey="your-secure-key" \
   --set postgresql.auth.password="secure-db-password" \
   --set ingress.hosts[0].host="bifrost.yourdomain.com"
@@ -111,8 +130,8 @@ kubectl create secret generic bifrost-semantic-cache \
   -n default
 
 # Install with semantic caching enabled
-helm install bifrost ./bifrost \
-  -f bifrost/values-examples/postgres-weaviate.yaml
+helm install bifrost bifrost/bifrost \
+  -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/postgres-weaviate.yaml
 ```
 
 The values examples now use `secretRef` to reference the secret instead of inline keys for better security.
@@ -145,13 +164,13 @@ bifrost:
 Then install:
 
 ```bash
-helm install bifrost ./bifrost -f my-values.yaml
+helm install bifrost bifrost/bifrost -f my-values.yaml
 ```
 
 ## Upgrade
 
 ```bash
-helm upgrade bifrost ./bifrost -f your-values.yaml
+helm upgrade bifrost bifrost/bifrost -f your-values.yaml
 ```
 
 ## Uninstall
@@ -163,8 +182,8 @@ helm uninstall bifrost
 ## Support
 
 - Documentation: [https://www.getbifrost.ai/docs](https://www.getbifrost.ai/docs)
-- GitHub: [https://github.com/maxim-ai/bifrost](https://github.com/maxim-ai/bifrost)
-- Issues: [https://github.com/maxim-ai/bifrost/issues](https://github.com/maxim-ai/bifrost/issues)
+- GitHub: [https://github.com/maximhq/bifrost](https://github.com/maximhq/bifrost)
+- Issues: [https://github.com/maximhq/bifrost/issues](https://github.com/maximhq/bifrost/issues)
 
 ## License
 

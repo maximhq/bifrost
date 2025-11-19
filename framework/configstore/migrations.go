@@ -73,6 +73,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVertexDeploymentsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationMissingProviderColumnInKeyTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -964,6 +967,69 @@ func migrationAddVertexDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) e
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running vertex deployments JSON migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationMissingProviderColumnInKeyTable(ctx context.Context, db *gorm.DB) error {
+	options := &migrator.Options{
+		TableName:                 migrator.DefaultOptions.TableName,
+		IDColumnName:              migrator.DefaultOptions.IDColumnName,
+		IDColumnSize:              migrator.DefaultOptions.IDColumnSize,
+		UseTransaction:            true,
+		ValidateUnknownMigrations: migrator.DefaultOptions.ValidateUnknownMigrations,
+	}
+	m := migrator.New(db, options, []*migrator.Migration{{
+		ID: "add_and_fill_provider_column_in_key_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Step 1: Add the provider column if it doesn't exist
+			if migrator.HasColumn(&tables.TableKey{}, "provider") {
+				return nil
+			}
+			if err := migrator.AddColumn(&tables.TableKey{}, "provider"); err != nil {
+				return fmt.Errorf("failed to add provider column: %w", err)
+			}
+
+			// Step 2: Find all keys where provider is empty/null but provider_id is set
+			var keys []tables.TableKey
+			if err := tx.Where("provider IS NULL OR provider = ''").Find(&keys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys with missing provider: %w", err)
+			}
+
+			// Step 3: Update each key with the provider name from the provider table
+			for _, key := range keys {
+				var provider tables.TableProvider
+				if err := tx.First(&provider, key.ProviderID).Error; err != nil {
+					// Skip keys with invalid provider_id
+					if err == gorm.ErrRecordNotFound {
+						continue
+					}
+					return fmt.Errorf("failed to fetch provider %d for key %s: %w", key.ProviderID, key.KeyID, err)
+				}
+
+				// Update the key with the provider name
+				if err := tx.Model(&key).Update("provider", provider.Name).Error; err != nil {
+					return fmt.Errorf("failed to update key %s with provider %s: %w", key.KeyID, provider.Name, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "provider"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add and fill provider column migration: %s", err.Error())
 	}
 	return nil
 }

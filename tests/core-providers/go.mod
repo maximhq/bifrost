@@ -1,8 +1,6 @@
 module github.com/maximhq/bifrost/tests/core-providers
 
-go 1.24.0
-
-toolchain go1.24.3
+go 1.24.3
 
 replace github.com/maximhq/bifrost/core => ../../core
 

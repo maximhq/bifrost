@@ -16,6 +16,9 @@ type OpenAITextCompletionRequest struct {
 
 	schemas.TextCompletionParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -29,6 +32,9 @@ type OpenAIEmbeddingRequest struct {
 	Input *schemas.EmbeddingInput `json:"input"` // Can be string or []string
 
 	schemas.EmbeddingParameters
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // OpenAIChatRequest represents an OpenAI chat completion request
@@ -42,6 +48,9 @@ type OpenAIChatRequest struct {
 	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -89,6 +98,9 @@ type OpenAIResponsesRequest struct {
 
 	schemas.ResponsesParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -103,6 +115,9 @@ type OpenAISpeechRequest struct {
 
 	schemas.SpeechParameters
 	StreamFormat *string `json:"stream_format,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // OpenAITranscriptionRequest represents an OpenAI transcription request
@@ -113,6 +128,9 @@ type OpenAITranscriptionRequest struct {
 
 	schemas.TranscriptionParameters
 	Stream *bool `json:"stream,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface for speech
@@ -130,7 +148,7 @@ type OpenAIModel struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
-	Created *int64  `json:"created,omitempty"`
+	Created *int64 `json:"created,omitempty"`
 
 	// GROQ specific fields
 	Active        *bool `json:"active,omitempty"`

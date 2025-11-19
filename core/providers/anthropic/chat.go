@@ -13,8 +13,9 @@ func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostC
 	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostChatRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	messages := []schemas.ChatMessage{}

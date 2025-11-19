@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tests/scripts/1millogs
 
-go 1.24.0
+go 1.24.3
 
 require (
 	github.com/maximhq/bifrost/core v1.2.25

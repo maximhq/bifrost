@@ -136,8 +136,9 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	// Convert basic parameters

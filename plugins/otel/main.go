@@ -52,6 +52,7 @@ const ProtocolHTTP Protocol = "http"
 const ProtocolGRPC Protocol = "grpc"
 
 type Config struct {
+	ServiceName  string            `json:"service_name"`
 	CollectorURL string            `json:"collector_url"`
 	Headers      map[string]string `json:"headers"`
 	TraceType    TraceType         `json:"trace_type"`
@@ -63,10 +64,13 @@ type OtelPlugin struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	url       string
-	headers   map[string]string
-	traceType TraceType
-	protocol  Protocol
+	serviceName string
+	url         string
+	headers     map[string]string
+	traceType   TraceType
+	protocol    Protocol
+
+	bifrostVersion string
 
 	ongoingSpans *TTLSyncMap
 
@@ -79,7 +83,7 @@ type OtelPlugin struct {
 }
 
 // Init function for the OTEL plugin
-func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingManager *modelcatalog.ModelCatalog) (*OtelPlugin, error) {
+func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingManager *modelcatalog.ModelCatalog, bifrostVersion string) (*OtelPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -100,7 +104,11 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			}
 		}
 	}
+	if config.ServiceName == "" {
+		config.ServiceName = "bifrost"
+	}
 	p := &OtelPlugin{
+		serviceName:    config.ServiceName,
 		url:            config.CollectorURL,
 		traceType:      config.TraceType,
 		headers:        config.Headers,
@@ -109,6 +117,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		pricingManager: pricingManager,
 		accumulator:    streaming.NewAccumulator(pricingManager, logger),
 		emitWg:         sync.WaitGroup{},
+		bifrostVersion: bifrostVersion,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
@@ -196,7 +205,7 @@ func (p *OtelPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest) 
 	if bifrost.IsStreamRequestType(req.RequestType) {
 		p.accumulator.CreateStreamAccumulator(traceID, createdTimestamp)
 	}
-	p.ongoingSpans.Set(traceID, createResourceSpan(traceID, spanID, time.Now(), req))
+	p.ongoingSpans.Set(traceID, p.createResourceSpan(traceID, spanID, time.Now(), req))
 	return req, nil, nil
 }
 
@@ -221,6 +230,11 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 
 	numberOfRetries := bifrost.GetIntFromContext(*ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := bifrost.GetIntFromContext(*ctx, schemas.BifrostContextKeyFallbackIndex)
+
+	teamID := bifrost.GetStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-team-id"))
+	teamName := bifrost.GetStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-team-name"))
+	customerID := bifrost.GetStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
+	customerName := bifrost.GetStringFromContext(*ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
 
 	// Track every PostHook emission, stream and non-stream.
 	p.emitWg.Add(1)
@@ -253,6 +267,10 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 						selectedKeyName,
 						numberOfRetries,
 						fallbackIndex,
+						teamID,
+						teamName,
+						customerID,
+						customerName,
 					)}); err != nil {
 						logger.Error("failed to emit response span for request %s: %v", traceID, err)
 					}
@@ -272,6 +290,10 @@ func (p *OtelPlugin) PostHook(ctx *context.Context, resp *schemas.BifrostRespons
 				selectedKeyName,
 				numberOfRetries,
 				fallbackIndex,
+				teamID,
+				teamName,
+				customerID,
+				customerName,
 			)
 			if err := p.client.Emit(p.ctx, []*ResourceSpan{rs}); err != nil {
 				logger.Error("failed to emit response span for request %s: %v", traceID, err)

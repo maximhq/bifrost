@@ -8,14 +8,13 @@ import (
 func (request *OpenAIEmbeddingRequest) ToBifrostEmbeddingRequest() *schemas.BifrostEmbeddingRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
 
-	bifrostReq := &schemas.BifrostEmbeddingRequest{
-		Provider: provider,
-		Model:    model,
-		Input:    request.Input,
-		Params:   &request.EmbeddingParameters,
+	return &schemas.BifrostEmbeddingRequest{
+		Provider:  provider,
+		Model:     model,
+		Input:     request.Input,
+		Params:    &request.EmbeddingParameters,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
-
-	return bifrostReq
 }
 
 // ToOpenAIEmbeddingRequest converts a Bifrost embedding request to OpenAI format

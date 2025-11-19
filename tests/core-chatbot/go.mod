@@ -1,8 +1,6 @@
 module github.com/maximhq/bifrost/tests/core-chatbot
 
-go 1.24.1
-
-toolchain go1.24.3
+go 1.24.3
 
 require (
 	github.com/maximhq/bifrost/core v1.2.22

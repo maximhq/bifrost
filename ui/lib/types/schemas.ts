@@ -481,6 +481,7 @@ export const performanceFormSchema = z.object({
 // OTEL Configuration Schema
 export const otelConfigSchema = z
 	.object({
+		service_name: z.string().optional(),
 		collector_url: z.string().min(1, "Collector address is required"),
 		trace_type: z
 			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {

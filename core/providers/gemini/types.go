@@ -61,6 +61,9 @@ type GeminiGenerationRequest struct {
 	CachedContent     string                   `json:"cachedContent,omitempty"`
 	Stream            bool                     `json:"-"` // Internal field to track streaming requests
 	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

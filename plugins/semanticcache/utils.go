@@ -91,7 +91,7 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		Params interface{} `json:"params,omitempty"`
 		Stream bool        `json:"stream,omitempty"`
 	}{
-		Input:  plugin.getInputForCaching(req),
+		Input:  plugin.getNormalizedInputForCaching(req),
 		Stream: bifrost.IsStreamRequestType(req.RequestType),
 	}
 
@@ -200,7 +200,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 				var blockTexts []string
 				for _, block := range msg.Content.ContentBlocks {
 					if block.Text != nil {
-						blockTexts = append(blockTexts, normalizeText(*block.Text))
+						blockTexts = append(blockTexts, *block.Text)
 					}
 					if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
 						attachments = append(attachments, block.ImageURLStruct.URL)
@@ -210,7 +210,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 			}
 
 			if content != "" {
-				textParts = append(textParts, fmt.Sprintf("%s: %s", msg.Role, content))
+				textParts = append(textParts, fmt.Sprintf("%s: %s", msg.Role, normalizeText(content)))
 			}
 		}
 
@@ -434,13 +434,61 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	return nil
 }
 
-// getInputForCaching returns a normalized and sanitized copy of req.Input for hashing/embedding.
-// It applies text normalization (lowercase + trim) and optionally removes system messages.
+// getInputForCaching extracts request input for hashing/embedding without normalization.
+// For Chat/Responses requests, it filters out system messages if configured but returns shallow copies.
+// For other request types, it returns direct references to the input.
 func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{} {
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-		// Create a shallow copy of the input to avoid mutating the original request
-		copiedInput := req.TextCompletionRequest.Input
+		return req.TextCompletionRequest.Input
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		originalMessages := req.ChatRequest.Input
+		filteredMessages := make([]schemas.ChatMessage, 0, len(originalMessages))
+		for _, msg := range originalMessages {
+			// Skip system messages if configured to exclude them
+			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role == schemas.ChatMessageRoleSystem {
+				continue
+			}
+			filteredMessages = append(filteredMessages, msg)
+		}
+		return filteredMessages
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		originalMessages := req.ResponsesRequest.Input
+		filteredMessages := make([]schemas.ResponsesMessage, 0, len(originalMessages))
+		for _, msg := range originalMessages {
+			// Skip system messages if configured to exclude them
+			if plugin.config.ExcludeSystemPrompt != nil && *plugin.config.ExcludeSystemPrompt && msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+				continue
+			}
+			filteredMessages = append(filteredMessages, msg)
+		}
+		return filteredMessages
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return req.SpeechRequest.Input.Input
+	case schemas.EmbeddingRequest:
+		return req.EmbeddingRequest.Input
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		return req.TranscriptionRequest.Input
+	default:
+		return nil
+	}
+}
+
+// getNormalizedInputForCaching returns a copy of req.Input for hashing/embedding. The input is normalized.
+// It applies text normalization (lowercase + trim) and optionally removes system messages.
+func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) interface{} {
+	switch req.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		// Create a deep copy of the input to avoid mutating the original request
+		copiedInput := schemas.TextCompletionInput{}
+		if req.TextCompletionRequest.Input.PromptStr != nil {
+			copiedPromptStr := *req.TextCompletionRequest.Input.PromptStr
+			copiedInput.PromptStr = &copiedPromptStr
+		} else if len(req.TextCompletionRequest.Input.PromptArray) > 0 {
+			copiedPromptArray := make([]string, len(req.TextCompletionRequest.Input.PromptArray))
+			copy(copiedPromptArray, req.TextCompletionRequest.Input.PromptArray)
+			copiedInput.PromptArray = copiedPromptArray
+		}
 
 		if copiedInput.PromptStr != nil {
 			normalizedText := normalizeText(*copiedInput.PromptStr)
@@ -465,8 +513,8 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 				continue
 			}
 
-			// Create a copy of the message with normalized content
-			normalizedMsg := msg
+			// Create a deep copy of the message with normalized content
+			normalizedMsg := schemas.DeepCopyChatMessage(msg)
 
 			// Normalize message content
 			if msg.Content.ContentStr != nil {
@@ -499,14 +547,13 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 			}
 
 			// Create a deep copy of the message with normalized content
-			normalizedMsg := msg
+			normalizedMsg := schemas.DeepCopyResponsesMessage(msg)
 
 			// Create a deep copy of the Content to avoid modifying the original
 			if msg.Content != nil {
-				normalizedContent := &schemas.ResponsesMessageContent{}
 				if msg.Content.ContentStr != nil {
 					normalizedText := normalizeText(*msg.Content.ContentStr)
-					normalizedContent.ContentStr = &normalizedText
+					normalizedMsg.Content.ContentStr = &normalizedText
 				} else if msg.Content.ContentBlocks != nil {
 					// Create a copy of content blocks with normalized text
 					normalizedBlocks := make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
@@ -517,9 +564,8 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 							normalizedBlocks[i].Text = &normalizedText
 						}
 					}
-					normalizedContent.ContentBlocks = normalizedBlocks
+					normalizedMsg.Content.ContentBlocks = normalizedBlocks
 				}
-				normalizedMsg.Content = normalizedContent
 			}
 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
@@ -528,18 +574,35 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return normalizeText(req.SpeechRequest.Input.Input)
 	case schemas.EmbeddingRequest:
-		input := req.EmbeddingRequest.Input
-		if input.Text != nil {
-			normalizedText := normalizeText(*input.Text)
-			return schemas.EmbeddingInput{Text: &normalizedText}
-		} else if len(input.Texts) > 0 {
-			normalizedTexts := make([]string, len(input.Texts))
-			for i, text := range input.Texts {
+		// Create a deep copy of the input to avoid mutating the original request
+		copiedInput := schemas.EmbeddingInput{}
+		if req.EmbeddingRequest.Input.Text != nil {
+			copiedText := *req.EmbeddingRequest.Input.Text
+			copiedInput.Text = &copiedText
+		} else if len(req.EmbeddingRequest.Input.Texts) > 0 {
+			copiedTexts := make([]string, len(req.EmbeddingRequest.Input.Texts))
+			copy(copiedTexts, req.EmbeddingRequest.Input.Texts)
+			copiedInput.Texts = copiedTexts
+		} else if req.EmbeddingRequest.Input.Embedding != nil {
+			copiedEmbedding := make([]int, len(req.EmbeddingRequest.Input.Embedding))
+			copy(copiedEmbedding, req.EmbeddingRequest.Input.Embedding)
+			copiedInput.Embedding = copiedEmbedding
+		} else if req.EmbeddingRequest.Input.Embeddings != nil {
+			copiedEmbeddings := make([][]int, len(req.EmbeddingRequest.Input.Embeddings))
+			copy(copiedEmbeddings, req.EmbeddingRequest.Input.Embeddings)
+			copiedInput.Embeddings = copiedEmbeddings
+		}
+		if copiedInput.Text != nil {
+			normalizedText := normalizeText(*copiedInput.Text)
+			copiedInput.Text = &normalizedText
+		} else if len(copiedInput.Texts) > 0 {
+			normalizedTexts := make([]string, len(copiedInput.Texts))
+			for i, text := range copiedInput.Texts {
 				normalizedTexts[i] = normalizeText(text)
 			}
-			return schemas.EmbeddingInput{Texts: normalizedTexts}
+			copiedInput.Texts = normalizedTexts
 		}
-		return input
+		return copiedInput
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
 	default:

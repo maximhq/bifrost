@@ -6,10 +6,11 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/maxim-ai/bifrost
+  repository: docker.io/maximhq/bifrost
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  # Docker images are tagged with v prefix (e.g., v1.3.5)
+  tag: "v1.3.5"
 
 imagePullSecrets: []
 nameOverride: ""

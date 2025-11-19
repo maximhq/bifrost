@@ -108,16 +108,17 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest() *schemas.Bif
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	if provider == schemas.Vertex && request.IsEmbedding {
-		// Add google/ prefix for Bifrost if not already present
-		if !strings.HasPrefix(model, "google/") {
+		// Add google/ prefix if not already present and model is not a custom fine-tuned model
+		if !schemas.IsAllDigitsASCII(model) && !strings.HasPrefix(model, "google/") {
 			model = "google/" + model
 		}
 	}
 
 	// Create the embedding request
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
-		Provider: provider,
-		Model:    model,
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
 	if len(request.Requests) > 0 {

@@ -30,8 +30,8 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
-		mode: "onBlur",
-		reValidateMode: "onBlur",
+		mode: "onChange",
+		reValidateMode: "onChange",
 		defaultValues: {
 			key: provider?.keys?.[keyIndex] ?? {
 				id: uuid(),
