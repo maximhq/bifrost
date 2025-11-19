@@ -1585,6 +1585,10 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	provider, model, fallbacks := req.GetRequestFields()
 
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
@@ -1593,11 +1597,6 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 		return nil, err
-	}
-
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
@@ -1683,6 +1682,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 	provider, model, fallbacks := req.GetRequestFields()
 
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
@@ -1691,11 +1694,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 			RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 		}
 		return nil, err
-	}
-
-	// Handle nil context early to prevent blocking
-	if ctx == nil {
-		ctx = bifrost.ctx
 	}
 
 	// Try the primary provider first
