@@ -1,7 +1,11 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+
+	"github.com/valyala/fasthttp"
+)
 
 // PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
@@ -28,6 +32,10 @@ type PluginStatus struct {
 	Status string   `json:"status"`
 	Logs   []string `json:"logs"`
 }
+
+// BifrostHTTPMiddleware is a middleware function for the Bifrost HTTP transport
+// It follows the standard pattern: receives the next handler and returns a new handler
+type BifrostHTTPMiddleware func(next fasthttp.RequestHandler) fasthttp.RequestHandler
 
 // Plugin defines the interface for Bifrost plugins.
 // Plugins can intercept and modify requests and responses at different stages
@@ -64,11 +72,11 @@ type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
 
-	// TransportInterceptor is called at the HTTP transport layer before requests enter Bifrost core.
-	// It allows plugins to modify raw HTTP headers and body before transformation into BifrostRequest.
+	// HTTPTransportMiddleware is called at the HTTP transport layer before requests enter Bifrost core.
+	// It allows plugins to modify the request and response before they are processed by the next middleware.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
-	// Returns modified headers, modified body, and any error that occurred during interception.
-	TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	// Returns a new handler that will be called next in the middleware chain.
+	HTTPTransportMiddleware() BifrostHTTPMiddleware
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -23,7 +24,7 @@ func NewHealthHandler(config *lib.Config) *HealthHandler {
 }
 
 // RegisterRoutes registers the health-related routes.
-func (h *HealthHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *HealthHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/health", lib.ChainMiddlewares(h.getHealth, middlewares...))
 }
 
