@@ -51,6 +51,7 @@ type AnthropicMessageRequest struct {
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
+	OutputFormat  interface{}         `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
@@ -293,10 +294,16 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens"`
+	InputTokens              int                          `json:"input_tokens"`
+	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                          `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            *AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
+	OutputTokens             int                          `json:"output_tokens"`
+}
+
+type AnthropicUsageCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // ==================== STREAMING TYPES ====================

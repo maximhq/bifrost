@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"reflect"
@@ -133,14 +134,14 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 }
 
 // sendStreamError sends an error in streaming format using the stream error converter if available
-func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostErr *schemas.BifrostError) {
+func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, config RouteConfig, bifrostErr *schemas.BifrostError) {
 	var errorResponse interface{}
 
 	// Use stream error converter if available, otherwise fallback to regular error converter
 	if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-		errorResponse = config.StreamConfig.ErrorConverter(bifrostErr)
+		errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
 	} else {
-		errorResponse = config.ErrorConverter(bifrostErr)
+		errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
 	}
 
 	errorJSON, err := sonic.Marshal(map[string]interface{}{
@@ -159,7 +160,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, config RouteCo
 
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
-func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
+func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
 	} else {
@@ -167,7 +168,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, errorConverter Error
 	}
 	ctx.SetContentType("application/json")
 
-	errorBody, err := sonic.Marshal(errorConverter(bifrostErr))
+	errorBody, err := sonic.Marshal(errorConverter(bifrostCtx, bifrostErr))
 	if err != nil {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", err))
@@ -178,13 +179,13 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, errorConverter Error
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, errorConverter ErrorConverter, response interface{}) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
 
 	responseBody, err := sonic.Marshal(response)
 	if err != nil {
-		g.sendError(ctx, errorConverter, newBifrostError(err, "failed to encode response"))
+		g.sendError(ctx, bifrostCtx, errorConverter, newBifrostError(err, "failed to encode response"))
 		return
 	}
 

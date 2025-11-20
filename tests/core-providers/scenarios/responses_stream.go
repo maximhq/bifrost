@@ -476,6 +476,221 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Logf("✅ Responses streaming with reasoning test completed successfully")
 		})
 	}
+
+	// Test responses streaming lifecycle events
+	t.Run("ResponsesStreamLifecycle", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		messages := []schemas.ResponsesMessage{
+			{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{
+					ContentStr: schemas.Ptr("Say hello in exactly 5 words."),
+				},
+			},
+		}
+
+		request := &schemas.BifrostResponsesRequest{
+			Provider: testConfig.Provider,
+			Model:    testConfig.ChatModel,
+			Input:    messages,
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: bifrost.Ptr(50),
+			},
+			Fallbacks: testConfig.Fallbacks,
+		}
+
+		responseChannel, err := client.ResponsesStreamRequest(ctx, request)
+		RequireNoError(t, err, "Responses stream request failed")
+		if responseChannel == nil {
+			t.Fatal("Response channel should not be nil")
+		}
+
+		// Track lifecycle events
+		var hasResponseCreated, hasResponseInProgress, hasResponseCompleted bool
+		var hasOutputItemAdded bool
+		var hasContentPartAdded, hasContentPartDone bool
+		var hasOutputTextDelta, hasOutputTextDone bool
+		var hasOutputItemDone bool
+
+		var outputItemAddedSeq, contentPartAddedSeq, firstTextDeltaSeq int
+		var outputTextDoneSeq, contentPartDoneSeq, outputItemDoneSeq int
+		var textDeltaCount int
+
+		streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
+		defer cancel()
+
+		t.Logf("🔄 Testing responses streaming lifecycle events...")
+
+		responseCount := 0
+		for {
+			select {
+			case response, ok := <-responseChannel:
+				if !ok {
+					goto lifecycleComplete
+				}
+
+				if response == nil {
+					t.Fatal("Streaming response should not be nil")
+				}
+				responseCount++
+
+				if response.BifrostResponsesStreamResponse != nil {
+					streamResp := response.BifrostResponsesStreamResponse
+					seqNum := streamResp.SequenceNumber
+
+					switch streamResp.Type {
+					case schemas.ResponsesStreamResponseTypeCreated:
+						hasResponseCreated = true
+						t.Logf("✅ Event %d: response.created", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeInProgress:
+						hasResponseInProgress = true
+						t.Logf("✅ Event %d: response.in_progress", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+						hasOutputItemAdded = true
+						outputItemAddedSeq = seqNum
+						t.Logf("✅ Event %d: response.output_item.added", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeContentPartAdded:
+						hasContentPartAdded = true
+						contentPartAddedSeq = seqNum
+						t.Logf("✅ Event %d: response.content_part.added", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+						hasOutputTextDelta = true
+						if textDeltaCount == 0 {
+							firstTextDeltaSeq = seqNum
+						}
+						textDeltaCount++
+						if streamResp.Delta != nil {
+							t.Logf("✅ Event %d: response.output_text.delta (chunk %d): %q", seqNum, textDeltaCount, *streamResp.Delta)
+						}
+
+					case schemas.ResponsesStreamResponseTypeOutputTextDone:
+						hasOutputTextDone = true
+						outputTextDoneSeq = seqNum
+						t.Logf("✅ Event %d: response.output_text.done", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeContentPartDone:
+						hasContentPartDone = true
+						contentPartDoneSeq = seqNum
+						t.Logf("✅ Event %d: response.content_part.done", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeOutputItemDone:
+						hasOutputItemDone = true
+						outputItemDoneSeq = seqNum
+						t.Logf("✅ Event %d: response.output_item.done", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeCompleted:
+						hasResponseCompleted = true
+						t.Logf("✅ Event %d: response.completed", seqNum)
+
+					case schemas.ResponsesStreamResponseTypeError:
+						if streamResp.Message != nil {
+							t.Fatalf("❌ Error in streaming: %s", *streamResp.Message)
+						} else {
+							t.Fatalf("❌ Error in streaming (no message)")
+						}
+					}
+				}
+
+				if responseCount > 100 {
+					goto lifecycleComplete
+				}
+
+			case <-streamCtx.Done():
+				t.Fatal("Timeout waiting for responses streaming lifecycle events")
+			}
+		}
+
+	lifecycleComplete:
+		if responseCount == 0 {
+			t.Fatal("Should receive at least one streaming response")
+		}
+
+		// Validate lifecycle events are present
+		t.Logf("\n📋 Lifecycle Event Validation:")
+		t.Logf("  response.created: %v", hasResponseCreated)
+		t.Logf("  response.in_progress: %v", hasResponseInProgress)
+		t.Logf("  response.output_item.added: %v (seq: %d)", hasOutputItemAdded, outputItemAddedSeq)
+		t.Logf("  response.content_part.added: %v (seq: %d)", hasContentPartAdded, contentPartAddedSeq)
+		t.Logf("  response.output_text.delta: %v (count: %d, first seq: %d)", hasOutputTextDelta, textDeltaCount, firstTextDeltaSeq)
+		t.Logf("  response.output_text.done: %v (seq: %d)", hasOutputTextDone, outputTextDoneSeq)
+		t.Logf("  response.content_part.done: %v (seq: %d)", hasContentPartDone, contentPartDoneSeq)
+		t.Logf("  response.output_item.done: %v (seq: %d)", hasOutputItemDone, outputItemDoneSeq)
+		t.Logf("  response.completed: %v", hasResponseCompleted)
+
+		// Validate required lifecycle events
+		if !hasResponseCreated {
+			t.Error("❌ Missing required event: response.created")
+		}
+		if !hasResponseInProgress {
+			t.Error("❌ Missing required event: response.in_progress")
+		}
+		if !hasOutputItemAdded {
+			t.Error("❌ Missing required event: response.output_item.added")
+		}
+		if !hasContentPartAdded {
+			t.Error("❌ Missing required event: response.content_part.added")
+		}
+		if !hasOutputTextDelta {
+			t.Error("❌ Missing required event: response.output_text.delta")
+		}
+		if !hasOutputTextDone {
+			t.Error("❌ Missing required event: response.output_text.done")
+		}
+		if !hasContentPartDone {
+			t.Error("❌ Missing required event: response.content_part.done")
+		}
+		if !hasOutputItemDone {
+			t.Error("❌ Missing required event: response.output_item.done")
+		}
+		if !hasResponseCompleted {
+			t.Error("❌ Missing required event: response.completed")
+		}
+
+		// Validate event ordering
+		if hasOutputItemAdded && hasContentPartAdded {
+			if contentPartAddedSeq > outputItemAddedSeq {
+				t.Logf("✅ Event ordering: output_item.added (%d) -> content_part.added (%d)", outputItemAddedSeq, contentPartAddedSeq)
+			} else {
+				t.Errorf("❌ Invalid event ordering: content_part.added (%d) should come after output_item.added (%d)", contentPartAddedSeq, outputItemAddedSeq)
+			}
+		}
+
+		if hasContentPartAdded && hasOutputTextDelta {
+			if firstTextDeltaSeq > contentPartAddedSeq {
+				t.Logf("✅ Event ordering: content_part.added (%d) -> output_text.delta (%d)", contentPartAddedSeq, firstTextDeltaSeq)
+			} else {
+				t.Errorf("❌ Invalid event ordering: output_text.delta (%d) should come after content_part.added (%d)", firstTextDeltaSeq, contentPartAddedSeq)
+			}
+		}
+
+		if hasOutputTextDone && hasContentPartDone && hasOutputItemDone {
+			if outputTextDoneSeq < contentPartDoneSeq && contentPartDoneSeq < outputItemDoneSeq {
+				t.Logf("✅ Event ordering: output_text.done (%d) -> content_part.done (%d) -> output_item.done (%d)", outputTextDoneSeq, contentPartDoneSeq, outputItemDoneSeq)
+			} else {
+				t.Errorf("❌ Invalid event ordering: expected output_text.done (%d) -> content_part.done (%d) -> output_item.done (%d)", outputTextDoneSeq, contentPartDoneSeq, outputItemDoneSeq)
+			}
+		}
+
+		// Final validation
+		allEventsPresent := hasResponseCreated && hasResponseInProgress && hasOutputItemAdded &&
+			hasContentPartAdded && hasOutputTextDelta && hasOutputTextDone &&
+			hasContentPartDone && hasOutputItemDone && hasResponseCompleted
+
+		if allEventsPresent {
+			t.Logf("✅ All required lifecycle events are present and properly ordered")
+		} else {
+			t.Error("❌ Not all required lifecycle events are present")
+		}
+
+		t.Logf("✅ Responses streaming lifecycle test completed")
+	})
 }
 
 // validateResponsesStreamingStructure validates the structure and events of responses streaming

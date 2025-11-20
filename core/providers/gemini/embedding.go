@@ -107,7 +107,7 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest() *schemas.Bif
 
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
-	if provider == schemas.Vertex && request.IsEmbedding {
+	if provider == schemas.Vertex && !request.IsEmbedding {
 		// Add google/ prefix if not already present and model is not a custom fine-tuned model
 		if !schemas.IsAllDigitsASCII(model) && !strings.HasPrefix(model, "google/") {
 			model = "google/" + model

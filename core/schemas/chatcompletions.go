@@ -481,10 +481,11 @@ type ChatAssistantMessageAnnotationCitation struct {
 
 // ChatAssistantMessageToolCall represents a tool call in a message
 type ChatAssistantMessageToolCall struct {
-	Index    uint16                               `json:"index"`
-	Type     *string                              `json:"type,omitempty"`
-	ID       *string                              `json:"id,omitempty"`
-	Function ChatAssistantMessageToolCallFunction `json:"function"`
+	Index        uint16                               `json:"index"`
+	Type         *string                              `json:"type,omitempty"`
+	ID           *string                              `json:"id,omitempty"`
+	Function     ChatAssistantMessageToolCallFunction `json:"function"`
+	ExtraContent map[string]interface{}               `json:"extra_content,omitempty"` // Provider-specific fields (e.g., thought_signature for Gemini)
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.

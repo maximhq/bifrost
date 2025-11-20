@@ -170,7 +170,7 @@ func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostC
 	bifrostReq.Input = messages
 
 	// Convert parameters
-	if request.MaxTokens > 0 || request.Temperature != nil || request.TopP != nil || request.TopK != nil || request.StopSequences != nil {
+	if request.MaxTokens > 0 || request.Temperature != nil || request.TopP != nil || request.TopK != nil || request.StopSequences != nil || request.OutputFormat != nil {
 		params := &schemas.ChatParameters{
 			ExtraParams: make(map[string]interface{}),
 		}
@@ -189,6 +189,9 @@ func (request *AnthropicMessageRequest) ToBifrostChatRequest() *schemas.BifrostC
 		}
 		if request.StopSequences != nil {
 			params.Stop = request.StopSequences
+		}
+		if request.OutputFormat != nil {
+			params.ResponseFormat = &request.OutputFormat
 		}
 
 		bifrostReq.Params = params
@@ -397,6 +400,9 @@ func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *A
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
 			anthropicReq.TopK = topK
+		}
+		if bifrostReq.Params.ResponseFormat != nil {
+			anthropicReq.OutputFormat = bifrostReq.Params.ResponseFormat
 		}
 
 		// Convert tools

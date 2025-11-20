@@ -794,7 +794,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 				}
 			}
 
-			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex, streamState)
+			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 					RequestType:    schemas.ResponsesStreamRequest,
@@ -818,7 +818,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 					lastChunkTime = time.Now()
 					chunkIndex++
 
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+					// Only add raw response to the last chunk of the incoming event
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) && i == len(responses)-1 {
 						response.ExtraFields.RawResponse = eventData
 					}
 

@@ -12,8 +12,8 @@ github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
-github.com/maximhq/bifrost/core v1.2.27 h1:1mHCeABfaAqcrEDcbkV+Ppdx4P9/AVoZkBowzf8Fn9k=
-github.com/maximhq/bifrost/core v1.2.27/go.mod h1:zyAYoA5lN5mlwUODeZdBw5s45kBftvbq14qtQne8ZVw=
+github.com/maximhq/bifrost/core v1.2.28 h1:FDdM/L2uNl4//FqnWIr3u+MjV2wDVLSISzUQ+RRI9pA=
+github.com/maximhq/bifrost/core v1.2.28/go.mod h1:zyAYoA5lN5mlwUODeZdBw5s45kBftvbq14qtQne8ZVw=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=

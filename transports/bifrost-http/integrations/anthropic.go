@@ -29,7 +29,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
-		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
 					TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
@@ -37,10 +37,10 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		TextResponseConverter: func(resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+		TextResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			return anthropic.ToAnthropicTextCompletionResponse(resp), nil
 		},
-		ErrorConverter: func(err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 	}
@@ -60,7 +60,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
-			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					return &schemas.BifrostRequest{
 						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(),
@@ -68,7 +68,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponsesResponseConverter: func(resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.Anthropic {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -76,14 +76,31 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				}
 				return anthropic.ToAnthropicResponsesResponse(resp), nil
 			},
-			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			StreamConfig: &StreamConfig{
-				ResponsesStreamResponseConverter: func(resp *schemas.BifrostResponsesStreamResponse) (interface{}, error) {
-					return anthropic.ToAnthropicResponsesStreamResponse(resp), nil
+				ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(resp)
+					// Should never happen, but just in case
+					if anthropicResponse == nil {
+						return "", nil, nil
+					}
+					if resp.ExtraFields.Provider == schemas.Anthropic {
+						// This is always true in integrations
+						isRawResponseEnabled, ok := (*ctx).Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+						if ok && isRawResponseEnabled {
+							if resp.ExtraFields.RawResponse != nil {
+								return string(anthropicResponse.Type), resp.ExtraFields.RawResponse, nil
+							} else {
+								// Explicitly return nil to indicate that no raw response is available (because 1 chunk of anthropic gets converted to multiple bifrost responses chunks)
+								return "", nil, nil
+							}
+						}
+					}
+					return string(anthropicResponse.Type), anthropicResponse, nil
 				},
-				ErrorConverter: func(err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
 			},
@@ -109,7 +126,7 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
-			RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 					return &schemas.BifrostRequest{
 						ListModelsRequest: listModelsReq,
@@ -117,10 +134,10 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ListModelsResponseConverter: func(resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+			ListModelsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 				return anthropic.ToAnthropicListModelsResponse(resp), nil
 			},
-			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			PreCallback: extractAnthropicListModelsParams,
@@ -168,6 +185,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUseRawRequestBody, true)
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("is_anthropic_passthrough"), true)
 	}
 	return nil
 }

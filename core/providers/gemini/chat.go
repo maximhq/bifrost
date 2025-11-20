@@ -67,23 +67,33 @@ func (request *GeminiGenerationRequest) ToBifrostChatRequest() *schemas.BifrostC
 					if err != nil {
 						jsonArgs = []byte(fmt.Sprintf("%v", part.FunctionCall.Args))
 					}
-					name := part.FunctionCall.Name // create local copy
-					// Gemini primarily works with function names for correlation
-					// Use ID if provided, otherwise fallback to name for stable correlation
-					callID := name
-					if strings.TrimSpace(part.FunctionCall.ID) != "" {
-						callID = part.FunctionCall.ID
-					}
-					toolCall := schemas.ChatAssistantMessageToolCall{
-						Index: uint16(len(toolCalls)),
-						ID:    schemas.Ptr(callID),
-						Type:  schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
-						Function: schemas.ChatAssistantMessageToolCallFunction{
-							Name:      &name,
-							Arguments: string(jsonArgs),
-						},
-					}
-					toolCalls = append(toolCalls, toolCall)
+				name := part.FunctionCall.Name // create local copy
+				// Gemini primarily works with function names for correlation
+				// Use ID if provided, otherwise fallback to name for stable correlation
+				callID := name
+				if strings.TrimSpace(part.FunctionCall.ID) != "" {
+					callID = part.FunctionCall.ID
+				}
+				toolCall := schemas.ChatAssistantMessageToolCall{
+					Index: uint16(len(toolCalls)),
+					ID:    schemas.Ptr(callID),
+					Type:  schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &name,
+						Arguments: string(jsonArgs),
+					},
+				}
+
+			// Preserve thought signature if present (required for Gemini 3 Pro)
+			if len(part.ThoughtSignature) > 0 {
+				toolCall.ExtraContent = map[string]interface{}{
+					"google": map[string]interface{}{
+						"thought_signature": string(part.ThoughtSignature),
+					},
+				}
+			}
+
+				toolCalls = append(toolCalls, toolCall)
 				}
 
 			case part.FunctionResponse != nil:
@@ -434,27 +444,39 @@ func ToGeminiChatResponse(bifrostResp *schemas.BifrostChatResponse) *GenerateCon
 					}
 				}
 
-				// Handle tool calls
-				if choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
-					for _, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
-						argsMap := make(map[string]interface{})
-						if toolCall.Function.Arguments != "" {
-							if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap); err != nil {
-								argsMap = map[string]interface{}{}
-							}
-						}
-						if toolCall.Function.Name != nil {
-							fc := &FunctionCall{
-								Name: *toolCall.Function.Name,
-								Args: argsMap,
-							}
-							if toolCall.ID != nil {
-								fc.ID = *toolCall.ID
-							}
-							parts = append(parts, &Part{FunctionCall: fc})
+			// Handle tool calls
+			if choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage != nil && choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls != nil {
+				for _, toolCall := range choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls {
+					argsMap := make(map[string]interface{})
+					if toolCall.Function.Arguments != "" {
+						if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap); err != nil {
+							argsMap = map[string]interface{}{}
 						}
 					}
+					if toolCall.Function.Name != nil {
+						fc := &FunctionCall{
+							Name: *toolCall.Function.Name,
+							Args: argsMap,
+						}
+						if toolCall.ID != nil {
+							fc.ID = *toolCall.ID
+						}
+
+						part := &Part{FunctionCall: fc}
+
+						// Preserve thought signature from extra_content (required for Gemini 3 Pro)
+						if toolCall.ExtraContent != nil {
+							if googleData, ok := toolCall.ExtraContent["google"].(map[string]interface{}); ok {
+								if thoughtSig, ok := googleData["thought_signature"].(string); ok {
+									part.ThoughtSignature = []byte(thoughtSig)
+								}
+							}
+						}
+
+						parts = append(parts, part)
+					}
 				}
+			}
 
 				if len(parts) > 0 {
 					candidate.Content = &Content{

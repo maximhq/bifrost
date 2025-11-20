@@ -140,3 +140,165 @@ func parseJSONInput(jsonStr string) interface{} {
 
 	return result
 }
+
+// convertResponsesTextConfigToAnthropicOutputFormat converts OpenAI Responses API text config
+// to Anthropic's output_format structure.
+//
+// OpenAI Responses API format:
+//
+//	{
+//	  "text": {
+//	    "format": {
+//	      "type": "json_schema",
+//	      "schema": {...}
+//	    }
+//	  }
+//	}
+//
+// Anthropic's expected format (per https://docs.claude.com/en/docs/build-with-claude/structured-outputs):
+//
+//	{
+//	  "type": "json_schema",
+//	  "schema": {...}
+//	}
+func convertResponsesTextConfigToAnthropicOutputFormat(textConfig *schemas.ResponsesTextConfig) interface{} {
+	if textConfig == nil || textConfig.Format == nil {
+		return nil
+	}
+
+	format := textConfig.Format
+	// Anthropic currently only supports json_schema type
+	if format.Type != "json_schema" {
+		return nil
+	}
+
+	// Build the Anthropic-compatible output_format structure
+	outputFormat := map[string]interface{}{
+		"type": format.Type,
+	}
+
+	// Add optional fields if present
+	if format.Name != nil {
+		outputFormat["name"] = *format.Name
+	}
+
+	if format.JSONSchema != nil {
+		// Convert the schema structure
+		schema := map[string]interface{}{}
+
+		if format.JSONSchema.Type != nil {
+			schema["type"] = *format.JSONSchema.Type
+		}
+
+		if format.JSONSchema.Properties != nil {
+			schema["properties"] = *format.JSONSchema.Properties
+		}
+
+		if len(format.JSONSchema.Required) > 0 {
+			schema["required"] = format.JSONSchema.Required
+		}
+
+		if format.JSONSchema.AdditionalProperties != nil {
+			schema["additionalProperties"] = *format.JSONSchema.AdditionalProperties
+		}
+
+		outputFormat["schema"] = schema
+	}
+
+	if format.Strict != nil {
+		outputFormat["strict"] = *format.Strict
+	}
+
+	return outputFormat
+}
+
+// convertAnthropicOutputFormatToResponsesTextConfig converts Anthropic's output_format structure
+// to OpenAI Responses API text config.
+//
+// Anthropic format:
+//
+//	{
+//	  "type": "json_schema",
+//	  "schema": {...},
+//	  "name": "...",
+//	  "strict": true
+//	}
+//
+// OpenAI Responses API format:
+//
+//	{
+//	  "text": {
+//	    "format": {
+//	      "type": "json_schema",
+//	      "json_schema": {...},
+//	      "name": "...",
+//	      "strict": true
+//	    }
+//	  }
+//	}
+func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{}) *schemas.ResponsesTextConfig {
+	if outputFormat == nil {
+		return nil
+	}
+
+	// Try to convert to map
+	formatMap, ok := outputFormat.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// Extract type
+	formatType, ok := formatMap["type"].(string)
+	if !ok || formatType != "json_schema" {
+		return nil
+	}
+
+	format := &schemas.ResponsesTextConfigFormat{
+		Type: formatType,
+	}
+
+	// Extract name if present
+	if name, ok := formatMap["name"].(string); ok {
+		format.Name = &name
+	}
+
+	// Extract strict if present
+	if strict, ok := formatMap["strict"].(bool); ok {
+		format.Strict = &strict
+	}
+
+	// Extract schema if present
+	if schemaMap, ok := formatMap["schema"].(map[string]interface{}); ok {
+		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
+
+		if schemaType, ok := schemaMap["type"].(string); ok {
+			jsonSchema.Type = &schemaType
+		}
+
+		if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
+			jsonSchema.Properties = &properties
+		}
+
+		if required, ok := schemaMap["required"].([]interface{}); ok {
+			requiredStrs := make([]string, 0, len(required))
+			for _, r := range required {
+				if rStr, ok := r.(string); ok {
+					requiredStrs = append(requiredStrs, rStr)
+				}
+			}
+			if len(requiredStrs) > 0 {
+				jsonSchema.Required = requiredStrs
+			}
+		}
+
+		if additionalProps, ok := schemaMap["additionalProperties"].(bool); ok {
+			jsonSchema.AdditionalProperties = &additionalProps
+		}
+
+		format.JSONSchema = jsonSchema
+	}
+
+	return &schemas.ResponsesTextConfig{
+		Format: format,
+	}
+}
