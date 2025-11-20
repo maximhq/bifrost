@@ -20,25 +20,58 @@ var availableIntegrations = []string{
 	"langchain",
 }
 
-// newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
-// This helper function reduces code duplication when handling non-Bifrost errors.
-func newBifrostError(err error, message string) *schemas.BifrostError {
-	if err == nil {
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: message,
-			},
-		}
+// setRawRequestInExtraFields parses the raw request body and sets it in the ExtraFields.
+// Returns true if successful, false otherwise.
+func setRawRequestInExtraFields(extraFields *schemas.BifrostErrorExtraFields, rawRequestBody []byte) bool {
+	if len(rawRequestBody) == 0 {
+		return false
 	}
 
-	return &schemas.BifrostError{
+	var rawRequest interface{}
+	if err := sonic.Unmarshal(rawRequestBody, &rawRequest); err == nil {
+		extraFields.RawRequest = rawRequest
+		return true
+	}
+	return false
+}
+
+// newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
+// This helper function reduces code duplication when handling non-Bifrost errors.
+// If rawRequestBody is provided, it will be parsed and included in ExtraFields for debugging.
+func newBifrostError(err error, message string, rawRequestBody ...[]byte) *schemas.BifrostError {
+	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
 			Message: message,
-			Error:   err,
 		},
 	}
+
+	if err != nil {
+		bifrostErr.Error.Error = err
+	}
+
+	// Parse raw request body to interface{} if available
+	if len(rawRequestBody) > 0 {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{}
+		setRawRequestInExtraFields(&bifrostErr.ExtraFields, rawRequestBody[0])
+	}
+
+	return bifrostErr
+}
+
+// addRawRequestToBifrostError adds the raw request body to an existing BifrostError's ExtraFields.
+// If the BifrostError already has RawRequest in ExtraFields, it won't be overwritten.
+func addRawRequestToBifrostError(bifrostErr *schemas.BifrostError, rawRequestBody []byte) *schemas.BifrostError {
+	if bifrostErr == nil {
+		return bifrostErr
+	}
+
+	// Only add raw request if it doesn't already exist
+	if bifrostErr.ExtraFields.RawRequest == nil {
+		setRawRequestInExtraFields(&bifrostErr.ExtraFields, rawRequestBody)
+	}
+
+	return bifrostErr
 }
 
 // safeGetRequestType safely obtains the request type from a BifrostStream chunk.

@@ -298,8 +298,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if method != fasthttp.MethodGet {
 			if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
+				rawBody = ctx.Request.Body() // Capture raw body
 				if err := config.RequestParser(ctx, req); err != nil {
-					g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse request"))
+					g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse request", rawBody))
 					return
 				}
 			} else {
@@ -307,7 +308,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 				rawBody = ctx.Request.Body()
 				if len(rawBody) > 0 {
 					if err := sonic.Unmarshal(rawBody, req); err != nil {
-						g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
+						g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "Invalid JSON", rawBody))
 						return
 					}
 				}
@@ -320,12 +321,17 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set send back raw response flag for all integration requests
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySendBackRawResponse, true)
 
+		// Set raw request body in context for error debugging
+		if len(rawBody) > 0 {
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
+		}
+
 		// Execute pre-request callback if configured
 		// This is typically used for extracting data from URL parameters
 		// or performing request validation after parsing
 		if config.PreCallback != nil {
 			if err := config.PreCallback(ctx, bifrostCtx, req); err != nil {
-				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback: "+err.Error()))
+				g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback: "+err.Error(), rawBody))
 				return
 			}
 		}
@@ -333,11 +339,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Convert the integration-specific request to Bifrost format
 		bifrostReq, err := config.RequestConverter(req)
 		if err != nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format"))
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to convert request to Bifrost format", rawBody))
 			return
 		}
 		if bifrostReq == nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Invalid request"))
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(nil, "Invalid request", rawBody))
 			return
 		}
 		if sendRawRequestBody, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && sendRawRequestBody {
@@ -346,7 +352,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Extract and parse fallbacks from the request if present
 		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
-			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
+			g.sendError(ctx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error(), rawBody))
 			return
 		}
 
@@ -364,16 +370,16 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		if isStreaming {
-			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx, cancel)
+			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx, cancel, rawBody)
 		} else {
 			defer cancel() // Ensure cleanup on function exit
-			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
+			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx, rawBody)
 		}
 	}
 }
 
 // handleNonStreamingRequest handles regular (non-streaming) requests
-func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context, rawBody []byte) {
 	// Use the cancellable context from ConvertToBifrostContext
 	// While we can't detect client disconnects until we try to write, having a cancellable context
 	// allows providers that check ctx.Done() to cancel early if needed. This is less critical than
@@ -388,7 +394,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.ListModelsRequest != nil:
 		listModelsResponse, bifrostErr := g.client.ListModelsRequest(requestCtx, bifrostReq.ListModelsRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -408,7 +414,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.TextCompletionRequest != nil:
 		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(requestCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -431,7 +437,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.ChatRequest != nil:
 		chatResponse, bifrostErr := g.client.ChatCompletionRequest(requestCtx, bifrostReq.ChatRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -454,7 +460,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.ResponsesRequest != nil:
 		responsesResponse, bifrostErr := g.client.ResponsesRequest(requestCtx, bifrostReq.ResponsesRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -477,7 +483,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.EmbeddingRequest != nil:
 		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(requestCtx, bifrostReq.EmbeddingRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -500,7 +506,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.SpeechRequest != nil:
 		speechResponse, bifrostErr := g.client.SpeechRequest(requestCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -512,7 +518,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	case bifrostReq.TranscriptionRequest != nil:
 		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(requestCtx, bifrostReq.TranscriptionRequest)
 		if bifrostErr != nil {
-			g.sendError(ctx, config.ErrorConverter, bifrostErr)
+			g.sendError(ctx, config.ErrorConverter, addRawRequestToBifrostError(bifrostErr, rawBody))
 			return
 		}
 
@@ -546,7 +552,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
-func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context, cancel context.CancelFunc, rawBody []byte) {
 	// Set common SSE headers
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
@@ -581,7 +587,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	if bifrostErr != nil {
 		// Send error in SSE format and cancel stream context since we're not proceeding
 		cancel()
-		g.sendStreamError(ctx, config, bifrostErr)
+		g.sendStreamError(ctx, config, addRawRequestToBifrostError(bifrostErr, rawBody))
 		return
 	}
 
@@ -594,7 +600,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 			for range stream {
 			}
 		}()
-		g.sendStreamError(ctx, config, newBifrostError(nil, "streaming is not supported for this integration"))
+		g.sendStreamError(ctx, config, newBifrostError(nil, "streaming is not supported for this integration", rawBody))
 		return
 	}
 

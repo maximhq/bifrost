@@ -116,6 +116,7 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                           // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"                     // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
+	BifrostContextKeyRawRequestBody                      BifrostContextKey = "bifrost-raw-request-body"                         // []byte (raw request body for error debugging)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost)
 )
 
@@ -421,4 +422,21 @@ type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider"`
 	ModelRequested string        `json:"model_requested"`
 	RequestType    RequestType   `json:"request_type"`
+	RawRequest     interface{}   `json:"raw_request,omitempty"` // Raw request body for debugging
+}
+
+// GetRawRequestFromContext extracts and parses the raw request body from the context.
+// Returns the parsed request as interface{} or nil if not available or parsing fails.
+func GetRawRequestFromContext(ctx *context.Context) interface{} {
+	if ctx == nil {
+		return nil
+	}
+
+	if rawBody, ok := (*ctx).Value(BifrostContextKeyRawRequestBody).([]byte); ok && len(rawBody) > 0 {
+		var rawRequest interface{}
+		if err := sonic.Unmarshal(rawBody, &rawRequest); err == nil {
+			return rawRequest
+		}
+	}
+	return nil
 }

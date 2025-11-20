@@ -366,8 +366,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 // textCompletion handles POST /v1/completions - Process text completion requests
 func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
+	rawBody := ctx.PostBody()
 	var req TextRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(rawBody, &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -391,7 +392,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	if req.TextCompletionParameters == nil {
 		req.TextCompletionParameters = &schemas.TextCompletionParameters{}
 	}
-	extraParams, err := extractExtraParams(ctx.PostBody(), textParamsKnownFields)
+	extraParams, err := extractExtraParams(rawBody, textParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
 	} else {
@@ -415,6 +416,12 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
+
+	// Set raw request body in context for error debugging
+	if len(rawBody) > 0 {
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingTextCompletion(ctx, bifrostTextReq, bifrostCtx, cancel)
 		return
@@ -437,8 +444,9 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+	rawBody := ctx.PostBody()
 	var req ChatRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(rawBody, &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -467,7 +475,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		req.ChatParameters = &schemas.ChatParameters{}
 	}
 
-	extraParams, err := extractExtraParams(ctx.PostBody(), chatParamsKnownFields)
+	extraParams, err := extractExtraParams(rawBody, chatParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
 	} else {
@@ -490,6 +498,11 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Set raw request body in context for error debugging
+	if len(rawBody) > 0 {
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
@@ -509,8 +522,9 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 
 // responses handles POST /v1/responses - Process responses requests
 func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
+	rawBody := ctx.PostBody()
 	var req ResponsesRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(rawBody, &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -539,7 +553,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		req.ResponsesParameters = &schemas.ResponsesParameters{}
 	}
 
-	extraParams, err := extractExtraParams(ctx.PostBody(), responsesParamsKnownFields)
+	extraParams, err := extractExtraParams(rawBody, responsesParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
 	} else {
@@ -572,6 +586,11 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Set raw request body in context for error debugging
+	if len(rawBody) > 0 {
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
+	}
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
 		return
@@ -591,8 +610,9 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 
 // embeddings handles POST /v1/embeddings - Process embeddings requests
 func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
+	rawBody := ctx.PostBody()
 	var req EmbeddingRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(rawBody, &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -621,7 +641,7 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		req.EmbeddingParameters = &schemas.EmbeddingParameters{}
 	}
 
-	extraParams, err := extractExtraParams(ctx.PostBody(), embeddingParamsKnownFields)
+	extraParams, err := extractExtraParams(rawBody, embeddingParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
 	} else {
@@ -645,6 +665,11 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Set raw request body in context for error debugging
+	if len(rawBody) > 0 {
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
+	}
+
 	resp, bifrostErr := h.client.EmbeddingRequest(*bifrostCtx, bifrostEmbeddingReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -657,8 +682,9 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 
 // speech handles POST /v1/audio/speech - Process speech completion requests
 func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
+	rawBody := ctx.PostBody()
 	var req SpeechRequest
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(rawBody, &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -697,7 +723,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		req.SpeechParameters = &schemas.SpeechParameters{}
 	}
 
-	extraParams, err := extractExtraParams(ctx.PostBody(), speechParamsKnownFields)
+	extraParams, err := extractExtraParams(rawBody, speechParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
 	} else {
@@ -718,6 +744,11 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
+	}
+
+	// Set raw request body in context for error debugging
+	if len(rawBody) > 0 {
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyRawRequestBody, rawBody)
 	}
 
 	if req.StreamFormat != nil && *req.StreamFormat == "sse" {

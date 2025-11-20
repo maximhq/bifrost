@@ -144,6 +144,7 @@ func listModelsByKey(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
 		return nil, bifrostErr
 	}
 
@@ -264,7 +265,9 @@ func HandleOpenAITextCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -471,6 +474,7 @@ func HandleOpenAITextCompletionStreaming(
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.TextCompletionStreamRequest,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
@@ -645,7 +649,9 @@ func HandleOpenAIChatCompletionRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -879,6 +885,7 @@ func HandleOpenAIChatCompletionStreaming(
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.ChatCompletionStreamRequest,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
@@ -905,6 +912,7 @@ func HandleOpenAIChatCompletionStreaming(
 								RequestType:    schemas.ResponsesStreamRequest,
 								Provider:       providerName,
 								ModelRequested: request.Model,
+								RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 							},
 						}
 
@@ -1108,7 +1116,9 @@ func HandleOpenAIResponsesRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1333,6 +1343,7 @@ func HandleOpenAIResponsesStreaming(
 						RequestType:    schemas.ResponsesStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					},
 				}
 
@@ -1456,7 +1467,9 @@ func HandleOpenAIEmbeddingRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1529,8 +1542,9 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	// Get the binary audio data from the response body
@@ -1706,6 +1720,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.SpeechStreamRequest,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
@@ -1804,8 +1819,9 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		bifrostErr := ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1979,6 +1995,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.TranscriptionStreamRequest,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)

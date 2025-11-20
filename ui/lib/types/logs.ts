@@ -219,12 +219,20 @@ export interface ErrorField {
 	event_id?: string;
 }
 
+export interface BifrostErrorExtraFields {
+  provider?: string;
+  model_requested?: string;
+  request_type?: string;
+  raw_request?: unknown;
+}
+
 export interface BifrostError {
 	event_id?: string;
 	type?: string;
 	is_bifrost_error: boolean;
 	status_code?: number;
 	error: ErrorField;
+  extra_fields?: BifrostErrorExtraFields;
 }
 
 // Citation and Annotation types

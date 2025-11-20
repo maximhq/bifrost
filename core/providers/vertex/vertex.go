@@ -190,9 +190,13 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 
 			var errorResp VertexError
 			if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
-				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+				bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+				bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+				return nil, bifrostErr
 			}
-			return nil, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr := providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+			return nil, bifrostErr
 		}
 
 		// Parse Vertex's response
@@ -459,25 +463,39 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 					// Try VertexValidationError format (validation errors from Mistral endpoint)
 					var validationErr VertexValidationError
 					if err := sonic.Unmarshal(resp.Body(), &validationErr); err != nil {
-						return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+						bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+						bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+						return nil, bifrostErr
 					}
 					if len(validationErr.Detail) > 0 {
-						return nil, providerUtils.NewProviderAPIError(validationErr.Detail[0].Msg, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+						bifrostErr := providerUtils.NewProviderAPIError(validationErr.Detail[0].Msg, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+						bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+						return nil, bifrostErr
 					}
-					return nil, providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+					bifrostErr := providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+					bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+					return nil, bifrostErr
 				}
 
-				return nil, providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+				bifrostErr := providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+				bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+				return nil, bifrostErr
 			}
 
 			if len(vertexErr) > 0 {
-				return nil, providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+				bifrostErr := providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+				bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+				return nil, bifrostErr
 			}
 
-			return nil, providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr := providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+			return nil, bifrostErr
 		} else {
 			// OpenAI error format succeeded with valid Error field
-			return nil, providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr := providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+			bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+			return nil, bifrostErr
 		}
 	}
 
@@ -818,7 +836,9 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 		// Try to parse Vertex's error format
 		var vertexError map[string]interface{}
 		if err := sonic.Unmarshal(resp.Body(), &vertexError); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+			bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+			bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+			return nil, bifrostErr
 		}
 
 		// Extract error message from Vertex's error format
@@ -833,7 +853,9 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 			}
 		}
 
-		return nil, providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+		bifrostErr := providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), schemas.Vertex, nil, nil)
+		bifrostErr.ExtraFields.RawRequest = schemas.GetRawRequestFromContext(&ctx)
+		return nil, bifrostErr
 	}
 
 	// Parse Vertex's native embedding response using typed response

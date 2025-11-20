@@ -539,6 +539,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 							RequestType:    schemas.SpeechStreamRequest,
 							Provider:       providerName,
 							ModelRequested: request.Model,
+							RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 						},
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -792,6 +793,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 						RequestType:    schemas.TranscriptionStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
+						RawRequest:     schemas.GetRawRequestFromContext(&ctx),
 					},
 				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
