@@ -36,11 +36,13 @@ curl -X POST http://localhost:8080/api/providers \
     "provider": "openai",
     "keys": [
       {
+        "name": "openai-key-1",
         "value": "env.OPENAI_API_KEY_1",
         "models": ["gpt-4o", "gpt-4o-mini"],
         "weight": 0.7
       },
       {
+        "name": "openai-key-2",
         "value": "env.OPENAI_API_KEY_2", 
         "models": [],
         "weight": 0.3
@@ -174,11 +176,13 @@ Keys can be restricted to specific models for access control and cost management
 {
   "keys": [
     {
+      "name": "openai-pre-key-1",
       "value": "premium-key",
       "models": ["gpt-4o", "o1-preview"],  // Only premium models
       "weight": 1.0
     },
     {
+      "name": "openai-std-key-1",
       "value": "standard-key", 
       "models": ["gpt-4o-mini", "gpt-3.5-turbo"], // Only standard models
       "weight": 1.0
