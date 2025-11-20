@@ -442,6 +442,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		resp, bifrostErr = h.client.ListModelsRequest(*bifrostCtx, bifrostListModelsReq)
 	} else {
 		resp, bifrostErr = h.client.ListModelsFromProviders(*bifrostCtx, providersToFetch, bifrostListModelsReq)
+		if bifrostErr == nil && resp != nil {
+			resp = resp.ApplyPagination(bifrostListModelsReq.PageSize, bifrostListModelsReq.PageToken)
+		}
 	}
 
 	if bifrostErr != nil {

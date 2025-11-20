@@ -329,8 +329,9 @@ func (bifrost *Bifrost) ListModelsFromProviders(ctx context.Context, providers [
 
 			// Create request for this provider with limit of 1000
 			providerRequest := &schemas.BifrostListModelsRequest{
-				Provider: providerKey,
-				PageSize: schemas.DefaultPageSize,
+				Provider:    providerKey,
+				PageSize:    schemas.DefaultPageSize,
+				ExtraParams: request.ExtraParams,
 			}
 
 			iterations := 0
