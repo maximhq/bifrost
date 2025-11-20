@@ -4326,9 +4326,15 @@
       "Key": {
         "type": "object",
         "required": [
+          "name",
           "value"
         ],
         "properties": {
+          "name": {
+            "type": "string",
+            "description": "Unique name for the API key",
+            "example": "openai-key-1"
+          },
           "value": {
             "type": "string",
             "description": "API key value or environment variable reference",

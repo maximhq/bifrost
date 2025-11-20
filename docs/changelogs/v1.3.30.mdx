@@ -5,6 +5,10 @@ description: "v1.3.30 changelog - 2025-11-18"
 <Update label="Bifrost(HTTP)" description="1.3.30">
 - feat: adds migration for missing provider column in key table
 
+<Warning>
+"keys" in "provider_config" in `config.json` file requires unique name. If there is any collision, Bifrost wont be able to boot.
+</Warning>
+
 </Update>
 <Update label="Framework" description="1.1.33">
 feat: add migration for missing provider column in key table
