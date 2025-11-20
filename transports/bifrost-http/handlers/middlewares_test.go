@@ -3,6 +3,7 @@ package handlers
 import (
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -291,7 +292,7 @@ func TestChainMiddlewares_SingleMiddleware(t *testing.T) {
 	middlewareCalled := false
 	handlerCalled := false
 
-	middleware := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			middlewareCalled = true
 			next(ctx)
@@ -318,21 +319,21 @@ func TestChainMiddlewares_MultipleMiddlewares(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	executionOrder := []int{}
 
-	middleware1 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware1 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 1)
 			next(ctx)
 		}
 	})
 
-	middleware2 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware2 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 2)
 			next(ctx)
 		}
 	})
 
-	middleware3 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware3 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 3)
 			next(ctx)
@@ -364,7 +365,7 @@ func TestChainMiddlewares_MultipleMiddlewares(t *testing.T) {
 func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
-	middleware := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			ctx.SetUserValue("test-key", "test-value")
 			next(ctx)
@@ -391,7 +392,7 @@ func TestChainMiddlewares_ShortCircuit(t *testing.T) {
 	executionOrder := []int{}
 
 	// First middleware - writes response and short-circuits by not calling next
-	middleware1 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware1 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 1)
 			ctx.SetStatusCode(fasthttp.StatusUnauthorized)
@@ -401,7 +402,7 @@ func TestChainMiddlewares_ShortCircuit(t *testing.T) {
 	})
 
 	// Second middleware - should NOT execute when middleware1 short-circuits
-	middleware2 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware2 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 2)
 			next(ctx)
@@ -409,7 +410,7 @@ func TestChainMiddlewares_ShortCircuit(t *testing.T) {
 	})
 
 	// Third middleware - should NOT execute when middleware1 short-circuits
-	middleware3 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware3 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 3)
 			next(ctx)
@@ -455,7 +456,7 @@ func TestChainMiddlewares_ShortCircuitMiddlePosition(t *testing.T) {
 	executionOrder := []int{}
 
 	// First middleware - executes and calls next
-	middleware1 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware1 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 1)
 			next(ctx)
@@ -463,7 +464,7 @@ func TestChainMiddlewares_ShortCircuitMiddlePosition(t *testing.T) {
 	})
 
 	// Second middleware - writes response and short-circuits
-	middleware2 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware2 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 2)
 			ctx.SetStatusCode(fasthttp.StatusUnauthorized)
@@ -473,7 +474,7 @@ func TestChainMiddlewares_ShortCircuitMiddlePosition(t *testing.T) {
 	})
 
 	// Third middleware - should NOT execute
-	middleware3 := lib.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	middleware3 := schemas.BifrostHTTPMiddleware(func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			executionOrder = append(executionOrder, 3)
 			next(ctx)

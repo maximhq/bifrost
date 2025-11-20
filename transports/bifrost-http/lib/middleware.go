@@ -1,15 +1,14 @@
 package lib
 
-import "github.com/valyala/fasthttp"
-
-// BifrostHTTPMiddleware is a middleware function for the Bifrost HTTP transport
-// It follows the standard pattern: receives the next handler and returns a new handler
-type BifrostHTTPMiddleware func(next fasthttp.RequestHandler) fasthttp.RequestHandler
+import (
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
 
 // ChainMiddlewares chains multiple middlewares together
 // Middlewares are applied in order: the first middleware wraps the second, etc.
 // This allows earlier middlewares to short-circuit by not calling next(ctx)
-func ChainMiddlewares(handler fasthttp.RequestHandler, middlewares ...BifrostHTTPMiddleware) fasthttp.RequestHandler {
+func ChainMiddlewares(handler fasthttp.RequestHandler, middlewares ...schemas.BifrostHTTPMiddleware) fasthttp.RequestHandler {
 	// If no middlewares, return the original handler
 	if len(middlewares) == 0 {
 		return handler
