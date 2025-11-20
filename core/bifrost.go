@@ -297,22 +297,10 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 	return response, nil
 }
 
-// ListAllModels lists all models from all configured providers.
-// It accumulates responses from all providers with a limit of 1000 per provider to get all results.
-func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+// ListModelsFromProviders fetches models concurrently from specified providers
+func (bifrost *Bifrost) ListModelsFromProviders(ctx context.Context, providers []schemas.ModelProvider, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if request == nil {
 		request = &schemas.BifrostListModelsRequest{}
-	}
-
-	providerKeys, err := bifrost.GetConfiguredProviders()
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: err.Error(),
-				Error:   err,
-			},
-		}
 	}
 
 	startTime := time.Now()
@@ -323,11 +311,11 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 		err    *schemas.BifrostError
 	}
 
-	results := make(chan providerResult, len(providerKeys))
+	results := make(chan providerResult, len(providers))
 	var wg sync.WaitGroup
 
-	// Launch concurrent requests for all providers
-	for _, providerKey := range providerKeys {
+	// Launch concurrent requests for specified providers
+	for _, providerKey := range providers {
 		if strings.TrimSpace(string(providerKey)) == "" {
 			continue
 		}
@@ -425,6 +413,33 @@ func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.Bifr
 			RequestType: schemas.ListModelsRequest,
 			Latency:     time.Since(startTime).Milliseconds(),
 		},
+	}
+
+	return response, nil
+}
+
+// ListAllModels lists all models from all configured providers.
+// It accumulates responses from all providers with a limit of 1000 per provider to get all results.
+func (bifrost *Bifrost) ListAllModels(ctx context.Context, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if request == nil {
+		request = &schemas.BifrostListModelsRequest{}
+	}
+
+	providerKeys, err := bifrost.GetConfiguredProviders()
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+				Error:   err,
+			},
+		}
+	}
+
+	// Use the helper function to fetch from all configured providers
+	response, bifrostErr := bifrost.ListModelsFromProviders(ctx, providerKeys, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	response = response.ApplyPagination(request.PageSize, request.PageToken)
