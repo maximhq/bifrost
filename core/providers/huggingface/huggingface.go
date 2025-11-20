@@ -2,19 +2,15 @@ package huggingface
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
-)
-
-const (
-	// According to https://huggingface.co/docs/inference-providers/en/tasks/chat-completion the
-	// OpenAI-compatible router lives under the /v1 prefix, so we wire that in as the default base URL.
-	defaultInferenceBaseURL = "https://router.huggingface.co/v1"
-	modelHubBaseURL         = "https://huggingface.co"
 )
 
 // HuggingFaceProvider implements the Provider interface for Hugging Face's inference APIs.
@@ -59,20 +55,105 @@ func (provider *HuggingFaceProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.HuggingFace, provider.customProviderConfig)
 }
 
-// buildRequestURL composes the final request URL based on context overrides.
-func (provider *HuggingFaceProvider) buildRequestURL(ctx context.Context, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+// ListModels queries the Hugging Face model hub API to list models served by the inference provider.
+func (provider *HuggingFaceProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.HuggingFace, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+
+	if request == nil {
+		request = &schemas.BifrostListModelsRequest{}
+		request.Provider = provider.GetProviderKey()
+	}
+
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey, provider.logger)
+}
+
+func (provider *HuggingFaceProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.buildModelHubURL(request))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if key.Value != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	}
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		var errorResp HuggingFaceError
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr.Error.Message = errorResp.Message
+		return nil, bifrostErr
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// First unmarshal to apiModelEntry which matches the actual API response
+	var huggingfaceAPIResponse HuggingFaceListModelsResponse
+
+	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &huggingfaceAPIResponse, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := huggingfaceAPIResponse.ToBifrostListModelsResponse(providerName)
+
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	response.NextPageToken = provider.extractCursor(resp)
+
+	return response, nil
+
+}
+
+// ChatCompletion proxies OpenAI-compatible chat completions to Hugging Face inference endpoints.
+func (provider *HuggingFaceProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.HuggingFace, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
+		return nil, err
+	}
+
+	effectiveRequest, resolvedModel := provider.prepareChatRequest(request, key)
+
+	response, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/chat/completions", schemas.ChatCompletionRequest),
+		effectiveRequest,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.shouldSendRawResponse(ctx),
+		provider.GetProviderKey(),
+		provider.logger,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	provider.decorateResponseMetadata(&response.ExtraFields, request.Model, resolvedModel)
+	return response, nil
 }
 
 func (provider *HuggingFaceProvider) shouldSendRawResponse(ctx context.Context) bool {
 	return providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-}
-
-func (provider *HuggingFaceProvider) buildAuthHeader(key schemas.Key) map[string]string {
-	if key.Value == "" {
-		return nil
-	}
-	return map[string]string{"Authorization": "Bearer " + key.Value}
 }
 
 // resolveModelAlias returns the actual Hub identifier for the requested model, if an alias is configured on the key.
