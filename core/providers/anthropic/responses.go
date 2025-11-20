@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -24,6 +25,8 @@ type AnthropicResponsesStreamState struct {
 	ToolArgumentBuffers       map[int]string // Maps output_index to accumulated tool argument JSON
 	MCPCallOutputIndices      map[int]bool   // Tracks which output indices are MCP calls
 	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
+	ReasoningSignatures       map[int]string // Maps output_index to reasoning signature
+	TextContentIndices        map[int]bool   // Tracks which content indices are text blocks
 	CurrentOutputIndex        int            // Current output index counter
 	MessageID                 *string        // Message ID from message_start
 	Model                     *string        // Model name from message_start
@@ -40,6 +43,8 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			ToolArgumentBuffers:       make(map[int]string),
 			MCPCallOutputIndices:      make(map[int]bool),
 			ItemIDs:                   make(map[int]string),
+			ReasoningSignatures:       make(map[int]string),
+			TextContentIndices:        make(map[int]bool),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -73,6 +78,16 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.ItemIDs)
 	}
+	if state.ReasoningSignatures == nil {
+		state.ReasoningSignatures = make(map[int]string)
+	} else {
+		clear(state.ReasoningSignatures)
+	}
+	if state.TextContentIndices == nil {
+		state.TextContentIndices = make(map[int]bool)
+	} else {
+		clear(state.TextContentIndices)
+	}
 	// Reset other fields
 	state.ChunkIndex = nil
 	state.AccumulatedJSON = ""
@@ -103,6 +118,8 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.ToolArgumentBuffers = make(map[int]string)
 	state.MCPCallOutputIndices = make(map[int]bool)
 	state.ItemIDs = make(map[int]string)
+	state.ReasoningSignatures = make(map[int]string)
+	state.TextContentIndices = make(map[int]bool)
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
@@ -450,7 +467,7 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 // ToBifrostResponsesStream converts an Anthropic stream event to a Bifrost Responses Stream response
 // It maintains state via the state for handling multi-chunk conversions like computer tools
 // Returns a slice of responses to support cases where a single event produces multiple responses
-func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *AnthropicResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context, sequenceNumber int, state *AnthropicResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
@@ -557,13 +574,38 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					},
 				}
 
-				return []*schemas.BifrostResponsesStreamResponse{{
+				// Track that this content index is a text block
+				if chunk.Index != nil {
+					state.TextContentIndices[*chunk.Index] = true
+				}
+
+				var responses []*schemas.BifrostResponsesStreamResponse
+
+				// Emit output_item.added
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Item:           item,
-				}}, nil, false
+				})
+
+				// Emit content_part.added with empty output_text part
+				emptyText := ""
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
+					ItemID:         &itemID,
+					Part:           part,
+				})
+
+				return responses, nil, false
 
 			case AnthropicContentBlockTypeToolUse:
 				// Function call starting - emit output_item.added with type "function_call" and status "in_progress"
@@ -625,6 +667,43 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(outputIndex),
+					Item:           item,
+				}}, nil, false
+
+			case AnthropicContentBlockTypeThinking:
+				// Thinking/reasoning block - emit output_item.added with type "reasoning"
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+
+				// Generate stable ID for reasoning item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				// Initialize reasoning structure
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary: []schemas.ResponsesReasoningContent{},
+					},
+				}
+
+				// Preserve signature if present
+				if chunk.ContentBlock.Signature != nil {
+					item.ResponsesReasoning.EncryptedContent = chunk.ContentBlock.Signature
+				}
+
+				return []*schemas.BifrostResponsesStreamResponse{{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   chunk.Index,
 					Item:           item,
 				}}, nil, false
 			}
@@ -707,8 +786,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 
 			case AnthropicStreamDeltaTypeSignature:
 				// Handle signature verification for thinking content
-				// This is used to verify the integrity of thinking content
-				// For now, we don't need to emit a specific event for signatures
+				// Store the signature in state for the reasoning item
+				if chunk.Delta.Signature != nil && *chunk.Delta.Signature != "" {
+					state.ReasoningSignatures[outputIndex] = *chunk.Delta.Signature
+					// Emit signature_delta event to pass through
+					return []*schemas.BifrostResponsesStreamResponse{{
+						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, // Reuse this type for signature
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Delta:          chunk.Delta.Signature,
+					}}, nil, false
+				}
 				return nil, nil, false
 			}
 		}
@@ -771,9 +860,46 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 				}, nil, false
 			}
 
+			// Check if this is a text block - emit output_text.done and content_part.done
+			var responses []*schemas.BifrostResponsesStreamResponse
+			itemID := state.ItemIDs[outputIndex]
+
+			// Check if this content index is a text block
+			if chunk.Index != nil {
+				if state.TextContentIndices[*chunk.Index] {
+					// Emit output_text.done (without accumulated text, just the event)
+					emptyText := ""
+					textDoneResponse := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Text:           &emptyText,
+					}
+					if itemID != "" {
+						textDoneResponse.ItemID = &itemID
+					}
+					responses = append(responses, textDoneResponse)
+
+					// Emit content_part.done
+					partDoneResponse := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+					}
+					if itemID != "" {
+						partDoneResponse.ItemID = &itemID
+					}
+					responses = append(responses, partDoneResponse)
+
+					// Clear the text content index tracking
+					delete(state.TextContentIndices, *chunk.Index)
+				}
+			}
+
 			// Check if this is a tool call (function_call or MCP call)
 			// If we have accumulated arguments, emit appropriate arguments.done first
-			var responses []*schemas.BifrostResponsesStreamResponse
 			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && accumulatedArgs != "" {
 				// Emit appropriate arguments.done based on whether this is an MCP call
 				var doneType schemas.ResponsesStreamResponseType
@@ -783,10 +909,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 					doneType = schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone
 				}
 
-				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           doneType,
-					SequenceNumber: sequenceNumber,
+					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Arguments:      &accumulatedArgs,
@@ -800,14 +925,45 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 				delete(state.MCPCallOutputIndices, outputIndex)
 			}
 
+			// Check if this is a reasoning item and we have a signature
+			// If so, include the signature in the reasoning item
+			if signature, hasSignature := state.ReasoningSignatures[outputIndex]; hasSignature && signature != "" {
+				itemID := state.ItemIDs[outputIndex]
+				// Find if we have a reasoning item in responses or create one
+				var reasoningItem *schemas.ResponsesMessage
+				for _, resp := range responses {
+					if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeReasoning {
+						reasoningItem = resp.Item
+						break
+					}
+				}
+				if reasoningItem == nil {
+					reasoningItem = &schemas.ResponsesMessage{
+						ID:   &itemID,
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					}
+				}
+				if reasoningItem.ResponsesReasoning == nil {
+					reasoningItem.ResponsesReasoning = &schemas.ResponsesReasoning{}
+				}
+				reasoningItem.ResponsesReasoning.EncryptedContent = &signature
+			}
+
 			// Emit output_item.done for all content blocks (text, tool, etc.)
 			statusCompleted := "completed"
-			itemID := state.ItemIDs[outputIndex]
+			doneItemID := state.ItemIDs[outputIndex]
 			doneItem := &schemas.ResponsesMessage{
 				Status: &statusCompleted,
 			}
-			if itemID != "" {
-				doneItem.ID = &itemID
+			if doneItemID != "" {
+				doneItem.ID = &doneItemID
+			}
+			// Include signature if this is a reasoning item
+			if signature, hasSignature := state.ReasoningSignatures[outputIndex]; hasSignature && signature != "" {
+				if doneItem.ResponsesReasoning == nil {
+					doneItem.ResponsesReasoning = &schemas.ResponsesReasoning{}
+				}
+				doneItem.ResponsesReasoning.EncryptedContent = &signature
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
@@ -821,10 +977,50 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 		}
 
 	case AnthropicStreamEventTypeMessageDelta:
-		// Message-level updates (like stop reason, usage, etc.)
-		// Note: We don't emit output_item.done here because items are already closed
-		// by content_block_stop. This event is informational only.
-		return nil, nil, false
+		isAnthropicPassthrough, ok := ctx.Value(schemas.BifrostContextKey("is_anthropic_passthrough")).(bool)
+		if ok && isAnthropicPassthrough {
+			// Message-level updates (like stop reason, usage, etc.)
+			// For Anthropic passthrough mode, we should forward these events as they contain
+			// important information like stop_reason and final usage counts
+
+			// Create a message_delta event that will be passed through in raw mode
+			// Since there's no specific BifrostResponsesStreamResponse type for message deltas,
+			// we'll use a custom approach that allows the integration layer to pass it through
+			response := &schemas.BifrostResponsesResponse{
+				CreatedAt: state.CreatedAt,
+			}
+			if state.MessageID != nil {
+				response.ID = state.MessageID
+			}
+
+			// Include usage information if present
+			if chunk.Usage != nil {
+				response.Usage = &schemas.ResponsesResponseUsage{
+					InputTokens:  chunk.Usage.InputTokens,
+					OutputTokens: chunk.Usage.OutputTokens,
+					TotalTokens:  chunk.Usage.InputTokens + chunk.Usage.OutputTokens,
+				}
+				if chunk.Usage.CacheReadInputTokens > 0 {
+					if response.Usage.InputTokensDetails == nil {
+						response.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+					}
+					response.Usage.InputTokensDetails.CachedTokens = chunk.Usage.CacheReadInputTokens
+				}
+			}
+
+			// Use a special response type that indicates this is a message delta
+			// The integration layer can detect this and pass through the raw event
+			return []*schemas.BifrostResponsesStreamResponse{{
+				Type:           schemas.ResponsesStreamResponseType("anthropic.passthrough.message_delta"), // Custom type for message deltas
+				SequenceNumber: sequenceNumber,
+				Response:       response,
+			}}, nil, false
+		} else {
+			// Message-level updates (like stop reason, usage, etc.)
+			// Note: We don't emit output_item.done here because items are already closed
+			// by content_block_stop. This event is informational only.
+			return nil, nil, false
+		}
 
 	case AnthropicStreamEventTypeMessageStop:
 		// Message stop - emit response.completed (OpenAI-style)
@@ -842,8 +1038,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 		}}, nil, true // Indicate stream is complete
 
 	case AnthropicStreamEventTypePing:
-		// Ping events are just keepalive, no action needed
-		return nil, nil, false
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypePing,
+			SequenceNumber: sequenceNumber,
+		}}, nil, false
 
 	case AnthropicStreamEventTypeError:
 		if chunk.Error != nil {
@@ -868,15 +1066,43 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(sequenceNumber int, 
 }
 
 // ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response to Anthropic SSE string format
-func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) string {
+func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) *AnthropicStreamEvent {
 	if bifrostResp == nil {
-		return ""
+		return nil
 	}
 
 	streamResp := &AnthropicStreamEvent{}
 
 	// Map ResponsesStreamResponse types to Anthropic stream events
 	switch bifrostResp.Type {
+	case schemas.ResponsesStreamResponseTypeCreated, schemas.ResponsesStreamResponseTypeInProgress:
+		// These are emitted from message_start - convert back to message_start
+		streamResp.Type = AnthropicStreamEventTypeMessageStart
+		if bifrostResp.Response != nil {
+			streamMessage := &AnthropicMessageResponse{
+				Type: "message",
+				Role: "assistant",
+			}
+			if bifrostResp.Response.ID != nil {
+				streamMessage.ID = *bifrostResp.Response.ID
+			}
+			// Preserve model from ExtraFields if available
+			if bifrostResp.ExtraFields.ModelRequested != "" {
+				streamMessage.Model = bifrostResp.ExtraFields.ModelRequested
+			}
+			// Preserve usage if available
+			if bifrostResp.Response.Usage != nil {
+				streamMessage.Usage = &AnthropicUsage{
+					InputTokens:  bifrostResp.Response.Usage.InputTokens,
+					OutputTokens: bifrostResp.Response.Usage.OutputTokens,
+				}
+				if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+					streamMessage.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+				}
+			}
+			streamResp.Message = streamMessage
+		}
+
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
 		// Check if this is a computer tool call
 		if bifrostResp.Item != nil &&
@@ -902,19 +1128,50 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			streamResp.ContentBlock = contentBlock
 
 		} else {
-			streamResp.Type = AnthropicStreamEventTypeMessageStart
-			if bifrostResp.Item != nil {
-				// Create message start event
-				streamMessage := &AnthropicMessageResponse{
-					Type: "message",
-					Role: string(schemas.ResponsesInputMessageRoleAssistant),
-				}
-				if bifrostResp.Item.ID != nil {
-					streamMessage.ID = *bifrostResp.Item.ID
-				}
-				streamResp.Message = streamMessage
+			// Text or other content blocks - emit content_block_start
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStart
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			} else if bifrostResp.OutputIndex != nil {
+				streamResp.Index = bifrostResp.OutputIndex
 			}
 
+			// Build content_block based on item type
+			if bifrostResp.Item != nil {
+				contentBlock := &AnthropicContentBlock{}
+				if bifrostResp.Item.Type != nil {
+					switch *bifrostResp.Item.Type {
+					case schemas.ResponsesMessageTypeMessage:
+						contentBlock.Type = AnthropicContentBlockTypeText
+						contentBlock.Text = schemas.Ptr("")
+					case schemas.ResponsesMessageTypeReasoning:
+						contentBlock.Type = AnthropicContentBlockTypeThinking
+						contentBlock.Thinking = schemas.Ptr("")
+						// Preserve signature if present
+						if bifrostResp.Item.ResponsesReasoning != nil && bifrostResp.Item.ResponsesReasoning.EncryptedContent != nil {
+							contentBlock.Signature = bifrostResp.Item.ResponsesReasoning.EncryptedContent
+						}
+					case schemas.ResponsesMessageTypeFunctionCall:
+						contentBlock.Type = AnthropicContentBlockTypeToolUse
+						if bifrostResp.Item.ResponsesToolMessage != nil {
+							contentBlock.ID = bifrostResp.Item.ResponsesToolMessage.CallID
+							contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
+						}
+					case schemas.ResponsesMessageTypeMCPCall:
+						contentBlock.Type = AnthropicContentBlockTypeMCPToolUse
+						if bifrostResp.Item.ResponsesToolMessage != nil {
+							contentBlock.ID = bifrostResp.Item.ID
+							contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
+							if bifrostResp.Item.ResponsesToolMessage.ResponsesMCPToolCall != nil {
+								contentBlock.ServerName = &bifrostResp.Item.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+							}
+						}
+					}
+				}
+				if contentBlock.Type != "" {
+					streamResp.ContentBlock = contentBlock
+				}
+			}
 		}
 	case schemas.ResponsesStreamResponseTypeContentPartAdded:
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStart
@@ -963,9 +1220,21 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			streamResp.Index = bifrostResp.ContentIndex
 		}
 		if bifrostResp.Delta != nil {
-			streamResp.Delta = &AnthropicStreamDelta{
-				Type:     AnthropicStreamDeltaTypeThinking,
-				Thinking: bifrostResp.Delta,
+			// Check if this looks like a signature (long base64 string, typically >200 chars)
+			// Signatures are base64 encoded and much longer than typical thinking text
+			deltaStr := *bifrostResp.Delta
+			if len(deltaStr) > 200 && isBase64Like(deltaStr) {
+				// This is likely a signature_delta
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:      AnthropicStreamDeltaTypeSignature,
+					Signature: bifrostResp.Delta,
+				}
+			} else {
+				// This is a thinking_delta
+				streamResp.Delta = &AnthropicStreamDelta{
+					Type:     AnthropicStreamDeltaTypeThinking,
+					Thinking: bifrostResp.Delta,
+				}
 			}
 		}
 
@@ -1009,13 +1278,17 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 				}
 			}
 		} else {
-			streamResp.Type = AnthropicStreamEventTypeMessageDelta
-			// Add stop reason if available (this would need to be passed through somehow)
-			streamResp.Delta = &AnthropicStreamDelta{
-				Type: AnthropicStreamDeltaTypeText, // Use text delta type for message deltas
-				// StopReason would be set based on the completion reason
+			// For text blocks and other content blocks, emit content_block_stop
+			streamResp.Type = AnthropicStreamEventTypeContentBlockStop
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			} else if bifrostResp.OutputIndex != nil {
+				streamResp.Index = bifrostResp.OutputIndex
 			}
 		}
+	case schemas.ResponsesStreamResponseTypePing:
+		streamResp.Type = AnthropicStreamEventTypePing
+
 	case schemas.ResponsesStreamResponseTypeCompleted:
 		streamResp.Type = AnthropicStreamEventTypeMessageStop
 
@@ -1064,19 +1337,28 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			}
 		}
 
+	case schemas.ResponsesStreamResponseType("anthropic.passthrough.message_delta"):
+		// Handle message_delta events - convert back to Anthropic format
+		streamResp.Type = AnthropicStreamEventTypeMessageDelta
+		streamResp.Delta = &AnthropicStreamDelta{}
+
+		// Include usage information if present
+		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
+			streamResp.Usage = &AnthropicUsage{
+				InputTokens:  bifrostResp.Response.Usage.InputTokens,
+				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
+			}
+			if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+				streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+			}
+		}
+
 	default:
 		// Unknown event type, return empty
-		return ""
+		return nil
 	}
 
-	// Marshal to JSON and format as SSE
-	jsonData, err := json.Marshal(streamResp)
-	if err != nil {
-		return ""
-	}
-
-	// Format as Anthropic SSE
-	return fmt.Sprintf("event: %s\ndata: %s\n\n", streamResp.Type, jsonData)
+	return streamResp
 }
 
 // ToAnthropicResponsesStreamError converts a BifrostError to Anthropic responses streaming error in SSE format
@@ -2706,4 +2988,20 @@ func convertAnthropicToResponsesComputerAction(inputMap map[string]interface{}) 
 	}
 
 	return action
+}
+
+// isBase64Like checks if a string looks like base64 encoded data
+// Signatures are typically long base64 strings (>200 chars)
+func isBase64Like(s string) bool {
+	if len(s) < 100 {
+		return false
+	}
+	// Check if string contains only base64 characters
+	base64Chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	for _, char := range s {
+		if !strings.ContainsRune(base64Chars, char) {
+			return false
+		}
+	}
+	return true
 }

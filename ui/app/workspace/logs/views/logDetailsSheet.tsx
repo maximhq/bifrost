@@ -104,7 +104,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
 								Object.entries(log.params)
-									.filter(([key]) => key !== "tools")
+									.filter(([key]) => key !== "tools" && key !== "instructions")
 									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
@@ -270,12 +270,16 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 						/>
 					</div>
 				)}
+				{log.params?.instructions && (
+					<div className="w-full rounded-sm border">
+						<div className="border-b px-6 py-2 text-sm font-medium">Instructions</div>
+						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{log.params.instructions}</div>
+					</div>
+				)}
 
 				{/* Speech and Transcription Views */}
 				{(log.speech_input || log.speech_output) && (
-					<>
-						<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
-					</>
+					<SpeechView speechInput={log.speech_input} speechOutput={log.speech_output} isStreaming={log.stream} />
 				)}
 
 				{(log.transcription_input || log.transcription_output) && (

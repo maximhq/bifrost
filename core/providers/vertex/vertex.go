@@ -771,6 +771,9 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 
 	deployment := provider.getModelDeployment(key, request.Model)
 
+	// Remove google/ prefix from deployment
+	deployment = strings.TrimPrefix(deployment, "google/")
+
 	// Build the native Vertex embedding API endpoint
 	url := fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict",
 		key.VertexKeyConfig.Region, key.VertexKeyConfig.ProjectID, key.VertexKeyConfig.Region, deployment)
@@ -815,19 +818,23 @@ func (provider *VertexProvider) Embedding(ctx context.Context, key schemas.Key, 
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
 
-		// Try to parse Vertex's error format
-		var vertexError map[string]interface{}
-		if err := sonic.Unmarshal(resp.Body(), &vertexError); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
-		}
+		responseBody := resp.Body()
 
 		// Extract error message from Vertex's error format
 		errorMessage := "Unknown error"
-		if errorObj, exists := vertexError["error"]; exists {
-			if errorMap, ok := errorObj.(map[string]interface{}); ok {
-				if message, exists := errorMap["message"]; exists {
-					if msgStr, ok := message.(string); ok {
-						errorMessage = msgStr
+		if len(responseBody) > 0 {
+			// Try to parse Vertex's error format
+			var vertexError map[string]interface{}
+			if err := sonic.Unmarshal(resp.Body(), &vertexError); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex)
+			}
+
+			if errorObj, exists := vertexError["error"]; exists {
+				if errorMap, ok := errorObj.(map[string]interface{}); ok {
+					if message, exists := errorMap["message"]; exists {
+						if msgStr, ok := message.(string); ok {
+							errorMessage = msgStr
+						}
 					}
 				}
 			}

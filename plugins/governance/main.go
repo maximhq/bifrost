@@ -159,7 +159,23 @@ func (p *GovernancePlugin) TransportInterceptor(ctx *context.Context, url string
 	var err error
 
 	for header, value := range headers {
-		if strings.ToLower(string(header)) == string(schemas.BifrostContextKeyVirtualKey) {
+		headerStr := strings.ToLower(header)
+		if headerStr == string(schemas.BifrostContextKeyVirtualKey) {
+			virtualKeyValue = string(value)
+			break
+		}
+		if headerStr == "authorization" {
+			valueStr := string(value)
+			// Only accept Bearer token format: "Bearer ..."
+			if strings.HasPrefix(strings.ToLower(valueStr), "bearer ") {
+				authHeaderValue := strings.TrimSpace(valueStr[7:]) // Remove "Bearer " prefix
+				if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+					virtualKeyValue = authHeaderValue
+					break
+				}
+			}
+		}
+		if headerStr == "x-api-key" && strings.HasPrefix(strings.ToLower(string(value)), VirtualKeyPrefix) {
 			virtualKeyValue = string(value)
 			break
 		}

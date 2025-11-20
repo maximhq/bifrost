@@ -264,7 +264,7 @@ type ResponsesResponseInputTokens struct {
 type ResponsesResponseOutputTokens struct {
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
-	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
@@ -448,8 +448,8 @@ type ResponsesOutputMessageContentRefusal struct {
 }
 
 type ResponsesToolMessage struct {
-	CallID    *string                           `json:"call_id,omitempty"`    // Common call ID for tool calls and outputs
-	Name      *string                           `json:"name,omitempty"`       // Common name field for tool calls
+	CallID    *string                           `json:"call_id,omitempty"` // Common call ID for tool calls and outputs
+	Name      *string                           `json:"name,omitempty"`    // Common name field for tool calls
 	Arguments *string                           `json:"arguments,omitempty"`
 	Output    *ResponsesToolMessageOutputStruct `json:"output,omitempty"`
 	Action    *ResponsesToolMessageActionStruct `json:"action,omitempty"`
@@ -1345,6 +1345,9 @@ type ResponsesToolWebSearchPreview struct {
 type ResponsesStreamResponseType string
 
 const (
+	// Ping events are just keepalive (sent by very few providers, Anthropic is one of them)
+	ResponsesStreamResponseTypePing ResponsesStreamResponseType = "response.ping"
+
 	ResponsesStreamResponseTypeCreated    ResponsesStreamResponseType = "response.created"
 	ResponsesStreamResponseTypeInProgress ResponsesStreamResponseType = "response.in_progress"
 	ResponsesStreamResponseTypeCompleted  ResponsesStreamResponseType = "response.completed"

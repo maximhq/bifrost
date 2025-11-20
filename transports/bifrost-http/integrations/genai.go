@@ -32,7 +32,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &gemini.GeminiGenerationRequest{}
 		},
-		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsEmbedding {
 					return &schemas.BifrostRequest{
@@ -46,7 +46,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		EmbeddingResponseConverter: func(resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+		EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Gemini {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -54,17 +54,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
-		ChatResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
+		ChatResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (interface{}, error) {
 			return gemini.ToGeminiChatResponse(resp), nil
 		},
-		ErrorConverter: func(err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(resp *schemas.BifrostChatResponse) (interface{}, error) {
-				return gemini.ToGeminiChatResponse(resp), nil
+			ChatStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+				return "", gemini.ToGeminiChatResponse(resp), nil
 			},
-			ErrorConverter: func(err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
 			},
 		},
@@ -78,7 +78,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostListModelsRequest{}
 		},
-		RequestConverter: func(req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 			if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 				return &schemas.BifrostRequest{
 					ListModelsRequest: listModelsReq,
@@ -86,10 +86,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ListModelsResponseConverter: func(resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+		ListModelsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 			return gemini.ToGeminiListModelsResponse(resp), nil
 		},
-		ErrorConverter: func(err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		PreCallback: extractGeminiListModelsParams,

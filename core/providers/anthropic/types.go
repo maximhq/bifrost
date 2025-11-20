@@ -294,10 +294,16 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens"`
+	InputTokens              int                          `json:"input_tokens"`
+	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                          `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            *AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
+	OutputTokens             int                          `json:"output_tokens"`
+}
+
+type AnthropicUsageCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // ==================== STREAMING TYPES ====================
