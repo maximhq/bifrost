@@ -1324,6 +1324,10 @@ func HandleOpenAIResponsesStreaming(
 				}
 			}
 
+			if sendBackRawResponse {
+				response.ExtraFields.RawResponse = jsonData
+			}
+
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := &schemas.BifrostError{
 					Type:           schemas.Ptr(string(schemas.ResponsesStreamResponseTypeError)),
@@ -1355,10 +1359,6 @@ func HandleOpenAIResponsesStreaming(
 			response.ExtraFields.Provider = providerName
 			response.ExtraFields.ModelRequested = request.Model
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
-
-			if sendBackRawResponse {
-				response.ExtraFields.RawResponse = jsonData
-			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()

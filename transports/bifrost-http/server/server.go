@@ -1077,7 +1077,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.CorsMiddleware(s.Config)(handlers.TransportInterceptorMiddleware(s.Config)(s.Router.Handler)),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     1024 * 16, // 16kb		
+		ReadBufferSize:     1024 * 16, // 16kb
 	}
 	return nil
 }

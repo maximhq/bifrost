@@ -237,7 +237,7 @@ func main() {
             if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
                 content := *choice.ChatStreamResponseChoice.Delta.Content
                 fmt.Printf("Chunk: %s\n", content)
-                
+
                 // With JSON parser, you can parse each chunk immediately
                 var jsonData map[string]interface{}
                 if err := json.Unmarshal([]byte(content), &jsonData); err == nil {

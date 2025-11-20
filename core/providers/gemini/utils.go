@@ -443,13 +443,25 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 					if toolCall.ID != nil && strings.TrimSpace(*toolCall.ID) != "" {
 						callID = *toolCall.ID
 					}
-					parts = append(parts, &Part{
+
+					part := &Part{
 						FunctionCall: &FunctionCall{
 							ID:   callID,
 							Name: *toolCall.Function.Name,
 							Args: argsMap,
 						},
-					})
+					}
+
+					// Preserve thought signature from extra_content (required for Gemini 3 Pro)
+					if toolCall.ExtraContent != nil {
+						if googleData, ok := toolCall.ExtraContent["google"].(map[string]interface{}); ok {
+							if thoughtSig, ok := googleData["thought_signature"].(string); ok {
+								part.ThoughtSignature = []byte(thoughtSig)
+							}
+						}
+					}
+
+					parts = append(parts, part)
 				}
 			}
 		}

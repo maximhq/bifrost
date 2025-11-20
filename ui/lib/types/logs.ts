@@ -166,6 +166,7 @@ export interface ToolCall {
 export interface ModelParameters {
 	tool_choice?: unknown; // Can be string or object
 	tools?: Tool[];
+	instructions?: string;
 	temperature?: number;
 	top_p?: number;
 	top_k?: number;

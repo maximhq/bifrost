@@ -135,31 +135,47 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					messages = append(messages, msg)
 				}
 
-			case part.FunctionCall != nil:
-				// Function call message
-				// Convert Args to JSON string if it's not already a string
-				argumentsStr := ""
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := json.Marshal(part.FunctionCall.Args); err == nil {
-						argumentsStr = string(argsBytes)
-					}
+		case part.FunctionCall != nil:
+			// Function call message
+			// Convert Args to JSON string if it's not already a string
+			argumentsStr := ""
+			if part.FunctionCall.Args != nil {
+				if argsBytes, err := json.Marshal(part.FunctionCall.Args); err == nil {
+					argumentsStr = string(argsBytes)
 				}
+			}
 
-				// Create copies of the values to avoid range loop variable capture
-				functionCallID := part.FunctionCall.ID
-				functionCallName := part.FunctionCall.Name
+			// Create copies of the values to avoid range loop variable capture
+			functionCallID := part.FunctionCall.ID
+			functionCallName := part.FunctionCall.Name
 
-				msg := schemas.ResponsesMessage{
-					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{},
-					Type:    schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    &functionCallID,
-						Name:      &functionCallName,
-						Arguments: &argumentsStr,
-					},
-				}
-				messages = append(messages, msg)
+		toolMsg := &schemas.ResponsesToolMessage{
+			CallID:    &functionCallID,
+			Name:      &functionCallName,
+			Arguments: &argumentsStr,
+		}
+
+		msg := schemas.ResponsesMessage{
+			Role:                 schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content:              &schemas.ResponsesMessageContent{},
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: toolMsg,
+		}
+		messages = append(messages, msg)
+
+		// Preserve thought signature if present (required for Gemini 3 Pro)
+		// Store it in a separate ResponsesReasoning message for better scalability
+		if len(part.ThoughtSignature) > 0 {
+			thoughtSig := string(part.ThoughtSignature)
+			reasoningMsg := schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					EncryptedContent: &thoughtSig,
+				},
+			}
+			messages = append(messages, reasoningMsg)
+		}
 
 			case part.FunctionResponse != nil:
 				// Function response message
@@ -511,7 +527,12 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	var contents []Content
 	var systemInstruction *Content
 
-	for _, msg := range messages {
+	for i, msg := range messages {
+		// Skip standalone reasoning messages (they're handled as part of function calls)
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
+			continue
+		}
+
 		// Handle system messages separately
 		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
 			if systemInstruction == nil {
@@ -584,16 +605,27 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
-					part := &Part{
-						FunctionCall: &FunctionCall{
-							Name: *msg.ResponsesToolMessage.Name,
-							Args: argsMap,
-						},
+				part := &Part{
+					FunctionCall: &FunctionCall{
+						Name: *msg.ResponsesToolMessage.Name,
+						Args: argsMap,
+					},
+				}
+				if msg.ResponsesToolMessage.CallID != nil {
+					part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+				}
+
+				// Preserve thought signature from ResponsesReasoning message (required for Gemini 3 Pro)
+				// Look ahead to see if the next message is a reasoning message with encrypted content
+				if i+1 < len(messages) {
+					nextMsg := messages[i+1]
+					if nextMsg.Type != nil && *nextMsg.Type == schemas.ResponsesMessageTypeReasoning &&
+						nextMsg.ResponsesReasoning != nil && nextMsg.ResponsesReasoning.EncryptedContent != nil {
+						part.ThoughtSignature = []byte(*nextMsg.ResponsesReasoning.EncryptedContent)
 					}
-					if msg.ResponsesToolMessage.CallID != nil {
-						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
-					}
-					content.Parts = append(content.Parts, part)
+				}
+
+				content.Parts = append(content.Parts, part)
 				}
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
 				// Convert function response to Gemini FunctionResponse
