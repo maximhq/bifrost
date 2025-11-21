@@ -1,20 +1,16 @@
 ---
 title: "AWS Bedrock Integration"
-description: "Use Bifrost as a Bedrock-compatible gateway for the Converse API, with Bifrost features on top."
+description: "Use Bifrost as a Bedrock-compatible gateway for the Converse and Invoke APIs, with Bifrost features on top."
 icon: "b"
 ---
 
 ## Overview
 
-Bifrost provides a Bedrock-compatible endpoint for the **Converse** API via protocol adaptation. The integration handles request transformation, response normalization, and error mapping between AWS Bedrock's Converse API and Bifrost's internal processing pipeline.
+Bifrost provides a Bedrock-compatible endpoint for the **Converse** and **Invoke** APIs via protocol adaptation. The integration handles request transformation, response normalization, and error mapping between AWS Bedrock's API specification and Bifrost's internal processing pipeline.
 
-This integration lets you layer Bifrost features like governance, load balancing, semantic caching, multi-provider support, and more on top of your existing Bedrock usage.
+This integration enables you to utilize Bifrost's features like governance, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing Bedrock SDK-based architecture.
 
 **Endpoint:** `/bedrock`
-
-> **Current Status:** This integration currently supports the **Converse** API (non-streaming), including tools and image/multimodal usage via standard Converse fields. Converse streaming and list models via this integration are in progress.
-
----
 
 ## Setup
 
@@ -25,10 +21,15 @@ This integration lets you layer Bifrost features like governance, load balancing
 import boto3
 
 # Configure boto3 Bedrock client to use Bifrost
+# Note: When using Bifrost keys, dummy credentials are required
+# because boto3 needs credentials to sign requests, even though
+# Bifrost will use its own configured keys.
 client = boto3.client(
     service_name="bedrock-runtime",
     endpoint_url="http://localhost:8080/bedrock",
-    region_name="us-west-2"  # AWS credentials handled by Bifrost
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",  # Required when using Bifrost keys
+    aws_secret_access_key="bifrost-dummy-secret"  # Required when using Bifrost keys
 )
 
 # Make requests as usual
@@ -44,11 +45,8 @@ response = client.converse(
 
 print(response)
 ```
-
 </Tab>
 </Tabs>
-
----
 
 ## Provider/Model Usage Examples
 
@@ -56,31 +54,76 @@ Because Bedrock itself is a multi-provider platform, you can use any Bedrock-sup
 
 ```python
 import boto3
+import json
 
 client = boto3.client(
     service_name="bedrock-runtime",
     endpoint_url="http://localhost:8080/bedrock",
-    region_name="us-west-2"
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
 )
 
-# Anthropic via Bedrock
+# Anthropic via Bedrock (Converse API)
 anthropic_response = client.converse(
     modelId="anthropic.claude-3-sonnet-20240229",
     messages=[{"role": "user", "content": [{"text": "Hello from Claude!"}]}]
 )
 
-# Mistral via Bedrock
+# Mistral via Bedrock (Converse API)
 mistral_response = client.converse(
     modelId="mistral.mistral-large-2407",
     messages=[{"role": "user", "content": [{"text": "Hello from Mistral!"}]}]
 )
 
-# Amazon Titan text models
-titan_response = client.converse(
-    modelId="amazon.titan-text-lite-v1",
-    messages=[{"role": "user", "content": [{"text": "Hello from Titan!"}]}]
+# Mistral via Bedrock (Invoke API)
+mistral_invoke_response = client.invoke_model(
+    modelId="mistral.mistral-large-2407",
+    contentType="application/json",
+    accept="application/json",
+    body=json.dumps({
+        "prompt": "Say hello from Mistral using Invoke API.",
+        "max_tokens": 50,
+        "temperature": 0.7
+    }),
 )
 ```
+
+---
+
+## Using Direct Keys
+
+Pass AWS credentials or Bedrock API keys directly in requests to bypass Bifrost's load balancing. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Quickstart Configuration](../quickstart/README) for enabling direct API key usage.
+
+When direct keys are enabled, you can pass your AWS credentials directly to the boto3 client instead of using dummy credentials.
+
+<Tabs group="bedrock-sdk">
+<Tab title="Python">
+
+```python
+import boto3
+
+# When direct keys are enabled, pass real AWS credentials to boto3
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="your-aws-access-key",  # Real credentials when direct keys enabled
+    aws_secret_access_key="your-aws-secret-key"  # Real credentials when direct keys enabled
+)
+
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[{"role": "user", "content": [{"text": "Hello!"}]}]
+)
+```
+
+</Tab>
+</Tabs>
+
+> **Note:** When using Bifrost's configured keys (not direct keys), you must provide dummy AWS credentials (`aws_access_key_id` and `aws_secret_access_key`) to the boto3 client. This is because boto3 requires credentials to sign requests, even though Bifrost will use its own configured keys. The dummy values can be any string (e.g., `"bifrost-dummy-key"` and `"bifrost-dummy-secret"`).
 
 ---
 
@@ -89,11 +132,12 @@ titan_response = client.converse(
 The Bedrock integration currently supports:
 
 - **Converse** API (`/bedrock/model/{modelId}/converse`) for text/chat-style workloads  
+- **Invoke** API (`/bedrock/model/{modelId}/invoke`) for model-specific text completion workloads
 - **Tools** via `toolConfig`, `toolUse`, and `toolResult` inside Converse requests  
 - **Image and multimodal** responses where supported by the underlying Bedrock model  
 - All Bifrost core features that apply to these flows (governance, load balancing, semantic cache, observability, etc.)
 
-> **Roadmap:** Support for **Converse streaming** and **List Models** via the Bedrock integration is under active development.
+> **Roadmap:** Support for  **Streaming** via the Bedrock integration is under active development.
 
 ---
 

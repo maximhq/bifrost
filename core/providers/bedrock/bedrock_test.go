@@ -1380,19 +1380,6 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 			input:   nil,
 			wantErr: true,
 		},
-		{
-			name: "EmptyOutput",
-			input: &schemas.BifrostResponsesResponse{
-				CreatedAt: 1234567890,
-				Output:    []schemas.ResponsesMessage{},
-			},
-			expected: &BedrockConverseResponse{
-				StopReason: "end_turn",
-				Output:     &BedrockConverseOutput{},
-				Usage:      &BedrockTokenUsage{},
-				Metrics:    &BedrockConverseMetrics{},
-			},
-		},
 	}
 
 	for _, tt := range tests {

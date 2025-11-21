@@ -192,13 +192,11 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 				imageBlock := schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 				}
-
 				if content.Image != nil && content.Image.Source.Bytes != nil {
 					imageBlock.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: content.Image.Source.Bytes,
 					}
 				}
-
 				bifrostMsg.Content.ContentBlocks = append(bifrostMsg.Content.ContentBlocks, imageBlock)
 			}
 			if content.ToolUse != nil {
@@ -226,7 +224,6 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 						})
 					}
 				}
-
 				bifrostMsg.ResponsesToolMessage = &schemas.ResponsesToolMessage{
 					CallID: &content.ToolResult.ToolUseID,
 					Output: &schemas.ResponsesToolMessageOutputStruct{
@@ -938,14 +935,13 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		Metrics: &BedrockConverseMetrics{},
 	}
 
-	// Convert output messages to Bedrock message format
 	var hasToolUse bool
-	if len(bifrostResp.Output) > 0 {
-		message := &BedrockMessage{
-			Role:    BedrockMessageRoleAssistant,
-			Content: []BedrockContentBlock{},
-		}
+	message := &BedrockMessage{
+		Role:    BedrockMessageRoleAssistant,
+		Content: []BedrockContentBlock{},
+	}
 
+	if len(bifrostResp.Output) > 0 {
 		for _, outputMsg := range bifrostResp.Output {
 			// Check if this output message contains a tool use
 			if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCall {
@@ -1035,8 +1031,6 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			}
 		}
 
-		bedrockResp.Output.Message = message
-
 		// Also check the final message content for tool use blocks (more robust)
 		if !hasToolUse {
 			for _, block := range message.Content {
@@ -1047,6 +1041,8 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 			}
 		}
 	}
+
+	bedrockResp.Output.Message = message
 
 	// Find stop reason from incomplete details or derive from response
 	// Priority: IncompleteDetails > tool_use detection > end_turn
