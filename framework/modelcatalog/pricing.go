@@ -17,8 +17,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	var audioSeconds *int
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 
-	//TODO: Detect cache and batch operations
-	isCacheRead := false
+	//TODO: Detect batch operations
 	isBatch := false
 
 	switch {
@@ -91,7 +90,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
 		extraFields := result.GetExtraFields()
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isCacheRead, isBatch, audioSeconds, audioTokenDetails)
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
@@ -112,7 +111,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, false, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil)
 			}
 
 			// Don't over-bill cache hits if fields are missing.
@@ -125,7 +124,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, false, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil)
 			}
 
 			return baseCost + semanticCacheCost
@@ -136,7 +135,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isCacheRead bool, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
 	// Allow audio-only flows by only returning early if we have no usage data at all
 	if usage == nil && audioSeconds == nil && audioTokenDetails == nil {
 		return 0.0
@@ -170,6 +169,18 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 	})
 	completionTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
 		return u.CompletionTokens
+	})
+	cachedPromptTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
+		if u.PromptTokensDetails != nil {
+			return u.PromptTokensDetails.CachedTokens
+		}
+		return 0
+	})
+	cachedCompletionTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
+		if u.CompletionTokensDetails != nil {
+			return u.CompletionTokensDetails.CachedTokens
+		}
+		return 0
 	})
 
 	// Special handling for audio operations with duration-based pricing
@@ -237,20 +248,16 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 		} else {
 			outputCost = float64(completionTokens) * pricing.OutputCostPerToken
 		}
-	} else if isCacheRead {
-		// Use cache read pricing for input tokens if available, regular pricing for output
-		if pricing.CacheReadInputTokenCost != nil {
-			inputCost = float64(promptTokens) * *pricing.CacheReadInputTokenCost
-		} else {
-			inputCost = float64(promptTokens) * pricing.InputCostPerToken
-		}
-
-		// Output tokens always use regular pricing for cache reads
-		outputCost = float64(completionTokens) * pricing.OutputCostPerToken
 	} else {
 		// Use regular pricing
-		inputCost = float64(promptTokens) * pricing.InputCostPerToken
-		outputCost = float64(completionTokens) * pricing.OutputCostPerToken
+		inputCost = float64(promptTokens-cachedPromptTokens) * pricing.InputCostPerToken
+		if pricing.CacheCreationInputTokenCost != nil {
+			inputCost += float64(cachedPromptTokens) * *pricing.CacheCreationInputTokenCost
+		}
+		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
+		if pricing.CacheCreationInputTokenCost != nil {
+			outputCost += float64(cachedCompletionTokens) * *pricing.CacheCreationInputTokenCost
+		}
 	}
 
 	totalCost := inputCost + outputCost

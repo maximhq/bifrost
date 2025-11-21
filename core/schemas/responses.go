@@ -268,6 +268,8 @@ type ResponsesResponseOutputTokens struct {
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+
+	CachedTokens int `json:"cached_tokens,omitempty"` // Not in OpenAI's schemas, but sent by a few providers (Anthropic is one of them)
 }
 
 // =============================================================================

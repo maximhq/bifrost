@@ -407,6 +407,12 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.
 			}
 			bifrostResp.Usage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
 		}
+		if response.Usage.CacheCreationInputTokens > 0 {
+			if bifrostResp.Usage.OutputTokensDetails == nil {
+				bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+			}
+			bifrostResp.Usage.OutputTokensDetails.CachedTokens = response.Usage.CacheCreationInputTokens
+		}
 	}
 
 	// Convert content to Responses output messages
@@ -437,6 +443,9 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 
 		if bifrostResp.Usage.InputTokensDetails != nil && bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
+		}
+		if bifrostResp.Usage.OutputTokensDetails != nil && bifrostResp.Usage.OutputTokensDetails.CachedTokens > 0 {
+			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
 		}
 	}
 
@@ -1006,6 +1015,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					}
 					response.Usage.InputTokensDetails.CachedTokens = chunk.Usage.CacheReadInputTokens
 				}
+				if chunk.Usage.CacheCreationInputTokens > 0 {
+					if response.Usage.OutputTokensDetails == nil {
+						response.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+					}
+					response.Usage.OutputTokensDetails.CachedTokens = chunk.Usage.CacheCreationInputTokens
+				}
 			}
 
 			// Use a special response type that indicates this is a message delta
@@ -1098,6 +1113,9 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 				}
 				if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
 					streamMessage.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+				}
+				if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
+					streamMessage.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
 				}
 			}
 			streamResp.Message = streamMessage
@@ -1350,6 +1368,9 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			}
 			if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
 				streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+			}
+			if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
+				streamResp.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
 			}
 		}
 

@@ -28,9 +28,10 @@ type TableModelPricing struct {
 	OutputCostPerCharacterAbove128kTokens     *float64 `gorm:"default:null" json:"output_cost_per_character_above_128k_tokens,omitempty"`
 
 	// Cache and batch pricing
-	CacheReadInputTokenCost   *float64 `gorm:"default:null" json:"cache_read_input_token_cost,omitempty"`
-	InputCostPerTokenBatches  *float64 `gorm:"default:null" json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches *float64 `gorm:"default:null" json:"output_cost_per_token_batches,omitempty"`
+	CacheReadInputTokenCost     *float64 `gorm:"default:null" json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost *float64 `gorm:"default:null" json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches    *float64 `gorm:"default:null" json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `gorm:"default:null" json:"output_cost_per_token_batches,omitempty"`
 }
 
 // TableName sets the table name for each model

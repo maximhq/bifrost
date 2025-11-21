@@ -370,6 +370,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 			CompletionTokens: response.Usage.OutputTokens,
 			TotalTokens:      response.Usage.InputTokens + response.Usage.OutputTokens,
 		}
+		if response.Usage.CacheCreationInputTokens > 0 {
+			if bifrostResponse.Usage.CompletionTokensDetails == nil {
+				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+			}
+			bifrostResponse.Usage.CompletionTokensDetails.CachedTokens = response.Usage.CacheCreationInputTokens
+		}
 	}
 
 	return bifrostResponse
@@ -636,6 +642,9 @@ func ToAnthropicChatCompletionResponse(bifrostResp *schemas.BifrostChatResponse)
 		//NOTE: We cannot segregate between cache creation and cache read tokens, so we will use the total cached tokens as the cache read tokens
 		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.PromptTokensDetails.CachedTokens
+		}
+		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.CachedTokens > 0 {
+			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.CompletionTokensDetails.CachedTokens
 		}
 	}
 

@@ -185,8 +185,8 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUseRawRequestBody, true)
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("is_anthropic_passthrough"), true)
 	}
+	*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("is_anthropic_passthrough"), true)
 	return nil
 }
 
