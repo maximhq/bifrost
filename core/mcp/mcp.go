@@ -91,12 +91,20 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		toolExecutionTimeout:  toolExecutionTimeout,
 		fetchNewRequestIDFunc: config.FetchNewRequestIDFunc,
 	}
-	toolsHandler, err := NewDefaultToolsHandler(&DefaultHandlerConfig{
-		toolExecutionTimeout: toolExecutionTimeout,
-		maxAgentDepth:        maxAgentDepth,
-	})
-	if err != nil {
-		return nil, err
+	var toolsHandler schemas.MCPToolHandler
+	switch config.Mode {
+	case schemas.MCPModeDefault, "":
+		toolsHandler = NewDefaultToolsHandler(&DefaultHandlerConfig{
+			toolExecutionTimeout: toolExecutionTimeout,
+			maxAgentDepth:        maxAgentDepth,
+		})
+	case schemas.MCPModeCodeMode:
+		toolsHandler = NewCodeModeToolsHandler(&CodeModeHandlerConfig{
+			toolExecutionTimeout: toolExecutionTimeout,
+			maxAgentDepth:        maxAgentDepth,
+		})
+	default:
+		return nil, fmt.Errorf("unknown MCP mode: %s", config.Mode)
 	}
 	toolsHandler.SetToolsFetcherFunc(manager.getAvailableTools)
 	toolsHandler.SetClientForToolFetcherFunc(manager.findMCPClientForTool)
@@ -125,26 +133,6 @@ func (m *MCPManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssis
 		logger.Error("%s Tools handler is not fully setup", MCPLogPrefix)
 		return nil, fmt.Errorf("tools handler is not fully setup")
 	}
-	// Check if the user has permission to execute the tool call
-	availableTools := m.getAvailableTools(ctx)
-	toolName := toolCall.Function.Name
-	if toolName == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
-
-	// Check if the tool is available
-	toolFound := false
-	for _, mcpTool := range availableTools {
-		if mcpTool.Function != nil && mcpTool.Function.Name == *toolName {
-			toolFound = true
-			break
-		}
-	}
-
-	if !toolFound {
-		return nil, fmt.Errorf("tool '%s' is not available or not permitted", *toolName)
-	}
-
 	return m.toolsHandler.ExecuteTool(ctx, toolCall)
 }
 

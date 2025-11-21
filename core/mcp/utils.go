@@ -27,7 +27,13 @@ func (m *MCPManager) findMCPClientForTool(toolName string) *schemas.MCPClientSta
 
 // getAvailableTools returns all tools from connected MCP clients.
 // Applies client filtering if specified in the context.
-func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
+// Returns a map of client name to its available tools.
+// Parameters:
+//   - ctx: Execution context
+//
+// Returns:
+//   - map[string][]schemas.ChatTool: Map of client name to its available tools
+func (m *MCPManager) getAvailableTools(ctx context.Context) map[string][]schemas.ChatTool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -38,7 +44,7 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 		includeClients = existingIncludeClients
 	}
 
-	tools := make([]schemas.ChatTool, 0)
+	tools := make(map[string][]schemas.ChatTool)
 	for id, client := range m.clientMap {
 		// Apply client filtering logic
 		if !shouldIncludeClient(id, includeClients) {
@@ -47,6 +53,9 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 		}
 
 		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", id, client.ExecutionConfig.ToolsToExecute))
+
+		// Use client name as the key (not ID)
+		clientName := client.ExecutionConfig.Name
 
 		// Add all tools from this client
 		for toolName, tool := range client.ToolMap {
@@ -62,7 +71,7 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 				continue
 			}
 
-			tools = append(tools, tool)
+			tools[clientName] = append(tools[clientName], tool)
 		}
 	}
 	return tools

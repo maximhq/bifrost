@@ -13,7 +13,7 @@ type MCPToolHandler interface {
 	ParseAndAddToolsToRequest(ctx context.Context, req *BifrostRequest) *BifrostRequest                                                                     // Parse the available tools and add them to the Bifrost request
 	ExecuteTool(ctx context.Context, toolCall ChatAssistantMessageToolCall) (*ChatMessage, error)                                                           // Execute a tool call and return the result as a tool message, It DOES NOT check if the tool is allowed to be executed by the client, so it is the responsibility of the caller to check if the tool is allowed to be executed by the client.
 	ExecuteAgent(ctx context.Context, req *BifrostChatRequest, resp *BifrostChatResponse, llmCaller BifrostLLMCaller) (*BifrostChatResponse, *BifrostError) // Execute an agent mode tool call and return the result as a chat response
-	SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) []ChatTool)                                                                              // Set the function to get the available tools
+	SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) map[string][]ChatTool)                                                                   // Set the function to get the available tools
 	SetClientForToolFetcherFunc(clientForToolFetcherFunc func(toolName string) *MCPClientState)                                                             // Set the function to get the client for a tool
 	SetFetchNewRequestIDFunc(fetchNewRequestIDFunc func(ctx context.Context) string)                                                                        // Set the function to get a new request ID
 }
@@ -24,9 +24,17 @@ type BifrostLLMCaller interface {
 	ChatCompletionRequest(ctx context.Context, req *BifrostChatRequest) (*BifrostChatResponse, *BifrostError)
 }
 
+type MCPMode string
+
+const (
+	MCPModeDefault  MCPMode = "default"  // Default MCP mode
+	MCPModeCodeMode MCPMode = "codemode" // CodeMode MCP mode
+)
+
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 type MCPConfig struct {
+	Mode                 MCPMode           `json:"mode"`                             // MCP mode (default or codemode)
 	ClientConfigs        []MCPClientConfig `json:"client_configs,omitempty"`         // Per-client execution configurations
 	MaxAgentDepth        int               `json:"max_agent_depth,omitempty"`        // Maximum depth for agent mode tool execution (default: 10)
 	ToolExecutionTimeout int               `json:"tool_execution_timeout,omitempty"` // Timeout for individual tool execution in seconds (default: 30)

@@ -15,7 +15,7 @@ type DefaultToolsHandler struct {
 	maxAgentDepth         int
 	fetchNewRequestIDFunc func(ctx context.Context) string
 	clientForToolFetcher  func(toolName string) *schemas.MCPClientState
-	toolsGetterFunc       func(ctx context.Context) []schemas.ChatTool
+	toolsFetcherFunc      func(ctx context.Context) map[string][]schemas.ChatTool
 }
 
 type DefaultHandlerConfig struct {
@@ -23,7 +23,7 @@ type DefaultHandlerConfig struct {
 	maxAgentDepth        int
 }
 
-func NewDefaultToolsHandler(config *DefaultHandlerConfig) (*DefaultToolsHandler, error) {
+func NewDefaultToolsHandler(config *DefaultHandlerConfig) *DefaultToolsHandler {
 	if config == nil {
 		config = &DefaultHandlerConfig{
 			toolExecutionTimeout: 30 * time.Second,
@@ -39,18 +39,18 @@ func NewDefaultToolsHandler(config *DefaultHandlerConfig) (*DefaultToolsHandler,
 	return &DefaultToolsHandler{
 		toolExecutionTimeout: config.toolExecutionTimeout,
 		maxAgentDepth:        config.maxAgentDepth,
-	}, nil
+	}
 }
 
 // SetupCompleted checks if the handler is fully setup and ready to use.
 func (m *DefaultToolsHandler) SetupCompleted() bool {
-	return m.toolsFetcherFunc != nil && m.clientForToolFetcher != nil && m.fetchNewRequestIDFunc != nil
+	return m.toolsFetcherFunc != nil && m.clientForToolFetcher != nil
 }
 
 // SetToolsFetcherFunc sets the function to get the available tools.
 // TO BE CALLED JUST AFTER THE HANDLER IS CREATED AND BEFORE THE FIRST USE.
-func (m *DefaultToolsHandler) SetToolsFetcherFunc(toolsGetterFunc func(ctx context.Context) []schemas.ChatTool) {
-	m.toolsGetterFunc = toolsGetterFunc
+func (m *DefaultToolsHandler) SetToolsFetcherFunc(toolsFetcherFunc func(ctx context.Context) map[string][]schemas.ChatTool) {
+	m.toolsFetcherFunc = toolsFetcherFunc
 }
 
 // SetClientForToolFetcherFunc sets the function to get the client for a tool.
@@ -65,18 +65,25 @@ func (m *DefaultToolsHandler) SetFetchNewRequestIDFunc(fetchNewRequestIDFunc fun
 	m.fetchNewRequestIDFunc = fetchNewRequestIDFunc
 }
 
-// ParseAndAddToolsToRequest parses the available tools and adds them to the Bifrost request.
+// ParseAndAddToolsToRequest parses the available tools per client and adds them to the Bifrost request.
 //
 // Parameters:
 //   - ctx: Execution context
 //   - req: Bifrost request
+//   - availableToolsPerClient: Map of client name to its available tools
 //
 // Returns:
 //   - *schemas.BifrostRequest: Bifrost request with MCP tools added
 func (m *DefaultToolsHandler) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	availableTools := m.toolsGetterFunc(ctx)
+	availableToolsPerClient := m.toolsFetcherFunc(ctx)
+	// Flatten tools from all clients into a single slice
+	var availableTools []schemas.ChatTool
+	for _, clientTools := range availableToolsPerClient {
+		availableTools = append(availableTools, clientTools...)
+	}
+
 	if len(availableTools) > 0 {
-		logger.Debug(fmt.Sprintf("%s Adding %d MCP tools to request", MCPLogPrefix, len(availableTools)))
+		logger.Debug(fmt.Sprintf("%s Adding %d MCP tools to request from %d clients", MCPLogPrefix, len(availableTools), len(availableToolsPerClient)))
 		switch req.RequestType {
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			// Only allocate new Params if it's nil to preserve caller-supplied settings
@@ -167,6 +174,25 @@ func (m *DefaultToolsHandler) ExecuteTool(ctx context.Context, toolCall schemas.
 		return nil, fmt.Errorf("tool call missing function name")
 	}
 	toolName := *toolCall.Function.Name
+
+	// Check if the user has permission to execute the tool call
+	availableTools := m.toolsFetcherFunc(ctx)
+	toolFound := false
+	for _, tools := range availableTools {
+		for _, mcpTool := range tools {
+			if mcpTool.Function != nil && mcpTool.Function.Name == toolName {
+				toolFound = true
+				break
+			}
+		}
+		if toolFound {
+			break
+		}
+	}
+
+	if !toolFound {
+		return nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+	}
 
 	client := m.clientForToolFetcher(toolName)
 	if client == nil {

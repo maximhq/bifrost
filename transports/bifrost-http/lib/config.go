@@ -568,7 +568,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
 			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
 		}
-		
+
 		// Merge with config file if present
 		if configData.Client != nil {
 			logger.Debug("merging client config from config file with store")
@@ -607,7 +607,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			if !config.ClientConfig.EnableLiteLLMFallbacks && configData.Client.EnableLiteLLMFallbacks {
 				config.ClientConfig.EnableLiteLLMFallbacks = configData.Client.EnableLiteLLMFallbacks
 			}
-			
+
 			// Update store with merged config
 			if config.ConfigStore != nil {
 				logger.Debug("updating merged client config in store")
@@ -726,15 +726,15 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 							// Here we will skip the key
 							found = true
 							break
-						}				
+						}
 					}
 					if !found {
-						keysToAdd = append(keysToAdd, newKey)	
-					}					
+						keysToAdd = append(keysToAdd, newKey)
+					}
 				}
 				existingCfg.Keys = append(existingCfg.Keys, keysToAdd...)
 				processedProviders[provider] = existingCfg
-			}			
+			}
 		}
 		// Store processed configurations in memory
 		config.Providers = processedProviders
@@ -763,11 +763,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	if mcpConfig != nil {
 		config.MCPConfig = mcpConfig
-		
+
 		// Merge with config file if present
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			logger.Debug("merging MCP config from config file with store")
-			
+
 			// Process env vars for config file MCP configs
 			tempMCPConfig := configData.MCP
 			originalMCPConfig := config.MCPConfig
@@ -792,10 +792,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						clientConfigsToAdd = append(clientConfigsToAdd, newClientConfig)
 					}
 				}
-				
+
 				// Add new client configs to existing ones
 				config.MCPConfig.ClientConfigs = append(mcpConfig.ClientConfigs, clientConfigsToAdd...)
-				
+
 				// Update store with merged config
 				if config.ConfigStore != nil && len(clientConfigsToAdd) > 0 {
 					logger.Debug("updating MCP config in store with %d new client configs", len(clientConfigsToAdd))
@@ -837,11 +837,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	if governanceConfig != nil {
 		config.GovernanceConfig = governanceConfig
-		
+
 		// Merge with config file if present
 		if configData.Governance != nil {
 			logger.Debug("merging governance config from config file with store")
-			
+
 			// Merge Budgets by ID
 			budgetsToAdd := make([]configstoreTables.TableBudget, 0)
 			for _, newBudget := range configData.Governance.Budgets {
@@ -856,7 +856,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					budgetsToAdd = append(budgetsToAdd, newBudget)
 				}
 			}
-			
+
 			// Merge RateLimits by ID
 			rateLimitsToAdd := make([]configstoreTables.TableRateLimit, 0)
 			for _, newRateLimit := range configData.Governance.RateLimits {
@@ -871,7 +871,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					rateLimitsToAdd = append(rateLimitsToAdd, newRateLimit)
 				}
 			}
-			
+
 			// Merge Customers by ID
 			customersToAdd := make([]configstoreTables.TableCustomer, 0)
 			for _, newCustomer := range configData.Governance.Customers {
@@ -886,7 +886,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					customersToAdd = append(customersToAdd, newCustomer)
 				}
 			}
-			
+
 			// Merge Teams by ID
 			teamsToAdd := make([]configstoreTables.TableTeam, 0)
 			for _, newTeam := range configData.Governance.Teams {
@@ -901,7 +901,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					teamsToAdd = append(teamsToAdd, newTeam)
 				}
 			}
-			
+
 			// Merge VirtualKeys by ID
 			virtualKeysToAdd := make([]configstoreTables.TableVirtualKey, 0)
 			for _, newVirtualKey := range configData.Governance.VirtualKeys {
@@ -916,14 +916,14 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 					virtualKeysToAdd = append(virtualKeysToAdd, newVirtualKey)
 				}
 			}
-			
+
 			// Add merged items to config
 			config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 			config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
 			config.GovernanceConfig.Customers = append(governanceConfig.Customers, customersToAdd...)
 			config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
 			config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
-			
+
 			// Update store with merged config items
 			if config.ConfigStore != nil && (len(budgetsToAdd) > 0 || len(rateLimitsToAdd) > 0 || len(customersToAdd) > 0 || len(teamsToAdd) > 0 || len(virtualKeysToAdd) > 0) {
 				logger.Debug("updating governance config in store with merged items")
@@ -1961,7 +1961,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		c.cleanupEnvKeys("", clientConfig.ID, newEnvKeys)
-		return fmt.Errorf("failed to add MCP client: %w", err)
+		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	if c.ConfigStore != nil {
