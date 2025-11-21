@@ -594,6 +594,24 @@ export const mcpClientUpdateSchema = z.object({
 			},
 			{ message: "Duplicate tool names are not allowed" },
 		),
+	tools_to_auto_execute: z
+		.array(z.string())
+		.optional()
+		.refine(
+			(tools) => {
+				if (!tools || tools.length === 0) return true;
+				const hasWildcard = tools.includes("*");
+				return !hasWildcard || tools.length === 1;
+			},
+			{ message: "Wildcard '*' cannot be combined with other tool names" },
+		)
+		.refine(
+			(tools) => {
+				if (!tools) return true;
+				return tools.length === new Set(tools).size;
+			},
+			{ message: "Duplicate tool names are not allowed" },
+		),
 });
 
 // Export type inference helpers

@@ -17,6 +17,7 @@ export interface MCPClientConfig {
 	connection_string?: string;
 	stdio_config?: MCPStdioConfig;
 	tools_to_execute?: string[];
+	tools_to_auto_execute?: string[];
 	headers?: Record<string, string>;
 }
 
@@ -32,6 +33,7 @@ export interface CreateMCPClientRequest {
 	connection_string?: string;
 	stdio_config?: MCPStdioConfig;
 	tools_to_execute?: string[];
+	tools_to_auto_execute?: string[];
 	headers?: Record<string, string>;
 }
 
@@ -39,4 +41,5 @@ export interface UpdateMCPClientRequest {
 	name?: string;
 	headers?: Record<string, string>;
 	tools_to_execute?: string[];
+	tools_to_auto_execute?: string[];
 }
