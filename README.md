@@ -218,6 +218,7 @@ Bifrost adds virtually zero overhead to your AI requests. In sustained 5,000 RPS
 
 - [OpenAI SDK](https://docs.getbifrost.ai/integrations/openai-sdk) - Drop-in OpenAI replacement
 - [Anthropic SDK](https://docs.getbifrost.ai/integrations/anthropic-sdk) - Drop-in Anthropic replacement
+- [AWS Bedrock SDK](https://docs.getbifrost.ai/integrations/bedrock-sdk) - AWS Bedrock integration
 - [Google GenAI SDK](https://docs.getbifrost.ai/integrations/genai-sdk) - Drop-in GenAI replacement
 - [LiteLLM SDK](https://docs.getbifrost.ai/integrations/litellm-sdk) - LiteLLM integration
 - [Langchain SDK](https://docs.getbifrost.ai/integrations/langchain-sdk) - Langchain integration

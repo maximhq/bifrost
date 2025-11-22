@@ -128,6 +128,257 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.TextItemClosed = false
 }
 
+// ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format
+func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.BifrostResponsesRequest, error) {
+	if request == nil {
+		return nil, fmt.Errorf("bedrock request is nil")
+	}
+
+	// Extract provider from model ID (format: "bedrock/model-name")
+	provider, model := schemas.ParseModelString(request.ModelID, schemas.Bedrock)
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Params:   &schemas.ResponsesParameters{},
+	}
+
+	// Convert system messages first (they should appear at the top)
+	if len(request.System) > 0 {
+		for _, sysMsg := range request.System {
+			if sysMsg.Text != nil {
+				systemRole := schemas.ResponsesInputMessageRoleSystem
+				bifrostMsg := schemas.ResponsesMessage{
+					Role: &systemRole,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type: schemas.ResponsesInputMessageContentBlockTypeText,
+								Text: sysMsg.Text,
+							},
+						},
+					},
+				}
+				bifrostReq.Input = append(bifrostReq.Input, bifrostMsg)
+			}
+		}
+	}
+
+	// Convert regular messages
+	for _, msg := range request.Messages {
+		var role schemas.ResponsesMessageRoleType
+		if msg.Role == BedrockMessageRoleUser {
+			role = schemas.ResponsesInputMessageRoleUser
+		} else if msg.Role == BedrockMessageRoleAssistant {
+			role = schemas.ResponsesInputMessageRoleAssistant
+		}
+
+		bifrostMsg := schemas.ResponsesMessage{
+			Role: &role,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+			},
+		}
+
+		// Convert content blocks
+		for _, content := range msg.Content {
+			if content.Text != nil {
+				bifrostMsg.Content.ContentBlocks = append(bifrostMsg.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesInputMessageContentBlockTypeText,
+					Text: content.Text,
+				})
+			}
+			if content.Image != nil {
+				imageBlock := schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				}
+				if content.Image != nil && content.Image.Source.Bytes != nil {
+					imageBlock.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+						ImageURL: content.Image.Source.Bytes,
+					}
+				}
+				bifrostMsg.Content.ContentBlocks = append(bifrostMsg.Content.ContentBlocks, imageBlock)
+			}
+			if content.ToolUse != nil {
+				callType := schemas.ResponsesMessageTypeFunctionCall
+				callStatus := "in_progress"
+				bifrostMsg.Type = &callType
+				bifrostMsg.Status = &callStatus
+				bifrostMsg.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+					CallID:    &content.ToolUse.ToolUseID,
+					Name:      &content.ToolUse.Name,
+					Arguments: schemas.Ptr(schemas.JsonifyInput(content.ToolUse.Input)),
+				}
+			}
+			if content.ToolResult != nil {
+				resultType := schemas.ResponsesMessageTypeFunctionCallOutput
+				resultStatus := "completed"
+				bifrostMsg.Type = &resultType
+				bifrostMsg.Status = &resultStatus
+				var toolResultContent []schemas.ResponsesMessageContentBlock
+				for _, resultContent := range content.ToolResult.Content {
+					if resultContent.Text != nil {
+						toolResultContent = append(toolResultContent, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: resultContent.Text,
+						})
+					}
+				}
+				bifrostMsg.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+					CallID: &content.ToolResult.ToolUseID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{
+						ResponsesFunctionToolCallOutputBlocks: toolResultContent,
+					},
+				}
+			}
+		}
+
+		bifrostReq.Input = append(bifrostReq.Input, bifrostMsg)
+	}
+
+	// Convert inference config to parameters
+	if request.InferenceConfig != nil {
+		if request.InferenceConfig.MaxTokens != nil {
+			bifrostReq.Params.MaxOutputTokens = request.InferenceConfig.MaxTokens
+		}
+		if request.InferenceConfig.Temperature != nil {
+			bifrostReq.Params.Temperature = request.InferenceConfig.Temperature
+		}
+		if request.InferenceConfig.TopP != nil {
+			bifrostReq.Params.TopP = request.InferenceConfig.TopP
+		}
+		if len(request.InferenceConfig.StopSequences) > 0 {
+			if bifrostReq.Params.ExtraParams == nil {
+				bifrostReq.Params.ExtraParams = make(map[string]interface{})
+			}
+			bifrostReq.Params.ExtraParams["stop"] = request.InferenceConfig.StopSequences
+		}
+	}
+
+	// Convert tool config
+	if request.ToolConfig != nil && len(request.ToolConfig.Tools) > 0 {
+		for _, tool := range request.ToolConfig.Tools {
+			if tool.ToolSpec != nil {
+				bifrostTool := schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  &tool.ToolSpec.Name,
+					Description:           tool.ToolSpec.Description,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+				}
+
+				// Handle different types for InputSchema.JSON
+				if params, ok := tool.ToolSpec.InputSchema.JSON.(*schemas.ToolFunctionParameters); ok {
+					bifrostTool.ResponsesToolFunction.Parameters = params
+				} else if paramsMap, ok := tool.ToolSpec.InputSchema.JSON.(map[string]interface{}); ok {
+					// Convert map to ToolFunctionParameters
+					params := &schemas.ToolFunctionParameters{}
+					if typeVal, ok := paramsMap["type"].(string); ok {
+						params.Type = typeVal
+					}
+					// Handle both pointer and non-pointer properties
+					if propsPtr, ok := paramsMap["properties"].(*map[string]interface{}); ok {
+						params.Properties = propsPtr
+					} else if props, ok := paramsMap["properties"].(map[string]interface{}); ok {
+						params.Properties = &props
+					}
+					if required, ok := paramsMap["required"].([]interface{}); ok {
+						reqStrings := make([]string, 0, len(required))
+						for _, r := range required {
+							if rStr, ok := r.(string); ok {
+								reqStrings = append(reqStrings, rStr)
+							}
+						}
+						params.Required = reqStrings
+					} else if required, ok := paramsMap["required"].([]string); ok {
+						params.Required = required
+					}
+					bifrostTool.ResponsesToolFunction.Parameters = params
+				}
+
+				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			}
+		}
+	}
+
+	// Convert guardrail config to extra params
+	if request.GuardrailConfig != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+
+		guardrailMap := map[string]interface{}{
+			"guardrailIdentifier": request.GuardrailConfig.GuardrailIdentifier,
+			"guardrailVersion":    request.GuardrailConfig.GuardrailVersion,
+		}
+		if request.GuardrailConfig.Trace != nil {
+			guardrailMap["trace"] = *request.GuardrailConfig.Trace
+		}
+		bifrostReq.Params.ExtraParams["guardrailConfig"] = guardrailMap
+	}
+
+	// Convert additional model request fields to extra params
+	if len(request.AdditionalModelRequestFields) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"] = request.AdditionalModelRequestFields
+	}
+
+	// Convert additional model response field paths to extra params
+	if len(request.AdditionalModelResponseFieldPaths) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"] = request.AdditionalModelResponseFieldPaths
+	}
+
+	// Convert performance config to extra params
+	if request.PerformanceConfig != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+
+		perfConfigMap := map[string]interface{}{}
+		if request.PerformanceConfig.Latency != nil {
+			perfConfigMap["latency"] = *request.PerformanceConfig.Latency
+		}
+		if len(perfConfigMap) > 0 {
+			bifrostReq.Params.ExtraParams["performanceConfig"] = perfConfigMap
+		}
+	}
+
+	// Convert prompt variables to extra params
+	if len(request.PromptVariables) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+
+		promptVarsMap := make(map[string]interface{})
+		for key, value := range request.PromptVariables {
+			varMap := map[string]interface{}{}
+			if value.Text != nil {
+				varMap["text"] = *value.Text
+			}
+			if len(varMap) > 0 {
+				promptVarsMap[key] = varMap
+			}
+		}
+		if len(promptVarsMap) > 0 {
+			bifrostReq.Params.ExtraParams["promptVariables"] = promptVarsMap
+		}
+	}
+
+	// Convert request metadata to extra params
+	if len(request.RequestMetadata) > 0 {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["requestMetadata"] = request.RequestMetadata
+	}
+
+	return bifrostReq, nil
+}
+
 // ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest
 func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
@@ -501,7 +752,9 @@ func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage)
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
 			// Handle function call outputs from Responses
-			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil &&
+				(msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil ||
+					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil) {
 				var toolUseID string
 				if msg.ResponsesToolMessage.CallID != nil {
 					toolUseID = *msg.ResponsesToolMessage.CallID
@@ -509,6 +762,7 @@ func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage)
 				toolResultBlock := BedrockContentBlock{
 					ToolResult: &BedrockToolResult{
 						ToolUseID: toolUseID,
+						Status:    schemas.Ptr("success"), // Default to success
 					},
 				}
 				// Set content based on available data
@@ -667,6 +921,152 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 	}
 
 	return outputMessages
+}
+
+// ToBedrockConverseResponse converts Bifrost Responses response to Bedrock Converse response
+func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*BedrockConverseResponse, error) {
+	if bifrostResp == nil {
+		return nil, fmt.Errorf("bifrost response is nil")
+	}
+
+	bedrockResp := &BedrockConverseResponse{
+		Output:  &BedrockConverseOutput{},
+		Usage:   &BedrockTokenUsage{},
+		Metrics: &BedrockConverseMetrics{},
+	}
+
+	var hasToolUse bool
+	message := &BedrockMessage{
+		Role:    BedrockMessageRoleAssistant,
+		Content: []BedrockContentBlock{},
+	}
+
+	if len(bifrostResp.Output) > 0 {
+		for _, outputMsg := range bifrostResp.Output {
+			// Check if this output message contains a tool use
+			if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCall {
+				hasToolUse = true
+			}
+			// Handle content blocks
+			if outputMsg.Content != nil && outputMsg.Content.ContentBlocks != nil {
+				for _, content := range outputMsg.Content.ContentBlocks {
+					switch content.Type {
+					case schemas.ResponsesOutputMessageContentTypeText:
+						if content.Text != nil {
+							message.Content = append(message.Content, BedrockContentBlock{
+								Text: content.Text,
+							})
+						}
+					}
+				}
+			}
+
+			// Handle tool calls and tool results
+			if outputMsg.ResponsesToolMessage != nil {
+				// Check if this is a tool use (function_call type)
+				if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCall {
+					// This is a tool use - ensure we have required fields
+					if outputMsg.ResponsesToolMessage.Name != nil && outputMsg.ResponsesToolMessage.CallID != nil {
+						var input interface{} = map[string]interface{}{}
+						if outputMsg.ResponsesToolMessage.Arguments != nil {
+							var parsed interface{}
+							if err := json.Unmarshal([]byte(*outputMsg.ResponsesToolMessage.Arguments), &parsed); err == nil {
+								input = parsed
+							} else {
+								// Fallback to raw string if it's not valid JSON
+								input = *outputMsg.ResponsesToolMessage.Arguments
+							}
+						}
+						message.Content = append(message.Content, BedrockContentBlock{
+							ToolUse: &BedrockToolUse{
+								ToolUseID: *outputMsg.ResponsesToolMessage.CallID,
+								Name:      *outputMsg.ResponsesToolMessage.Name,
+								Input:     input,
+							},
+						})
+					}
+				} else if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+					// This is a tool result - ensure we have required fields
+					if outputMsg.ResponsesToolMessage.CallID != nil && outputMsg.ResponsesToolMessage.Output != nil {
+						resultBlock := BedrockContentBlock{
+							ToolResult: &BedrockToolResult{
+								ToolUseID: *outputMsg.ResponsesToolMessage.CallID,
+								Status:    schemas.Ptr("success"),
+							},
+						}
+						var resultContent []BedrockContentBlock
+						if outputMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+							raw := *outputMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+							var parsed interface{}
+							if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+								resultContent = append(resultContent, BedrockContentBlock{
+									JSON: parsed,
+								})
+							} else {
+								// Fallback to raw string if it's not valid JSON
+								resultContent = append(resultContent, BedrockContentBlock{
+									Text: &raw,
+								})
+							}
+						} else if outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+							converted, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(schemas.ResponsesMessageContent{
+								ContentBlocks: outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks,
+							})
+							if err == nil {
+								resultContent = append(resultContent, converted...)
+							} else {
+								// Fallback to JSON string if conversion fails
+								fallback := schemas.JsonifyInput(outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+								resultContent = append(resultContent, BedrockContentBlock{
+									Text: &fallback,
+								})
+							}
+						}
+						if len(resultContent) > 0 {
+							resultBlock.ToolResult.Content = resultContent
+							message.Content = append(message.Content, resultBlock)
+						}
+					}
+				}
+			}
+		}
+
+		// Also check the final message content for tool use blocks (more robust)
+		if !hasToolUse {
+			for _, block := range message.Content {
+				if block.ToolUse != nil {
+					hasToolUse = true
+					break
+				}
+			}
+		}
+	}
+
+	bedrockResp.Output.Message = message
+
+	// Find stop reason from incomplete details or derive from response
+	// Priority: IncompleteDetails > tool_use detection > end_turn
+	stopReason := "end_turn"
+	if bifrostResp.IncompleteDetails != nil {
+		stopReason = bifrostResp.IncompleteDetails.Reason
+	} else if hasToolUse {
+		stopReason = "tool_use"
+	}
+	bedrockResp.StopReason = stopReason
+
+	// Convert usage stats
+	if bifrostResp.Usage != nil {
+		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
+		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
+		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
+	}
+
+	// Set metrics
+	if bifrostResp.ExtraFields.Latency > 0 {
+		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
+	}
+
+	return bedrockResp, nil
 }
 
 // ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response

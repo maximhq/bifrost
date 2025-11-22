@@ -8,6 +8,8 @@ const DefaultBedrockRegion = "us-east-1"
 // BedrockTextCompletionRequest represents a Bedrock text completion request
 // Combines both Anthropic-style and standard completion parameters
 type BedrockTextCompletionRequest struct {
+	ModelID string `json:"-"` // Model ID (sent in URL path, not body)
+
 	// Required field
 	Prompt string `json:"prompt"` // The text prompt to complete
 
@@ -23,6 +25,11 @@ type BedrockTextCompletionRequest struct {
 	// Stop sequences (both naming conventions supported)
 	Stop          []string `json:"stop,omitempty"`           // Stop sequences (standard format)
 	StopSequences []string `json:"stop_sequences,omitempty"` // Stop sequences (Anthropic format)
+
+	// Messages API parameters (Anthropic Claude 3)
+	Messages         []BedrockMessage `json:"messages,omitempty"`
+	System           interface{}      `json:"system,omitempty"`
+	AnthropicVersion string           `json:"anthropic_version,omitempty"`
 }
 
 // BedrockConverseRequest represents a Bedrock Converse API request

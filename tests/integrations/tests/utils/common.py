@@ -421,6 +421,18 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
             if hasattr(content, "type") and content.type == "tool_use":
                 tool_calls.append({"name": content.name, "arguments": content.input})
 
+    # Handle Bedrock format
+    elif isinstance(response, dict) and "output" in response and "message" in response["output"]:
+        message = response["output"]["message"]
+        if "content" in message:
+            for content in message["content"]:
+                if "toolUse" in content:
+                    tool_use = content["toolUse"]
+                    tool_calls.append({
+                        "name": tool_use["name"],
+                        "arguments": tool_use["input"]
+                    })
+
     return tool_calls
 
 
@@ -447,6 +459,14 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
             content = choice.message.content or ""
+    elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
+        # Handle Bedrock format
+        output = response["output"]
+        if "message" in output and "content" in output["message"]:
+             for item in output["message"]["content"]:
+                 if "text" in item:
+                     content = item["text"]
+                     break
 
     assert (
         len(content) >= min_length
@@ -491,6 +511,13 @@ def assert_valid_image_response(response: Any):
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
             content = (choice.message.content or "").lower()
+    elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
+        output = response["output"]
+        if "message" in output and "content" in output["message"]:
+            for item in output["message"]["content"]:
+                if "text" in item:
+                    content = item["text"].lower()
+                    break
 
     # Check for image-related keywords
     image_keywords = [
@@ -1370,6 +1397,7 @@ def get_api_key(integration: str) -> str:
         "anthropic": "ANTHROPIC_API_KEY",
         "google": "GOOGLE_API_KEY",
         "litellm": "LITELLM_API_KEY",
+        "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
     }
 
     env_var = key_map.get(integration.lower())

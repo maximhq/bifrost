@@ -21,6 +21,7 @@ def check_api_keys():
         "anthropic": os.getenv("ANTHROPIC_API_KEY"),
         "google": os.getenv("GOOGLE_API_KEY"),
         "litellm": os.getenv("LITELLM_API_KEY"),
+        "bedrock": os.getenv("AWS_ACCESS_KEY_ID"),
     }
 
     available = [integration for integration, key in keys.items() if key]

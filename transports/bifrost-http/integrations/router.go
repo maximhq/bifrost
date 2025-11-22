@@ -184,6 +184,7 @@ const (
 	RouteConfigTypeOpenAI    RouteConfigType = "openai"
 	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
+	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.

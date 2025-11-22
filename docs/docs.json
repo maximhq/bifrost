@@ -84,6 +84,7 @@
               "integrations/what-is-an-integration",
               "integrations/openai-sdk",
               "integrations/anthropic-sdk",
+              "integrations/bedrock-sdk",
               "integrations/genai-sdk",
               "integrations/litellm-sdk",
               "integrations/langchain-sdk"

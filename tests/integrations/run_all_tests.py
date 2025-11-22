@@ -62,6 +62,11 @@ class BifrostTestRunner:
                 "description": "Google GenAI integration tests",
                 "env_vars": ["GOOGLE_API_KEY"],
             },
+            "bedrock": {
+                "file": "tests/integrations/test_bedrock.py",
+                "description": "Bedrock integration tests",
+                "env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+            },
         }
 
         self.results = {}

@@ -50,8 +50,19 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 
 			// Handle additional model response field paths
 			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
+				// Handle both []string and []interface{} types
 				if fields, ok := responseFields.([]string); ok {
 					bedrockReq.AdditionalModelResponseFieldPaths = fields
+				} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
+					stringFields := make([]string, 0, len(fieldsInterface))
+					for _, field := range fieldsInterface {
+						if fieldStr, ok := field.(string); ok {
+							stringFields = append(stringFields, fieldStr)
+						}
+					}
+					if len(stringFields) > 0 {
+						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
+					}
 				}
 			}
 			// Handle performance configuration
@@ -567,4 +578,31 @@ func convertToolCallToContentBlock(toolCall schemas.ChatAssistantMessageToolCall
 			Input:     input,
 		},
 	}
+}
+
+// ToBedrockError converts a BifrostError to BedrockError
+// This is a standalone function similar to ToAnthropicChatCompletionError
+func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
+	if bifrostErr == nil || bifrostErr.Error == nil {
+		return &BedrockError{
+			Type:    "InternalServerError",
+			Message: "unknown error",
+		}
+	}
+
+	bedrockErr := &BedrockError{
+		Message: bifrostErr.Error.Message,
+	}
+
+	// Map error type/code
+	if bifrostErr.Error.Code != nil {
+		bedrockErr.Type = *bifrostErr.Error.Code
+		bedrockErr.Code = bifrostErr.Error.Code
+	} else if bifrostErr.Type != nil {
+		bedrockErr.Type = *bifrostErr.Type
+	} else {
+		bedrockErr.Type = "InternalServerError"
+	}
+
+	return bedrockErr
 }
