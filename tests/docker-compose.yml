@@ -46,6 +46,17 @@ services:
             timeout: 10s
             retries: 3
 
+    # Qdrant instance for vector store tests
+    qdrant:
+        image: qdrant/qdrant:v1.16.0
+        ports:
+            - "6334:6334"  # gRPC API
+        volumes:
+            - qdrant_data:/qdrant/storage
+        networks:
+            bifrost_network:
+                ipv4_address: 172.38.0.14
+
 networks:
     bifrost_network:
         driver: bridge
@@ -57,3 +68,4 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
+    qdrant_data:

@@ -52,11 +52,13 @@ We provide several pre-configured examples in `bifrost/values-examples/`:
 1. **postgres-only.yaml** - PostgreSQL for config and logs
 2. **postgres-weaviate.yaml** - PostgreSQL + Weaviate vector store
 3. **postgres-redis.yaml** - PostgreSQL + Redis vector store
-4. **sqlite-only.yaml** - SQLite for config and logs
-5. **sqlite-weaviate.yaml** - SQLite + Weaviate vector store
-6. **sqlite-redis.yaml** - SQLite + Redis vector store
-7. **external-postgres.yaml** - Use external PostgreSQL instance
-8. **production-ha.yaml** - Production HA setup with auto-scaling
+4. **postgres-qdrant.yaml** - PostgreSQL + Qdrant vector store
+5. **sqlite-only.yaml** - SQLite for config and logs
+6. **sqlite-weaviate.yaml** - SQLite + Weaviate vector store
+7. **sqlite-redis.yaml** - SQLite + Redis vector store
+8. **sqlite-qdrant.yaml** - SQLite + Qdrant vector store
+9. **external-postgres.yaml** - Use external PostgreSQL instance
+10. **production-ha.yaml** - Production HA setup with auto-scaling
 
 ## Documentation
 

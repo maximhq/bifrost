@@ -50,10 +50,12 @@ read -p "Enable vector store? (y/n): " vector_choice
 if [[ "$vector_choice" =~ ^[Yy]$ ]]; then
     echo "   1) Weaviate"
     echo "   2) Redis"
-    read -p "Choice [1-2]: " vector_type_choice
+    echo "   3) Qdrant"
+    read -p "Choice [1-3]: " vector_type_choice
     case $vector_type_choice in
         1) VECTOR_TYPE="weaviate" ;;
         2) VECTOR_TYPE="redis" ;;
+        3) VECTOR_TYPE="qdrant" ;;
         *) print_error "Invalid choice"; exit 1 ;;
     esac
     VECTOR_ENABLED="true"
@@ -234,6 +236,21 @@ elif [[ "$VECTOR_TYPE" == "redis" ]] && [[ "$VECTOR_ENABLED" == "true" ]]; then
         requests:
           cpu: 250m
           memory: 256Mi
+EOF
+elif [[ "$VECTOR_TYPE" == "qdrant" ]] && [[ "$VECTOR_ENABLED" == "true" ]]; then
+    cat >> "$OUTPUT_FILE" <<EOF
+  qdrant:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
 EOF
 fi
 

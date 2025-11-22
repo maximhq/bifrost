@@ -12,16 +12,17 @@ The VectorStore is a core component of Bifrost's framework package that provides
 - **Vector Similarity Search**: Find semantically similar content using embeddings
 - **Namespace Management**: Organize data into separate collections with custom schemas
 - **Flexible Filtering**: Query data with complex filters and pagination
-- **Multiple Backends**: Support for Weaviate and Redis vector stores
+- **Multiple Backends**: Support for Weaviate, Redis, and Qdrant vector stores
 - **High Performance**: Optimized for production workloads
 - **Scalable Storage**: Handle millions of vectors with efficient indexing
 
 ## Supported Vector Stores
 
-Bifrost currently supports two vector store implementations:
+Bifrost currently supports three vector store implementations:
 
 - **[Weaviate](#weaviate)**: Production-ready vector database with gRPC support and advanced querying
 - **[Redis](#redis)**: High-performance in-memory vector store using RediSearch
+- **[Qdrant](#qdrant)**: Rust-based vector search engine with advanced filtering
 
 ## VectorStore Interface Usage
 
@@ -460,6 +461,95 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 - Use Redis AUTH for production deployments
 - Configure appropriate connection timeouts
 - Monitor memory usage and set appropriate TTL values
+</Warning>
+
+---
+
+## Qdrant
+
+[Qdrant](https://qdrant.tech/) is a high-performance vector search engine built in Rust.
+
+### Setup & Installation
+
+**Local Qdrant:**
+```bash
+# Using Docker
+docker run -d \
+  --name qdrant \
+  -p 6333:6333 \
+  -p 6334:6334 \
+  -v $(pwd)/qdrant_storage:/qdrant/storage \
+  qdrant/qdrant:latest
+```
+
+**Qdrant Cloud:**
+Sign up at [cloud.qdrant.io](https://cloud.qdrant.io)
+
+### Configuration Options
+
+<Tabs group="qdrant-config">
+
+<Tab title="Go SDK">
+
+```go
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypeQdrant,
+    Config: vectorstore.QdrantConfig{
+        Host:   "localhost",
+        Port:   6334,
+        APIKey: "",
+        UseTLS: false,
+    },
+}
+
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+**Local Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "qdrant",
+    "config": {
+      "host": "localhost",
+      "port": 6334
+    }
+  }
+}
+```
+
+**Cloud Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "qdrant",
+    "config": {
+      "host": "your-qdrant-cluster.cloud.qdrant.io",
+      "port": 6334,
+      "api_key": "your-qdrant-api-key",
+      "use_tls": true
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+Qdrant uses port 6334 for gRPC and port 6333 for REST. Bifrost uses the gRPC port.
+</Note>
+
+<Warning>
+Qdrant requires all IDs to be valid UUIDs. Use `uuid.New().String()` to generate IDs.
 </Warning>
 
 ---

@@ -44,4 +44,3 @@ func generateSimilarEmbedding(original []float32, similarity float32) []float32 
 	}
 	return similar
 }
-

@@ -14,6 +14,7 @@ type VectorStoreType string
 const (
 	VectorStoreTypeWeaviate VectorStoreType = "weaviate"
 	VectorStoreTypeRedis    VectorStoreType = "redis"
+	VectorStoreTypeQdrant   VectorStoreType = "qdrant"
 )
 
 // Query represents a query to the vector store.
@@ -129,6 +130,12 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal redis config: %w", err)
 		}
 		c.Config = redisConfig
+	case VectorStoreTypeQdrant:
+		var qdrantConfig QdrantConfig
+		if err := json.Unmarshal(temp.Config, &qdrantConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal qdrant config: %w", err)
+		}
+		c.Config = qdrantConfig
 	default:
 		return fmt.Errorf("unknown vector store type: %s", temp.Type)
 	}
@@ -165,6 +172,15 @@ func NewVectorStore(ctx context.Context, config *Config, logger schemas.Logger) 
 			return nil, fmt.Errorf("invalid redis config")
 		}
 		return newRedisStore(ctx, redisConfig, logger)
+	case VectorStoreTypeQdrant:
+		if config.Config == nil {
+			return nil, fmt.Errorf("qdrant config is required")
+		}
+		qdrantConfig, ok := config.Config.(QdrantConfig)
+		if !ok {
+			return nil, fmt.Errorf("invalid qdrant config")
+		}
+		return newQdrantStore(ctx, &qdrantConfig, logger)
 	}
 	return nil, fmt.Errorf("invalid vector store type: %s", config.Type)
 }
