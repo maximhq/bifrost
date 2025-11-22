@@ -497,7 +497,8 @@
           "type": "string",
           "enum": [
             "sqlite",
-            "postgres"
+            "postgres",
+            "clickhouse"
           ],
           "description": "Logs store type"
         },
@@ -579,6 +580,59 @@
                   "password",
                   "db_name",
                   "ssl_mode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "../type": {
+                    "const": "clickhouse"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "description": "ClickHouse host"
+                  },
+                  "port": {
+                    "type": "string",
+                    "description": "ClickHouse port"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "ClickHouse username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "ClickHouse password"
+                  },
+                  "db_name": {
+                    "type": "string",
+                    "description": "ClickHouse database name"
+                  },
+                  "max_idle_conns": {
+                    "type": "integer",
+                    "description": "Maximum number of idle connections in the pool (default: 5)",
+                    "minimum": 0,
+                    "default": 5
+                  },
+                  "max_open_conns": {
+                    "type": "integer",
+                    "description": "Maximum number of open connections to the database (default: 50)",
+                    "minimum": 2,
+                    "default": 50
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "user",
+                  "password",
+                  "db_name"
                 ],
                 "additionalProperties": false
               }

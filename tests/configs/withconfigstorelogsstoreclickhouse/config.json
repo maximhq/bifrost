@@ -1,0 +1,23 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../../tests/configs/withconfigstorelogsstore/config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "clickhouse",
+    "config": {
+      "host": "localhost",
+      "port": "9001",
+      "user": "default",
+      "password": "",
+      "db_name": "bifrost",
+      "max_idle_conns": 5,
+      "max_open_conns": 50
+    }
+  }
+}

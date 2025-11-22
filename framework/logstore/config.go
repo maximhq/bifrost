@@ -96,6 +96,44 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			}
 		}
 		c.Config = &postgresConfig
+	case LogStoreTypeClickHouse:
+		var clickHouseConfig ClickHouseConfig
+		var err error
+		if err = json.Unmarshal(temp.Config, &clickHouseConfig); err != nil {
+			return fmt.Errorf("failed to unmarshal clickhouse config: %w", err)
+		}
+		// Checking if any of the values start with env. If so, we need to process them.
+		if clickHouseConfig.DBName != "" && strings.HasPrefix(clickHouseConfig.DBName, "env.") {
+			clickHouseConfig.DBName, err = envutils.ProcessEnvValue(clickHouseConfig.DBName)
+			if err != nil {
+				return fmt.Errorf("failed to process env value for db name: %w", err)
+			}
+		}
+		if clickHouseConfig.Password != "" && strings.HasPrefix(clickHouseConfig.Password, "env.") {
+			clickHouseConfig.Password, err = envutils.ProcessEnvValue(clickHouseConfig.Password)
+			if err != nil {
+				return fmt.Errorf("failed to process env value for password: %w", err)
+			}
+		}
+		if clickHouseConfig.User != "" && strings.HasPrefix(clickHouseConfig.User, "env.") {
+			clickHouseConfig.User, err = envutils.ProcessEnvValue(clickHouseConfig.User)
+			if err != nil {
+				return fmt.Errorf("failed to process env value for user: %w", err)
+			}
+		}
+		if clickHouseConfig.Host != "" && strings.HasPrefix(clickHouseConfig.Host, "env.") {
+			clickHouseConfig.Host, err = envutils.ProcessEnvValue(clickHouseConfig.Host)
+			if err != nil {
+				return fmt.Errorf("failed to process env value for host: %w", err)
+			}
+		}
+		if clickHouseConfig.Port != "" && strings.HasPrefix(clickHouseConfig.Port, "env.") {
+			clickHouseConfig.Port, err = envutils.ProcessEnvValue(clickHouseConfig.Port)
+			if err != nil {
+				return fmt.Errorf("failed to process env value for port: %w", err)
+			}
+		}
+		c.Config = &clickHouseConfig
 	default:
 		return fmt.Errorf("unknown log store type: %s", temp.Type)
 	}

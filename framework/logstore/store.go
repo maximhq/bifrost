@@ -13,12 +13,13 @@ type LogStoreType string
 
 // LogStoreTypeSQLite is the type of log store for SQLite.
 const (
-	LogStoreTypeSQLite LogStoreType = "sqlite"
-	LogStoreTypePostgres LogStoreType = "postgres"
+	LogStoreTypeSQLite     LogStoreType = "sqlite"
+	LogStoreTypePostgres   LogStoreType = "postgres"
+	LogStoreTypeClickHouse LogStoreType = "clickhouse"
 )
 
 // LogStore is the interface for the log store.
-type LogStore interface {	
+type LogStore interface {
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	FindFirst(ctx context.Context, query any, fields ...string) (*Log, error)
@@ -27,7 +28,7 @@ type LogStore interface {
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
 	Update(ctx context.Context, id string, entry any) error
-	Flush(ctx context.Context, since time.Time) error	
+	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
@@ -35,7 +36,7 @@ type LogStore interface {
 }
 
 // NewLogStore creates a new log store based on the configuration.
-func NewLogStore(ctx context.Context,config *Config, logger schemas.Logger) (LogStore, error) {	
+func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (LogStore, error) {
 	switch config.Type {
 	case LogStoreTypeSQLite:
 		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {
@@ -47,6 +48,11 @@ func NewLogStore(ctx context.Context,config *Config, logger schemas.Logger) (Log
 			return newPostgresLogStore(ctx, postgresConfig, logger)
 		}
 		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
+	case LogStoreTypeClickHouse:
+		if clickHouseConfig, ok := config.Config.(*ClickHouseConfig); ok {
+			return newClickHouseLogStore(ctx, clickHouseConfig, logger)
+		}
+		return nil, fmt.Errorf("invalid clickhouse config: %T", config.Config)
 	default:
 		return nil, fmt.Errorf("unsupported log store type: %s", config.Type)
 	}
