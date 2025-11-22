@@ -8,6 +8,7 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
+	github.com/mark3labs/mcp-go v0.41.1
 	github.com/maximhq/bifrost/core v1.2.30
 	github.com/maximhq/bifrost/framework v1.1.39
 	github.com/maximhq/bifrost/plugins/governance v1.3.40
@@ -82,7 +83,6 @@ require (
 	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
-	github.com/mark3labs/mcp-go v0.41.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect

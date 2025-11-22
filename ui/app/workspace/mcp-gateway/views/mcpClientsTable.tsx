@@ -155,7 +155,7 @@ export default function MCPClientsTable({ mcpClients }: MCPClientsTableProps) {
 					<TableBody>
 						{clients.length === 0 && (
 							<TableRow>
-								<TableCell colSpan={5} className="py-6 text-center">
+								<TableCell colSpan={8} className="py-6 text-center">
 									No clients found.
 								</TableCell>
 							</TableRow>

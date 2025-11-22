@@ -1216,6 +1216,17 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	return clientsInConfig, nil
 }
 
+// GetAvailableTools returns the available tools for the given context.
+//
+// Returns:
+//   - []schemas.ChatTool: List of available tools
+func (bifrost *Bifrost) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	if bifrost.mcpManager == nil {
+		return nil
+	}
+	return bifrost.mcpManager.GetAvailableTools(ctx)
+}
+
 // AddMCPClient adds a new MCP client to the Bifrost instance.
 // This allows for dynamic MCP client management at runtime.
 //
@@ -2079,6 +2090,7 @@ func executeRequestWithRetries[T any](
 
 			// Calculate and apply backoff
 			backoff := calculateBackoff(attempts-1, config)
+			logger.Debug("sleeping for %s before retry", backoff)
 			time.Sleep(backoff)
 		}
 

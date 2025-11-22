@@ -80,9 +80,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 	}
 	manager.toolsHandler = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc)
 	// Process client configs: create client map entries and establish connections
-	for _, clientConfig := range config.ClientConfigs {
-		if err := manager.AddClient(clientConfig); err != nil {
-			logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
+	if len(config.ClientConfigs) > 0 {
+		for _, clientConfig := range config.ClientConfigs {
+			if err := manager.AddClient(clientConfig); err != nil {
+				logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
+			}
 		}
 	}
 	logger.Info(MCPLogPrefix + " MCP Manager initialized")
@@ -101,6 +103,10 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 //   - *schemas.BifrostRequest: The request with tools added
 func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsHandler.ParseAndAddToolsToRequest(ctx, req)
+}
+
+func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+	return m.toolsHandler.GetAvailableTools(ctx)
 }
 
 // ExecuteTool executes a single tool call from a chat assistant message.

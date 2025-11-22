@@ -163,8 +163,9 @@ func (p *LoggerPlugin) cleanupWorker() {
 
 // cleanupOldProcessingLogs removes processing logs older than 30 minutes
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
-	// Calculate timestamp for 30 minutes ago
-	thirtyMinutesAgo := time.Now().Add(-1 * 30 * time.Minute)
+	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
+	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
+	p.logger.Debug("cleaning up old processing logs before %s", thirtyMinutesAgo)
 	// Delete processing logs older than 30 minutes using the store
 	if err := p.store.Flush(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing logs: %v", err)
@@ -305,7 +306,7 @@ func (p *LoggerPlugin) PreHook(ctx *context.Context, req *schemas.BifrostRequest
 					CreatedAt:                   msg.Timestamp,
 				}
 				p.logCallback(initialEntry)
-			}			
+			}
 		}
 	}(logMsg)
 

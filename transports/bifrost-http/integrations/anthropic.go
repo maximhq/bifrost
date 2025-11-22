@@ -173,9 +173,26 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		return nil
 	}
 
+	headers := extractHeadersFromRequest(ctx)
+	if len(headers) > 0 {
+		// Check for User-Agent header (case-insensitive)
+		var userAgent []string
+		for key, value := range headers {
+			if strings.EqualFold(key, "user-agent") {
+				userAgent = value
+				break
+			}
+		}
+		if len(userAgent) > 0 {
+			// Check if it's claude code
+			if strings.Contains(userAgent[0], "claude-cli") {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("integration-user-agent"), "claude-cli")
+			}
+		}
+	}
+
 	// Check if anthropic oauth headers are present
 	if !isAnthropicAPIKeyAuth(ctx) {
-		headers := extractHeadersFromRequest(ctx)
 		url := extractExactPath(ctx)
 		if !strings.HasPrefix(url, "/") {
 			url = "/" + url

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,21 +74,8 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 	return manager
 }
 
-// ParseAndAddToolsToRequest parses the available tools per client and adds them to the Bifrost request.
-//
-// Parameters:
-//   - ctx: Execution context
-//   - req: Bifrost request
-//   - availableToolsPerClient: Map of client name to its available tools
-//
-// Returns:
-//   - *schemas.BifrostRequest: Bifrost request with MCP tools added
-func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
-	// MCP is only supported for chat and responses requests
-	if req.ChatRequest == nil && req.ResponsesRequest == nil {
-		return req
-	}
-
+// GetAvailableTools returns the available tools for the given context.
+func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -133,8 +121,99 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 		}
 	}
 
+	return availableTools
+}
+
+// buildIntegrationDuplicateCheckMap builds a map of tool names to check for duplicates
+// based on the integration user agent. This includes both direct tool names and
+// integration-specific naming patterns from existing tools in the request.
+//
+// Parameters:
+//   - existingTools: List of existing tools in the request
+//   - integrationUserAgent: Integration user agent string (e.g., "claude-cli")
+//   - availableToolsPerClient: Map of client names to their available tools (for reverse pattern matching)
+//
+// Returns:
+//   - map[string]bool: Map of tool names/patterns to check against
+func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integrationUserAgent string) map[string]bool {
+	duplicateCheckMap := make(map[string]bool)
+
+	// Add direct tool names
+	for _, tool := range existingTools {
+		if tool.Function != nil && tool.Function.Name != "" {
+			duplicateCheckMap[tool.Function.Name] = true
+		}
+	}
+
+	// Add integration-specific patterns from existing tools
+	switch integrationUserAgent {
+	case "claude-cli":
+		// Claude CLI uses pattern: mcp__{foreign_name}__{tool_name}
+		// The middle part is a foreign name we cannot check for, so we extract the last part
+		// Examples:
+		//   mcp__bifrost__executeToolCode -> executeToolCode
+		//   mcp__bifrost__listToolFiles -> listToolFiles
+		//   mcp__bifrost__readToolFile -> readToolFile
+		//   mcp__calculator__calculator_add -> calculator_add
+		for _, tool := range existingTools {
+			if tool.Function != nil && tool.Function.Name != "" {
+				existingToolName := tool.Function.Name
+				// Check if existing tool matches Claude CLI pattern: mcp__*__{tool_name}
+				if strings.HasPrefix(existingToolName, "mcp__") {
+					// Split on __ and take the last entry (the tool_name)
+					parts := strings.Split(existingToolName, "__")
+					if len(parts) >= 3 {
+						toolName := parts[len(parts)-1] // Last part is the tool name
+						// Map Claude CLI pattern back to our tool name format
+						// This handles both regular MCP tools and code mode tools
+						if toolName != "" {
+							duplicateCheckMap[toolName] = true
+							// Also keep the original pattern for direct matching
+							duplicateCheckMap[existingToolName] = true
+						}
+					}
+				}
+			}
+		}
+		// Add more integration-specific patterns here as needed
+		// case "another-integration":
+		//     // Add patterns for other integrations
+	}
+
+	return duplicateCheckMap
+}
+
+// ParseAndAddToolsToRequest parses the available tools per client and adds them to the Bifrost request.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - req: Bifrost request
+//   - availableToolsPerClient: Map of client name to its available tools
+//
+// Returns:
+//   - *schemas.BifrostRequest: Bifrost request with MCP tools added
+func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+	// MCP is only supported for chat and responses requests
+	if req.ChatRequest == nil && req.ResponsesRequest == nil {
+		return req
+	}
+
+	availableTools := m.GetAvailableTools(ctx)
+
+	if len(availableTools) == 0 {
+		return req
+	}
+
+	// Get integration user agent for duplicate checking
+	var integrationUserAgentStr string
+	integrationUserAgent := ctx.Value(schemas.BifrostContextKey("integration-user-agent"))
+	if integrationUserAgent != nil {
+		if str, ok := integrationUserAgent.(string); ok {
+			integrationUserAgentStr = str
+		}
+	}
+
 	if len(availableTools) > 0 {
-		logger.Debug(fmt.Sprintf("%s Adding %d MCP tools to request from %d clients", MCPLogPrefix, len(availableTools), len(availableToolsPerClient)))
 		switch req.RequestType {
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			// Only allocate new Params if it's nil to preserve caller-supplied settings
@@ -144,13 +223,8 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 
 			tools := req.ChatRequest.Params.Tools
 
-			// Create a map of existing tool names for O(1) lookup
-			existingToolsMap := make(map[string]bool)
-			for _, tool := range tools {
-				if tool.Function != nil && tool.Function.Name != "" {
-					existingToolsMap[tool.Function.Name] = true
-				}
-			}
+			// Build integration-aware duplicate check map
+			duplicateCheckMap := buildIntegrationDuplicateCheckMap(tools, integrationUserAgentStr)
 
 			// Add MCP tools that are not already present
 			for _, mcpTool := range availableTools {
@@ -159,10 +233,13 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 					continue
 				}
 
-				if !existingToolsMap[mcpTool.Function.Name] {
+				toolName := mcpTool.Function.Name
+
+				// Check for duplicates using integration-aware logic
+				if !duplicateCheckMap[toolName] {
 					tools = append(tools, mcpTool)
 					// Update the map to prevent duplicates within MCP tools as well
-					existingToolsMap[mcpTool.Function.Name] = true
+					duplicateCheckMap[toolName] = true
 				}
 			}
 			req.ChatRequest.Params.Tools = tools
@@ -174,13 +251,21 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 
 			tools := req.ResponsesRequest.Params.Tools
 
-			// Create a map of existing tool names for O(1) lookup
-			existingToolsMap := make(map[string]bool)
+			// Convert Responses tools to ChatTool format for duplicate checking
+			existingChatTools := make([]schemas.ChatTool, 0, len(tools))
 			for _, tool := range tools {
 				if tool.Name != nil {
-					existingToolsMap[*tool.Name] = true
+					existingChatTools = append(existingChatTools, schemas.ChatTool{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name: *tool.Name,
+						},
+					})
 				}
 			}
+
+			// Build integration-aware duplicate check map
+			duplicateCheckMap := buildIntegrationDuplicateCheckMap(existingChatTools, integrationUserAgentStr)
 
 			// Add MCP tools that are not already present
 			for _, mcpTool := range availableTools {
@@ -189,7 +274,10 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 					continue
 				}
 
-				if !existingToolsMap[mcpTool.Function.Name] {
+				toolName := mcpTool.Function.Name
+
+				// Check for duplicates using integration-aware logic
+				if !duplicateCheckMap[toolName] {
 					responsesTool := mcpTool.ToResponsesTool()
 					// Skip if the converted tool has nil Name
 					if responsesTool.Name == nil {
@@ -198,7 +286,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 
 					tools = append(tools, *responsesTool)
 					// Update the map to prevent duplicates within MCP tools as well
-					existingToolsMap[*responsesTool.Name] = true
+					duplicateCheckMap[toolName] = true
 				}
 			}
 			req.ResponsesRequest.Params.Tools = tools

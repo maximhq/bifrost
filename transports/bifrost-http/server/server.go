@@ -101,6 +101,7 @@ type BifrostHTTPServer struct {
 	Router           *router.Router
 	WebSocketHandler *handlers.WebSocketHandler
 	LogsCleaner      *logstore.LogsCleaner
+	MCPServerHandler *handlers.MCPServerHandler
 }
 
 var logger schemas.Logger
@@ -445,17 +446,44 @@ func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (
 
 // AddMCPClient adds a new MCP client to the in-memory store
 func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
-	return s.Config.AddMCPClient(ctx, clientConfig)
-}
-
-// RemoveMCPClient removes an MCP client from the in-memory store
-func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) error {
-	return s.Config.RemoveMCPClient(ctx, id)
+	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after adding client: %v", err)
+	}
+	return nil
 }
 
 // EditMCPClient edits an MCP client in the in-memory store
 func (s *BifrostHTTPServer) EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error {
-	return s.Config.EditMCPClient(ctx, id, updatedConfig)
+	if err := s.Config.EditMCPClient(ctx, id, updatedConfig); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after editing client: %v", err)
+	}
+	return nil
+}
+
+// RemoveMCPClient removes an MCP client from the in-memory store
+func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) error {
+	if err := s.Config.RemoveMCPClient(ctx, id); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after removing client: %v", err)
+	}
+	return nil
+}
+
+// ExecuteTool executes an MCP tool call and returns the result
+func (s *BifrostHTTPServer) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return s.Client.ExecuteMCPTool(ctx, toolCall)
+}
+
+func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	return s.Client.GetAvailableMCPTools(ctx)
 }
 
 // ReloadVirtualKey reloads a virtual key from the in-memory store
@@ -487,6 +515,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 			}
 		}
 	}
+	s.MCPServerHandler.SyncVKMCPServer(preloadedVk)
 	return preloadedVk, nil
 }
 
@@ -528,6 +557,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 			}
 		}
 	}
+	s.MCPServerHandler.DeleteVKMCPServer(preloadedVk.Value)
 	return nil
 }
 
@@ -909,6 +939,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler := handlers.NewHealthHandler(s.Config)
 	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config)
+	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
+	if err != nil {
+		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
+	}
+	s.MCPServerHandler = mcpServerHandler
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore)
@@ -916,6 +951,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpServerHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)

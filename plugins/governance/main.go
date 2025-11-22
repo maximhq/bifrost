@@ -342,7 +342,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 					Type:       bifrost.Ptr("virtual_key_required"),
 					StatusCode: bifrost.Ptr(400),
 					Error: &schemas.ErrorField{
-						Message: "x-bf-vk header is missing",
+						Message: "virtual key is missing in headers",
 					},
 				},
 			}, nil

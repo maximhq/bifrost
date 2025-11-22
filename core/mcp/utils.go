@@ -221,8 +221,6 @@ func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
 	includeTools := ctx.Value(MCPContextKeyIncludeTools)
 
-	logger.Debug(fmt.Sprintf("%s Checking if tool %s should be skipped for request: %v", MCPLogPrefix, toolName, includeTools))
-
 	if includeTools != nil {
 		// Try []string first (preferred type)
 		if includeToolsList, ok := includeTools.([]string); ok {

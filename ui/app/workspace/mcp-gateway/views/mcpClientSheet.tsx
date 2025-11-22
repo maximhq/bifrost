@@ -183,8 +183,8 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8 sm:max-w-2xl">
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
-						<SheetHeader className="p-0">
-							<div className="flex items-center justify-between">
+						<SheetHeader className="w-full p-0" showCloseButton={false}>
+							<div className="flex w-full items-center justify-between">
 								<div className="space-y-2">
 									<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 										{mcpClient.config.name}

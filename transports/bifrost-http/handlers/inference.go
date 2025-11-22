@@ -948,7 +948,6 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 	ctx.SetContentType("text/event-stream")
 	ctx.Response.Header.Set("Cache-Control", "no-cache")
 	ctx.Response.Header.Set("Connection", "keep-alive")
-	ctx.Response.Header.Set("Access-Control-Allow-Origin", "*")
 
 	// Get the streaming channel
 	stream, bifrostErr := getStream()
