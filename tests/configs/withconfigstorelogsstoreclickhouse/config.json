@@ -12,7 +12,7 @@
     "type": "clickhouse",
     "config": {
       "host": "localhost",
-      "port": "9000",
+      "port": "9001",
       "user": "default",
       "password": "",
       "db_name": "bifrost",

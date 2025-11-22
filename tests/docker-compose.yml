@@ -50,7 +50,7 @@ services:
     clickhouse:
         image: clickhouse/clickhouse:25.10.2.65
         ports:
-            - "9000:9000"  # Native protocol
+            - "9001:9000"  # Native protocol
             - "8123:8123"  # HTTP protocol
         environment:
             - CLICKHOUSE_DB=bifrost
