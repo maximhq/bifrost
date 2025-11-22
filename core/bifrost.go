@@ -15,16 +15,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/maximhq/bifrost/core/providers"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/cerebras"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/groq"
 	"github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/openrouter"
+	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -1301,21 +1306,21 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 	case schemas.Mistral:
 		return mistral.NewMistralProvider(config, bifrost.logger), nil
 	case schemas.Ollama:
-		return providers.NewOllamaProvider(config, bifrost.logger)
+		return ollama.NewOllamaProvider(config, bifrost.logger)
 	case schemas.Groq:
-		return providers.NewGroqProvider(config, bifrost.logger)
+		return groq.NewGroqProvider(config, bifrost.logger)
 	case schemas.SGL:
-		return providers.NewSGLProvider(config, bifrost.logger)
+		return sgl.NewSGLProvider(config, bifrost.logger)
 	case schemas.Parasail:
-		return providers.NewParasailProvider(config, bifrost.logger)
+		return parasail.NewParasailProvider(config, bifrost.logger)
 	case schemas.Perplexity:
 		return perplexity.NewPerplexityProvider(config, bifrost.logger)
 	case schemas.Cerebras:
-		return providers.NewCerebrasProvider(config, bifrost.logger)
+		return cerebras.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.Gemini:
 		return gemini.NewGeminiProvider(config, bifrost.logger), nil
 	case schemas.OpenRouter:
-		return providers.NewOpenRouterProvider(config, bifrost.logger), nil
+		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
 	case schemas.Elevenlabs:
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	default:
