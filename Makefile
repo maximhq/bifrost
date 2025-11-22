@@ -315,10 +315,10 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 	REPORT_FILE=""; \
 	if [ -n "$(PROVIDER)" ]; then \
 		echo "$(CYAN)Running tests for provider: $(PROVIDER)$(NC)"; \
-		if [ ! -f "tests/core-providers/$(PROVIDER)_test.go" ]; then \
-			echo "$(RED)Error: Provider test file '$(PROVIDER)_test.go' not found$(NC)"; \
+		if [ ! -f "core/providers/$(PROVIDER)/$(PROVIDER)_test.go" ]; then \
+			echo "$(RED)Error: Provider test file '$(PROVIDER)_test.go' not found in core/providers/$(PROVIDER)/$(NC)"; \
 			echo "$(YELLOW)Available providers:$(NC)"; \
-			ls tests/core-providers/*_test.go 2>/dev/null | grep -v cross_provider | xargs -n 1 basename | sed 's/_test\.go//' | sed 's/^/  - /'; \
+			find core/providers -name "*_test.go" -type f 2>/dev/null | sed 's|core/providers/\([^/]*\)/.*|\1|' | sort -u | sed 's/^/  - /'; \
 			exit 1; \
 		fi; \
 	fi; \
@@ -335,11 +335,11 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 			CLEAN_TESTCASE=$$(echo "$$CLEAN_TESTCASE" | sed 's|^Test[A-Z][A-Za-z]*/[A-Z][A-Za-z]*Tests/||'); \
 			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$$CLEAN_TESTCASE...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$(echo $$CLEAN_TESTCASE | sed 's|/|_|g').xml"; \
-			cd tests/core-providers && GOWORK=off gotestsum \
+			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$$REPORT_FILE \
+				--junitfile=../../../$$REPORT_FILE \
 				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
-			cd ../..; \
+			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
@@ -359,11 +359,11 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 		else \
 			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER).xml"; \
-			cd tests/core-providers && GOWORK=off gotestsum \
+			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$$REPORT_FILE \
+				--junitfile=../../../$$REPORT_FILE \
 				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
-			cd ../..; \
+			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
@@ -388,11 +388,11 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 			exit 1; \
 		fi; \
 		REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
-		cd tests/core-providers && GOWORK=off gotestsum \
+		cd core && GOWORK=off gotestsum \
 			--format=$(GOTESTSUM_FORMAT) \
-			--junitfile=../../$$REPORT_FILE \
-			-- -v ./... || TEST_FAILED=1; \
-		cd ../..; \
+			--junitfile=../$$REPORT_FILE \
+			-- -v ./providers/... || TEST_FAILED=1; \
+		cd ..; \
 		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
@@ -524,6 +524,24 @@ test-all: test-core test-plugins test ## Run all tests
 		ls -1 $(TEST_REPORTS_DIR)/*.xml 2>/dev/null | sed 's/^/  ✓ /' || echo "  No reports found"; \
 		echo ""; \
 	fi
+
+test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TEST=1 make test-chatbot)
+	@echo "$(GREEN)Running interactive chatbot integration test...$(NC)"
+	@if [ -z "$(RUN_CHATBOT_TEST)" ]; then \
+		echo "$(YELLOW)⚠️  This is an interactive test. Set RUN_CHATBOT_TEST=1 to run it.$(NC)"; \
+		echo "$(CYAN)Usage: RUN_CHATBOT_TEST=1 make test-chatbot$(NC)"; \
+		echo ""; \
+		echo "$(YELLOW)Required environment variables:$(NC)"; \
+		echo "  - OPENAI_API_KEY (required)"; \
+		echo "  - ANTHROPIC_API_KEY (optional)"; \
+		echo "  - Additional provider keys as needed"; \
+		exit 0; \
+	fi
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi
+	@cd core && RUN_CHATBOT_TEST=1 go test -v -run TestChatbot
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin
