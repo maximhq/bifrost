@@ -46,6 +46,26 @@ services:
             timeout: 10s
             retries: 3
 
+    # ClickHouse instance for logs store tests
+    clickhouse:
+        image: clickhouse/clickhouse:25.10.2.65
+        ports:
+            - "9000:9000"  # Native protocol
+            - "8123:8123"  # HTTP protocol
+        environment:
+            - CLICKHOUSE_DB=bifrost
+            - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse
+        networks:
+            bifrost_network:
+                ipv4_address: 172.38.0.14
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://localhost:8123/ping"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+
 networks:
     bifrost_network:
         driver: bridge
@@ -57,3 +77,4 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
+    clickhouse_data:

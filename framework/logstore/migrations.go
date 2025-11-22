@@ -638,3 +638,10 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 	}
 	return nil
 }
+
+func triggerClickhouseMigrations(ctx context.Context, db *gorm.DB) error {
+	if err := migrationInit(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
