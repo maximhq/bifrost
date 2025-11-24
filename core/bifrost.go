@@ -293,10 +293,8 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 		return provider.ListModels(ctx, keys, request)
 	}, schemas.ListModelsRequest, req.Provider, "")
 	if bifrostErr != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType: schemas.ListModelsRequest,
-			Provider:    req.Provider,
-		}
+		bifrostErr.ExtraFields.RequestType = schemas.ListModelsRequest
+		bifrostErr.ExtraFields.Provider = req.Provider
 		return nil, bifrostErr
 	}
 	return response, nil
@@ -1608,6 +1606,7 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	// Try the primary provider first
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
+
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
 			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
@@ -1623,11 +1622,9 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr != nil {
-			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			primaryErr.ExtraFields.RequestType = req.RequestType
+			primaryErr.ExtraFields.Provider = provider
+			primaryErr.ExtraFields.ModelRequested = model
 		}
 		return primaryResult, primaryErr
 	}
@@ -1653,21 +1650,17 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
-			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       fallback.Provider,
-				ModelRequested: fallback.Model,
-			}
+			fallbackErr.ExtraFields.RequestType = req.RequestType
+			fallbackErr.ExtraFields.Provider = fallback.Provider
+			fallbackErr.ExtraFields.ModelRequested = fallback.Model
 			return nil, fallbackErr
 		}
 	}
 
 	if primaryErr != nil {
-		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		primaryErr.ExtraFields.RequestType = req.RequestType
+		primaryErr.ExtraFields.Provider = provider
+		primaryErr.ExtraFields.ModelRequested = model
 	}
 
 	// All providers failed, return the original error
@@ -1705,11 +1698,9 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 	shouldTryFallbacks := bifrost.shouldTryFallbacks(req, primaryErr)
 	if !shouldTryFallbacks {
 		if primaryErr != nil {
-			primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       provider,
-				ModelRequested: model,
-			}
+			primaryErr.ExtraFields.RequestType = req.RequestType
+			primaryErr.ExtraFields.Provider = provider
+			primaryErr.ExtraFields.ModelRequested = model
 		}
 		return primaryResult, primaryErr
 	}
@@ -1733,21 +1724,17 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
-			fallbackErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType:    req.RequestType,
-				Provider:       fallback.Provider,
-				ModelRequested: fallback.Model,
-			}
+			fallbackErr.ExtraFields.RequestType = req.RequestType
+			fallbackErr.ExtraFields.Provider = fallback.Provider
+			fallbackErr.ExtraFields.ModelRequested = fallback.Model
 			return nil, fallbackErr
 		}
 	}
 
 	if primaryErr != nil {
-		primaryErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		}
+		primaryErr.ExtraFields.RequestType = req.RequestType
+		primaryErr.ExtraFields.Provider = provider
+		primaryErr.ExtraFields.ModelRequested = model
 	}
 
 	// All providers failed, return the original error
@@ -1759,6 +1746,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	provider, _, _ := req.GetRequestFields()
 	queue, err := bifrost.getProviderQueue(provider)
+
 	if err != nil {
 		return nil, newBifrostError(err)
 	}
@@ -1799,6 +1787,7 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 
 	msg := bifrost.getChannelMessage(*preReq)
 	msg.Context = ctx
+
 	select {
 	case queue <- msg:
 		// Message was sent successfully
@@ -1823,6 +1812,7 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 	var result *schemas.BifrostResponse
 	var resp *schemas.BifrostResponse
 	pluginCount := len(*bifrost.plugins.Load())
+
 	select {
 	case result = <-msg.Response:
 		resp, bifrostErr := pipeline.RunPostHooks(&msg.Context, result, nil, pluginCount)
@@ -1834,9 +1824,17 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
+
+		// Save RawResponse before calling PostHooks in case plugins create new errors
+		savedRawResponse := bifrostErrPtr.ExtraFields.RawResponse
+
 		resp, bifrostErrPtr = pipeline.RunPostHooks(&msg.Context, nil, bifrostErrPtr, pluginCount)
 		bifrost.releaseChannelMessage(msg)
 		if bifrostErrPtr != nil {
+			// Restore RawResponse if it was lost during PostHooks
+			if bifrostErrPtr.ExtraFields.RawResponse == nil && savedRawResponse != nil {
+				bifrostErrPtr.ExtraFields.RawResponse = savedRawResponse
+			}
 			return nil, bifrostErrPtr
 		}
 		return resp, nil
@@ -2141,11 +2139,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		if bifrostError != nil {
-			bifrostError.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       provider.GetProviderKey(),
-				ModelRequested: model,
-				RequestType:    req.RequestType,
-			}
+			bifrostError.ExtraFields.Provider = provider.GetProviderKey()
+			bifrostError.ExtraFields.ModelRequested = model
+			bifrostError.ExtraFields.RequestType = req.RequestType
 
 			// Send error with context awareness to prevent deadlock
 			select {
@@ -2290,6 +2286,7 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
 func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+
 	// Defensive: ensure count is within valid bounds
 	if runFrom < 0 {
 		runFrom = 0

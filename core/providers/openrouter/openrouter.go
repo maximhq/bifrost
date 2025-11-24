@@ -87,7 +87,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx context.Context, key sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "", providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		return nil, bifrostErr
 	}
 
