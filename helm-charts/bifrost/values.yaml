@@ -271,7 +271,7 @@ postgresql:
 vectorStore:
   # Enable vector store for semantic caching
   enabled: false
-  type: none  # Options: none, weaviate, redis
+  type: none  # Options: none, weaviate, redis, qdrant
   
   # Weaviate configuration
   weaviate:
@@ -355,6 +355,38 @@ vectorStore:
     
     metrics:
       enabled: false
+
+  # Qdrant configuration
+  qdrant:
+    # Deploy Qdrant as part of this chart
+    enabled: false
+
+    # Use external Qdrant instance
+    external:
+      enabled: false
+      host: ""
+      port: 6334
+      apiKey: ""
+      useTls: false
+
+    # Qdrant image configuration
+    image:
+      repository: qdrant/qdrant
+      tag: "v1.16.0"
+      pullPolicy: IfNotPresent
+
+    # Qdrant subchart configuration (when qdrant.enabled is true)
+    persistence:
+      enabled: true
+      size: 10Gi
+
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
 
 # Environment variables
 env: []

@@ -129,6 +129,36 @@ http
 {{- end }}
 {{- end }}
 
+{{- define "bifrost.qdrant.host" -}}
+{{- if .Values.vectorStore.qdrant.external.enabled }}
+{{- .Values.vectorStore.qdrant.external.host }}
+{{- else }}
+{{- printf "%s-qdrant" (include "bifrost.fullname" .) }}
+{{- end }}
+{{- end }}
+
+{{- define "bifrost.qdrant.port" -}}
+{{- if .Values.vectorStore.qdrant.external.enabled -}}
+{{- .Values.vectorStore.qdrant.external.port -}}
+{{- else -}}
+6334
+{{- end -}}
+{{- end -}}
+
+{{- define "bifrost.qdrant.apiKey" -}}
+{{- if .Values.vectorStore.qdrant.external.enabled }}
+{{- .Values.vectorStore.qdrant.external.apiKey }}
+{{- end }}
+{{- end }}
+
+{{- define "bifrost.qdrant.useTls" -}}
+{{- if .Values.vectorStore.qdrant.external.enabled -}}
+{{- .Values.vectorStore.qdrant.external.useTls -}}
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
 {{- define "bifrost.config" -}}
 {{- $config := dict }}
 {{- if .Values.bifrost.encryptionKey }}
@@ -214,6 +244,19 @@ http
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "redis" $redisConfig }}
+{{- else if eq .Values.vectorStore.type "qdrant" }}
+{{- $qdrantConfig := dict "host" (include "bifrost.qdrant.host" .) "port" (include "bifrost.qdrant.port" . | int) }}
+{{- $apiKey := include "bifrost.qdrant.apiKey" . }}
+{{- if $apiKey }}
+{{- $_ := set $qdrantConfig "api_key" $apiKey }}
+{{- end }}
+{{- $useTls := include "bifrost.qdrant.useTls" . }}
+{{- if eq $useTls "true" }}
+{{- $_ := set $qdrantConfig "use_tls" true }}
+{{- else }}
+{{- $_ := set $qdrantConfig "use_tls" false }}
+{{- end }}
+{{- $_ := set $vectorStore "qdrant" $qdrantConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
