@@ -50,7 +50,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 		// Convert Gemini's response format to OpenAI's response_format for compatibility
 		switch config.ResponseMIMEType {
 		case "application/json":
-			params.ResponseFormat = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJsonSchema)
+			params.ResponseFormat = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
 		case "text/plain":
 			// Gemini text/plain → OpenAI text format
 			var responseFormat interface{} = map[string]interface{}{
@@ -62,8 +62,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 	if config.ResponseSchema != nil {
 		params.ExtraParams["response_schema"] = config.ResponseSchema
 	}
-	if config.ResponseJsonSchema != nil {
-		params.ExtraParams["response_json_schema"] = config.ResponseJsonSchema
+	if config.ResponseJSONSchema != nil {
+		params.ExtraParams["response_json_schema"] = config.ResponseJSONSchema
 	}
 	if config.ResponseLogprobs {
 		params.ExtraParams["response_logprobs"] = config.ResponseLogprobs
@@ -299,7 +299,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 		if responseJsonSchema, ok := params.ExtraParams["response_json_schema"]; ok {
-			config.ResponseJsonSchema = responseJsonSchema
+			config.ResponseJSONSchema = responseJsonSchema
 		}
 	}
 

@@ -1,0 +1,116 @@
+[project]
+name = "bifrost-integration-tests"
+version = "0.1.0"
+description = "Production-ready end-to-end test suite for testing AI integrations through Bifrost proxy"
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    # Core testing framework
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    # Environment and configuration
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0",
+    # Image processing
+    "Pillow>=9.0.0",
+    # HTTP requests for debugging
+    "requests>=2.28.0",
+    # Type hints
+    "typing-extensions>=4.0.0",
+    # Test reporting
+    "pytest-html>=3.1.0",
+    "pytest-cov>=4.0.0",
+    # AI/ML SDK dependencies
+    "openai>=1.30.0",
+    "anthropic>=0.25.0",
+    "litellm>=1.80.5",
+    "langchain-openai>=0.1.0",
+    "langchain-core>=0.2.0",
+    "langchain-anthropic>=0.1.0",
+    "langchain-google-genai>=1.0.0",
+    "langchain-mistralai>=0.1.0",
+    "langgraph>=0.1.0",
+    "mistralai>=0.4.0",
+    "google-genai>=1.0.0",
+    "boto3>=1.34.0",
+    # Testing utilities
+    "httpx>=0.25.0",
+    "pytest-timeout>=2.1.0",
+    "pytest-mock>=3.11.0",
+    "langchain-google-vertexai>=3.1.0",
+    "langchain-tests>=1.0.2",
+    "langchain>=1.1.0",
+    "langchain-community>=0.4.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",   # Code formatting
+    "flake8>=6.0.0",   # Linting
+    "mypy>=1.5.0",     # Type checking
+]
+
+[tool.pytest.ini_options]
+# Test discovery
+testpaths = ["."]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+# Output formatting
+addopts = [
+    "-v",
+    "-s",  # Show print statements (no output capture)
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+    "--color=yes",
+]
+
+# Logging configuration
+log_cli = true
+log_cli_level = "ERROR"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+
+# Timeout settings (3 minutes per test)
+timeout = 300
+
+# Markers for test categorization
+markers = [
+    "integration: marks tests as integration tests",
+    "slow: marks tests as slow running",
+    "e2e: marks tests as end-to-end tests",
+    "tool_calling: marks tests as tool calling tests",
+]
+
+# Minimum version
+minversion = "7.0"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["tests"]
+omit = ["*/tests/*", "*/venv/*", "*/.venv/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+

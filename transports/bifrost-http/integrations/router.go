@@ -301,7 +301,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Parse request body into the integration-specific request type
 		// Note: config validation is performed at startup in RegisterRoutes
 		req := config.GetRequestTypeInstance()
-		var rawBody []byte
+		var rawBody []byte		
 
 		// Execute the request through Bifrost
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys())
@@ -325,7 +325,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
 						return
 					}
-				}
+				}							
 			}
 		}
 
@@ -510,6 +510,18 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		speechResponse, bifrostErr := g.client.SpeechRequest(requestCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, speechResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if speechResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
 		}
 

@@ -1,0 +1,167 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "value": "env.OPENAI_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "anthropic": {
+            "keys": [
+                {
+                    "value": "env.ANTHROPIC_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "gemini": {
+            "keys": [
+                {
+                    "value": "env.GEMINI_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "vertex": {
+            "keys": [
+                {
+                    "vertex_key_config": {
+                        "projectId": "env.GOOGLE_PROJECT_ID",
+                        "location": "env.GOOGLE_LOCATION"
+                    },
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "mistral": {
+            "keys": [
+                {
+                    "value": "env.MISTRAL_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "cohere": {
+            "keys": [
+                {
+                    "value": "env.COHERE_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "groq": {
+            "keys": [
+                {
+                    "value": "env.GROQ_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "perplexity": {
+            "keys": [
+                {
+                    "value": "env.PERPLEXITY_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "cerebras": {
+            "keys": [
+                {
+                    "value": "env.CEREBRAS_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "openrouter": {
+            "keys": [
+                {
+                    "value": "env.OPENROUTER_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "azure": {
+            "keys": [
+                {
+                    "value": "env.AZURE_OPENAI_API_KEY",
+                    "azure_key_config": {
+                        "endpoint": "env.AZURE_OPENAI_ENDPOINT",
+                        "api_version": "env.AZURE_OPENAI_API_VERSION"
+                    },
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "bedrock": {
+            "keys": [
+                {
+                    "bedrock_key_config": {
+                        "access_key": "env.AWS_ACCESS_KEY_ID",
+                        "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+                        "region": "env.AWS_REGION"                        
+                    },
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        }
+    },
+    "config_store": {
+        "enabled": false
+    },
+    "log_store": {
+        "enabled": false
+    },
+    "client_config": {
+        "drop_excess_requests": false,
+        "initial_pool_size": 300,
+        "allowed_origins": [
+            "*"
+        ],
+        "enable_logging": true,
+        "enable_governance": false,
+        "enforce_governance_header": false,
+        "allow_direct_keys": true,
+        "max_request_body_size_mb": 100,
+        "enable_litellm_fallbacks": false
+    }
+}

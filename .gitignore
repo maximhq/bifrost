@@ -40,4 +40,13 @@ go.work.sum
 # Test reports
 test-reports
 
+# Cursor specific
 .claude
+
+# Python specific
+**/__pycache__/**
+**/venv/
+**/.venv/
+**/.pytest_cache/
+**/.coverage/
+**/.pytest_cache/

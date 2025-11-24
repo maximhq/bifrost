@@ -4,10 +4,19 @@ Pytest configuration for integration-specific tests.
 
 import pytest
 import os
+import logging
 
 
 def pytest_configure(config):
-    """Configure pytest with custom markers"""
+    """Configure pytest with custom markers and logging"""
+    # Configure logging
+    logging.basicConfig(
+        level=logging.ERROR,
+        format='%(asctime)s [%(levelname)8s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Add custom markers
     config.addinivalue_line("markers", "openai: mark test as requiring OpenAI API key")
     config.addinivalue_line(
         "markers", "anthropic: mark test as requiring Anthropic API key"

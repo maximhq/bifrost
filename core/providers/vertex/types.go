@@ -8,6 +8,73 @@ const (
 	DefaultVertexAnthropicVersion = "vertex-2023-10-16"
 )
 
+// PhoneticEncoding represents the phonetic encoding of a phrase.
+type PhoneticEncoding string
+
+const (
+	PhoneticEncodingUnspecified      PhoneticEncoding = "PHONETIC_ENCODING_UNSPECIFIED"
+	PhoneticEncodingIPA              PhoneticEncoding = "PHONETIC_ENCODING_IPA"
+	PhoneticEncodingXSAMPA           PhoneticEncoding = "PHONETIC_ENCODING_X_SAMPA"
+	PhoneticEncodingJapaneseYomigana PhoneticEncoding = "PHONETIC_ENCODING_JAPANESE_YOMIGANA"
+	PhoneticEncodingPinyin           PhoneticEncoding = "PHONETIC_ENCODING_PINYIN"
+)
+
+// CustomPronunciationParams represents pronunciation customization for a phrase.
+type CustomPronunciationParams struct {
+	Phrase           string           `json:"phrase,omitempty"`
+	PhoneticEncoding PhoneticEncoding `json:"phoneticEncoding,omitempty"`
+	Pronunciation    string           `json:"pronunciation,omitempty"`
+}
+
+// CustomPronunciations represents a collection of pronunciation customizations.
+type CustomPronunciations struct {
+	Pronunciations []CustomPronunciationParams `json:"pronunciations,omitempty"`
+}
+
+// Turn represents a multi-speaker turn.
+type Turn struct {
+	Speaker string `json:"speaker,omitempty"`
+	Text    string `json:"text,omitempty"`
+}
+
+// MultiSpeakerMarkup represents a collection of turns for multi-speaker synthesis.
+type MultiSpeakerMarkup struct {
+	Turns []Turn `json:"turns,omitempty"`
+}
+
+// VertexSynthesisInput contains text input to be synthesized.
+type VertexSynthesisInput struct {
+	Text                 *string               `json:"text,omitempty"`
+	Markup               *string               `json:"markup,omitempty"`
+	SSML                 *string               `json:"ssml,omitempty"`
+	MultiSpeakerMarkup   *MultiSpeakerMarkup   `json:"multiSpeakerMarkup,omitempty"`
+	Prompt               *string               `json:"prompt,omitempty"`
+	CustomPronunciations *CustomPronunciations `json:"customPronunciations,omitempty"`
+}
+
+// VertexVoiceSelectionParams represents voice selection parameters for TTS synthesis.
+type VertexVoiceSelectionParams struct {
+	LanguageCode string `json:"languageCode,omitempty"`
+	Name         string `json:"name,omitempty"`
+	SsmlGender   string `json:"ssmlGender,omitempty"`
+}
+
+// VertexAudioConfig represents audio configuration for TTS synthesis.
+type VertexAudioConfig struct {
+	AudioEncoding    string   `json:"audioEncoding,omitempty"`
+	SpeakingRate     float64  `json:"speakingRate,omitempty"`
+	Pitch            float64  `json:"pitch,omitempty"`
+	VolumeGainDB     float64  `json:"volumeGainDb,omitempty"`
+	SampleRateHertz  int      `json:"sampleRateHertz,omitempty"`
+	EffectsProfileID []string `json:"effectsProfileId,omitempty"`
+}
+
+// VertexAdvancedVoiceOptions represents advanced voice options for TTS synthesis.
+type VertexAdvancedVoiceOptions struct {
+	LowLatencyJourneySynthesis bool `json:"lowLatencyJourneySynthesis,omitempty"`
+}
+
+
 // VertexEmbeddingInstance represents a single embedding instance in the request
 type VertexEmbeddingInstance struct {
 	Content  string  `json:"content"`             // The text to generate embeddings for

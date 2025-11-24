@@ -47,7 +47,7 @@ from google.genai.types import HttpOptions
 from google.genai import types
 from typing import List, Dict, Any
 
-from ..utils.common import (
+from .utils.common import (
     Config,
     SIMPLE_CHAT_MESSAGES,
     SINGLE_TOOL_CALL_MESSAGES,
@@ -82,8 +82,8 @@ from ..utils.common import (
     EMBEDDINGS_SINGLE_TEXT,
     SPEECH_TEST_INPUT,
 )
-from ..utils.config_loader import get_model
-from ..utils.parametrize import (
+from .utils.config_loader import get_model
+from .utils.parametrize import (
     get_cross_provider_params_for_scenario,
     format_provider_model,
 )
@@ -92,7 +92,7 @@ from ..utils.parametrize import (
 @pytest.fixture
 def google_client():
     """Configure Google GenAI client for testing"""
-    from ..utils.config_loader import get_integration_url
+    from .utils.config_loader import get_integration_url
 
     api_key = get_api_key("google")
     base_url = get_integration_url("google")
@@ -228,6 +228,8 @@ class TestGoogleIntegration:
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
     def test_01_simple_chat(self, google_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
         """Test Case 1: Simple chat interaction - runs across all available providers"""
         message = convert_to_google_messages(SIMPLE_CHAT_MESSAGES)
 
@@ -237,7 +239,7 @@ class TestGoogleIntegration:
 
         assert_valid_chat_response(response)
         assert response.text is not None
-        assert len(response.text) > 0
+        assert len(response.text) > 0        
 
     @skip_if_no_api_key("google")
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))

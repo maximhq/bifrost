@@ -1,7 +1,7 @@
 """
 Anthropic Integration Tests - Cross-Provider Support
 
-🌉 CROSS-PROVIDER TESTING:
+CROSS-PROVIDER TESTING:
 This test suite uses the Anthropic SDK to test against multiple AI providers through Bifrost.
 Tests automatically run against all available providers with proper capability filtering.
 
@@ -27,13 +27,15 @@ Tests all core scenarios using Anthropic SDK directly:
 16. Extended thinking (streaming)
 """
 
+import logging
+from uuid import uuid4
 import pytest
 import base64
 import requests
 from anthropic import Anthropic
 from typing import List, Dict, Any
 
-from ..utils.common import (
+from .utils.common import (
     Config,
     SIMPLE_CHAT_MESSAGES,
     MULTI_TURN_MESSAGES,
@@ -65,18 +67,18 @@ from ..utils.common import (
     ANTHROPIC_THINKING_PROMPT,
     ANTHROPIC_THINKING_STREAMING_PROMPT,
 )
-from ..utils.config_loader import get_model
-from ..utils.parametrize import (
+from .utils.config_loader import get_model
+from .utils.parametrize import (
     get_cross_provider_params_for_scenario,
     format_provider_model,
 )
-from ..utils.config_loader import get_config
+from .utils.config_loader import get_config
 
 
 @pytest.fixture
 def anthropic_client():
     """Create Anthropic client for testing"""
-    from ..utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_integration_url, get_config
 
     api_key = get_api_key("anthropic")
     base_url = get_integration_url("anthropic")
@@ -193,6 +195,8 @@ class TestAnthropicIntegration:
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))
     def test_02_multi_turn_conversation(self, anthropic_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
         """Test Case 2: Multi-turn conversation - runs across all available providers"""
         messages = convert_to_anthropic_messages(MULTI_TURN_MESSAGES)
 
@@ -258,7 +262,7 @@ class TestAnthropicIntegration:
         """Test Case 5: Complete tool calling flow with responses"""
         messages = [{"role": "user", "content": "What's the weather in Boston in fahrenheit?"}]
         tools = convert_to_anthropic_tools([WEATHER_TOOL])
-
+        logger = logging.getLogger("05AnthropicEnd2EndToolCalling")
         response = anthropic_client.messages.create(
             model=format_provider_model(provider, model),
             messages=messages,
@@ -269,7 +273,8 @@ class TestAnthropicIntegration:
         assert_has_tool_calls(response, expected_count=1)
 
         # Add assistant's response to conversation
-        messages.append({"role": "assistant", "content": response.content})
+        # Serialize content blocks to dicts for cross-provider compatibility
+        messages.append({"role": "assistant", "content": serialize_anthropic_content(response.content)})
 
         # Add tool response
         tool_calls = extract_anthropic_tool_calls(response)
@@ -284,6 +289,7 @@ class TestAnthropicIntegration:
                 tool_use_id = content.id
                 break
 
+        
         messages.append(
             {
                 "role": "user",
@@ -296,6 +302,8 @@ class TestAnthropicIntegration:
                 ],
             }
         )
+
+        logger.info(f"Messages: {messages}")
 
         # Get final response
         final_response = anthropic_client.messages.create(
@@ -461,7 +469,8 @@ class TestAnthropicIntegration:
         assert len(response1.content) > 0
 
         # Add response to conversation
-        messages.append({"role": "assistant", "content": response1.content})
+        # Serialize content blocks to dicts for cross-provider compatibility
+        messages.append({"role": "assistant", "content": serialize_anthropic_content(response1.content)})
 
         # If there were tool calls, handle them
         tool_calls = extract_anthropic_tool_calls(response1)
@@ -820,9 +829,44 @@ class TestAnthropicIntegration:
 
 
 # Additional helper functions specific to Anthropic
+def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:
+    """Serialize Anthropic content blocks (including ToolUseBlock objects) to dicts"""
+    serialized_content = []
+    
+    for block in content_blocks:
+        if hasattr(block, 'type'):
+            if block.type == 'tool_use':
+                # Serialize ToolUseBlock to dict
+                serialized_content.append({
+                    'type': 'tool_use',
+                    'id': block.id,
+                    'name': block.name,
+                    'input': block.input
+                })
+            elif block.type == 'text':
+                # Serialize TextBlock to dict
+                serialized_content.append({
+                    'type': 'text',
+                    'text': block.text
+                })
+            else:
+                # For other block types, try to convert using model_dump if available
+                if hasattr(block, 'model_dump'):
+                    serialized_content.append(block.model_dump())
+                else:
+                    # Fallback: try to convert to dict
+                    serialized_content.append(dict(block))
+        else:
+            # If already a dict, use as is
+            serialized_content.append(block)
+    
+    return serialized_content
+
+
 def extract_anthropic_tool_calls(response: Any) -> List[Dict[str, Any]]:
     """Extract tool calls from Anthropic response format with proper type checking"""
     tool_calls = []
+    logger = logging.getLogger("AnthropicToolCallsExtractor")
 
     # Type check for Anthropic Message response
     if not hasattr(response, "content") or not response.content:
@@ -832,8 +876,9 @@ def extract_anthropic_tool_calls(response: Any) -> List[Dict[str, Any]]:
         if hasattr(content, "type") and content.type == "tool_use":
             if hasattr(content, "name") and hasattr(content, "input"):
                 try:
+                    logger.debug(f"Extracting tool call: {content}")
                     tool_calls.append(
-                        {"name": content.name, "arguments": content.input}
+                        {"id":content.id, "name": content.name, "arguments": content.input}
                     )
                 except AttributeError as e:
                     print(f"Warning: Failed to extract tool call from content: {e}")

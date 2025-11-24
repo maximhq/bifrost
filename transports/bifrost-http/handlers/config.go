@@ -127,6 +127,13 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"disable_auth_on_inference": authConfig.DisableAuthOnInference,
 			}
 		}
+	}else{
+		mapConfig["auth_config"] = map[string]any{
+			"admin_username":            "",
+			"admin_password":            "",
+			"is_enabled":                false,
+			"disable_auth_on_inference": false,
+		}
 	}
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil

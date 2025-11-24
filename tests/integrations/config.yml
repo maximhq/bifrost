@@ -78,8 +78,10 @@ providers:
     tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     thinking: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "cohere.embed-v4:0"
-    alternatives: []
+    alternatives:
+      - "anthropic.claude-3-opus-20240229-v1:0"
     
   cohere:
     chat: "command-a-03-2025"
@@ -234,13 +236,6 @@ scenario_capabilities:
   embeddings: "embeddings"
   thinking: "thinking"
   list_models: "chat"
-
-  bedrock:
-    chat: "anthropic.claude-3-sonnet-20240229-v1:0" # For converse API with tools
-    vision: "anthropic.claude-3-sonnet-20240229-v1:0" # For converse API with images
-    text_completion: "mistral.mistral-7b-instruct-v0:2" # For invoke API
-    alternatives:
-      - "anthropic.claude-3-opus-20240229-v1:0"
 
 # Model capabilities matrix
 model_capabilities:

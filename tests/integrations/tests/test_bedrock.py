@@ -21,7 +21,7 @@ import requests
 import time
 from typing import List, Dict, Any
 
-from ..utils.common import (
+from .utils.common import (
     Config,
     BASE64_IMAGE,
     WEATHER_TOOL,
@@ -32,7 +32,7 @@ from ..utils.common import (
     WEATHER_KEYWORDS,
     LOCATION_KEYWORDS,
 )
-from ..utils.config_loader import get_model, get_config, get_integration_url
+from .utils.config_loader import get_model, get_config, get_integration_url
 
 
 @pytest.fixture

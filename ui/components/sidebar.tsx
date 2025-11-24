@@ -582,10 +582,16 @@ export default function AppSidebar() {
 	return (
 		<Sidebar className="overflow-y-clip border-none bg-transparent">
 			<SidebarHeader className="mt-1 ml-2 flex h-12 justify-between px-0">
-				<div className="flex h-full items-center justify-between gap-2 px-1.5">
-					<Link href="/" className="group flex items-center gap-2">
-						<Image className="h-10 w-auto" src={logoSrc} alt="Bifrost" width={100} height={100} />
+				<div className="flex h-full items-center gap-2 px-1.5">
+					<Link href="/" className="group flex items-center gap-2 pl-2">
+						<Image className="h-[23px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
 					</Link>
+					<span className="text-muted-foreground mt-[11px] text-xs">
+						by{" "}
+						<a href="https://getmaxim.ai" target="_blank" rel="noopener noreferrer" className="cursor-pointer hover:underline">
+							Maxim AI
+						</a>
+					</span>
 				</div>
 			</SidebarHeader>
 			<SidebarContent className="overflow-hidden pb-4">

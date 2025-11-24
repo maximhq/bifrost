@@ -1,3 +1,4 @@
+// Package gemini provides types and structures for interacting with Google's Gemini API.
 package gemini
 
 import (
@@ -16,7 +17,7 @@ const (
 	RoleModel = "model"
 )
 
-// The reason why the model stopped generating tokens.
+// FinishReason represents the reason why the model stopped generating tokens.
 // If empty, the model has not stopped generating the tokens.
 type FinishReason string
 
@@ -76,7 +77,7 @@ func (r *GeminiGenerationRequest) IsStreamingRequested() bool {
 	return r.Stream
 }
 
-// Safety settings.
+// SafetySetting represents safety settings.
 type SafetySetting struct {
 	// Optional. Determines if the harm block method uses probability or probability
 	// and severity scores.
@@ -87,7 +88,7 @@ type SafetySetting struct {
 	Threshold string `json:"threshold,omitempty"`
 }
 
-// Function calling config.
+// FunctionCallingConfig represents function calling configuration.
 type FunctionCallingConfig struct {
 	// Optional. Function calling mode.
 	Mode FunctionCallingConfigMode `json:"mode,omitempty"`
@@ -97,7 +98,7 @@ type FunctionCallingConfig struct {
 	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
-// Config for the function calling config mode.
+// FunctionCallingConfigMode represents the function calling config mode.
 type FunctionCallingConfigMode string
 
 const (
@@ -120,7 +121,7 @@ const (
 	FunctionCallingConfigModeValidated FunctionCallingConfigMode = "VALIDATED"
 )
 
-// An object that represents a latitude/longitude pair.
+// LatLng represents a latitude/longitude pair.
 // This is expressed as a pair of doubles to represent degrees latitude and
 // degrees longitude. Unless specified otherwise, this object must conform to the
 // <a href="https://en.wikipedia.org/wiki/World_Geodetic_System#1984_version">
@@ -132,7 +133,7 @@ type LatLng struct {
 	Longitude *float64 `json:"longitude,omitempty"`
 }
 
-// Retrieval config.
+// RetrievalConfig represents retrieval configuration.
 type RetrievalConfig struct {
 	// Optional. The location of the user.
 	LatLng *LatLng `json:"latLng,omitempty"`
@@ -140,7 +141,7 @@ type RetrievalConfig struct {
 	LanguageCode string `json:"languageCode,omitempty"`
 }
 
-// Tool config.
+// ToolConfig represents tool configuration.
 // This config is shared for all tools provided in the request.
 type ToolConfig struct {
 	// Optional. Function calling config.
@@ -149,7 +150,7 @@ type ToolConfig struct {
 	RetrievalConfig *RetrievalConfig `json:"retrievalConfig,omitempty"`
 }
 
-// Defines a function that the model can generate JSON inputs for.
+// FunctionDeclaration defines a function that the model can generate JSON inputs for.
 // The inputs are based on `OpenAPI 3.0 specifications
 // <https://spec.openapis.org/oas/v3.0.3>`_.
 type FunctionDeclaration struct {
@@ -177,7 +178,7 @@ type FunctionDeclaration struct {
 	// "age": { "type": "integer" } }, "additionalProperties": false, "required": ["name",
 	// "age"], "propertyOrdering": ["name", "age"] } ``` This field is mutually exclusive
 	// with `parameters`.
-	ParametersJsonSchema any `json:"parametersJsonSchema,omitempty"`
+	ParametersJSONSchema any `json:"parametersJsonSchema,omitempty"`
 	// Optional. Describes the output from this function in JSON Schema format. Reflects
 	// the Open API 3.03 Response Object. The Schema defines the type used for the response
 	// value of the function.
@@ -185,10 +186,10 @@ type FunctionDeclaration struct {
 	// Optional. Describes the output from this function in JSON Schema format. The value
 	// specified by the schema is the response value of the function. This field is mutually
 	// exclusive with `response`.
-	ResponseJsonSchema any `json:"responseJsonSchema,omitempty"`
+	ResponseJSONSchema any `json:"responseJsonSchema,omitempty"`
 }
 
-// Defines the function behavior. Defaults to `BLOCKING`.
+// Behavior defines the function behavior. Defaults to `BLOCKING`.
 type Behavior string
 
 const (
@@ -203,7 +204,7 @@ const (
 	BehaviorNonBlocking Behavior = "NON_BLOCKING"
 )
 
-// Represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).
+// Interval represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).
 // The start time must be less than or equal to the end time.
 // When the start equals the end time, the interval is an empty interval.
 // (matches no time)
@@ -261,7 +262,7 @@ func (i *Interval) MarshalJSON() ([]byte, error) {
 	return json.Marshal(aux)
 }
 
-// Tool to support Google Search in Model. Powered by Google.
+// GoogleSearch is a tool to support Google Search in Model. Powered by Google.
 type GoogleSearch struct {
 	// Optional. Filter search results to a specific time range.
 	// If customers set a start time, they must set an end time (and vice versa).
@@ -271,7 +272,7 @@ type GoogleSearch struct {
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
 }
 
-// Describes the options to customize dynamic retrieval.
+// DynamicRetrievalConfig describes the options to customize dynamic retrieval.
 type DynamicRetrievalConfig struct {
 	// Optional. The mode of the predictor to be used in dynamic retrieval.
 	Mode string `json:"mode,omitempty"`
@@ -280,26 +281,26 @@ type DynamicRetrievalConfig struct {
 	DynamicThreshold *float32 `json:"dynamicThreshold,omitempty"`
 }
 
-// Tool to retrieve public web data for grounding, powered by Google.
+// GoogleSearchRetrieval is a tool to retrieve public web data for grounding, powered by Google.
 type GoogleSearchRetrieval struct {
 	// Optional. Specifies the dynamic retrieval configuration for the given source.
 	DynamicRetrievalConfig *DynamicRetrievalConfig `json:"dynamicRetrievalConfig,omitempty"`
 }
 
-// Tool to search public web data, powered by Vertex AI Search and Sec4 compliance.
+// EnterpriseWebSearch is a tool to search public web data, powered by Vertex AI Search and Sec4 compliance.
 type EnterpriseWebSearch struct {
 	// Optional. List of domains to be excluded from the search results. The default limit
 	// is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
 }
 
-// Config for authentication with API key.
+// APIKeyConfig represents configuration for authentication with API key.
 type APIKeyConfig struct {
 	// Optional. The API key to be used in the request directly.
 	APIKeyString string `json:"apiKeyString,omitempty"`
 }
 
-// Config for Google Service Account Authentication.
+// AuthConfigGoogleServiceAccountConfig represents configuration for Google Service Account Authentication.
 type AuthConfigGoogleServiceAccountConfig struct {
 	// Optional. The service account that the extension execution service runs as. - If
 	// the service account is specified, the `iam.serviceAccounts.getAccessToken` permission
@@ -309,7 +310,7 @@ type AuthConfigGoogleServiceAccountConfig struct {
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 }
 
-// Config for HTTP Basic Authentication.
+// AuthConfigHTTPBasicAuthConfig represents configuration for HTTP Basic Authentication.
 type AuthConfigHTTPBasicAuthConfig struct {
 	// Required. The name of the SecretManager secret version resource storing the base64
 	// encoded credentials. Format: `projects/{project}/secrets/{secrete}/versions/{version}`
@@ -319,7 +320,7 @@ type AuthConfigHTTPBasicAuthConfig struct {
 	CredentialSecret string `json:"credentialSecret,omitempty"`
 }
 
-// Config for user oauth.
+// AuthConfigOauthConfig represents configuration for user oauth.
 type AuthConfigOauthConfig struct {
 	// Access token for extension endpoint. Only used to propagate token from [[ExecuteExtensionRequest.runtime_auth_config]]
 	// at request time.
@@ -331,7 +332,7 @@ type AuthConfigOauthConfig struct {
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 }
 
-// Config for user OIDC auth.
+// AuthConfigOidcConfig represents configuration for user OIDC auth.
 type AuthConfigOidcConfig struct {
 	// OpenID Connect formatted ID token for extension endpoint. Only used to propagate
 	// token from [[ExecuteExtensionRequest.runtime_auth_config]] at request time.
@@ -345,7 +346,7 @@ type AuthConfigOidcConfig struct {
 	ServiceAccount string `json:"serviceAccount,omitempty"`
 }
 
-// Auth configuration to run the extension.
+// AuthConfig represents authentication configuration to run the extension.
 type AuthConfig struct {
 	// Optional. Config for API key auth.
 	APIKeyConfig *APIKeyConfig `json:"apiKeyConfig,omitempty"`
@@ -361,7 +362,7 @@ type AuthConfig struct {
 	OidcConfig *AuthConfigOidcConfig `json:"oidcConfig,omitempty"`
 }
 
-// Type of auth scheme.
+// AuthType represents the type of auth scheme.
 type AuthType string
 
 const (
@@ -380,23 +381,23 @@ const (
 	AuthTypeOidcAuth AuthType = "OIDC_AUTH"
 )
 
-// Tool to support Google Maps in Model.
+// GoogleMaps is a tool to support Google Maps in Model.
 type GoogleMaps struct {
 	// Optional. Auth config for the Google Maps tool.
 	AuthConfig *AuthConfig `json:"authConfig,omitempty"`
 }
 
-// Tool to support URL context retrieval.
+// URLContext is a tool to support URL context retrieval.
 type URLContext struct {
 }
 
-// Tool to support computer use.
+// ToolComputerUse is a tool to support computer use.
 type ToolComputerUse struct {
 	// Optional. Required. The environment being operated.
 	Environment Environment `json:"environment,omitempty"`
 }
 
-// The environment being operated.
+// Environment represents the environment being operated.
 type Environment string
 
 const (
@@ -406,7 +407,7 @@ const (
 	EnvironmentBrowser Environment = "ENVIRONMENT_BROWSER"
 )
 
-// The API secret.
+// APIAuthAPIKeyConfig represents the API secret.
 type APIAuthAPIKeyConfig struct {
 	// Required. The SecretManager secret version resource name storing API key. e.g. projects/{project}/secrets/{secret}/versions/{version}
 	APIKeySecretVersion string `json:"apiKeySecretVersion,omitempty"`
@@ -414,14 +415,14 @@ type APIAuthAPIKeyConfig struct {
 	APIKeyString string `json:"apiKeyString,omitempty"`
 }
 
-// The generic reusable API auth config. Deprecated. Please use AuthConfig (google/cloud/aiplatform/master/auth.proto)
+// APIAuth represents the generic reusable API auth config. Deprecated. Please use AuthConfig (google/cloud/aiplatform/master/auth.proto)
 // instead.
 type APIAuth struct {
 	// The API secret.
 	APIKeyConfig *APIAuthAPIKeyConfig `json:"apiKeyConfig,omitempty"`
 }
 
-// The search parameters to use for the ELASTIC_SEARCH spec.
+// ExternalAPIElasticSearchParams represents the search parameters to use for the ELASTIC_SEARCH spec.
 type ExternalAPIElasticSearchParams struct {
 	// The ElasticSearch index to use.
 	Index string `json:"index,omitempty"`
@@ -432,12 +433,12 @@ type ExternalAPIElasticSearchParams struct {
 	SearchTemplate string `json:"searchTemplate,omitempty"`
 }
 
-// The search parameters to use for SIMPLE_SEARCH spec.
+// ExternalAPISimpleSearchParams represents the search parameters to use for SIMPLE_SEARCH spec.
 type ExternalAPISimpleSearchParams struct {
 }
 
-// Retrieve from data source powered by external API for grounding. The external API
-// is not owned by Google, but need to follow the pre-defined API spec.
+// ExternalAPI retrieves from data source powered by external API for grounding. The external API
+// is not owned by Google, but needs to follow the pre-defined API spec.
 type ExternalAPI struct {
 	// The authentication config to access the API. Deprecated. Please use auth_config instead.
 	APIAuth *APIAuth `json:"apiAuth,omitempty"`
@@ -454,7 +455,7 @@ type ExternalAPI struct {
 	SimpleSearchParams *ExternalAPISimpleSearchParams `json:"simpleSearchParams,omitempty"`
 }
 
-// The API spec that the external API implements.
+// APISpec represents the API spec that the external API implements.
 type APISpec string
 
 const (
@@ -466,7 +467,7 @@ const (
 	APISpecElasticSearch APISpec = "ELASTIC_SEARCH"
 )
 
-// Define data stores within engine to filter on in a search call and configurations
+// VertexAISearchDataStoreSpec defines data stores within engine to filter on in a search call and configurations
 // for those data stores. For more information, see https://cloud.google.com/generative-ai-app-builder/docs/reference/rpc/google.cloud.discoveryengine.v1#datastorespec
 type VertexAISearchDataStoreSpec struct {
 	// Full resource name of DataStore, such as Format: `projects/{project}/locations/{location}/collections/{collection}/dataStores/{dataStore}`
@@ -476,7 +477,7 @@ type VertexAISearchDataStoreSpec struct {
 	Filter string `json:"filter,omitempty"`
 }
 
-// Retrieve from Vertex AI Search datastore or engine for grounding. datastore and engine
+// VertexAISearch retrieves from Vertex AI Search datastore or engine for grounding. datastore and engine
 // are mutually exclusive. See https://cloud.google.com/products/agent-builder
 type VertexAISearch struct {
 	// Specifications that define the specific DataStores to be searched, along with configurations
@@ -494,7 +495,7 @@ type VertexAISearch struct {
 	MaxResults *int32 `json:"maxResults,omitempty"`
 }
 
-// The definition of the RAG resource.
+// VertexRAGStoreRAGResource represents the definition of the RAG resource.
 type VertexRAGStoreRAGResource struct {
 	// Optional. RAGCorpora resource name. Format: `projects/{project}/locations/{location}/ragCorpora/{rag_corpus}`
 	RAGCorpus string `json:"ragCorpus,omitempty"`
@@ -503,7 +504,7 @@ type VertexRAGStoreRAGResource struct {
 	RAGFileIDs []string `json:"ragFileIds,omitempty"`
 }
 
-// Config for filters.
+// RAGRetrievalConfigFilter represents configuration for filters.
 type RAGRetrievalConfigFilter struct {
 	// Optional. String for metadata filtering.
 	MetadataFilter string `json:"metadataFilter,omitempty"`
@@ -513,7 +514,7 @@ type RAGRetrievalConfigFilter struct {
 	VectorSimilarityThreshold *float64 `json:"vectorSimilarityThreshold,omitempty"`
 }
 
-// Config for Hybrid Search.
+// RAGRetrievalConfigHybridSearch represents configuration for Hybrid Search.
 type RAGRetrievalConfigHybridSearch struct {
 	// Optional. Alpha value controls the weight between dense and sparse vector search
 	// results. The range is [0, 1], while 0 means sparse vector search only and 1 means
@@ -522,19 +523,19 @@ type RAGRetrievalConfigHybridSearch struct {
 	Alpha *float64 `json:"alpha,omitempty"`
 }
 
-// Config for LlmRanker.
+// RAGRetrievalConfigRankingLlmRanker represents configuration for LlmRanker.
 type RAGRetrievalConfigRankingLlmRanker struct {
 	// Optional. The model name used for ranking. See [Supported models](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#supported-models).
 	ModelName string `json:"modelName,omitempty"`
 }
 
-// Config for Rank Service.
+// RAGRetrievalConfigRankingRankService represents configuration for Rank Service.
 type RAGRetrievalConfigRankingRankService struct {
 	// Optional. The model name of the rank service. Format: `semantic-ranker-512@latest`
 	ModelName string `json:"modelName,omitempty"`
 }
 
-// Config for ranking and reranking.
+// RAGRetrievalConfigRanking represents configuration for ranking and reranking.
 type RAGRetrievalConfigRanking struct {
 	// Optional. Config for LlmRanker.
 	LlmRanker *RAGRetrievalConfigRankingLlmRanker `json:"llmRanker,omitempty"`
@@ -542,7 +543,7 @@ type RAGRetrievalConfigRanking struct {
 	RankService *RAGRetrievalConfigRankingRankService `json:"rankService,omitempty"`
 }
 
-// Specifies the context retrieval config.
+// RAGRetrievalConfig specifies the context retrieval configuration.
 type RAGRetrievalConfig struct {
 	// Optional. Config for filters.
 	Filter *RAGRetrievalConfigFilter `json:"filter,omitempty"`
@@ -554,7 +555,7 @@ type RAGRetrievalConfig struct {
 	TopK *int32 `json:"topK,omitempty"`
 }
 
-// Retrieve from Vertex RAG Store for grounding. You can find API default values and
+// VertexRAGStore retrieves from Vertex RAG Store for grounding. You can find API default values and
 // more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/rag-api-v1#parameters-list
 type VertexRAGStore struct {
 	// Optional. Deprecated. Please use rag_resources instead.
@@ -576,7 +577,7 @@ type VertexRAGStore struct {
 	VectorDistanceThreshold *float64 `json:"vectorDistanceThreshold,omitempty"`
 }
 
-// Defines a retrieval tool that model can call to access external knowledge.
+// Retrieval defines a retrieval tool that model can call to access external knowledge.
 type Retrieval struct {
 	// Optional. Deprecated. This option is no longer supported.
 	DisableAttribution bool `json:"disableAttribution,omitempty"`
@@ -589,7 +590,7 @@ type Retrieval struct {
 	VertexRAGStore *VertexRAGStore `json:"vertexRagStore,omitempty"`
 }
 
-// Tool that executes code generated by the model, and automatically returns the result
+// ToolCodeExecution is a tool that executes code generated by the model, and automatically returns the result
 // to the model. See also [ExecutableCode]and [CodeExecutionResult] which are input
 // and output to this tool.
 type ToolCodeExecution struct {
@@ -625,7 +626,7 @@ type Tool struct {
 	CodeExecution *ToolCodeExecution `json:"codeExecution,omitempty"`
 }
 
-// Generation config. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
+// GenerationConfig represents generation configuration. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
 // and https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/content-generation-parameters.
 type GenerationConfig struct {
 	// Optional. Config for model selection.
@@ -660,7 +661,7 @@ type GenerationConfig struct {
 	// as such, may only be used within non-required properties. (Nullable properties are
 	// not sufficient.) If `$ref` is set on a sub-schema, no other properties, except for
 	// than those starting as a `$`, may be set.
-	ResponseJsonSchema any `json:"responseJsonSchema,omitempty"`
+	ResponseJSONSchema any `json:"responseJsonSchema,omitempty"`
 	// Optional. If true, export the logprobs results in response.
 	ResponseLogprobs bool `json:"responseLogprobs,omitempty"`
 	// Optional. Output response mimetype of the generated candidate text. Supported mimetype:
@@ -695,13 +696,13 @@ type GenerationConfig struct {
 	TopP *float64 `json:"topP,omitempty"`
 }
 
-// Config for model selection.
+// ModelSelectionConfig represents configuration for model selection.
 type ModelSelectionConfig struct {
 	// Optional. Options for feature selection preference.
 	FeatureSelectionPreference string `json:"featureSelectionPreference,omitempty"`
 }
 
-// Server content modalities.
+// Modality represents server content modalities.
 type Modality string
 
 const (
@@ -773,7 +774,7 @@ type Schema struct {
 	Type Type `json:"type,omitempty"`
 }
 
-// The type of the data.
+// Type represents the type of the data.
 type Type string
 
 const (
@@ -795,7 +796,7 @@ const (
 	TypeNULL Type = "NULL"
 )
 
-// The configuration for routing the request to a specific model.
+// GenerationConfigRoutingConfig represents the configuration for routing the request to a specific model.
 type GenerationConfigRoutingConfig struct {
 	// Automated routing.
 	AutoMode *GenerationConfigRoutingConfigAutoRoutingMode `json:"autoMode,omitempty"`
@@ -803,58 +804,57 @@ type GenerationConfigRoutingConfig struct {
 	ManualMode *GenerationConfigRoutingConfigManualRoutingMode `json:"manualMode,omitempty"`
 }
 
-// Automated routing.
+// GenerationConfigRoutingConfigAutoRoutingMode represents automated routing.
 type GenerationConfigRoutingConfigAutoRoutingMode struct {
 	// The model routing preference.
 	ModelRoutingPreference string `json:"modelRoutingPreference,omitempty"`
 }
 
-// Manual routing.
+// GenerationConfigRoutingConfigManualRoutingMode represents manual routing.
 type GenerationConfigRoutingConfigManualRoutingMode struct {
 	// The model name to use. Only the public LLM models are accepted. See [Supported models](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#supported-models).
 	ModelName string `json:"modelName,omitempty"`
 }
 
-// The configuration for the prebuilt speaker to use.
+// PrebuiltVoiceConfig represents the configuration for the prebuilt speaker to use.
 type PrebuiltVoiceConfig struct {
 	// Optional. The name of the prebuilt voice to use.
-	VoiceName string `json:"voiceName,omitempty"`
+	VoiceName string `json:"voice_name,omitempty"`
 }
 
-// The configuration for the voice to use.
+// VoiceConfig represents the configuration for the voice to use.
 type VoiceConfig struct {
-	// The configuration for the speaker to use.
-	PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuiltVoiceConfig,omitempty"`
+	// Optional. The configuration for the speaker to use.
+	PrebuiltVoiceConfig *PrebuiltVoiceConfig `json:"prebuilt_voice_config,omitempty"`
 }
 
-// The configuration for the speaker to use.
+// SpeakerVoiceConfig represents the configuration for the speaker to use.
 type SpeakerVoiceConfig struct {
-	// The name of the speaker to use. Should be the same as in the
-	// prompt.
+	// Optional. The name of the speaker to use. Should be the same as in the prompt.
 	Speaker string `json:"speaker,omitempty"`
-	// The configuration for the voice to use.
+	// Optional. The configuration for the voice to use.
 	VoiceConfig *VoiceConfig `json:"voiceConfig,omitempty"`
 }
 
-// The configuration for the multi-speaker setup.
+// MultiSpeakerVoiceConfig represents the configuration for the multi-speaker setup.
 type MultiSpeakerVoiceConfig struct {
-	// The configuration for the speaker to use.
+	// Optional. The configuration for the speakers to use.
 	SpeakerVoiceConfigs []*SpeakerVoiceConfig `json:"speakerVoiceConfigs,omitempty"`
 }
 
-// The speech generation configuration.
+// SpeechConfig represents the speech generation configuration.
 type SpeechConfig struct {
 	// Optional. The configuration for the speaker to use.
-	VoiceConfig *VoiceConfig `json:"voiceConfig,omitempty"`
+	VoiceConfig *VoiceConfig `json:"voice_config,omitempty"`
 	// Optional. The configuration for the multi-speaker setup.
-	// It is mutually exclusive with the voice_config field.
+	// Mutually exclusive with the voiceConfig field.
 	MultiSpeakerVoiceConfig *MultiSpeakerVoiceConfig `json:"multiSpeakerVoiceConfig,omitempty"`
-	// Optional. Language code (ISO 639. e.g. en-US) for the speech synthesization.
+	// Optional. Language code (ISO 639, e.g., en-US) for speech synthesis.
 	// Only available for Live API.
 	LanguageCode string `json:"languageCode,omitempty"`
 }
 
-// Config for thinking features.
+// GenerationConfigThinkingConfig represents configuration for thinking features.
 type GenerationConfigThinkingConfig struct {
 	// Optional. Indicates whether to include thoughts in the response. If true, thoughts
 	// are returned only when available.
@@ -863,7 +863,7 @@ type GenerationConfigThinkingConfig struct {
 	ThinkingBudget *int32 `json:"thinkingBudget,omitempty"`
 }
 
-// EmbeddingRequest represents a single embedding request in a batch
+// GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content `json:"content,omitempty"`
 	TaskType             *string  `json:"taskType,omitempty"`
@@ -872,7 +872,7 @@ type GeminiEmbeddingRequest struct {
 	Model                string   `json:"model,omitempty"`
 }
 
-// Contains the multi-part content of a message.
+// Content contains the multi-part content of a message.
 type Content struct {
 	// Optional. List of parts that constitute a single message. Each part may have
 	// a different IANA MIME type.
@@ -883,7 +883,7 @@ type Content struct {
 	Role string `json:"role,omitempty"`
 }
 
-// A datatype containing media content.
+// Part is a datatype containing media content.
 // Exactly one field within a Part should be set, representing the specific type
 // of content being conveyed. Using multiple fields within the same `Part`
 // instance is considered invalid.
@@ -913,7 +913,7 @@ type Part struct {
 	Text string `json:"text,omitempty"`
 }
 
-// Content blob.
+// Blob represents content blob.
 type Blob struct {
 	// Optional. Display name of the blob. Used to provide a label or filename to distinguish
 	// blobs. This field is not currently used in the Gemini GenerateContent calls.
@@ -983,7 +983,7 @@ func (b Blob) MarshalJSON() ([]byte, error) {
 	return json.Marshal(aux)
 }
 
-// Describes how the video in the Part should be used by the model.
+// VideoMetadata describes how the video in the Part should be used by the model.
 type VideoMetadata struct {
 	// Optional. The frame rate of the video sent to the model. If not specified, the
 	// default value will be 1.0. The FPS range is (0.0, 24.0].
@@ -994,7 +994,7 @@ type VideoMetadata struct {
 	StartOffset time.Duration `json:"startOffset,omitempty"`
 }
 
-// Result of executing the [ExecutableCode]. Only generated when using the [CodeExecution]
+// CodeExecutionResult represents the result of executing the [ExecutableCode]. Only generated when using the [CodeExecution]
 // tool, and always follows a `part` containing the [ExecutableCode].
 type CodeExecutionResult struct {
 	// Required. Outcome of the code execution.
@@ -1019,7 +1019,7 @@ const (
 	OutcomeDeadlineExceeded Outcome = "OUTCOME_DEADLINE_EXCEEDED"
 )
 
-// Code generated by the model that is meant to be executed, and the result returned
+// ExecutableCode is code generated by the model that is meant to be executed, and the result returned
 // to the model. Generated when using the [CodeExecution] tool, in which the code will
 // be automatically executed, and a corresponding [CodeExecutionResult] will also be
 // generated.
@@ -1030,7 +1030,7 @@ type ExecutableCode struct {
 	Language string `json:"language,omitempty"`
 }
 
-// URI based data.
+// FileData represents URI based data.
 type FileData struct {
 	// Optional. Display name of the file data. Used to provide a label or filename to distinguish
 	// file datas. It is not currently used in the Gemini GenerateContent calls.
@@ -1041,7 +1041,7 @@ type FileData struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
-// A function call.
+// FunctionCall represents a function call.
 type FunctionCall struct {
 	// Optional. The unique ID of the function call. If populated, the client to execute
 	// the
@@ -1054,7 +1054,7 @@ type FunctionCall struct {
 	Name string `json:"name,omitempty"`
 }
 
-// A function response.
+// FunctionResponse represents a function response.
 type FunctionResponse struct {
 	// Optional. Signals that function call continues, and more responses will be returned,
 	// turning the function call into a generator. Is only applicable to NON_BLOCKING function
@@ -1080,7 +1080,8 @@ type FunctionResponse struct {
 }
 
 // ==================== RESPONSE TYPES ====================
-// GeminiEmbeddingResponse represents a Google GenAI embedding response
+
+// GeminiEmbeddingResponse represents a Google GenAI embedding response.
 type GeminiEmbeddingResponse struct {
 	Embeddings []GeminiEmbedding     `json:"embeddings"`
 	Metadata   *EmbedContentMetadata `json:"metadata,omitempty"`
@@ -1102,7 +1103,7 @@ type ContentEmbeddingStatistics struct {
 	TokenCount int32 `json:"tokenCount,omitempty"`
 }
 
-// Candidate for the logprobs token and score.
+// LogprobsResultCandidate represents a candidate for the logprobs token and score.
 type LogprobsResultCandidate struct {
 	// The candidate's log probability.
 	LogProbability float32 `json:"logProbability,omitempty"`
@@ -1112,13 +1113,13 @@ type LogprobsResultCandidate struct {
 	TokenID int32 `json:"tokenId,omitempty"`
 }
 
-// Candidates with top log probabilities at each decoding step.
+// LogprobsResultTopCandidates represents candidates with top log probabilities at each decoding step.
 type LogprobsResultTopCandidates struct {
 	// Sorted by log probability in descending order.
 	Candidates []*LogprobsResultCandidate `json:"candidates,omitempty"`
 }
 
-// Logprobs Result
+// LogprobsResult represents logprobs result.
 type LogprobsResult struct {
 	// Length = total number of decoding steps. The chosen candidates may or may not be
 	// in top_candidates.
@@ -1127,7 +1128,7 @@ type LogprobsResult struct {
 	TopCandidates []*LogprobsResultTopCandidates `json:"topCandidates,omitempty"`
 }
 
-// Safety rating corresponding to the generated content.
+// SafetyRating represents safety rating corresponding to the generated content.
 type SafetyRating struct {
 	// Output only. Indicates whether the content was filtered out because of this rating.
 	Blocked bool `json:"blocked,omitempty"`
@@ -1147,7 +1148,7 @@ type SafetyRating struct {
 	SeverityScore float32 `json:"severityScore,omitempty"`
 }
 
-// Context for a single URL retrieval.
+// URLMetadata represents context for a single URL retrieval.
 type URLMetadata struct {
 	// Optional. The URL retrieved by the tool.
 	RetrievedURL string `json:"retrievedUrl,omitempty"`
@@ -1155,13 +1156,13 @@ type URLMetadata struct {
 	URLRetrievalStatus string `json:"urlRetrievalStatus,omitempty"`
 }
 
-// Metadata related to URL context retrieval tool.
+// URLContextMetadata represents metadata related to URL context retrieval tool.
 type URLContextMetadata struct {
 	// Optional. List of URL context.
 	URLMetadata []*URLMetadata `json:"urlMetadata,omitempty"`
 }
 
-// A response candidate generated from the model.
+// Candidate represents a response candidate generated from the model.
 type Candidate struct {
 	// Optional. Contains the multi-part content of the response.
 	Content *Content `json:"content,omitempty"`
@@ -1190,7 +1191,7 @@ type Candidate struct {
 	SafetyRatings []*SafetyRating `json:"safetyRatings,omitempty"`
 }
 
-// Content filter results for a prompt sent in the request.
+// GenerateContentResponsePromptFeedback represents content filter results for a prompt sent in the request.
 type GenerateContentResponsePromptFeedback struct {
 	// Output only. Blocked reason.
 	BlockReason string `json:"blockReason,omitempty"`
@@ -1200,7 +1201,7 @@ type GenerateContentResponsePromptFeedback struct {
 	SafetyRatings []*SafetyRating `json:"safetyRatings,omitempty"`
 }
 
-// Represents token counting info for a single modality.
+// ModalityTokenCount represents token counting info for a single modality.
 type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
 	Modality string `json:"modality,omitempty"`
@@ -1208,7 +1209,7 @@ type ModalityTokenCount struct {
 	TokenCount int32 `json:"tokenCount,omitempty"`
 }
 
-// Usage metadata about response(s).
+// GenerateContentResponseUsageMetadata represents usage metadata about response(s).
 type GenerateContentResponseUsageMetadata struct {
 	// Output only. List of modalities of the cached content in the request input.
 	CacheTokensDetails []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
@@ -1236,7 +1237,7 @@ type GenerateContentResponseUsageMetadata struct {
 	TrafficType string `json:"trafficType,omitempty"`
 }
 
-// Response message for PredictionService.GenerateContent.
+// GenerateContentResponse represents response message for PredictionService.GenerateContent.
 type GenerateContentResponse struct {
 	// Response variations returned by the model.
 	Candidates []*Candidate `json:"candidates,omitempty"`

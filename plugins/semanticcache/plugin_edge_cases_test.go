@@ -244,7 +244,7 @@ func TestContentVariations(t *testing.T) {
 								{
 									Type: schemas.ChatContentBlockTypeImage,
 									ImageURLStruct: &schemas.ChatInputImage{
-										URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
+										URL: "https://pub-cdead89c2f004d8f963fd34010c479d0.r2.dev/Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 									},
 								},
 							},
@@ -274,7 +274,7 @@ func TestContentVariations(t *testing.T) {
 								{
 									Type: schemas.ChatContentBlockTypeImage,
 									ImageURLStruct: &schemas.ChatInputImage{
-										URL: "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
+										URL: "https://pub-cdead89c2f004d8f963fd34010c479d0.r2.dev/Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
 									},
 								},
 								{

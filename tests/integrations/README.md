@@ -2,6 +2,30 @@
 
 Production-ready end-to-end test suite for testing AI integrations through Bifrost proxy. This test suite provides uniform testing across multiple AI integrations with comprehensive coverage of chat, tool calling, image processing, embeddings, speech synthesis, and multimodal workflows.
 
+## 🎯 Quick Start (TL;DR)
+
+```bash
+# 1. Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. Install dependencies
+cd bifrost/tests/integrations
+uv sync
+
+# 3. Set environment variables
+export BIFROST_BASE_URL="http://localhost:8080"
+export OPENAI_API_KEY="your-key"
+export ANTHROPIC_API_KEY="your-key"
+
+# 4. Run tests
+uv run pytest                          # All tests
+uv run pytest tests/integrations/test_openai.py -v  # Specific integration
+uv run pytest -k "tool_call" -v       # By pattern
+uv run pytest -n auto                  # Parallel execution
+```
+
+**Note:** All `pytest` commands in this README can be prefixed with `uv run`. If you prefer traditional pip, run `pip install -r requirements.txt` and use `pytest` directly.
+
 ## 🌉 Architecture Overview
 
 The Bifrost integration tests use a centralized configuration system that routes all AI integration requests through Bifrost as a gateway/proxy:
@@ -83,14 +107,12 @@ Our test suite covers 30 comprehensive scenarios for each integration:
 ## 📁 Directory Structure
 
 ```text
-transports-integrations/
+integrations/
 ├── config.yml                   # Central configuration file
-├── requirements.txt             # Python dependencies
-├── run_all_tests.py            # Test runner script
-├── run_integration_tests.py    # Integration-specific test runner
-├── test_audio.py # Speech & transcription test runner
-├── pytest.ini                  # Pytest configuration
-├── Makefile                     # Convenience commands
+├── pyproject.toml               # Python project configuration (uv/pip)
+├── requirements.txt             # Python dependencies (legacy compatibility)
+├── .python-version              # Python version specification for uv
+├── pytest.ini                   # Pytest configuration
 ├── tests/
 │   ├── conftest.py             # Pytest configuration and fixtures
 │   ├── utils/
@@ -111,13 +133,34 @@ transports-integrations/
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd bifrost/tests/transports-integrations
+cd bifrost/tests/integrations
 
-# Option 1: Using Makefile (recommended)
-make install
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Option 2: Direct pip install
+# Install dependencies with uv (recommended - fastest)
+uv sync
+
+# Or with traditional pip
 pip install -r requirements.txt
+```
+
+#### Why use uv?
+
+[uv](https://github.com/astral-sh/uv) is an extremely fast Python package installer and resolver, written in Rust. It's 10-100x faster than pip and provides better dependency resolution.
+
+```bash
+# Install dependencies
+uv sync
+
+# Run all tests
+uv run pytest
+
+# Run specific integration tests
+uv run pytest tests/integrations/test_openai.py -v
+
+# Run specific test categories
+uv run pytest -k "tool_call" -v
 ```
 
 ### 2. Configuration
@@ -148,7 +191,7 @@ make check-env
 
 ```bash
 # Test the configuration system
-python tests/utils/config_loader.py
+uv run python tests/utils/config_loader.py
 ```
 
 This will display:
@@ -192,62 +235,117 @@ markers =
 ### 5. Run Tests
 
 ```bash
-# Option 1: Using Makefile (recommended for convenience)
-make test                        # Run all tests using master runner
-make test-openai                 # Run OpenAI tests only
-make test-anthropic              # Run Anthropic tests only
-make test-genai                  # Run Google GenAI tests only
-make test-litellm                # Run LiteLLM tests only
-make test-verbose                # Run all tests with verbose output
-make test-parallel               # Run tests in parallel
+# Run all tests
+uv run pytest
 
-# Option 2: Using test runner scripts directly
-python run_all_tests.py
+# Run all tests with verbose output
+uv run pytest -v
 
-# Run specific integration
-python run_integration_tests.py openai
-python run_integration_tests.py anthropic
-python run_integration_tests.py google
-python run_integration_tests.py litellm
+# Run specific integration tests
+uv run pytest tests/integrations/test_openai.py -v
+uv run pytest tests/integrations/test_anthropic.py -v
+uv run pytest tests/integrations/test_google.py -v
+uv run pytest tests/integrations/test_litellm.py -v
 
-# Option 3: Using pytest directly
+# Run specific test by name
+uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat -v
+
+# Run tests by pattern/category
+uv run pytest -k "tool_call" -v           # All tool calling tests
+uv run pytest -k "image" -v               # All image tests
+uv run pytest -k "speech or transcription" -v  # All audio tests
+uv run pytest -k "embedding" -v           # All embedding tests
+
+# Run tests in parallel (faster)
+uv run pytest -n auto
+
+# Run with coverage report
+uv run pytest --cov=tests --cov-report=html
+
+# Traditional pip usage (if not using uv)
 pytest tests/integrations/test_openai.py -v
-
-# Run specific test categories
-pytest tests/integrations/ -k "error_handling" -v  # Run only error handling tests
-pytest tests/integrations/ -k "test_12" -v         # Run all 12th test cases (error handling)
 ```
 
-#### Makefile Commands
+## 🚄 Using uv (Recommended)
 
-The project includes a `Makefile` with convenient commands:
+[uv](https://github.com/astral-sh/uv) is an extremely fast Python package installer and resolver, written in Rust. It's 10-100x faster than pip and provides better dependency resolution, making it the recommended way to run these tests.
+
+### Installation
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or with pip
+pip install uv
+
+# Or with Homebrew (macOS)
+brew install uv
+```
+
+### Quick Start with uv
+
+```bash
+# 1. Install dependencies
+uv sync
+
+# 2. Run all tests
+uv run pytest
+
+# 3. Run specific integration
+uv run pytest tests/integrations/test_openai.py -v
+
+# 4. Run tests by pattern
+uv run pytest -k "tool_call" -v
+```
+
+### Common Commands
 
 ```bash
 # Setup
-make install        # Install Python dependencies
-make check-env      # Check environment variables
+uv sync                          # Install all dependencies from pyproject.toml
 
-# Testing
-make test          # Run all tests using master runner
-make test-all      # Run all tests with pytest
-make test-parallel # Run tests in parallel
-make test-verbose  # Run tests with verbose output
-make test-openai   # Run OpenAI integration tests only
-make test-anthropic # Run Anthropic integration tests only
-make test-genai    # Run Google GenAI integration tests only
-make test-litellm  # Run LiteLLM integration tests only
-make test-coverage # Run tests with coverage report
+# Running tests
+uv run pytest                    # Run all tests
+uv run pytest -v                 # Verbose output
+uv run pytest -n auto            # Run tests in parallel
+uv run pytest -k "pattern"       # Run tests matching pattern
+uv run pytest tests/integrations/test_openai.py  # Run specific file
 
 # Development
-make lint          # Run code linting
-make format        # Format code with black
-make clean         # Clean up temporary files
+uv run black .                   # Format code
+uv run flake8 .                  # Lint code
+uv run mypy .                    # Type check
 
-# Quick workflows
-make quick-test    # Check environment + run tests
-make all-tests     # Full install + check + parallel tests
-make dev-setup     # Setup development environment
+# Managing dependencies
+uv add package-name              # Add a new dependency
+uv remove package-name           # Remove a dependency
+uv pip list                      # List installed packages
 ```
+
+### Why use uv?
+
+1. **Speed**: 10-100x faster than pip for package installation
+2. **Reliability**: Better dependency resolution and conflict detection
+3. **Simplicity**: Single tool for package management and running scripts
+4. **Modern**: Built with Rust, designed for speed and efficiency
+5. **Compatible**: Works with standard Python packaging (pyproject.toml, requirements.txt)
+
+### Migration from pip
+
+If you're currently using pip, migrating to uv is straightforward:
+
+```bash
+# Old way (pip)
+pip install -r requirements.txt
+pytest tests/integrations/test_openai.py -v
+
+# New way (uv)
+uv sync
+uv run pytest tests/integrations/test_openai.py -v
+```
+
+All existing pytest commands work the same way, just prefix them with `uv run`.
 
 ## 🔧 Configuration System
 
@@ -383,16 +481,16 @@ The test suite includes comprehensive speech synthesis and transcription testing
 
 ```bash
 # Run all speech and transcription tests
-python test_audio.py
+uv run pytest -k "speech or transcription" -v
 
-# Run with verbose output
-python test_audio.py --verbose
+# Run with verbose output and show print statements
+uv run pytest -k "speech or transcription" -v -s
 
 # Run specific test
-python test_audio.py --test test_14_speech_synthesis
+uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_14_speech_synthesis -v
 
 # List available tests
-python test_audio.py --list
+uv run pytest --collect-only -k "speech or transcription"
 ```
 
 #### Individual Test Examples
@@ -635,7 +733,7 @@ with pytest.raises(Exception):
 
 ```bash
 # Test individual components
-python test_audio.py --test test_14_speech_synthesis --verbose
+uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_14_speech_synthesis -v -s
 
 # Check Bifrost logs for audio endpoint requests
 # (Check your Bifrost instance logs)
@@ -697,71 +795,33 @@ vision_model = get_model("anthropic", "vision")
 
 ### Test Execution Methods
 
-#### 1. Using Test Runner Scripts
-
-##### `run_integration_tests.py` - Advanced Integration Testing
+#### Using pytest with uv
 
 ```bash
-# Basic usage - run all available integrations
-python run_integration_tests.py
-
-# Run specific integration
-python run_integration_tests.py --integrations openai
-
-# Run multiple integrations
-python run_integration_tests.py --integrations openai anthropic google
-
-# Run specific test across integrations
-python run_integration_tests.py --integrations openai anthropic --test "test_03_single_tool_call"
-
-# Run test pattern (e.g., all tool calling tests)
-python run_integration_tests.py --integrations google --test "tool_call"
-
-# Run with verbose output
-python run_integration_tests.py --integrations openai --test "test_01_simple_chat" --verbose
-
-# Utility commands
-python run_integration_tests.py --check-keys      # Check API key availability
-python run_integration_tests.py --show-models     # Show model configuration
-```
-
-##### `run_all_tests.py` - Simple Sequential Testing
-
-```bash
-# Run all integrations sequentially
-python run_all_tests.py
-
-# Run with custom configuration
-BIFROST_BASE_URL=https://your-bifrost.com python run_all_tests.py
-```
-
-#### 2. Using pytest Directly
-
-```bash
-# Run all tests for a integration
-pytest tests/integrations/test_openai.py -v
+# Run all tests for an integration
+uv run pytest tests/integrations/test_openai.py -v
 
 # Run specific test categories
-pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat -v
+uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat -v
 
 # Run with coverage
-pytest tests/integrations/ --cov=tests --cov-report=html
+uv run pytest tests/integrations/ --cov=tests --cov-report=html
 
 # Run with custom markers
-pytest tests/integrations/ -m "not slow" -v
+uv run pytest tests/integrations/ -m "not slow" -v
 ```
 
-#### 3. Selective Test Execution
+#### Selective Test Execution
 
 ```bash
 # Skip tests that require API keys you don't have
-pytest tests/integrations/test_openai.py -v  # Will skip if OPENAI_API_KEY not set
+uv run pytest tests/integrations/test_openai.py -v  # Will skip if OPENAI_API_KEY not set
 
 # Run only specific test methods
-pytest tests/integrations/test_anthropic.py -k "tool_call" -v
+uv run pytest tests/integrations/test_anthropic.py -k "tool_call" -v
 
 # Run with timeout
-pytest tests/integrations/ --timeout=300 -v
+uv run pytest tests/integrations/ --timeout=300 -v
 ```
 
 ### 🔍 Checking and Running Specific Tests
@@ -769,20 +829,20 @@ pytest tests/integrations/ --timeout=300 -v
 #### 🚀 Quick Commands (Most Common)
 
 ```bash
-# Run specific test for specific integration (your example!)
-python run_integration_tests.py --integrations google --test "test_03_single_tool_call"
+# Run specific test for specific integration
+uv run pytest tests/integrations/test_google.py::TestGoogleIntegration::test_03_single_tool_call -v
 
-# Run all tool calling tests across multiple integrations
-python run_integration_tests.py --integrations openai anthropic --test "tool_call"
+# Run all tool calling tests across all integrations
+uv run pytest -k "tool_call" -v
 
 # Run all tests for one integration
-python run_integration_tests.py --integrations openai -v
+uv run pytest tests/integrations/test_openai.py -v
 
-# Check what integrations are available
-python run_integration_tests.py --check-keys
+# Run tests in parallel (faster)
+uv run pytest -n auto
 
-# Run specific test with pytest directly
-pytest tests/integrations/test_google.py::TestGoogleIntegration::test_03_single_tool_call -v
+# Run with coverage
+uv run pytest --cov=tests --cov-report=html -v
 ```
 
 #### Quick Reference: Test Categories
@@ -973,68 +1033,61 @@ OPENAI_API_KEY=sk-test pytest tests/integrations/test_openai.py::TestOpenAIInteg
 #### Practical Testing Scenarios
 
 ```bash
-# Scenario 1: Test a new integration integration
+# Scenario 1: Test a new integration
 # 1. Check configuration
-python tests/utils/config_loader.py
+uv run python tests/utils/config_loader.py
 
 # 2. List available tests
-pytest tests/integrations/test_your_integration.py --collect-only
+uv run pytest tests/integrations/test_your_integration.py --collect-only
 
-# 3. Run basic tests first (using test runner)
-python run_integration_tests.py --integrations your_integration --test "test_01 or test_02" -v
+# 3. Run basic tests first
+uv run pytest tests/integrations/test_your_integration.py -k "test_01 or test_02" -v
 
-# 4. Test tool calling if supported (using test runner)
-python run_integration_tests.py --integrations your_integration --test "tool_call" -v
-
-# Alternative: Direct pytest approach
-pytest tests/integrations/test_your_integration.py -k "test_01 or test_02" -v
-pytest tests/integrations/test_your_integration.py -k "tool_call" -v
+# 4. Test tool calling if supported
+uv run pytest tests/integrations/test_your_integration.py -k "tool_call" -v
 
 # Scenario 2: Debug a failing tool call test
 # 1. Run with full debugging
-pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v -s --tb=long
+uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v -s --tb=long
 
 # 2. Check tool extraction function
-python -c "
+uv run python -c "
 from tests.integrations.test_openai import extract_openai_tool_calls
 print('Tool extraction function available:', callable(extract_openai_tool_calls))
 "
 
 # 3. Test with different model
-OPENAI_CHAT_MODEL=gpt-4 pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v
+OPENAI_CHAT_MODEL=gpt-4 uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v
 
 # Scenario 3: Compare integration capabilities
-# Run the same test across all integrations (using test runner)
-python run_integration_tests.py --integrations openai anthropic google litellm --test "test_01_simple_chat" -v
-
-# Alternative: Direct pytest approach
-pytest tests/integrations/ -k "test_01_simple_chat" -v --tb=short
+# Run the same test across all integrations
+uv run pytest tests/integrations/ -k "test_01_simple_chat" -v --tb=short
 
 # Scenario 4: Test only supported features
-# For a integration that doesn't support images
-pytest tests/integrations/test_your_integration.py -k "not (test_07 or test_08 or test_09 or test_10)" -v
+# For an integration that doesn't support images
+uv run pytest tests/integrations/test_your_integration.py -k "not (test_07 or test_08 or test_09 or test_10)" -v
 
 # Scenario 5: Performance testing
 # Run with timing to identify slow tests
-pytest tests/integrations/test_openai.py --durations=0 -v
+uv run pytest tests/integrations/test_openai.py --durations=0 -v
 
 # Scenario 6: Continuous integration testing
 # Run all tests with coverage and reports
-pytest tests/integrations/ --cov=tests --cov-report=xml --junit-xml=test_results.xml -v
+uv run pytest tests/integrations/ --cov=tests --cov-report=xml --junit-xml=test_results.xml -v
 ```
 
 #### Test Output Examples
 
 ```bash
 # Successful test run
-$ pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat -v
+$ uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat -v
 ========================= test session starts =========================
 tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat PASSED [100%]
 ✓ OpenAI simple chat test passed
-Response: "Hello! I'm Claude, an AI assistant. How can I help you today?"
+Response: "Hello! I'm an AI assistant. How can I help you today?"
 
 # Failed test with debugging info
-$ pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v -s
+$ uv run pytest tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call -v -s
 ========================= FAILURES =========================
 _____________ TestOpenAIIntegration.test_03_single_tool_call _____________
 AssertionError: Expected tool calls but got none
@@ -1042,7 +1095,7 @@ Response content: "I can help with weather information, but I need a specific lo
 Tool calls found: []
 
 # Test collection output
-$ pytest tests/integrations/test_openai.py --collect-only -q
+$ uv run pytest tests/integrations/test_openai.py --collect-only -q
 tests/integrations/test_openai.py::TestOpenAIIntegration::test_01_simple_chat
 tests/integrations/test_openai.py::TestOpenAIIntegration::test_02_multi_turn_conversation
 tests/integrations/test_openai.py::TestOpenAIIntegration::test_03_single_tool_call
@@ -1056,31 +1109,19 @@ tests/integrations/test_openai.py::TestOpenAIIntegration::test_10_complex_end2en
 tests/integrations/test_openai.py::TestOpenAIIntegration::test_11_integration_specific_features
 11 tests collected
 
-# Test runner script output
-$ python run_integration_tests.py --integrations google --test "test_03_single_tool_call" -v
-🚀 Starting integration tests...
-📋 Testing integrations: google
-============================================================
-🧪 TESTING GOOGLE INTEGRATION
-============================================================
+# Running all tests with summary
+$ uv run pytest tests/integrations/test_google.py::TestGoogleIntegration::test_03_single_tool_call -v
 ========================= test session starts =========================
 tests/integrations/test_google.py::TestGoogleIntegration::test_03_single_tool_call PASSED [100%]
-✅ GOOGLE tests PASSED
+✅ All tests passed
 
-================================================================================
-🎯 FINAL SUMMARY
-================================================================================
-
-🔑 API Key Status:
-  ✅ GOOGLE: Available
-
-📊 Test Results:
-  ✅ GOOGLE: All tests passed
-
-🏆 Overall Results:
-  Integrations tested: 1
-  Integrations passed: 1
-  Success rate: 100.0%
+# Running tests in parallel
+$ uv run pytest -n auto
+========================= test session starts =========================
+plugins: xdist-3.5.0, forked-2.0.0
+gw0 [11] / gw1 [11] / gw2 [11] / gw3 [11]
+...........                                                          [100%]
+========================= 11 passed in 5.21s =========================
 ```
 
 ### Environment Variables

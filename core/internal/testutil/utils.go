@@ -25,6 +25,15 @@ const (
 	TTSTestTextTechnical = "Bifrost AI Gateway is a sophisticated artificial intelligence proxy server that efficiently processes and routes audio requests, chat completions, embeddings, and various machine learning workloads across multiple provider endpoints. The system implements advanced load balancing algorithms, request queuing mechanisms, and intelligent failover strategies to ensure high availability and optimal performance. It supports multiple audio formats including MP3, WAV, FLAC, and OGG, with configurable bitrates, sample rates, and encoding parameters. The gateway handles authentication, rate limiting, request validation, response transformation, and comprehensive logging for enterprise-grade deployments. Performance metrics indicate sub-100ms latency for most operations with 99.9% uptime reliability."
 )
 
+func GetProviderDefaultFormat(provider schemas.ModelProvider) string {
+	switch provider {
+	case schemas.Gemini:
+		return "wav"
+	default:
+		return "mp3"
+	}
+}
+
 // GetProviderVoice returns an appropriate voice for the given provider
 func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 	switch provider {

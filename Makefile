@@ -11,6 +11,7 @@ TEST_REPORTS_DIR ?= test-reports
 GOTESTSUM_FORMAT ?= testname
 VERSION ?= dev-build
 LOCAL ?=
+DEBUG ?=
 
 # Colors for output
 RED=\033[0;31m
@@ -42,6 +43,7 @@ help: ## Show this help message
 	@echo "  LOG_LEVEL         Logger level: debug|info|warn|error (default: info)"
 	@echo "  APP_DIR           App data directory inside container (default: /app/data)"
 	@echo "  LOCAL             Use local go.work for builds (e.g., make build LOCAL=1)"
+	@echo "  DEBUG             Enable air + delve debugger on port 2345 (e.g., make dev DEBUG=1)"
 	@echo ""
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
@@ -63,6 +65,10 @@ install-ui: cleanup-enterprise
 install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || (echo "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@echo "$(GREEN)Air is ready$(NC)"
+
+install-delve: ## Install delve for debugging (if not already installed)
+	@which dlv > /dev/null || (echo "$(YELLOW)Installing delve for debugging...$(NC)" && go install github.com/go-delve/delve/cmd/dlv@latest)
+	@echo "$(GREEN)Delve is ready$(NC)"
 
 install-gotestsum: ## Install gotestsum for test reporting (if not already installed)
 	@which gotestsum > /dev/null || (echo "$(YELLOW)Installing gotestsum for test reporting...$(NC)" && go install gotest.tools/gotestsum@latest)
@@ -86,25 +92,44 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 		echo "$(YELLOW)CI environment detected, skipping junit-viewer installation$(NC)"; \
 	fi
 
-dev: install-ui install-air setup-workspace ## Start complete development environment (UI + API with proxy)
+dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment (UI + API with proxy)
 	@echo "$(GREEN)Starting Bifrost complete development environment...$(NC)"
 	@echo "$(YELLOW)This will start:$(NC)"
 	@echo "  1. UI development server (localhost:3000)"
 	@echo "  2. API server with UI proxy (localhost:$(PORT))"
 	@echo "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
+	@if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
 	@cd ui && npm run dev &
 	@sleep 3
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@$(MAKE) setup-workspace >/dev/null
-	@cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
-		-host "$(HOST)" \
-		-port "$(PORT)" \
-		-log-style "$(LOG_STYLE)" \
-		-log-level "$(LOG_LEVEL)" \
-		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
-		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)Starting with air + delve debugger on port 2345...$(NC)"; \
+		echo "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.debug.toml -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	else \
+		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	fi
 
 build-ui: install-ui ## Build ui
 	@echo "$(GREEN)Building ui...$(NC)"
@@ -542,6 +567,119 @@ test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TE
 		set -a; . ./.env; set +a; \
 	fi
 	@cd core && RUN_CHATBOT_TEST=1 go test -v -run TestChatbot
+
+test-integrations: ## Run Python integration tests (Usage: make test-integrations [INTEGRATION=openai] [TESTCASE=test_name] [VERBOSE=1])
+	@echo "$(GREEN)Running Python integration tests...$(NC)"
+	@if [ ! -d "tests/integrations" ]; then \
+		echo "$(RED)Error: tests/integrations directory not found$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -n "$(TESTCASE)" ] && [ -z "$(INTEGRATION)" ]; then \
+		echo "$(RED)Error: TESTCASE requires INTEGRATION to be specified$(NC)"; \
+		echo "$(YELLOW)Usage: make test-integrations INTEGRATION=anthropic TESTCASE=test_05_end2end_tool_calling$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	BIFROST_STARTED=0; \
+	BIFROST_PID=""; \
+	TAIL_PID=""; \
+	TEST_PORT=$${PORT:-8080}; \
+	TEST_HOST=$${HOST:-localhost}; \
+	echo "$(CYAN)Checking if Bifrost is running on $$TEST_HOST:$$TEST_PORT...$(NC)"; \
+	if curl -s -o /dev/null -w "%{http_code}" http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null | grep -q "200\|404"; then \
+		echo "$(GREEN)✓ Bifrost is already running$(NC)"; \
+	else \
+		echo "$(YELLOW)Bifrost not running, starting it...$(NC)"; \
+		./tmp/bifrost-http -host "$$TEST_HOST" -port "$$TEST_PORT" -log-style "$(LOG_STYLE)" -log-level "$(LOG_LEVEL)" -app-dir tests/integrations > /tmp/bifrost-test.log 2>&1 & \
+		BIFROST_PID=$$!; \
+		BIFROST_STARTED=1; \
+		echo "$(YELLOW)Waiting for Bifrost to be ready...$(NC)"; \
+		echo "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
+		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
+		TAIL_PID=$$!; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
+				echo "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
+				break; \
+			fi; \
+			if [ $$i -eq 10 ]; then \
+				echo "$(RED)Failed to start Bifrost$(NC)"; \
+				echo "$(YELLOW)Bifrost logs:$(NC)"; \
+				cat /tmp/bifrost-test.log 2>/dev/null || echo "No log file found"; \
+				[ -n "$$BIFROST_PID" ] && kill $$BIFROST_PID 2>/dev/null; \
+				[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null; \
+				exit 1; \
+			fi; \
+			sleep 1; \
+		done; \
+	fi; \
+	TEST_FAILED=0; \
+	if ! which uv > /dev/null 2>&1; then \
+		echo "$(YELLOW)uv not found, checking for pytest...$(NC)"; \
+		if ! which pytest > /dev/null 2>&1; then \
+			echo "$(RED)Error: Neither uv nor pytest found$(NC)"; \
+			echo "$(YELLOW)Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh$(NC)"; \
+			echo "$(YELLOW)Or install pytest: pip install pytest$(NC)"; \
+			[ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ] && kill $$BIFROST_PID 2>/dev/null; \
+			[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null; \
+			exit 1; \
+		fi; \
+		echo "$(CYAN)Using pytest directly$(NC)"; \
+		if [ -n "$(INTEGRATION)" ]; then \
+			if [ -n "$(TESTCASE)" ]; then \
+				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
+				cd tests/integrations && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			else \
+				echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
+				cd tests/integrations && pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			fi; \
+		else \
+			echo "$(CYAN)Running all integration tests...$(NC)"; \
+			cd tests/integrations && pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+		fi; \
+	else \
+		echo "$(CYAN)Using uv (fast mode)$(NC)"; \
+		cd tests/integrations && \
+		if [ ! -f .venv/bin/python ]; then \
+			echo "$(YELLOW)Installing dependencies with uv...$(NC)"; \
+			uv venv && uv pip install -r requirements.txt; \
+		fi; \
+		if [ -n "$(INTEGRATION)" ]; then \
+			if [ -n "$(TESTCASE)" ]; then \
+				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
+				uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			else \
+				echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
+				uv run pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			fi; \
+		else \
+			echo "$(CYAN)Running all integration tests...$(NC)"; \
+			uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+		fi; \
+	fi; \
+	if [ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ]; then \
+		echo "$(YELLOW)Stopping Bifrost (PID: $$BIFROST_PID)...$(NC)"; \
+		kill $$BIFROST_PID 2>/dev/null || true; \
+		[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null || true; \
+		wait $$BIFROST_PID 2>/dev/null || true; \
+		echo "$(GREEN)✓ Bifrost stopped$(NC)"; \
+		if [ $$TEST_FAILED -eq 1 ]; then \
+			echo ""; \
+			echo "$(YELLOW)Last 50 lines of Bifrost logs:$(NC)"; \
+			tail -50 /tmp/bifrost-test.log 2>/dev/null || echo "No log file found"; \
+		fi; \
+	fi; \
+	echo ""; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		echo "$(RED)✗ Integration tests failed$(NC)"; \
+		echo "$(CYAN)Full Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
+		exit 1; \
+	else \
+		echo "$(GREEN)✓ Integration tests complete$(NC)"; \
+	fi
 
 # Quick start with example config
 quick-start: ## Quick start with example config and maxim plugin

@@ -9,11 +9,13 @@ require (
 	github.com/aws/smithy-go v1.23.1
 	github.com/bytedance/sonic v1.14.1
 	github.com/google/uuid v1.6.0
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mark3labs/mcp-go v0.41.1
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.67.0
 	golang.org/x/oauth2 v0.32.0
+	golang.org/x/text v0.31.0
 )
 
 require (
@@ -51,7 +53,6 @@ require (
 	golang.org/x/arch v0.22.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

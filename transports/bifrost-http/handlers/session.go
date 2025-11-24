@@ -22,9 +22,6 @@ type SessionHandler struct {
 
 // NewSessionHandler creates a new session handler instance
 func NewSessionHandler(configStore configstore.ConfigStore) *SessionHandler {
-	if configStore == nil {
-		return nil
-	}
 	return &SessionHandler{
 		configStore: configStore,
 	}

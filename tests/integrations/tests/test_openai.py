@@ -56,7 +56,7 @@ import json
 from openai import OpenAI
 from typing import List, Dict, Any
 
-from ..utils.common import (
+from .utils.common import (
     Config,
     SIMPLE_CHAT_MESSAGES,
     MULTI_TURN_MESSAGES,
@@ -130,12 +130,12 @@ from ..utils.common import (
     assert_valid_text_completion_response,
     collect_text_completion_streaming_content,
 )
-from ..utils.config_loader import get_model
-from ..utils.parametrize import (
+from .utils.config_loader import get_model
+from .utils.parametrize import (
     get_cross_provider_params_for_scenario,
     format_provider_model,
 )
-from ..utils.config_loader import get_config
+from .utils.config_loader import get_config
 
 
 # Helper functions (defined early for use in test methods)
@@ -183,7 +183,7 @@ def convert_to_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 @pytest.fixture
 def openai_client():
     """Create OpenAI client for testing"""
-    from ..utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_integration_url, get_config
 
     api_key = get_api_key("openai")
     base_url = get_integration_url("openai")

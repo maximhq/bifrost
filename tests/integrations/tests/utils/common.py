@@ -23,7 +23,7 @@ class Config:
     debug: bool = False
 
 # Image Test Data
-IMAGE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
+IMAGE_URL = "https://pub-cdead89c2f004d8f963fd34010c479d0.r2.dev/Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
 IMAGE_URL_SECONDARY = "https://goo.gle/instrument-img"
 
 # Small test image as base64 (1x1 pixel red PNG)
@@ -468,6 +468,7 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
                 if hasattr(tool_call, "function"):
                     tool_calls.append(
                         {
+                            "id": tool_call.id,
                             "name": tool_call.function.name,
                             "arguments": (
                                 json.loads(tool_call.function.arguments)
@@ -483,6 +484,7 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
             if hasattr(tool_call, "function"):
                 tool_calls.append(
                     {
+                        "id": tool_call.id,
                         "name": tool_call.function.name,
                         "arguments": (
                             json.loads(tool_call.function.arguments)
@@ -496,7 +498,7 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
     elif hasattr(response, "content") and isinstance(response.content, list):
         for content in response.content:
             if hasattr(content, "type") and content.type == "tool_use":
-                tool_calls.append({"name": content.name, "arguments": content.input})
+                tool_calls.append({"id": content.id, "name": content.name, "arguments": content.input})
 
     # Handle Bedrock format
     elif isinstance(response, dict) and "output" in response and "message" in response["output"]:
@@ -563,6 +565,7 @@ def assert_has_tool_calls(response: Any, expected_count: Optional[int] = None):
 
     # Validate tool call structure
     for tool_call in tool_calls:
+        assert "id" in tool_call, "Tool call should have an ID"
         assert "name" in tool_call, "Tool call should have a name"
         assert "arguments" in tool_call, "Tool call should have arguments"
 
@@ -606,6 +609,32 @@ def assert_valid_image_response(response: Any):
         "appear",
         "color",
         "scene",
+        # Action/descriptive verbs
+        "depicts",
+        "displays",
+        "contains",
+        "features",
+        "includes",
+        "shows",
+        "has",
+        "presents",
+        # Demonstrative phrases
+        "this is",
+        "there is",
+        "there are",
+        "here is",
+        "it is",
+        # Visual descriptors
+        "visible",
+        "shown",
+        "depicted",
+        "appearing",
+        "illustrated",
+        # Structural words
+        "with",
+        "showing",
+        "displaying",
+        "featuring",
     ]
     has_image_reference = any(keyword in content for keyword in image_keywords)
 
@@ -1550,7 +1579,7 @@ def get_api_key(integration: str) -> str:
     key_map = {
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
-        "google": "GOOGLE_API_KEY",
+        "google": "GEMINI_API_KEY",
         "litellm": "LITELLM_API_KEY",
         "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
     }

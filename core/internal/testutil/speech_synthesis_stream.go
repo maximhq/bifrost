@@ -1,14 +1,15 @@
 package testutil
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -38,7 +39,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				name:            "ShortText_Streaming",
 				text:            "This is a short text for streaming speech synthesis test.",
 				voice:           GetProviderVoice(testConfig.Provider, "primary"),
-				format:          "mp3",
+				format:          GetProviderDefaultFormat(testConfig.Provider),
 				expectMinChunks: 1,
 				expectMinBytes:  1000,
 				skip:            false,
@@ -50,7 +51,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				       real-time playback while the rest of the audio is still being processed. 
 				       This enables better user experience with reduced latency.`,
 				voice:           GetProviderVoice(testConfig.Provider, "secondary"),
-				format:          "mp3",
+				format:          GetProviderDefaultFormat(testConfig.Provider),
 				expectMinChunks: 2,
 				expectMinBytes:  3000,
 				skip:            testConfig.Provider == schemas.Gemini,
@@ -133,6 +134,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				var lastResponse *schemas.BifrostStream
 				var streamErrors []string
 				var lastTokenLatency int64
+				var audioBuffer bytes.Buffer // Accumulate audio chunks for validation
 
 				// Read streaming chunks with enhanced validation
 				for response := range responseChannel {
@@ -171,6 +173,8 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							t.Logf("⚠️ Skipping zero-length audio chunk")
 							continue
 						}
+						// Accumulate audio data for codec validation
+						audioBuffer.Write(response.BifrostSpeechStreamResponse.Audio)
 						totalBytes += chunkSize
 						chunkCount++
 						t.Logf("✅ Received audio chunk %d: %d bytes", chunkCount, chunkSize)
@@ -211,11 +215,30 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 				averageChunkSize := totalBytes / chunkCount
 				if averageChunkSize < 100 {
-					t.Logf("⚠️ Average chunk size seems small: %d bytes", averageChunkSize)
+					t.Logf("Average chunk size seems small: %d bytes", averageChunkSize)
 				}
 
 				if lastTokenLatency == 0 {
 					t.Fatalf("❌ Last token latency is 0")
+				}
+
+				// Save audio to temp file, validate codec, and cleanup after test
+				if audioBuffer.Len() > 0 {
+					var err error
+					audioData := audioBuffer.Bytes()
+					if testConfig.Provider == schemas.Gemini {
+						audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+						if err != nil {
+							t.Fatalf("Failed to convert PCM to WAV: %v", err)
+						}
+					}
+					filePath, validationErr := SaveAndValidateAudio(t, audioData)
+					if validationErr != nil {
+						t.Fatalf("Audio codec validation failed: %v", validationErr)
+					}
+					t.Logf("Audio file validated successfully: %s", filePath)
+				} else {
+					t.Fatal("No audio data accumulated for codec validation")
 				}
 
 				t.Logf("✅ Streaming speech synthesis successful: %d chunks, %d total bytes for voice '%s' in %s format",
@@ -260,7 +283,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					VoiceConfig: &schemas.SpeechVoiceInput{
 						Voice: &voice,
 					},
-					ResponseFormat: "mp3",
+					ResponseFormat: GetProviderDefaultFormat(testConfig.Provider),
 					Instructions:   "Speak at a natural pace with clear pronunciation.",
 				},
 				Fallbacks: testConfig.SpeechSynthesisFallbacks,
@@ -295,6 +318,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			var chunkCount int
 			var streamErrors []string
 			var lastTokenLatency int64
+			var audioBuffer bytes.Buffer // Accumulate audio chunks for validation
 
 			for response := range responseChannel {
 				if response == nil {
@@ -317,6 +341,8 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 						t.Logf("⚠️ Skipping zero-length HD audio chunk")
 						continue
 					}
+					// Accumulate audio data for codec validation
+					audioBuffer.Write(response.BifrostSpeechStreamResponse.Audio)
 					totalBytes += chunkSize
 					chunkCount++
 					t.Logf("✅ HD chunk %d: %d bytes", chunkCount, chunkSize)
@@ -341,6 +367,26 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 
 			if lastTokenLatency == 0 {
 				t.Fatalf("❌ Last token latency is 0")
+			}
+
+			// Save audio to temp file, validate codec, and cleanup after test
+			if audioBuffer.Len() > 0 {
+				// If provider is Gemini, we will have to convert the PCM bytes to WAV bytes
+				var err error
+				audioData := audioBuffer.Bytes()
+				if testConfig.Provider == schemas.Gemini {
+					audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+					if err != nil {
+						t.Fatalf("Failed to convert PCM to WAV: %v", err)
+					}
+				}
+				filePath, validationErr := SaveAndValidateAudio(t, audioData)
+				if validationErr != nil {
+					t.Fatalf("Audio codec validation failed: %v", validationErr)
+				}
+				t.Logf("Audio file validated successfully (detected format: %s): %s", GetProviderDefaultFormat(testConfig.Provider), filePath)
+			} else {
+				t.Fatal("No audio data accumulated for codec validation")
 			}
 
 			t.Logf("✅ HD streaming successful: %d chunks, %d total bytes", chunkCount, totalBytes)
@@ -388,7 +434,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 							VoiceConfig: &schemas.SpeechVoiceInput{
 								Voice: &voiceCopy,
 							},
-							ResponseFormat: "mp3",
+							ResponseFormat: GetProviderDefaultFormat(testConfig.Provider),
 						},
 						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
@@ -409,11 +455,13 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					requestCtx := context.Background()
 
 					// Use retry framework with stream validation
+					var accumulatedAudio bytes.Buffer // Accumulate audio for codec validation
 					validationResult := WithSpeechStreamValidationRetry(
 						t,
 						retryConfig,
 						retryContext,
 						func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+							accumulatedAudio.Reset() // Reset buffer on retry
 							return client.SpeechStreamRequest(requestCtx, request)
 						},
 						func(responseChannel chan *schemas.BifrostStream) SpeechStreamValidationResult {
@@ -440,6 +488,8 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 
 								if response.BifrostSpeechStreamResponse != nil && response.BifrostSpeechStreamResponse.Audio != nil && len(response.BifrostSpeechStreamResponse.Audio) > 0 {
 									receivedData = true
+									// Accumulate audio data for codec validation
+									accumulatedAudio.Write(response.BifrostSpeechStreamResponse.Audio)
 									t.Logf("✅ Received data for voice %s: %d bytes", voiceCopy, len(response.BifrostSpeechStreamResponse.Audio))
 								}
 							}
@@ -471,6 +521,25 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 					if !validationResult.Passed {
 						allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
 						t.Fatalf("❌ Speech streaming validation failed for voice %s: %s", voiceCopy, strings.Join(allErrors, "; "))
+					}
+
+					// Save audio to temp file, validate codec, and cleanup after test
+					if accumulatedAudio.Len() > 0 {
+						var err error
+						audioData := accumulatedAudio.Bytes()
+						if testConfig.Provider == schemas.Gemini {
+							audioData, err = utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+							if err != nil {
+								t.Fatalf("Failed to convert PCM to WAV: %v", err)
+							}
+						}
+						filePath, validationErr := SaveAndValidateAudio(t, audioData)
+						if validationErr != nil {
+							t.Fatalf("❌ Audio codec validation failed for voice %s: %v", voiceCopy, validationErr)
+						}
+						t.Logf("🎵 Audio file validated successfully for voice %s: %s", voiceCopy, filePath)
+					} else {
+						t.Fatalf("❌ No audio data accumulated for codec validation (voice: %s)", voiceCopy)
 					}
 
 					t.Logf("✅ Streaming successful for voice: %s", voiceCopy)

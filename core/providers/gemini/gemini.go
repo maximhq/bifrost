@@ -17,6 +17,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const (
+	BifrostContextKeyResponseFormat schemas.BifrostContextKey = "bifrost_context_key_response_format"
+)
+
 type GeminiProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
@@ -363,7 +367,6 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
-
 	// Use the shared embedding request handler
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
@@ -389,7 +392,7 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, req
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiSpeechRequest(request), nil },
+		func() (any, error) { return ToGeminiSpeechRequest(request) },
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -400,15 +403,17 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, req
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	response := geminiResponse.ToBifrostSpeechResponse()
+	ctx = context.WithValue(ctx, BifrostContextKeyResponseFormat, request.Params.ResponseFormat)
+	response, convErr := geminiResponse.ToBifrostSpeechResponse(ctx)
+	if convErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr, provider.GetProviderKey())
+	}
 
 	// Set ExtraFields
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.SpeechRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
-
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -429,7 +434,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiSpeechRequest(request), nil },
+		func() (any, error) { return ToGeminiSpeechRequest(request) },
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr

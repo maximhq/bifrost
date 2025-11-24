@@ -1,8 +1,11 @@
 package gemini
 
 import (
+	"context"
+	"fmt"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -87,19 +90,22 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest() *schemas.Bifros
 	return bifrostReq
 }
 
-func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGenerationRequest {
+// ToGeminiSpeechRequest converts a BifrostSpeechRequest to a GeminiGenerationRequest
+func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
-		return nil
+		return nil, fmt.Errorf("bifrostReq is nil")
 	}
-
+	// Here we confirm if the response_format is wav or empty string
+	// If its anything else, we will return an error
+	if bifrostReq.Params.ResponseFormat != "" && bifrostReq.Params.ResponseFormat != "wav" {
+		return nil, fmt.Errorf("gemini does not support response_format: %s. Only wav or empty string is supported which defaults to wav", bifrostReq.Params.ResponseFormat)
+	}
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{
 		Model: bifrostReq.Model,
 	}
-
 	// Convert parameters to generation config
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
-
 	// Convert speech input to Gemini format
 	if bifrostReq.Input.Input != "" {
 		geminiReq.Contents = []Content{
@@ -111,7 +117,6 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGene
 				},
 			},
 		}
-
 		// Add speech config to generation config if voice config is provided
 		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig != nil {
 			// Handle both single voice and multi-voice configurations
@@ -120,12 +125,11 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GeminiGene
 			}
 		}
 	}
-
-	return geminiReq
+	return geminiReq, nil
 }
 
 // ToBifrostSpeechResponse converts a GenerateContentResponse to a BifrostSpeechResponse
-func (response *GenerateContentResponse) ToBifrostSpeechResponse() *schemas.BifrostSpeechResponse {
+func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Context) (*schemas.BifrostSpeechResponse, error) {
 	bifrostResp := &schemas.BifrostSpeechResponse{}
 
 	// Process candidates to extract audio content
@@ -133,7 +137,6 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse() *schemas.Bifr
 		candidate := response.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			var audioData []byte
-
 			// Extract audio data from all parts
 			for _, part := range candidate.Content.Parts {
 				if part.InlineData != nil && part.InlineData.Data != nil {
@@ -143,14 +146,23 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse() *schemas.Bifr
 					}
 				}
 			}
-
 			if len(audioData) > 0 {
-				bifrostResp.Audio = audioData
+				responseFormat := ctx.Value(BifrostContextKeyResponseFormat).(string)
+				// Gemini returns PCM audio (s16le, 24000 Hz, mono)
+				// Convert to WAV for standard playable output format
+				if responseFormat == "wav" {
+					wavData, err := utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)
+					}
+					bifrostResp.Audio = wavData
+				}else{
+					bifrostResp.Audio = audioData
+				}
 			}
 		}
 	}
-
-	return bifrostResp
+	return bifrostResp, nil
 }
 
 // ToGeminiSpeechResponse converts a BifrostSpeechResponse to Gemini's GenerateContentResponse

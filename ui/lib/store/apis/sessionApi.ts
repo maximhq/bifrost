@@ -20,9 +20,9 @@ export interface LogoutResponse {
 }
 
 export const sessionApi = baseApi.injectEndpoints({
-  overrideExisting: false,
+	overrideExisting: false,
 	endpoints: (builder) => ({
-		// Check if auth is enabled    
+		// Check if auth is enabled
 		isAuthEnabled: builder.query<IsAuthEnabledResponse, void>({
 			query: () => ({
 				url: "/session/is-auth-enabled",
@@ -50,7 +50,6 @@ export const sessionApi = baseApi.injectEndpoints({
 				try {
 					await queryFulfilled;
 				} catch (error) {
-          // Do nothing
 				} finally {
 					clearAuthStorage();
 				}
