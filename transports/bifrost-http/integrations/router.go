@@ -67,7 +67,7 @@ import (
 // ExtensionRouter defines the interface that all integration routers must implement
 // to register their routes with the main HTTP router.
 type ExtensionRouter interface {
-	RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware)
+	RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
 }
 
 // StreamingRequest interface for requests that support streaming
@@ -230,7 +230,7 @@ func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, ro
 
 // RegisterRoutes registers all configured routes on the given fasthttp router.
 // This method implements the ExtensionRouter interface.
-func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
 		method := strings.ToUpper(route.Method)

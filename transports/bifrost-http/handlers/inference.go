@@ -271,7 +271,7 @@ const (
 )
 
 // RegisterRoutes registers all completion-related routes
-func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Model endpoints
 	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 

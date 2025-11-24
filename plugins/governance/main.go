@@ -10,11 +10,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/valyala/fasthttp"
 )
 
 // PluginName is the name of the governance plugin
@@ -153,53 +155,82 @@ func (p *GovernancePlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor intercepts requests before they are processed (governance decision point)
-func (p *GovernancePlugin) TransportInterceptor(ctx *context.Context, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+func parseVirtualKey(ctx *fasthttp.RequestCtx) *string {
 	var virtualKeyValue string
-	var err error
-
-	for header, value := range headers {
-		headerStr := strings.ToLower(header)
-		if headerStr == string(schemas.BifrostContextKeyVirtualKey) {
-			virtualKeyValue = string(value)
-			break
-		}
-		if headerStr == "authorization" {
-			valueStr := string(value)
-			// Only accept Bearer token format: "Bearer ..."
-			if strings.HasPrefix(strings.ToLower(valueStr), "bearer ") {
-				authHeaderValue := strings.TrimSpace(valueStr[7:]) // Remove "Bearer " prefix
-				if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-					virtualKeyValue = authHeaderValue
-					break
-				}
+	vkHeader := ctx.Request.Header.Peek("x-bf-vk")
+	if string(vkHeader) != "" {
+		return bifrost.Ptr(string(vkHeader))
+	}
+	authHeader := string(ctx.Request.Header.Peek("Authorization"))
+	if authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+				virtualKeyValue = authHeaderValue
 			}
 		}
-		if headerStr == "x-api-key" && strings.HasPrefix(strings.ToLower(string(value)), VirtualKeyPrefix) {
-			virtualKeyValue = string(value)
-			break
+	}
+	if virtualKeyValue != "" {
+		return bifrost.Ptr(virtualKeyValue)
+	}
+	xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xAPIKey)
+	}
+	return nil
+}
+
+// HTTPTransportMiddleware intercepts requests before they are processed (governance decision point)
+func (p *GovernancePlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			virtualKeyValue := parseVirtualKey(ctx)
+			if virtualKeyValue == nil {
+				next(ctx)
+				return
+			}
+			// Get the virtual key from the store
+			virtualKey, ok := p.store.GetVirtualKey(*virtualKeyValue)
+			if !ok || virtualKey == nil || !virtualKey.IsActive {
+				next(ctx)
+				return
+			}
+			headers, err := p.addMCPIncludeTools(nil, virtualKey)
+			if err != nil {
+				p.logger.Error("failed to add MCP include tools: %v", err)
+				next(ctx)
+				return
+			}
+			for header, value := range headers {
+				ctx.Request.Header.Set(header, value)
+			}
+			if ctx.Request.Body() == nil {
+				next(ctx)
+				return
+			}
+			var payload map[string]any
+			err = sonic.Unmarshal(ctx.Request.Body(), &payload)
+			if err != nil {
+				p.logger.Error("failed to marshal request body to check for virtual key: %v", err)
+				next(ctx)
+				return
+			}
+			payload, err = p.loadBalanceProvider(payload, virtualKey)
+			if err != nil {
+				p.logger.Error("failed to load balance provider: %v", err)
+				next(ctx)
+				return
+			}
+			body, err := sonic.Marshal(payload)
+			if err != nil {
+				p.logger.Error("failed to marshal request body to check for virtual key: %v", err)
+				next(ctx)
+				return
+			}
+			ctx.Request.SetBody(body)
+			next(ctx)
 		}
 	}
-	if virtualKeyValue == "" {
-		return headers, body, nil
-	}
-
-	virtualKey, ok := p.store.GetVirtualKey(virtualKeyValue)
-	if !ok || virtualKey == nil || !virtualKey.IsActive {
-		return headers, body, nil
-	}
-
-	body, err = p.loadBalanceProvider(body, virtualKey)
-	if err != nil {
-		return headers, body, err
-	}
-
-	headers, err = p.addMCPIncludeTools(headers, virtualKey)
-	if err != nil {
-		return headers, body, err
-	}
-
-	return headers, body, nil
 }
 
 func (p *GovernancePlugin) loadBalanceProvider(body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, error) {
@@ -342,7 +373,7 @@ func (p *GovernancePlugin) PreHook(ctx *context.Context, req *schemas.BifrostReq
 					Type:       bifrost.Ptr("virtual_key_required"),
 					StatusCode: bifrost.Ptr(400),
 					Error: &schemas.ErrorField{
-						Message: "x-bf-vk header is missing",
+						Message: "virtual key is missing or invalid",
 					},
 				},
 			}, nil

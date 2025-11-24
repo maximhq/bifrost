@@ -39,7 +39,7 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 }
 
 // RegisterRoutes registers all logging-related routes
-func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))

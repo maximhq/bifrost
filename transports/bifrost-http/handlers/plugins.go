@@ -50,7 +50,7 @@ type UpdatePluginRequest struct {
 }
 
 // RegisterRoutes registers the routes for the PluginsHandler
-func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/plugins", lib.ChainMiddlewares(h.getPlugins, middlewares...))
 	r.GET("/api/plugins/{name}", lib.ChainMiddlewares(h.getPlugin, middlewares...))
 	r.POST("/api/plugins", lib.ChainMiddlewares(h.createPlugin, middlewares...))

@@ -843,7 +843,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 }
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
-func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
@@ -852,7 +852,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 }
 
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
@@ -932,7 +932,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 }
 
 // RegisterUIRoutes registers the UI handler with the specified router
-func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...lib.BifrostHTTPMiddleware) {
+func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
@@ -964,8 +964,8 @@ func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids [
 }
 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
-func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []lib.BifrostHTTPMiddleware {
-	commonMiddlewares := []lib.BifrostHTTPMiddleware{}
+func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
+	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
