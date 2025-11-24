@@ -1718,22 +1718,51 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 		}
 	}
 
+	// Update in-memory configuration first (so client can read updated config)
+	c.Providers[provider] = config
+
+	// Update provider in database within a transaction
+	var dbErr error
 	if c.ConfigStore != nil {
-		if err := c.ConfigStore.UpdateProvider(ctx, provider, config, c.EnvKeys); err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				return ErrNotFound
+		dbErr = c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			if err := c.ConfigStore.UpdateProvider(ctx, provider, config, c.EnvKeys, tx); err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return ErrNotFound
+				}
+				return fmt.Errorf("failed to update provider config in store: %w", err)
 			}
-			return fmt.Errorf("failed to update provider config in store: %w", err)
-		}
-		if err := c.ConfigStore.UpdateEnvKeys(ctx, c.EnvKeys); err != nil {
-			if errors.Is(err, configstore.ErrNotFound) {
-				return ErrNotFound
+			if err := c.ConfigStore.UpdateEnvKeys(ctx, c.EnvKeys, tx); err != nil {
+				if errors.Is(err, configstore.ErrNotFound) {
+					return ErrNotFound
+				}
+				return fmt.Errorf("failed to update env keys: %w", err)
 			}
-			logger.Warn("failed to update env keys: %v", err)
+			return nil
+		})
+		if dbErr != nil {
+			// Rollback in-memory changes if database transaction failed
+			c.Providers[provider] = existingConfig
+			return dbErr
 		}
 	}
 
-	c.Providers[provider] = config
+	// Release lock before calling client.UpdateProvider to avoid deadlock
+	// client.UpdateProvider will call GetConfigForProvider which needs RLock
+	c.Mu.Unlock()
+
+	// Update client provider - this may acquire its own locks
+	clientErr := c.client.UpdateProvider(provider)
+
+	// Re-acquire lock for cleanup (defer will unlock at function return)
+	c.Mu.Lock()
+
+	if clientErr != nil {
+		// Rollback in-memory changes if client update failed
+		c.Providers[provider] = existingConfig
+		// If database was updated, we can't rollback the transaction here
+		// but the in-memory state will be consistent
+		return fmt.Errorf("failed to update provider: %w", clientErr)
+	}
 
 	logger.Info("Updated configuration for provider: %s", provider)
 	return nil

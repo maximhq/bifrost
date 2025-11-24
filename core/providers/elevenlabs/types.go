@@ -149,10 +149,11 @@ type ElevenlabsSpeechToTextWebhookResponse struct {
 
 // ERROR TYPES
 type ElevenlabsError struct {
-	Detail []struct {
-		Loc  []string `json:"loc,omitempty"`
-		Msg  *string  `json:"msg,omitempty"`
-		Type *string  `json:"type,omitempty"`
+	Detail struct {
+		Type    *string  `json:"type,omitempty"`
+		Loc     []string `json:"loc,omitempty"`
+		Message *string  `json:"message,omitempty"`
+		Status  *string  `json:"status,omitempty"`
 	} `json:"detail"`
 }
 

@@ -730,6 +730,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.SpeechRequest(*bifrostCtx, bifrostSpeechReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
+		return
 	}
 
 	// Send successful response

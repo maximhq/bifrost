@@ -76,13 +76,13 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 	// Check for unique constraint violations
 	// SQLite format: "UNIQUE constraint failed: table_name.column_name"
 	// PostgreSQL format: "ERROR: duplicate key value violates unique constraint"
-	
-	if strings.Contains(errMsg, "UNIQUE constraint failed") || 
-	   strings.Contains(errMsg, "duplicate key value violates unique constraint") {
-		
+
+	if strings.Contains(errMsg, "UNIQUE constraint failed") ||
+		strings.Contains(errMsg, "duplicate key value violates unique constraint") {
+
 		// Extract column name from error message
 		var columnName string
-		
+
 		// SQLite: extract from "UNIQUE constraint failed: table.column"
 		if strings.Contains(errMsg, "UNIQUE constraint failed") {
 			parts := strings.Split(errMsg, "UNIQUE constraint failed:")
@@ -99,7 +99,7 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 			// PostgreSQL: try to extract from constraint name or detail
 			// Example: duplicate key value violates unique constraint "idx_key_name"
 			// Detail: Key (name)=(value) already exists.
-			
+
 			// First try to extract from Detail
 			if strings.Contains(errMsg, "Key (") {
 				startIdx := strings.Index(errMsg, "Key (")
@@ -110,7 +110,7 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 						columnName = rest[:endIdx]
 					}
 				}
-			}			
+			}
 			// If not found, try to parse from constraint name
 			if columnName == "" {
 				// Extract constraint name
@@ -131,17 +131,17 @@ func (s *RDBConfigStore) parseGormError(err error) error {
 					}
 				}
 			}
-		}		
+		}
 		// Clean up column name (remove underscores, convert to readable format)
 		if columnName != "" {
 			// Convert snake_case to space-separated words
 			columnName = strings.ReplaceAll(columnName, "_", " ")
 			return fmt.Errorf("a record with this %s already exists. Please use a different value", columnName)
-		}		
+		}
 		// Fallback message if we couldn't parse the column name
 		return fmt.Errorf("a record with this value already exists. Please use a different value")
 	}
-	
+
 	// For other errors, return the original error
 	// Future: add handling for foreign key violations, not null constraints, etc.
 	return err
@@ -197,20 +197,25 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 }
 
 // UpdateProvidersConfig updates the client configuration in the database.
-func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		for providerName, providerConfig := range providers {
-			dbProvider := tables.TableProvider{
-				Name:                     string(providerName),
-				NetworkConfig:            providerConfig.NetworkConfig,
-				ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
-				ProxyConfig:              providerConfig.ProxyConfig,
-				SendBackRawResponse:      providerConfig.SendBackRawResponse,
-				CustomProviderConfig:     providerConfig.CustomProviderConfig,
-			}
+func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	for providerName, providerConfig := range providers {
+		dbProvider := tables.TableProvider{
+			Name:                     string(providerName),
+			NetworkConfig:            providerConfig.NetworkConfig,
+			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
+			ProxyConfig:              providerConfig.ProxyConfig,
+			SendBackRawResponse:      providerConfig.SendBackRawResponse,
+			CustomProviderConfig:     providerConfig.CustomProviderConfig,
+		}
 
 		// Upsert provider (create or update if exists)
-		if err := tx.WithContext(ctx).Clauses(
+		if err := txDB.WithContext(ctx).Clauses(
 			clause.OnConflict{
 				Columns:   []clause.Column{{Name: "name"}},
 				UpdateAll: true,
@@ -220,288 +225,299 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			return s.parseGormError(err)
 		}
 
-			// Create keys for this provider
-			dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
-			for _, key := range providerConfig.Keys {
-				dbKey := tables.TableKey{
-					Provider:         dbProvider.Name,
-					ProviderID:       dbProvider.ID,
-					KeyID:            key.ID,
-					Name:             key.Name,
-					Value:            key.Value,
-					Models:           key.Models,
-					Weight:           key.Weight,
-					AzureKeyConfig:   key.AzureKeyConfig,
-					VertexKeyConfig:  key.VertexKeyConfig,
-					BedrockKeyConfig: key.BedrockKeyConfig,
-				}
-
-				// Handle Azure config
-				if key.AzureKeyConfig != nil {
-					dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-					dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
-				}
-
-				// Handle Vertex config
-				if key.VertexKeyConfig != nil {
-					dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-					dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-					dbKey.VertexRegion = &key.VertexKeyConfig.Region
-					dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-				}
-
-				// Handle Bedrock config
-				if key.BedrockKeyConfig != nil {
-					dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-					dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-					dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-					dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-					dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-				}
-
-				dbKeys = append(dbKeys, dbKey)
+		// Create keys for this provider
+		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
+		for _, key := range providerConfig.Keys {
+			dbKey := tables.TableKey{
+				Provider:         dbProvider.Name,
+				ProviderID:       dbProvider.ID,
+				KeyID:            key.ID,
+				Name:             key.Name,
+				Value:            key.Value,
+				Models:           key.Models,
+				Weight:           key.Weight,
+				AzureKeyConfig:   key.AzureKeyConfig,
+				VertexKeyConfig:  key.VertexKeyConfig,
+				BedrockKeyConfig: key.BedrockKeyConfig,
 			}
 
-			// Upsert keys to handle duplicates properly
-			for _, dbKey := range dbKeys {
-				// First try to find existing key by KeyID
-				var existingKey tables.TableKey
-				result := tx.WithContext(ctx).Where("key_id = ?", dbKey.KeyID).First(&existingKey)
+			// Handle Azure config
+			if key.AzureKeyConfig != nil {
+				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+			}
+
+			// Handle Vertex config
+			if key.VertexKeyConfig != nil {
+				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
+				dbKey.VertexRegion = &key.VertexKeyConfig.Region
+				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+			}
+
+			// Handle Bedrock config
+			if key.BedrockKeyConfig != nil {
+				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			}
+
+			dbKeys = append(dbKeys, dbKey)
+		}
+
+		// Upsert keys to handle duplicates properly
+		for _, dbKey := range dbKeys {
+			// First try to find existing key by KeyID
+			var existingKey tables.TableKey
+			result := txDB.WithContext(ctx).Where("key_id = ?", dbKey.KeyID).First(&existingKey)
 
 			if result.Error == nil {
 				// Update existing key with new data
-				dbKey.ID = existingKey.ID             // Keep the same database ID
+				dbKey.ID = existingKey.ID                 // Keep the same database ID
 				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
-				if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
+				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
-				} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-					// Create new key
-					if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
-						return s.parseGormError(err)
-					}
-				} else {
-					// Other error occurred
-					return result.Error
+			} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				// Create new key
+				if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
+					return s.parseGormError(err)
 				}
+			} else {
+				// Other error occurred
+				return result.Error
 			}
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // UpdateProvider updates a single provider configuration in the database without deleting/recreating.
-func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Find the existing provider
-		var dbProvider tables.TableProvider
-		if err := tx.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
+func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	// Find the existing provider
+	var dbProvider tables.TableProvider
+	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	// Create a deep copy of the config to avoid modifying the original
+	configCopy, err := deepCopy(config)
+	if err != nil {
+		return err
+	}
+	// Substitute environment variables back to their original form
+	substituteEnvVars(&configCopy, provider, envKeys)
+
+	// Update provider fields
+	dbProvider.NetworkConfig = configCopy.NetworkConfig
+	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
+	dbProvider.ProxyConfig = configCopy.ProxyConfig
+	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
+	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
+
+	// Save the updated provider
+	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	// Get existing keys for this provider
+	var existingKeys []tables.TableKey
+	if err := txDB.WithContext(ctx).Where("provider_id = ?", dbProvider.ID).Find(&existingKeys).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	// Create a map of existing keys by KeyID for quick lookup
+	existingKeysMap := make(map[string]tables.TableKey)
+	for _, key := range existingKeys {
+		existingKeysMap[key.KeyID] = key
+	}
+
+	// Process each key in the new config
+	for _, key := range configCopy.Keys {
+		dbKey := tables.TableKey{
+			Provider:         dbProvider.Name,
+			ProviderID:       dbProvider.ID,
+			KeyID:            key.ID,
+			Name:             key.Name,
+			Value:            key.Value,
+			Models:           key.Models,
+			Weight:           key.Weight,
+			AzureKeyConfig:   key.AzureKeyConfig,
+			VertexKeyConfig:  key.VertexKeyConfig,
+			BedrockKeyConfig: key.BedrockKeyConfig,
 		}
 
-		// Create a deep copy of the config to avoid modifying the original
-		configCopy, err := deepCopy(config)
-		if err != nil {
-			return err
-		}
-		// Substitute environment variables back to their original form
-		substituteEnvVars(&configCopy, provider, envKeys)
-
-		// Update provider fields
-		dbProvider.NetworkConfig = configCopy.NetworkConfig
-		dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
-		dbProvider.ProxyConfig = configCopy.ProxyConfig
-		dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
-		dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
-
-		// Save the updated provider
-		if err := tx.WithContext(ctx).Save(&dbProvider).Error; err != nil {
-			return s.parseGormError(err)
+		// Handle Azure config
+		if key.AzureKeyConfig != nil {
+			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
 		}
 
-		// Get existing keys for this provider
-		var existingKeys []tables.TableKey
-		if err := tx.WithContext(ctx).Where("provider_id = ?", dbProvider.ID).Find(&existingKeys).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
+		// Handle Vertex config
+		if key.VertexKeyConfig != nil {
+			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
+			dbKey.VertexRegion = &key.VertexKeyConfig.Region
+			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 		}
 
-		// Create a map of existing keys by KeyID for quick lookup
-		existingKeysMap := make(map[string]tables.TableKey)
-		for _, key := range existingKeys {
-			existingKeysMap[key.KeyID] = key
+		// Handle Bedrock config
+		if key.BedrockKeyConfig != nil {
+			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
 		}
 
-		// Process each key in the new config
-		for _, key := range configCopy.Keys {
-			dbKey := tables.TableKey{
-				Provider:         dbProvider.Name,
-				ProviderID:       dbProvider.ID,
-				KeyID:            key.ID,
-				Name:             key.Name,
-				Value:            key.Value,
-				Models:           key.Models,
-				Weight:           key.Weight,
-				AzureKeyConfig:   key.AzureKeyConfig,
-				VertexKeyConfig:  key.VertexKeyConfig,
-				BedrockKeyConfig: key.BedrockKeyConfig,
+		// Check if this key already exists
+		if existingKey, exists := existingKeysMap[key.ID]; exists {
+			// Update existing key - preserve the database ID
+			dbKey.ID = existingKey.ID
+			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
+				return s.parseGormError(err)
 			}
-
-			// Handle Azure config
-			if key.AzureKeyConfig != nil {
-				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
-			}
-
-			// Handle Vertex config
-			if key.VertexKeyConfig != nil {
-				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-				dbKey.VertexRegion = &key.VertexKeyConfig.Region
-				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			}
-
-			// Handle Bedrock config
-			if key.BedrockKeyConfig != nil {
-				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			}
-
-			// Check if this key already exists
-			if existingKey, exists := existingKeysMap[key.ID]; exists {
-				// Update existing key - preserve the database ID
-				dbKey.ID = existingKey.ID
-				if err := tx.WithContext(ctx).Save(&dbKey).Error; err != nil {
-					return s.parseGormError(err)
-				}
-				// Remove from map to track which keys are still in use
-				delete(existingKeysMap, key.ID)
-			} else {
-				// Create new key
-				if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
-					return s.parseGormError(err)
-				}
-			}
-		}
-
-		// Delete keys that are no longer in the new config
-		for _, keyToDelete := range existingKeysMap {
-			if err := tx.WithContext(ctx).Delete(&keyToDelete).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return ErrNotFound
-				}
-				return err
-			}
-		}
-
-		return nil
-	})
-}
-
-// AddProvider creates a new provider configuration in the database.
-func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Create a deep copy of the config to avoid modifying the original
-		configCopy, err := deepCopy(config)
-		if err != nil {
-			return err
-		}
-		// Substitute environment variables back to their original form
-		substituteEnvVars(&configCopy, provider, envKeys)
-
-		// Create new provider
-		dbProvider := tables.TableProvider{
-			Name:                     string(provider),
-			NetworkConfig:            configCopy.NetworkConfig,
-			ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
-			ProxyConfig:              configCopy.ProxyConfig,
-			SendBackRawResponse:      configCopy.SendBackRawResponse,
-			CustomProviderConfig:     configCopy.CustomProviderConfig,
-		}
-
-		// Create the provider
-		if err := tx.WithContext(ctx).Create(&dbProvider).Error; err != nil {
-			return s.parseGormError(err)
-		}
-
-		// Create keys for this provider
-		for _, key := range configCopy.Keys {
-			dbKey := tables.TableKey{
-				Provider:         dbProvider.Name,
-				ProviderID:       dbProvider.ID,
-				KeyID:            key.ID,
-				Name:             key.Name,
-				Value:            key.Value,
-				Models:           key.Models,
-				Weight:           key.Weight,
-				AzureKeyConfig:   key.AzureKeyConfig,
-				VertexKeyConfig:  key.VertexKeyConfig,
-				BedrockKeyConfig: key.BedrockKeyConfig,
-			}
-
-			// Handle Azure config
-			if key.AzureKeyConfig != nil {
-				dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
-				dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
-			}
-
-			// Handle Vertex config
-			if key.VertexKeyConfig != nil {
-				dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
-				dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
-				dbKey.VertexRegion = &key.VertexKeyConfig.Region
-				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
-			}
-
-			// Handle Bedrock config
-			if key.BedrockKeyConfig != nil {
-				dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
-				dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
-				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
-				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
-				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
-			}
-
-			// Create the key
-			if err := tx.WithContext(ctx).Create(&dbKey).Error; err != nil {
+			// Remove from map to track which keys are still in use
+			delete(existingKeysMap, key.ID)
+		} else {
+			// Create new key
+			if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
 		}
+	}
 
-		return nil
-	})
+	// Delete keys that are no longer in the new config
+	for _, keyToDelete := range existingKeysMap {
+		if err := txDB.WithContext(ctx).Delete(&keyToDelete).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
+// AddProvider creates a new provider configuration in the database.
+func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	// Create a deep copy of the config to avoid modifying the original
+	configCopy, err := deepCopy(config)
+	if err != nil {
+		return err
+	}
+	// Substitute environment variables back to their original form
+	substituteEnvVars(&configCopy, provider, envKeys)
+
+	// Create new provider
+	dbProvider := tables.TableProvider{
+		Name:                     string(provider),
+		NetworkConfig:            configCopy.NetworkConfig,
+		ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
+		ProxyConfig:              configCopy.ProxyConfig,
+		SendBackRawResponse:      configCopy.SendBackRawResponse,
+		CustomProviderConfig:     configCopy.CustomProviderConfig,
+	}
+
+	// Create the provider
+	if err := txDB.WithContext(ctx).Create(&dbProvider).Error; err != nil {
+		return s.parseGormError(err)
+	}
+
+	// Create keys for this provider
+	for _, key := range configCopy.Keys {
+		dbKey := tables.TableKey{
+			Provider:         dbProvider.Name,
+			ProviderID:       dbProvider.ID,
+			KeyID:            key.ID,
+			Name:             key.Name,
+			Value:            key.Value,
+			Models:           key.Models,
+			Weight:           key.Weight,
+			AzureKeyConfig:   key.AzureKeyConfig,
+			VertexKeyConfig:  key.VertexKeyConfig,
+			BedrockKeyConfig: key.BedrockKeyConfig,
+		}
+
+		// Handle Azure config
+		if key.AzureKeyConfig != nil {
+			dbKey.AzureEndpoint = &key.AzureKeyConfig.Endpoint
+			dbKey.AzureAPIVersion = key.AzureKeyConfig.APIVersion
+		}
+
+		// Handle Vertex config
+		if key.VertexKeyConfig != nil {
+			dbKey.VertexProjectID = &key.VertexKeyConfig.ProjectID
+			dbKey.VertexProjectNumber = &key.VertexKeyConfig.ProjectNumber
+			dbKey.VertexRegion = &key.VertexKeyConfig.Region
+			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
+		}
+
+		// Handle Bedrock config
+		if key.BedrockKeyConfig != nil {
+			dbKey.BedrockAccessKey = &key.BedrockKeyConfig.AccessKey
+			dbKey.BedrockSecretKey = &key.BedrockKeyConfig.SecretKey
+			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
+			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
+			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+		}
+
+		// Create the key
+		if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
+			return s.parseGormError(err)
+		}
+	}
+
+	return nil
 }
 
 // DeleteProvider deletes a single provider and all its associated keys from the database.
-func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Find the existing provider
-		var dbProvider tables.TableProvider
-		if err := tx.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
+func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	// Find the existing provider
+	var dbProvider tables.TableProvider
+	if err := txDB.WithContext(ctx).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
 		}
+		return err
+	}
 
-		// Delete the provider (keys will be deleted due to CASCADE constraint)
-		if err := tx.WithContext(ctx).Delete(&dbProvider).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
-			}
-			return err
+	// Delete the provider (keys will be deleted due to CASCADE constraint)
+	if err := txDB.WithContext(ctx).Delete(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
 		}
+		return err
+	}
 
-		return nil
-	})
+	return nil
 }
 
 // GetProvidersConfig retrieves the provider configuration from the database.
@@ -866,32 +882,36 @@ func (s *RDBConfigStore) GetEnvKeys(ctx context.Context) (map[string][]EnvKeyInf
 }
 
 // UpdateEnvKeys updates the environment keys in the database.
-func (s *RDBConfigStore) UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		// Delete existing env keys
-		if err := tx.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableEnvKey{}).Error; err != nil {
+func (s *RDBConfigStore) UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	// Delete existing env keys
+	if err := txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableEnvKey{}).Error; err != nil {
+		return err
+	}
+	var dbEnvKeys []tables.TableEnvKey
+	for envVar, infos := range keys {
+		for _, info := range infos {
+			dbEnvKey := tables.TableEnvKey{
+				EnvVar:     envVar,
+				Provider:   string(info.Provider),
+				KeyType:    string(info.KeyType),
+				ConfigPath: info.ConfigPath,
+				KeyID:      info.KeyID,
+			}
+			dbEnvKeys = append(dbEnvKeys, dbEnvKey)
+		}
+	}
+	if len(dbEnvKeys) > 0 {
+		if err := txDB.WithContext(ctx).CreateInBatches(dbEnvKeys, 100).Error; err != nil {
 			return err
 		}
-		var dbEnvKeys []tables.TableEnvKey
-		for envVar, infos := range keys {
-			for _, info := range infos {
-				dbEnvKey := tables.TableEnvKey{
-					EnvVar:     envVar,
-					Provider:   string(info.Provider),
-					KeyType:    string(info.KeyType),
-					ConfigPath: info.ConfigPath,
-					KeyID:      info.KeyID,
-				}
-				dbEnvKeys = append(dbEnvKeys, dbEnvKey)
-			}
-		}
-		if len(dbEnvKeys) > 0 {
-			if err := tx.WithContext(ctx).CreateInBatches(dbEnvKeys, 100).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // GetConfig retrieves a specific config from the database.

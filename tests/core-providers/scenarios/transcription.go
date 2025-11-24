@@ -284,9 +284,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 	t.Run("TranscriptionAdvanced", func(t *testing.T) {
 		t.Run("AllResponseFormats", func(t *testing.T) {
-			// Generate audio first for all format tests
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
-
 			// Test supported response formats (excluding text to avoid JSON parsing issues)
 			formats := []string{"json"}
 
@@ -295,6 +292,9 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 						t.Parallel()
 					}
+
+					// Generate fresh audio for each test to avoid race conditions and ensure validity
+					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 
 					formatCopy := format
 					request := &schemas.BifrostTranscriptionRequest{
@@ -424,9 +424,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		})
 
 		t.Run("MultipleLanguages", func(t *testing.T) {
-			// Generate audio for language tests
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
-
 			// Test with different language hints (only English for now since our TTS is English)
 			languages := []string{"en"}
 
@@ -435,6 +432,9 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 						t.Parallel()
 					}
+
+					// Generate fresh audio for each test to avoid race conditions and ensure validity
+					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 
 					langCopy := lang
 					request := &schemas.BifrostTranscriptionRequest{

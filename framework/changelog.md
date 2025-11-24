@@ -1,2 +1,3 @@
 - feat: Qdrant Vector Search Support (#893)
 - fix: stream accumulator nil content check fixes
+- enhancement: added transactions on provider config updates

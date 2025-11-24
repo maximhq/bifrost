@@ -27,10 +27,10 @@ type ConfigStore interface {
 	GetFrameworkConfig(ctx context.Context) (*tables.TableFrameworkConfig, error)
 
 	// Provider config CRUD
-	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig) error
-	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
-	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo) error
-	DeleteProvider(ctx context.Context, provider schemas.ModelProvider) error
+	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
+	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
+	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
+	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 
 	// MCP config CRUD
@@ -49,7 +49,7 @@ type ConfigStore interface {
 	GetLogsStoreConfig(ctx context.Context) (*logstore.Config, error)
 
 	// ENV keys CRUD
-	UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo) error
+	UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
 	GetEnvKeys(ctx context.Context) (map[string][]EnvKeyInfo, error)
 
 	// Config CRUD

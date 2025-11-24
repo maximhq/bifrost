@@ -14,25 +14,36 @@ import (
 func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
 	body := append([]byte(nil), resp.Body()...)
 
+	var message string
 	// Try to parse as JSON first
 	var errorResp ElevenlabsError
 	if err := sonic.Unmarshal(body, &errorResp); err == nil {
-		var messages []string
-		for _, detail := range errorResp.Detail {
-			location := "unknown"
-			if len(detail.Loc) > 0 {
-				location = strings.Join(detail.Loc, ".")
-			}
-			messages = append(messages, fmt.Sprintf("[%s] %s (%s)", location, *detail.Msg, *detail.Type))
+		location := ""
+		if len(errorResp.Detail.Loc) > 0 {
+			location = strings.Join(errorResp.Detail.Loc, ".")
 		}
-		errorMessage := strings.Join(messages, "; ")
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     schemas.Ptr(resp.StatusCode()),
-			Error: &schemas.ErrorField{
-				Code:    schemas.Ptr("validation_error"),
-				Message: fmt.Sprintf("Elevenlabs validation error: %s", errorMessage),
-			},
+		if errorResp.Detail.Message != nil {
+			message = *errorResp.Detail.Message
+		}
+		if location != "" {
+			message = message + " [" + location + "]"
+		}
+		errorType := ""
+		if errorResp.Detail.Type != nil {
+			errorType = *errorResp.Detail.Type
+		}
+		if errorResp.Detail.Status != nil {
+			errorType = *errorResp.Detail.Status
+		}
+		if message != "" {
+			return &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(resp.StatusCode()),
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(errorType),
+					Message: message,
+				},
+			}
 		}
 	}
 
