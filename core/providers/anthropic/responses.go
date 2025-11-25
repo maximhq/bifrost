@@ -1340,36 +1340,8 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx context.Co
 	// Convert messages directly to ChatMessage format
 	var bifrostMessages []schemas.ResponsesMessage
 
-	// Handle system message - convert Anthropic system field to first message with role "system"
-	if request.System != nil {
-		var systemText string
-		if request.System.ContentStr != nil {
-			systemText = *request.System.ContentStr
-		} else if request.System.ContentBlocks != nil {
-			// Combine text blocks from system content
-			var textParts []string
-			for _, block := range request.System.ContentBlocks {
-				if block.Text != nil {
-					textParts = append(textParts, *block.Text)
-				}
-			}
-			systemText = strings.Join(textParts, "\n")
-		}
-
-		if systemText != "" {
-			systemMsg := schemas.ResponsesMessage{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
-				Content: &schemas.ResponsesMessageContent{
-					ContentStr: &systemText,
-				},
-			}
-			bifrostMessages = append(bifrostMessages, systemMsg)
-		}
-	}
-
 	// Convert regular messages using the new conversion method
-	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(request.Messages, nil, false, provider == schemas.Bedrock)
+	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(request.Messages, request.System, false, provider == schemas.Bedrock)
 	bifrostMessages = append(bifrostMessages, convertedMessages...)
 
 	// Convert tools if present
@@ -2091,30 +2063,37 @@ func ConvertBifrostMessagesToAnthropicMessages(bifrostMessages []schemas.Respons
 
 // Helper function to convert Anthropic system content to Bifrost messages
 func convertAnthropicSystemToBifrostMessages(systemContent *AnthropicContent) []schemas.ResponsesMessage {
-	var systemText string
-	if systemContent.ContentStr != nil {
-		systemText = *systemContent.ContentStr
-	} else if systemContent.ContentBlocks != nil {
-		// Combine text blocks from system content
-		var textParts []string
-		for _, block := range systemContent.ContentBlocks {
-			if block.Text != nil {
-				textParts = append(textParts, *block.Text)
-			}
-		}
-		systemText = strings.Join(textParts, "\n")
-	}
+	var bifrostMessages []schemas.ResponsesMessage
 
-	if systemText != "" {
-		return []schemas.ResponsesMessage{{
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+	if systemContent.ContentStr != nil && *systemContent.ContentStr != "" {
+		bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
 			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
 			Content: &schemas.ResponsesMessageContent{
-				ContentStr: &systemText,
+				ContentStr: systemContent.ContentStr,
 			},
-		}}
+		})
+	} else if systemContent.ContentBlocks != nil {
+		contentBlocks := []schemas.ResponsesMessageContentBlock{}
+		for _, block := range systemContent.ContentBlocks {
+			if block.Text != nil { // System messages will only have text content
+				contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+					Type:         schemas.ResponsesOutputMessageContentTypeText,
+					Text:         block.Text,
+					CacheControl: block.CacheControl,
+				})
+			}
+		}
+		if len(contentBlocks) > 0 {
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: contentBlocks,
+				},
+			})
+		}
 	}
-	return []schemas.ResponsesMessage{}
+
+	return bifrostMessages
 }
 
 // Helper function to convert a single Anthropic message to Bifrost messages
@@ -2192,7 +2171,13 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
-							ContentStr: block.Text,
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:         schemas.ResponsesOutputMessageContentTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								},
+							},
 						},
 					}
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -2275,8 +2260,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 										blockType = schemas.ResponsesInputMessageContentBlockTypeText
 									}
 									toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-										Type: blockType,
-										Text: contentBlock.Text,
+										Type:         blockType,
+										Text:         contentBlock.Text,
+										CacheControl: contentBlock.CacheControl,
 									})
 								}
 							case AnthropicContentBlockTypeImage:
@@ -2388,8 +2374,9 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
-									Type: schemas.ResponsesOutputMessageContentTypeText,
-									Text: block.Text,
+									Type:         schemas.ResponsesOutputMessageContentTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
 								},
 							},
 						},
@@ -2400,7 +2387,13 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
-							ContentStr: block.Text,
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								},
+							},
 						},
 					}
 				}
@@ -2499,8 +2492,9 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 										blockType = schemas.ResponsesInputMessageContentBlockTypeText
 									}
 									toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-										Type: blockType,
-										Text: contentBlock.Text,
+										Type:         blockType,
+										Text:         contentBlock.Text,
+										CacheControl: contentBlock.CacheControl,
 									})
 								}
 							case AnthropicContentBlockTypeImage:
@@ -2563,8 +2557,9 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 										blockType = schemas.ResponsesInputMessageContentBlockTypeText
 									}
 									toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-										Type: blockType,
-										Text: contentBlock.Text,
+										Type:         blockType,
+										Text:         contentBlock.Text,
+										CacheControl: contentBlock.CacheControl,
 									})
 								}
 							}
@@ -3084,6 +3079,10 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		}
 	}
 
+	if tool.CacheControl != nil {
+		bifrostTool.CacheControl = tool.CacheControl
+	}
+
 	return bifrostTool
 }
 
@@ -3260,6 +3259,10 @@ func convertBifrostToolToAnthropic(tool *schemas.ResponsesTool) *AnthropicTool {
 		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
 	}
 
+	if tool.CacheControl != nil {
+		anthropicTool.CacheControl = tool.CacheControl
+	}
+
 	return anthropicTool
 }
 
@@ -3324,8 +3327,9 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
-				Type: AnthropicContentBlockTypeText,
-				Text: block.Text,
+				Type:         AnthropicContentBlockTypeText,
+				Text:         block.Text,
+				CacheControl: block.CacheControl,
 			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
@@ -3336,6 +3340,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 				ImageURLStruct: &schemas.ChatInputImage{
 					URL: *block.ResponsesInputMessageContentBlockImage.ImageURL,
 				},
+				CacheControl: block.CacheControl,
 			}
 			anthropicBlock := ConvertToAnthropicImageBlock(chatBlock)
 			return &anthropicBlock
@@ -3374,6 +3379,7 @@ func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.Respon
 		ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 			ImageURL: schemas.Ptr(getImageURLFromBlock(block)),
 		},
+		CacheControl: block.CacheControl,
 	}
 }
 

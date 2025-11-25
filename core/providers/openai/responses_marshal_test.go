@@ -478,4 +478,3 @@ func TestOpenAIResponsesRequest_MarshalJSON_RoundTrip(t *testing.T) {
 		}
 	})
 }
-

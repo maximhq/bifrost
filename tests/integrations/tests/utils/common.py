@@ -85,6 +85,201 @@ SEARCH_TOOL = {
     },
 }
 
+# Tools for Prompt Caching Tests 
+PROMPT_CACHING_TOOLS = [
+    {
+        "name": "get_weather",
+        "description": "Get the current weather for a location",
+        "parameters": {
+            "type": "object",
+            "required": ["location"],
+            "properties": {
+                "location": {
+                    "description": "The city and state, e.g. San Francisco, CA",
+                    "type": "string"
+                },
+                "unit": {
+                    "description": "The temperature unit",
+                    "enum": ["celsius", "fahrenheit"],
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "get_current_time",
+        "description": "Get the current local time for a given city",
+        "parameters": {
+            "type": "object",
+            "required": ["location"],
+            "properties": {
+                "location": {
+                    "description": "The city and country, e.g. London, UK",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "unit_converter",
+        "description": "Convert a numeric value from one unit to another",
+        "parameters": {
+            "type": "object",
+            "required": ["value", "from_unit", "to_unit"],
+            "properties": {
+                "value": {
+                    "description": "The numeric value to convert",
+                    "type": "number"
+                },
+                "from_unit": {
+                    "description": "The source unit",
+                    "type": "string"
+                },
+                "to_unit": {
+                    "description": "The target unit",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "get_exchange_rate",
+        "description": "Get the current exchange rate between two currencies",
+        "parameters": {
+            "type": "object",
+            "required": ["base_currency", "target_currency"],
+            "properties": {
+                "base_currency": {
+                    "description": "The base currency code, e.g. USD",
+                    "type": "string"
+                },
+                "target_currency": {
+                    "description": "The target currency code, e.g. EUR",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "translate_text",
+        "description": "Translate text from one language to another",
+        "parameters": {
+            "type": "object",
+            "required": ["text", "target_language"],
+            "properties": {
+                "text": {
+                    "description": "The text to translate",
+                    "type": "string"
+                },
+                "target_language": {
+                    "description": "The target language code, e.g. fr, es",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "summarize_text",
+        "description": "Summarize a long piece of text into a concise form",
+        "parameters": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {
+                    "description": "The text to summarize",
+                    "type": "string"
+                },
+                "max_length": {
+                    "description": "Maximum length of the summary",
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    {
+        "name": "detect_language",
+        "description": "Detect the language of a given text",
+        "parameters": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {
+                    "description": "The text whose language should be detected",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "extract_keywords",
+        "description": "Extract important keywords from a block of text",
+        "parameters": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {
+                    "description": "The input text",
+                    "type": "string"
+                },
+                "max_keywords": {
+                    "description": "Maximum number of keywords to return",
+                    "type": "integer"
+                }
+            }
+        }
+    },
+    {
+        "name": "sentiment_analysis",
+        "description": "Analyze the sentiment of a given text",
+        "parameters": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {
+                    "description": "The text to analyze",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "generate_uuid",
+        "description": "Generate a random UUID",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "check_url_status",
+        "description": "Check if a URL is accessible and return its HTTP status",
+        "parameters": {
+            "type": "object",
+            "required": ["url"],
+            "properties": {
+                "url": {
+                    "description": "The URL to check",
+                    "type": "string"
+                }
+            }
+        }
+    },
+    {
+        "name": "calculate",
+        "description": "Perform basic mathematical calculations",
+        "parameters": {
+            "type": "object",
+            "required": ["expression"],
+            "properties": {
+                "expression": {
+                    "description": "Mathematical expression to evaluate, e.g. '2 + 2'",
+                    "type": "string"
+                }
+            }
+        }
+    }
+]
+
 ALL_TOOLS = [WEATHER_TOOL, CALCULATOR_TOOL, SEARCH_TOOL]
 
 # Embeddings Test Data
@@ -222,6 +417,68 @@ ANTHROPIC_THINKING_STREAMING_PROMPT = [
         ),
     }
 ]
+
+# Prompt Caching Test Data
+PROMPT_CACHING_LARGE_CONTEXT = """You are an AI assistant tasked with analyzing legal documents. 
+Here is a detailed legal framework for contract analysis:
+
+1. CONTRACT FORMATION: A contract requires offer, acceptance, and consideration. The offer must be 
+definite and communicated to the offeree. Acceptance must mirror the terms of the offer (mirror image 
+rule). Consideration is the bargained-for exchange that makes the contract legally binding. Both parties 
+must have the legal capacity to enter into a contract, and the contract's purpose must be legal.
+
+2. WARRANTIES: Express warranties are explicit promises made by the seller about the product or service. 
+Implied warranties include the warranty of merchantability (the product is fit for ordinary purposes) and 
+the warranty of fitness for a particular purpose (the product is suitable for a specific buyer's needs). 
+These warranties provide guarantees about product or service quality and can be the basis for breach of 
+contract claims.
+
+3. LIMITATION OF LIABILITY: These clauses limit the amount or types of damages that can be recovered in 
+case of breach. They may cap damages at a specific amount, exclude certain types of damages (like 
+consequential or punitive damages), or limit liability to repair or replacement of defective goods. Courts 
+scrutinize these clauses carefully and may refuse to enforce them if they are unconscionable or against 
+public policy.
+
+4. INDEMNIFICATION: Indemnification clauses require one party to compensate the other for losses, damages, 
+or liabilities arising from specified events or claims. These provisions allocate risk between parties and 
+are particularly important in contracts involving potential third-party claims. The scope of indemnification 
+can vary widely, from narrow protection for specific claims to broad coverage for any losses arising from 
+the relationship.
+
+5. TERMINATION: Contract termination provisions specify the conditions under which either party may end the 
+contractual relationship. These may include termination for cause (breach of contract), termination for 
+convenience (with or without notice), automatic termination upon certain events, or mutual agreement. 
+Termination clauses often address notice requirements, cure periods, and the parties' rights and obligations 
+upon termination.
+
+6. DISPUTE RESOLUTION: These provisions establish the methods for resolving disagreements between parties. 
+Options include litigation in courts, arbitration (binding resolution by a neutral arbitrator), mediation 
+(facilitated negotiation), or a combination of methods. Arbitration clauses often specify the arbitration 
+rules (such as AAA or JAMS), the number of arbitrators, the location of arbitration, and whether arbitration 
+decisions are binding and final.
+
+7. FORCE MAJEURE: Force majeure clauses excuse performance when extraordinary events or circumstances beyond 
+the parties' control prevent fulfillment of contractual obligations. These events typically include natural 
+disasters, wars, pandemics, government actions, and other unforeseeable circumstances. The clause usually 
+defines what constitutes a force majeure event and specifies the parties' obligations during such events, 
+including notice requirements and efforts to mitigate damages.
+
+8. INTELLECTUAL PROPERTY: These provisions address rights related to patents, copyrights, trademarks, trade 
+secrets, and other intellectual property. They may cover ownership of pre-existing IP, IP created during the 
+contract term, licensing arrangements, and protection of proprietary information. IP clauses are crucial in 
+technology, creative works, and research and development contracts.
+
+9. CONFIDENTIALITY: Confidentiality provisions (also called non-disclosure clauses) impose obligations to 
+protect sensitive information shared between parties. They define what constitutes confidential information, 
+specify how it must be protected, limit its disclosure and use, and establish the duration of confidentiality 
+obligations. These clauses often survive contract termination and may include exceptions for information that 
+is publicly available or independently developed.
+
+10. GOVERNING LAW: Governing law clauses specify which jurisdiction's laws will apply to interpret and enforce 
+the contract. This is particularly important in contracts between parties in different states or countries. 
+The chosen jurisdiction's laws will govern issues like contract formation, performance, breach, and remedies. 
+These clauses often work in conjunction with venue or forum selection clauses that specify where disputes must 
+be resolved.""" * 3  # Repeat to ensure sufficient tokens (1024+ minimum)
 
 # Gemini Reasoning Test Prompts
 GEMINI_REASONING_PROMPT = [

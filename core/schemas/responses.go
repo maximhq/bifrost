@@ -412,6 +412,9 @@ type ResponsesMessageContentBlock struct {
 
 	*ResponsesOutputMessageContentText    // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal // Model refusal to answer
+
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type ResponsesInputMessageContentBlockImage struct {
@@ -1035,6 +1038,9 @@ type ResponsesTool struct {
 	Type        ResponsesToolType `json:"type"`                  // "function" | "file_search" | "computer_use_preview" | "web_search" | "web_search_2025_08_26" | "mcp" | "code_interpreter" | "image_generation" | "local_shell" | "custom" | "web_search_preview" | "web_search_preview_2025_03_11"
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
+
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch

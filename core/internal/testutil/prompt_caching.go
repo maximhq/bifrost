@@ -262,6 +262,9 @@ func GetPromptCachingTools() []schemas.ChatTool {
 					Required: []string{},
 				},
 			},
+			CacheControl: &schemas.CacheControl{
+				Type: schemas.CacheControlTypeEphemeral,
+			},
 		},
 	}
 }
@@ -271,14 +274,12 @@ func GetPromptCachingTools() []schemas.ChatTool {
 // by making multiple requests with the same long prefix and tools, and verifying
 // that cached tokens increase in subsequent requests.
 func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
-	// Only run for OpenAI provider as prompt caching is OpenAI-specific
-	if testConfig.Provider != schemas.OpenAI {
-		t.Logf("Prompt caching test skipped for provider %s (OpenAI-specific feature)", testConfig.Provider)
-		return
-	}
-
 	if !testConfig.Scenarios.SimpleChat {
 		t.Logf("Prompt caching test requires SimpleChat support")
+		return
+	}
+	if !testConfig.Scenarios.PromptCaching {
+		t.Logf("Prompt caching test not supported for provider %s", testConfig.Provider)
 		return
 	}
 
@@ -291,7 +292,15 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		systemMessage := schemas.ChatMessage{
 			Role: schemas.ChatMessageRoleSystem,
 			Content: &schemas.ChatMessageContent{
-				ContentStr: bifrost.Ptr(longSharedPrefix),
+				ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: bifrost.Ptr(longSharedPrefix),
+						CacheControl: &schemas.CacheControl{
+							Type: schemas.CacheControlTypeEphemeral,
+						},
+					},
+				},
 			},
 		}
 

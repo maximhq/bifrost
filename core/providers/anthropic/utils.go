@@ -95,8 +95,9 @@ func ConvertBifrostFinishReasonToAnthropic(bifrostReason string) AnthropicStopRe
 // Uses the same pattern as the original buildAnthropicImageSourceMap function
 func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
 	imageBlock := AnthropicContentBlock{
-		Type:   "image",
-		Source: &AnthropicImageSource{},
+		Type:         AnthropicContentBlockTypeImage,
+		CacheControl: block.CacheControl,
+		Source:       &AnthropicImageSource{},
 	}
 
 	if block.ImageURLStruct == nil {

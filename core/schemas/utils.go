@@ -1039,6 +1039,11 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	return copy
 }
 
+// IsNovaModel checks if the model is a Nova model.
+func IsNovaModel(model string) bool {
+	return strings.Contains(model, "nova")
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")

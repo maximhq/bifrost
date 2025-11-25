@@ -829,7 +829,9 @@ func StreamingRetryConfig() TestRetryConfig {
 		},
 		OnRetry: func(attempt int, reason string, t *testing.T) {
 			// reason already contains ❌ prefix from retry logic
-			t.Logf("🔄 Retrying streaming test (attempt %d): %s", attempt, reason)
+			// attempt represents the current failed attempt number
+			// Log with attempt+1 to show the next attempt that will run
+			t.Logf("🔄 Retrying streaming test (attempt %d): %s", attempt+1, reason)
 		},
 		OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
 			// finalErr already contains ❌ prefix from retry logic
@@ -2148,6 +2150,13 @@ func WithResponsesStreamValidationRetry(
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		context.AttemptNumber = attempt
 
+		// Log attempt start (especially for retries)
+		if attempt > 1 {
+			t.Logf("🔄 Starting responses stream retry attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
+		} else {
+			t.Logf("🔄 Starting responses stream test attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
+		}
+
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
 
@@ -2193,13 +2202,20 @@ func WithResponsesStreamValidationRetry(
 				}
 
 				if shouldRetry {
+					// Log the error and upcoming retry
+					if attempt > 1 {
+						t.Logf("❌ Responses stream request failed on attempt %d/%d for %s: %s", attempt, config.MaxAttempts, context.ScenarioName, retryReason)
+					}
+
 					if config.OnRetry != nil {
+						// Pass current failed attempt number
 						config.OnRetry(attempt, retryReason, t)
 					} else {
 						t.Logf("🔄 Retrying responses stream request (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
 					}
 
 					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					t.Logf("⏳ Waiting %v before retry...", delay)
 					time.Sleep(delay)
 					continue
 				}
@@ -2225,12 +2241,17 @@ func WithResponsesStreamValidationRetry(
 		if responseChannel == nil {
 			if attempt < config.MaxAttempts {
 				retryReason := "❌ response channel is nil"
+				t.Logf("❌ Responses stream response channel is nil on attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
 				if config.OnRetry != nil {
+					// Pass current failed attempt number
 					config.OnRetry(attempt, retryReason, t)
+				} else {
+					t.Logf("🔄 Retrying responses stream request (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
 				}
 				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				t.Logf("⏳ Waiting %v before retry...", delay)
 				time.Sleep(delay)
-				continue
+				continue // CRITICAL: Must continue to retry, not return
 			}
 			return ResponsesStreamValidationResult{
 				Passed: false,
@@ -2293,6 +2314,7 @@ func WithResponsesStreamValidationRetry(
 			}
 
 			if config.OnRetry != nil {
+				// Pass current failed attempt number
 				config.OnRetry(attempt, retryReason, t)
 			} else {
 				t.Logf("🔄 Retrying responses stream validation (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)

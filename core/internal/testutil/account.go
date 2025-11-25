@@ -40,6 +40,7 @@ type TestScenarios struct {
 	TranscriptionStream   bool // Streaming speech-to-text functionality
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
+	PromptCaching         bool // Prompt caching functionality
 	ListModels            bool // List available models functionality
 	BatchCreate           bool // Batch API create functionality
 	BatchList             bool // Batch API list functionality
@@ -605,6 +606,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			PromptCaching:         true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -638,6 +640,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			PromptCaching:         true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported

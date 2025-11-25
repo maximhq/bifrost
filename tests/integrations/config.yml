@@ -107,7 +107,7 @@ providers:
       - "gemini-2.0-flash-001"
     
   bedrock:
-    chat: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    chat: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -164,6 +164,7 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     thinking: true
+    prompt_caching: false
     list_models: true
     responses: true
     responses_image: true
@@ -201,6 +202,7 @@ provider_scenarios:
     transcription_streaming: false
     embeddings: false
     thinking: true
+    prompt_caching: true
     list_models: true
     responses: true
     responses_image: true
@@ -238,6 +240,7 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     thinking: true
+    prompt_caching: false
     list_models: true
     responses: true
     responses_image: true
@@ -275,6 +278,7 @@ provider_scenarios:
     transcription_streaming: false
     embeddings: true
     thinking: true
+    prompt_caching: true
     list_models: true
     responses: true
     responses_image: true
@@ -312,6 +316,7 @@ provider_scenarios:
     transcription_streaming: false
     embeddings: true
     thinking: false
+    prompt_caching: false
     list_models: false
     responses: true
     responses_image: true
@@ -354,6 +359,7 @@ scenario_capabilities:
   transcription_streaming: "transcription"
   embeddings: "embeddings"
   thinking: "thinking"
+  prompt_caching: "chat"
   list_models: "chat"
   langchain_structured_output: "chat"  # LangChain structured output uses chat capability
   pydantic_structured_output: "chat"  # Structured output uses chat capability

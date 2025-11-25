@@ -33,6 +33,11 @@ Batch API Tests (Multi-Provider via boto3 Bedrock with x-model-provider header):
 18. Batch retrieve - Cross-provider
 19. Batch cancel - Cross-provider
 20. Batch end-to-end - Cross-provider
+
+Prompt Caching Tests:
+21. Prompt caching with system message checkpoint
+22. Prompt caching with messages checkpoint
+23. Prompt caching with tools checkpoint
 """
 
 import pytest
@@ -48,9 +53,11 @@ from .utils.common import (
     BASE64_IMAGE,
     WEATHER_TOOL,
     CALCULATOR_TOOL,
+    PROMPT_CACHING_TOOLS,
     SIMPLE_CHAT_MESSAGES,
     MULTI_TURN_MESSAGES,
     MULTIPLE_TOOL_CALL_MESSAGES,
+    PROMPT_CACHING_LARGE_CONTEXT,
     mock_tool_response,
     assert_valid_chat_response,
     assert_has_tool_calls,
@@ -1611,3 +1618,204 @@ class TestBedrockIntegration:
             if "not authorized" in str(e).lower() or "access denied" in str(e).lower():
                 pytest.skip(f"Batch API not authorized: {e}")
             raise
+
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_21_prompt_caching_system(self, bedrock_client, provider, model):
+        """Test Case 21: Prompt caching with system message checkpoint"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing System Message Caching for provider {provider} ===")
+        print("First request: Creating cache with system message checkpoint...")
+        
+        system_with_cache = [
+            {"text": "You are an AI assistant tasked with analyzing legal documents."},
+            {"text": PROMPT_CACHING_LARGE_CONTEXT},
+            {"cachePoint": {"type": "default"}}  # Cache all preceding system content
+        ]
+        
+        # First request - should create cache
+        response1 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            system=system_with_cache,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "What are the key elements of contract formation?"}]
+                }
+            ]
+        )
+        
+        # Validate first response
+        assert response1 is not None
+        assert "usage" in response1
+        cache_write_tokens = validate_cache_write(response1["usage"], "First request")
+        
+        # Second request with same system - should hit cache
+        print("\nSecond request: Hitting cache with same system checkpoint...")
+        response2 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            system=system_with_cache,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "Explain the purpose of force majeure clauses."}]
+                }
+            ]
+        )
+        
+        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
+        
+        # Validate that cache read tokens are approximately equal to cache write tokens
+        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
+            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+        
+        print(f"✓ System caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_22_prompt_caching_messages(self, bedrock_client, provider, model):
+        """Test Case 22: Prompt caching with messages checkpoint"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing Messages Caching for provider {provider} ===")
+        print("First request: Creating cache with messages checkpoint...")
+        
+        # First request with cache point in user message
+        response1 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": "Here is a large legal document to analyze:"},
+                        {"text": PROMPT_CACHING_LARGE_CONTEXT},
+                        {"cachePoint": {"type": "default"}},  # Cache all preceding message content
+                        {"text": "What are the main indemnification principles?"}
+                    ]
+                }
+            ]
+        )
+        
+        assert response1 is not None
+        assert "usage" in response1
+        cache_write_tokens = validate_cache_write(response1["usage"], "First request")
+        
+        # Second request with same cached content
+        print("\nSecond request: Hitting cache with same messages checkpoint...")
+        response2 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": "Here is a large legal document to analyze:"},
+                        {"text": PROMPT_CACHING_LARGE_CONTEXT},
+                        {"cachePoint": {"type": "default"}},
+                        {"text": "Summarize the dispute resolution methods."}
+                    ]
+                }
+            ]
+        )
+        
+        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
+        
+        # Validate that cache read tokens are approximately equal to cache write tokens
+        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
+            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+        
+        print(f"✓ Messages caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_23_prompt_caching_tools(self, bedrock_client, provider, model):
+        """Test Case 23: Prompt caching with tools checkpoint (12 tools)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing Tools Caching for provider {provider} ===")
+        print("First request: Creating cache with tools checkpoint...")
+        
+        # Convert tools to Bedrock format (using 12 tools for larger cache test)
+        bedrock_tools = []
+        for tool in PROMPT_CACHING_TOOLS:
+            bedrock_tools.append({
+                "toolSpec": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "inputSchema": {"json": tool["parameters"]}
+                }
+            })
+        
+        # Add cache point after all tools
+        bedrock_tools.append({
+            "cachePoint": {"type": "default"}  # Cache all 12 tool definitions
+        })
+        
+        # First request with tool cache point
+        tool_config = {
+            "tools": bedrock_tools,
+        }
+        
+        response1 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            toolConfig=tool_config,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "What's the weather in Boston?"}]
+                }
+            ]
+        )
+        
+        assert response1 is not None
+        assert "usage" in response1
+        cache_write_tokens = validate_cache_write(response1["usage"], "First request")
+        
+        # Second request with same tools
+        print("\nSecond request: Hitting cache with same tools checkpoint...")
+        response2 = bedrock_client.converse(
+            modelId=format_provider_model(provider, model),
+            toolConfig=tool_config,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"text": "Calculate 42 * 17"}]
+                }
+            ]
+        )
+        
+        cache_read_tokens = validate_cache_read(response2["usage"], "Second request")
+        
+        # Validate that cache read tokens are approximately equal to cache write tokens
+        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
+            f"Cache read tokens ({cache_read_tokens}) should be close to cache write tokens ({cache_write_tokens})"
+        
+        print(f"✓ Tools caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
+def validate_cache_write(usage: Dict[str, Any], operation: str) -> int:
+    """Validate cache write operation and return tokens written"""
+    print(f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
+            f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
+            f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}")
+    
+    cache_write_tokens = usage.get('cacheWriteInputTokens', 0)
+    assert cache_write_tokens > 0, \
+        f"{operation} should write to cache (got {cache_write_tokens} tokens)"
+    
+    return cache_write_tokens
+    
+def validate_cache_read(usage: Dict[str, Any], operation: str) -> int:
+    """Validate cache read operation and return tokens read"""
+    print(f"{operation} usage - inputTokens: {usage.get('inputTokens', 0)}, "
+            f"cacheWriteInputTokens: {usage.get('cacheWriteInputTokens', 0)}, "
+            f"cacheReadInputTokens: {usage.get('cacheReadInputTokens', 0)}")
+    
+    cache_read_tokens = usage.get('cacheReadInputTokens', 0)
+    assert cache_read_tokens > 0, \
+        f"{operation} should read from cache (got {cache_read_tokens} tokens)"
+    
+    return cache_read_tokens

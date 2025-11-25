@@ -79,24 +79,105 @@ type OpenAIChatAssistantMessage struct {
 // MarshalJSON implements custom JSON marshalling for OpenAIChatRequest.
 // It excludes the reasoning field and instead marshals reasoning_effort
 // with the value of Reasoning.Effort if not nil.
+// It also removes cache_control from messages, their content blocks, and tools.
 func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if r == nil {
 		return []byte("null"), nil
 	}
 	type Alias OpenAIChatRequest
 
+	// First pass: check if we need to modify any messages
+	needsCopy := false
+	for _, msg := range r.Messages {
+		if hasCacheControlInChatMessage(msg) {
+			needsCopy = true
+			break
+		}
+	}
+
+	// Process messages if needed
+	var processedMessages []OpenAIMessage
+	if needsCopy {
+		processedMessages = make([]OpenAIMessage, len(r.Messages))
+		for i, msg := range r.Messages {
+			if !hasCacheControlInChatMessage(msg) {
+				// No modification needed, use original
+				processedMessages[i] = msg
+				continue
+			}
+
+			// Copy message
+			processedMessages[i] = msg
+
+			// Strip CacheControl from content blocks if needed
+			if msg.Content != nil && msg.Content.ContentBlocks != nil {
+				contentCopy := *msg.Content
+				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
+				for j, block := range msg.Content.ContentBlocks {
+					if block.CacheControl != nil {
+						blockCopy := block
+						blockCopy.CacheControl = nil
+						contentCopy.ContentBlocks[j] = blockCopy
+					} else {
+						contentCopy.ContentBlocks[j] = block
+					}
+				}
+				processedMessages[i].Content = &contentCopy
+			}
+		}
+	} else {
+		processedMessages = r.Messages
+	}
+
+	// Process tools if needed
+	var processedTools []schemas.ChatTool
+	if len(r.Tools) > 0 {
+		needsToolCopy := false
+		for _, tool := range r.Tools {
+			if tool.CacheControl != nil {
+				needsToolCopy = true
+				break
+			}
+		}
+
+		if needsToolCopy {
+			processedTools = make([]schemas.ChatTool, len(r.Tools))
+			for i, tool := range r.Tools {
+				if tool.CacheControl != nil {
+					toolCopy := tool
+					toolCopy.CacheControl = nil
+					processedTools[i] = toolCopy
+				} else {
+					processedTools[i] = tool
+				}
+			}
+		} else {
+			processedTools = r.Tools
+		}
+	} else {
+		processedTools = r.Tools
+	}
+
 	// Aux struct:
 	// - Alias embeds all original fields
+	// - Messages shadows the embedded Messages field to use processed messages
+	// - Tools shadows the embedded Tools field to use processed tools
 	// - Reasoning shadows the embedded ChatParameters.Reasoning
 	//   so that "reasoning" is not emitted
 	// - ReasoningEffort is emitted as "reasoning_effort"
 	aux := struct {
 		*Alias
+		// Shadow the embedded "messages" field to use processed messages
+		Messages []OpenAIMessage `json:"messages"`
+		// Shadow the embedded "tools" field to use processed tools
+		Tools []schemas.ChatTool `json:"tools,omitempty"`
 		// Shadow the embedded "reasoning" field and omit it
 		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
 		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
 	}{
-		Alias: (*Alias)(r),
+		Alias:    (*Alias)(r),
+		Messages: processedMessages,
+		Tools:    processedTools,
 	}
 
 	// DO NOT set aux.Reasoning → it stays nil and is omitted via omitempty, and also due to double reference to the same json field.
@@ -169,15 +250,123 @@ func (r *OpenAIResponsesRequestInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("openai responses request input is neither a string nor an array of responses messages")
 }
 
-// MarshalJSON implements custom JSON marshalling for ResponsesRequestInput.
 func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 	if r.OpenAIResponsesRequestInputStr != nil {
 		return sonic.Marshal(*r.OpenAIResponsesRequestInputStr)
 	}
 	if r.OpenAIResponsesRequestInputArray != nil {
-		return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
+		// First pass: check if we need to modify anything
+		needsCopy := false
+		for _, msg := range r.OpenAIResponsesRequestInputArray {
+			if hasCacheControl(msg) {
+				needsCopy = true
+				break
+			}
+		}
+
+		// If no CacheControl found anywhere, marshal as-is
+		if !needsCopy {
+			return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
+		}
+
+		// Only copy messages that have CacheControl
+		messagesCopy := make([]schemas.ResponsesMessage, len(r.OpenAIResponsesRequestInputArray))
+		for i, msg := range r.OpenAIResponsesRequestInputArray {
+			if !hasCacheControl(msg) {
+				// No modification needed, use original
+				messagesCopy[i] = msg
+				continue
+			}
+
+			// Copy only this message
+			messagesCopy[i] = msg
+
+			// Strip CacheControl from content blocks if needed
+			if msg.Content != nil && msg.Content.ContentBlocks != nil {
+				contentCopy := *msg.Content
+				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
+				hasContentCache := false
+				for j, block := range msg.Content.ContentBlocks {
+					if block.CacheControl != nil {
+						hasContentCache = true
+						blockCopy := block
+						blockCopy.CacheControl = nil
+						contentCopy.ContentBlocks[j] = blockCopy
+					} else {
+						contentCopy.ContentBlocks[j] = block
+					}
+				}
+				if hasContentCache {
+					messagesCopy[i].Content = &contentCopy
+				}
+			}
+
+			// Strip CacheControl from tool message output blocks if needed
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil {
+				if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+					hasToolCache := false
+					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						if block.CacheControl != nil {
+							hasToolCache = true
+							break
+						}
+					}
+
+					if hasToolCache {
+						toolMsgCopy := *msg.ResponsesToolMessage
+						outputCopy := *msg.ResponsesToolMessage.Output
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
+						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+							if block.CacheControl != nil {
+								blockCopy := block
+								blockCopy.CacheControl = nil
+								outputCopy.ResponsesFunctionToolCallOutputBlocks[j] = blockCopy
+							} else {
+								outputCopy.ResponsesFunctionToolCallOutputBlocks[j] = block
+							}
+						}
+						toolMsgCopy.Output = &outputCopy
+						messagesCopy[i].ResponsesToolMessage = &toolMsgCopy
+					}
+				}
+			}
+		}
+		return sonic.Marshal(messagesCopy)
 	}
 	return sonic.Marshal(nil)
+}
+
+// Helper function to check if a chat message has any CacheControl fields
+func hasCacheControlInChatMessage(msg OpenAIMessage) bool {
+	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.CacheControl != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Helper function to check if a responses message has any CacheControl fields
+func hasCacheControl(msg schemas.ResponsesMessage) bool {
+	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.CacheControl != nil {
+				return true
+			}
+		}
+	}
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil {
+		if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.CacheControl != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 type OpenAIResponsesRequest struct {
@@ -202,6 +391,35 @@ func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
+	// Process tools if needed
+	var processedTools []schemas.ResponsesTool
+	if len(r.Tools) > 0 {
+		needsToolCopy := false
+		for _, tool := range r.Tools {
+			if tool.CacheControl != nil {
+				needsToolCopy = true
+				break
+			}
+		}
+
+		if needsToolCopy {
+			processedTools = make([]schemas.ResponsesTool, len(r.Tools))
+			for i, tool := range r.Tools {
+				if tool.CacheControl != nil {
+					toolCopy := tool
+					toolCopy.CacheControl = nil
+					processedTools[i] = toolCopy
+				} else {
+					processedTools[i] = tool
+				}
+			}
+		} else {
+			processedTools = r.Tools
+		}
+	} else {
+		processedTools = r.Tools
+	}
+
 	// Aux struct:
 	// - Alias embeds all original fields
 	// - Input shadows the embedded Input field and uses json.RawMessage to preserve custom marshaling
@@ -213,9 +431,12 @@ func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		Input json.RawMessage `json:"input"`
 		// Shadow the embedded "reasoning" field to modify it
 		Reasoning *schemas.ResponsesParametersReasoning `json:"reasoning,omitempty"`
+		// Shadow the embedded "tools" field to use processed tools
+		Tools []schemas.ResponsesTool `json:"tools,omitempty"`
 	}{
 		Alias: (*Alias)(r),
 		Input: json.RawMessage(inputBytes),
+		Tools: processedTools,
 	}
 
 	// Copy reasoning but set MaxTokens to nil

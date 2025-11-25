@@ -36,6 +36,9 @@ Tests all core scenarios using Anthropic SDK directly:
 25. Batch API - batch cancel
 26. Batch API - batch results
 27. Batch API - end-to-end workflow
+28. Prompt caching - system message checkpoint
+29. Prompt caching - messages checkpoint
+30. Prompt caching - tools checkpoint
 """
 
 import logging
@@ -60,6 +63,7 @@ from .utils.common import (
     WEATHER_TOOL,
     CALCULATOR_TOOL,
     ALL_TOOLS,
+    PROMPT_CACHING_TOOLS,
     create_batch_jsonl_content,
     mock_tool_response,
     assert_valid_chat_response,
@@ -78,6 +82,7 @@ from .utils.common import (
     # Anthropic-specific test data
     ANTHROPIC_THINKING_PROMPT,
     ANTHROPIC_THINKING_STREAMING_PROMPT,
+    PROMPT_CACHING_LARGE_CONTEXT,
     # Files API utilities
     assert_valid_file_response,
     assert_valid_file_list_response,
@@ -1413,6 +1418,195 @@ class TestAnthropicIntegration:
             except Exception as e:
                 print(f"Cleanup info: Could not cancel batch: {e}")
 
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_28_prompt_caching_system(self, anthropic_client, provider, model):
+        """Test Case 28: Prompt caching with system message checkpoint"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing System Message Caching for provider {provider} ===")
+        print("First request: Creating cache with system message checkpoint...")
+        
+        system_messages = [
+            {
+                "type": "text",
+                "text": "You are an AI assistant tasked with analyzing legal documents."
+            },
+            {
+                "type": "text", 
+                "text": PROMPT_CACHING_LARGE_CONTEXT,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+        
+        # First request - should create cache
+        response1 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            system=system_messages,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "What are the key elements of contract formation?"
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        # Validate first response
+        assert_valid_chat_response(response1)
+        assert hasattr(response1, "usage"), "Response should have usage information"
+        cache_write_tokens = validate_cache_write(response1.usage, "First request")
+        
+        # Second request with same system - should hit cache
+        print("\nSecond request: Hitting cache with same system checkpoint...")
+        response2 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            system=system_messages,  # Same system messages with cache_control
+            messages=[
+                {
+                    "role": "user",
+                    "content": "What is the purpose of a force majeure clause?"
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        # Validate second response
+        assert_valid_chat_response(response2)
+        cache_read_tokens = validate_cache_read(response2.usage, "Second request")
+        
+        # Validate that cache read tokens are approximately equal to cache creation tokens
+        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
+            f"Cache read tokens ({cache_read_tokens}) should be close to cache creation tokens ({cache_write_tokens})"
+        
+        print(f"✓ System caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_29_prompt_caching_messages(self, anthropic_client, provider, model):
+        """Test Case 29: Prompt caching with messages checkpoint"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing Messages Caching for provider {provider} ===")
+        print("First request: Creating cache with messages checkpoint...")
+        
+        # First request with cache control in user message
+        response1 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Here is a large legal document to analyze:"
+                        },
+                        {
+                            "type": "text",
+                            "text": PROMPT_CACHING_LARGE_CONTEXT,
+                            "cache_control": {"type": "ephemeral"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "What are the main indemnification principles?"
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        assert_valid_chat_response(response1)
+        assert hasattr(response1, "usage"), "Response should have usage information"
+        cache_write_tokens = validate_cache_write(response1.usage, "First request")
+        
+        # Second request with same cached content
+        print("\nSecond request: Hitting cache with same messages checkpoint...")
+        response2 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Here is a large legal document to analyze:"
+                        },
+                        {
+                            "type": "text",
+                            "text": PROMPT_CACHING_LARGE_CONTEXT,
+                            "cache_control": {"type": "ephemeral"}
+                        },
+                        {
+                            "type": "text",
+                            "text": "Summarize the dispute resolution methods."
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        assert_valid_chat_response(response2)
+        cache_read_tokens = validate_cache_read(response2.usage, "Second request")
+        
+        # Validate that cache read tokens are approximately equal to cache creation tokens
+        assert abs(cache_write_tokens - cache_read_tokens) < 100, \
+            f"Cache read tokens ({cache_read_tokens}) should be close to cache creation tokens ({cache_write_tokens})"
+        
+        print(f"✓ Messages caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("prompt_caching"))
+    def test_30_prompt_caching_tools(self, anthropic_client, provider, model):
+        """Test Case 30: Prompt caching with tools checkpoint (12 tools)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for prompt_caching scenario")
+        
+        print(f"\n=== Testing Tools Caching for provider {provider} ===")
+        print("First request: Creating cache with tools checkpoint...")
+        
+        # Convert tools to Anthropic format with cache control
+        tools = convert_to_anthropic_tools(PROMPT_CACHING_TOOLS)
+        # Add cache control to the last tool
+        tools[-1]["cache_control"] = {"type": "ephemeral"}
+        
+        # First request with tool cache control
+        response1 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            tools=tools,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "What's the weather in Boston?"
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        assert hasattr(response1, "usage"), "Response should have usage information"
+        cache_write_tokens = validate_cache_write(response1.usage, "First request")
+        
+        # Second request with same tools
+        print("\nSecond request: Hitting cache with same tools checkpoint...")
+        response2 = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            tools=tools,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Calculate 42 * 17"
+                }
+            ],
+            max_tokens=1024
+        )
+        
+        cache_read_tokens = validate_cache_read(response2.usage, "Second request")
+        
+        print(f"✓ Tools caching validated - Cache created: {cache_write_tokens} tokens, "
+              f"Cache read: {cache_read_tokens} tokens")
+
 
 # Additional helper functions specific to Anthropic
 def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:
@@ -1465,3 +1659,31 @@ def extract_anthropic_tool_calls(response: Any) -> List[Dict[str, Any]]:
                     continue
 
     return tool_calls
+
+def validate_cache_write(usage: Any, operation: str) -> int:
+    """Validate cache write operation and return tokens written"""
+    print(f"{operation} usage - input_tokens: {usage.input_tokens}, "
+            f"cache_creation_input_tokens: {getattr(usage, 'cache_creation_input_tokens', 0)}, "
+            f"cache_read_input_tokens: {getattr(usage, 'cache_read_input_tokens', 0)}")
+    
+    assert hasattr(usage, 'cache_creation_input_tokens'), \
+        f"{operation} should have cache_creation_input_tokens"
+    cache_write_tokens = getattr(usage, 'cache_creation_input_tokens', 0)
+    assert cache_write_tokens > 0, \
+        f"{operation} should create cache (got {cache_write_tokens} tokens)"
+    
+    return cache_write_tokens
+
+def validate_cache_read(usage: Any, operation: str) -> int:
+    """Validate cache read operation and return tokens read"""
+    print(f"{operation} usage - input_tokens: {usage.input_tokens}, "
+            f"cache_creation_input_tokens: {getattr(usage, 'cache_creation_input_tokens', 0)}, "
+            f"cache_read_input_tokens: {getattr(usage, 'cache_read_input_tokens', 0)}")
+    
+    assert hasattr(usage, 'cache_read_input_tokens'), \
+        f"{operation} should have cache_read_input_tokens"
+    cache_read_tokens = getattr(usage, 'cache_read_input_tokens', 0)
+    assert cache_read_tokens > 0, \
+        f"{operation} should read from cache (got {cache_read_tokens} tokens)"
+    
+    return cache_read_tokens

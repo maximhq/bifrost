@@ -1280,6 +1280,13 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *context.Co
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+				// add cache control to last tool in tools array
+				if len(bifrostReq.Params.Tools) > 0 {
+					bifrostReq.Params.Tools[len(bifrostReq.Params.Tools)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
 			}
 		}
 	}
@@ -1561,6 +1568,14 @@ func ToBedrockResponsesRequest(ctx *context.Context, bifrostReq *schemas.Bifrost
 					},
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)
+
+				if tool.CacheControl != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+					bedrockTools = append(bedrockTools, BedrockTool{
+						CachePoint: &BedrockCachePoint{
+							Type: BedrockCachePointTypeDefault,
+						},
+					})
+				}
 			}
 		}
 
@@ -1688,6 +1703,13 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
 		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
 		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
+
+		if bifrostResp.Usage.InputTokensDetails != nil {
+			bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
+		}
+		if bifrostResp.Usage.OutputTokensDetails != nil {
+			bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
+		}
 	}
 
 	// Set metrics
@@ -2357,8 +2379,8 @@ func ConvertBedrockMessagesToBifrostMessages(ctx *context.Context, bedrockMessag
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Convert system messages first
-	for _, sysMsg := range systemMessages {
-		systemBifrostMsgs := convertBedrockSystemMessageToBifrostMessages(&sysMsg)
+	systemBifrostMsgs := convertBedrockSystemMessageToBifrostMessages(systemMessages)
+	if len(systemBifrostMsgs) > 0 {
 		bifrostMessages = append(bifrostMessages, systemBifrostMsgs...)
 	}
 
@@ -2388,6 +2410,13 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 					systemMessages = append(systemMessages, BedrockSystemMessage{
 						Text: block.Text,
 					})
+					if block.CacheControl != nil {
+						systemMessages = append(systemMessages, BedrockSystemMessage{
+							CachePoint: &BedrockCachePoint{
+								Type: BedrockCachePointTypeDefault,
+							},
+						})
+					}
 				}
 			}
 		}
@@ -2418,24 +2447,40 @@ func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *Bedro
 }
 
 // convertBedrockSystemMessageToBifrostMessages converts a Bedrock system message to Bifrost messages
-func convertBedrockSystemMessageToBifrostMessages(sysMsg *BedrockSystemMessage) []schemas.ResponsesMessage {
-	if sysMsg.Text != nil {
-		systemRole := schemas.ResponsesInputMessageRoleSystem
-		msgType := schemas.ResponsesMessageTypeMessage
-		return []schemas.ResponsesMessage{{
-			Type: &msgType,
-			Role: &systemRole,
-			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{
-					{
-						Type: schemas.ResponsesInputMessageContentBlockTypeText,
-						Text: sysMsg.Text,
+func convertBedrockSystemMessageToBifrostMessages(systemMessages []BedrockSystemMessage) []schemas.ResponsesMessage {
+	var bifrostMessages []schemas.ResponsesMessage
+
+	for _, sysMsg := range systemMessages {
+		if sysMsg.CachePoint != nil {
+			// add it to last content block of last message
+			if len(bifrostMessages) > 0 {
+				lastMessage := &bifrostMessages[len(bifrostMessages)-1]
+				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
+					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
+			}
+		}
+		if sysMsg.Text != nil {
+			systemRole := schemas.ResponsesInputMessageRoleSystem
+			msgType := schemas.ResponsesMessageTypeMessage
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				Type: &msgType,
+				Role: &systemRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: sysMsg.Text,
+						},
 					},
 				},
-			},
-		}}
+			})
+		}
+
 	}
-	return []schemas.ResponsesMessage{}
+	return bifrostMessages
 }
 
 // Helper to convert Bedrock role to Bifrost role
@@ -2608,6 +2653,16 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *Bed
 				}
 			}
 			outputMessages = append(outputMessages, resultMsg)
+		} else if block.CachePoint != nil {
+			// add cache control to last content block of last message
+			if len(outputMessages) > 0 {
+				lastMessage := &outputMessages[len(outputMessages)-1]
+				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
+					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
+			}
 		}
 	}
 
@@ -2690,7 +2745,6 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 		for _, block := range content.ContentBlocks {
 
 			bedrockBlock := BedrockContentBlock{}
-
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 				bedrockBlock.Text = block.Text
@@ -2717,6 +2771,14 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 			}
 
 			blocks = append(blocks, bedrockBlock)
+
+			if block.CacheControl != nil {
+				blocks = append(blocks, BedrockContentBlock{
+					CachePoint: &BedrockCachePoint{
+						Type: BedrockCachePointTypeDefault,
+					},
+				})
+			}
 		}
 	}
 

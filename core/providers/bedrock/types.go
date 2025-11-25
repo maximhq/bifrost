@@ -156,6 +156,7 @@ type BedrockMessage struct {
 type BedrockSystemMessage struct {
 	Text         *string              `json:"text,omitempty"`         // Text system message
 	GuardContent *BedrockGuardContent `json:"guardContent,omitempty"` // Guard content for guardrails
+	CachePoint   *BedrockCachePoint   `json:"cachePoint,omitempty"`   // Cache point for the system message
 }
 
 // BedrockContentBlock represents a content block that can be text, image, document, toolUse, or toolResult
@@ -183,6 +184,20 @@ type BedrockContentBlock struct {
 
 	// For Tool Call Result content
 	JSON interface{} `json:"json,omitempty"`
+
+	// Cache point for the content block
+	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"`
+}
+
+type BedrockCachePointType string
+
+const (
+	BedrockCachePointTypeDefault BedrockCachePointType = "default"
+)
+
+// BedrockCachePoint
+type BedrockCachePoint struct {
+	Type BedrockCachePointType `json:"type"`
 }
 
 // BedrockImageSource represents image content
@@ -267,7 +282,8 @@ type BedrockToolConfig struct {
 
 // BedrockTool represents a tool definition
 type BedrockTool struct {
-	ToolSpec *BedrockToolSpec `json:"toolSpec,omitempty"` // Tool specification
+	ToolSpec   *BedrockToolSpec   `json:"toolSpec,omitempty"`   // Tool specification
+	CachePoint *BedrockCachePoint `json:"cachePoint,omitempty"` // Cache point for the tool
 }
 
 // BedrockToolSpec represents the specification of a tool
@@ -626,7 +642,7 @@ type BedrockFileRetrieveRequest struct {
 	Bucket string `json:"bucket"`
 	Prefix string `json:"prefix"`
 	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
-	ETag string `json:"etag"` // S3 ETag
+	ETag   string `json:"etag"`  // S3 ETag
 }
 
 // BedrockFileRetrieveResponse wraps S3 HeadObject response
@@ -644,7 +660,7 @@ type BedrockFileDeleteRequest struct {
 	Bucket string `json:"bucket"`
 	Prefix string `json:"prefix"`
 	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
-	ETag string `json:"etag"` // S3 ETag
+	ETag   string `json:"etag"`  // S3 ETag
 }
 
 // BedrockFileDeleteResponse wraps S3 DeleteObject response
@@ -658,7 +674,7 @@ type BedrockFileContentRequest struct {
 	Bucket string `json:"bucket"`
 	Prefix string `json:"prefix,omitempty"`
 	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
-	ETag string `json:"etag"` // S3 ETag
+	ETag   string `json:"etag"`  // S3 ETag
 }
 
 // BedrockFileContentResponse wraps S3 GetObject response

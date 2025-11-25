@@ -27,7 +27,7 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 	responseFormatTool := convertResponseFormatToTool(ctx, bifrostReq.Params)
 
 	// Convert tool config
-	if toolConfig := convertToolConfig(bifrostReq.Params); toolConfig != nil {
+	if toolConfig := convertToolConfig(bifrostReq.Model, bifrostReq.Params); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
 
@@ -204,11 +204,11 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem:
 			// Convert system message
-			systemMsg, err := convertSystemMessage(msg)
+			systemMsgs, err := convertSystemMessages(msg)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to convert system message: %w", err)
 			}
-			systemMessages = append(systemMessages, systemMsg)
+			systemMessages = append(systemMessages, systemMsgs...)
 
 		case schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 			// Convert regular message
@@ -234,29 +234,33 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 	return messages, systemMessages, nil
 }
 
-// convertSystemMessage converts a Bifrost system message to Bedrock format
-func convertSystemMessage(msg schemas.ChatMessage) (BedrockSystemMessage, error) {
-	systemMsg := BedrockSystemMessage{}
+// convertSystemMessages converts a Bifrost system message to Bedrock format
+func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, error) {
+	systemMsgs := []BedrockSystemMessage{}
 
 	// Convert content
 	if msg.Content.ContentStr != nil {
-		systemMsg.Text = msg.Content.ContentStr
+		systemMsgs = append(systemMsgs, BedrockSystemMessage{
+			Text: msg.Content.ContentStr,
+		})
 	} else if msg.Content.ContentBlocks != nil {
-		// For system messages, we only support text content
-		// Combine all text blocks into a single string
-		var textParts []string
 		for _, block := range msg.Content.ContentBlocks {
 			if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-				textParts = append(textParts, *block.Text)
+				systemMsgs = append(systemMsgs, BedrockSystemMessage{
+					Text: block.Text,
+				})
+				if block.CacheControl != nil {
+					systemMsgs = append(systemMsgs, BedrockSystemMessage{
+						CachePoint: &BedrockCachePoint{
+							Type: BedrockCachePointTypeDefault,
+						},
+					})
+				}
 			}
-		}
-		if len(textParts) > 0 {
-			combined := strings.Join(textParts, "\n")
-			systemMsg.Text = &combined
 		}
 	}
 
-	return systemMsg, nil
+	return systemMsgs, nil
 }
 
 // convertMessage converts a Bifrost message to Bedrock format
@@ -323,6 +327,14 @@ func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
 						Text: block.Text,
 					})
+					// Cache point must be in a separate block
+					if block.CacheControl != nil {
+						toolResultContent = append(toolResultContent, BedrockContentBlock{
+							CachePoint: &BedrockCachePoint{
+								Type: BedrockCachePointTypeDefault,
+							},
+						})
+					}
 				}
 			case schemas.ChatContentBlockTypeImage:
 				if block.ImageURLStruct != nil {
@@ -333,6 +345,14 @@ func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
 						Image: imageSource,
 					})
+					// Cache point must be in a separate block
+					if block.CacheControl != nil {
+						toolResultContent = append(toolResultContent, BedrockContentBlock{
+							CachePoint: &BedrockCachePoint{
+								Type: BedrockCachePointTypeDefault,
+							},
+						})
+					}
 				}
 			}
 		}
@@ -363,11 +383,11 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 	} else if content.ContentBlocks != nil {
 		// Multi-modal content
 		for _, block := range content.ContentBlocks {
-			bedrockBlock, err := convertContentBlock(block)
+			bedrockBlocks, err := convertContentBlock(block)
 			if err != nil {
 				return nil, fmt.Errorf("failed to convert content block: %w", err)
 			}
-			contentBlocks = append(contentBlocks, bedrockBlock)
+			contentBlocks = append(contentBlocks, bedrockBlocks...)
 		}
 	}
 
@@ -375,32 +395,54 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 }
 
 // convertContentBlock converts a Bifrost content block to Bedrock format
-func convertContentBlock(block schemas.ChatContentBlock) (BedrockContentBlock, error) {
+func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
 	switch block.Type {
 	case schemas.ChatContentBlockTypeText:
-		return BedrockContentBlock{
-			Text: block.Text,
-		}, nil
+		blocks := []BedrockContentBlock{
+			{
+				Text: block.Text,
+			},
+		}
+		// Cache point must be in a separate block
+		if block.CacheControl != nil {
+			blocks = append(blocks, BedrockContentBlock{
+				CachePoint: &BedrockCachePoint{
+					Type: BedrockCachePointTypeDefault,
+				},
+			})
+		}
+		return blocks, nil
 
 	case schemas.ChatContentBlockTypeImage:
 		if block.ImageURLStruct == nil {
-			return BedrockContentBlock{}, fmt.Errorf("image_url block missing image_url field")
+			return nil, fmt.Errorf("image_url block missing image_url field")
 		}
 
 		imageSource, err := convertImageToBedrockSource(block.ImageURLStruct.URL)
 		if err != nil {
-			return BedrockContentBlock{}, fmt.Errorf("failed to convert image: %w", err)
+			return nil, fmt.Errorf("failed to convert image: %w", err)
 		}
-		return BedrockContentBlock{
-			Image: imageSource,
-		}, nil
+		blocks := []BedrockContentBlock{
+			{
+				Image: imageSource,
+			},
+		}
+		// Cache point must be in a separate block
+		if block.CacheControl != nil {
+			blocks = append(blocks, BedrockContentBlock{
+				CachePoint: &BedrockCachePoint{
+					Type: BedrockCachePointTypeDefault,
+				},
+			})
+		}
+		return blocks, nil
 
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
-		return BedrockContentBlock{}, fmt.Errorf("audio input not supported in Bedrock Converse API")
+		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
 
 	default:
-		return BedrockContentBlock{}, fmt.Errorf("unsupported content block type: %s", block.Type)
+		return nil, fmt.Errorf("unsupported content block type: %s", block.Type)
 	}
 }
 
@@ -572,7 +614,7 @@ func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceCon
 }
 
 // convertToolConfig converts Bifrost tools to Bedrock tool config
-func convertToolConfig(params *schemas.ChatParameters) *BedrockToolConfig {
+func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToolConfig {
 	if len(params.Tools) == 0 {
 		return nil
 	}
@@ -616,6 +658,14 @@ func convertToolConfig(params *schemas.ChatParameters) *BedrockToolConfig {
 				},
 			}
 			bedrockTools = append(bedrockTools, bedrockTool)
+
+			if tool.CacheControl != nil && !schemas.IsNovaModel(model) {
+				bedrockTools = append(bedrockTools, BedrockTool{
+					CachePoint: &BedrockCachePoint{
+						Type: BedrockCachePointTypeDefault,
+					},
+				})
+			}
 		}
 	}
 
