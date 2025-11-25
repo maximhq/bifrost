@@ -70,9 +70,7 @@ helm install bifrost \
   https://github.com/maximhq/bifrost/releases/download/helm-chart-v1.3.5/bifrost-1.3.5.tgz
 ```
 
-### Method 3: Install from Local Chart
-
-### Method 2: From Source
+### Method 3: Install from Source
 
 **Step 1:** Clone the repository
 
@@ -87,7 +85,7 @@ cd bifrost/helm-charts
 helm install bifrost ./bifrost
 ```
 
-### Method 3: From Package
+### Method 4: Install from Package
 
 **Step 1:** Download the chart package
 

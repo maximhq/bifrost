@@ -69,7 +69,7 @@ bifrost:
         provider: "openai"
         # keys:
         #   - "REPLACE_WITH_OPENAI_API_KEY"  # Not recommended: use secretRef instead
-        embeddingModel: "text-embedding-3-small"
+        embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.8
         ttl: "5m"

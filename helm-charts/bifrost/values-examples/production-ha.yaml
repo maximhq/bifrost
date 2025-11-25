@@ -124,11 +124,11 @@ bifrost:
       config:
         provider: "openai"
         # keys are injected from the secret via environment variable
-        embeddingModel: "text-embedding-3-small"
+        embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.85
         ttl: "1h"
-        conversationHistoryThreshold: 5
+        conversation_history_threshold: 5
 
 # Pod affinity for better distribution
 affinity:

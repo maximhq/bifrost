@@ -201,37 +201,40 @@ false
 {{- if .Values.bifrost.providers }}
 {{- $_ := set $config "providers" .Values.bifrost.providers }}
 {{- end }}
+{{- /* Config Store */ -}}
 {{- if eq .Values.storage.mode "postgres" }}
-{{- $configStore := dict "type" "postgres" }}
-{{- $_ := set $configStore "postgres" (dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" . | int) "database" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .)) }}
+{{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
-{{- $logsStore := dict "type" "postgres" }}
-{{- $_ := set $logsStore "postgres" (dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" . | int) "database" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .)) }}
+{{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
-{{- $configStore := dict "type" "sqlite" }}
-{{- $_ := set $configStore "sqlite" (dict "db_path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
-{{- $_ := set $config "config_store" $configStore }}
-{{- $logsStore := dict "type" "sqlite" }}
-{{- $_ := set $logsStore "sqlite" (dict "db_path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
-{{- $_ := set $config "logs_store" $logsStore }}
+{{- $sqliteConfigStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
+{{- $_ := set $config "config_store" $sqliteConfigStore }}
+{{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
+{{- $_ := set $config "logs_store" $sqliteLogsStore }}
 {{- end }}
+{{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
-{{- $vectorStore := dict "type" .Values.vectorStore.type }}
+{{- $vectorStore := dict "enabled" true "type" .Values.vectorStore.type }}
 {{- if eq .Values.vectorStore.type "weaviate" }}
 {{- $weaviateConfig := dict "scheme" (include "bifrost.weaviate.scheme" .) "host" (include "bifrost.weaviate.host" .) }}
 {{- if .Values.vectorStore.weaviate.external.enabled }}
 {{- if .Values.vectorStore.weaviate.external.apiKey }}
 {{- $_ := set $weaviateConfig "api_key" .Values.vectorStore.weaviate.external.apiKey }}
 {{- end }}
+{{- if or .Values.vectorStore.weaviate.external.grpcHost (hasKey .Values.vectorStore.weaviate.external "grpcSecured") }}
+{{- $grpcConfig := dict }}
 {{- if .Values.vectorStore.weaviate.external.grpcHost }}
-{{- $_ := set $weaviateConfig "grpc_host" .Values.vectorStore.weaviate.external.grpcHost }}
+{{- $_ := set $grpcConfig "host" .Values.vectorStore.weaviate.external.grpcHost }}
 {{- end }}
 {{- if hasKey .Values.vectorStore.weaviate.external "grpcSecured" }}
-{{- $_ := set $weaviateConfig "grpc_secured" .Values.vectorStore.weaviate.external.grpcSecured }}
+{{- $_ := set $grpcConfig "secured" .Values.vectorStore.weaviate.external.grpcSecured }}
+{{- end }}
+{{- $_ := set $weaviateConfig "grpc_config" $grpcConfig }}
 {{- end }}
 {{- end }}
-{{- $_ := set $vectorStore "weaviate" $weaviateConfig }}
+{{- $_ := set $vectorStore "config" $weaviateConfig }}
 {{- else if eq .Values.vectorStore.type "redis" }}
 {{- $redisConfig := dict "host" (include "bifrost.redis.host" .) "port" (include "bifrost.redis.port" . | int) }}
 {{- $password := include "bifrost.redis.password" . }}
@@ -243,7 +246,7 @@ false
 {{- $_ := set $redisConfig "database" .Values.vectorStore.redis.external.database }}
 {{- end }}
 {{- end }}
-{{- $_ := set $vectorStore "redis" $redisConfig }}
+{{- $_ := set $vectorStore "config" $redisConfig }}
 {{- else if eq .Values.vectorStore.type "qdrant" }}
 {{- $qdrantConfig := dict "host" (include "bifrost.qdrant.host" .) "port" (include "bifrost.qdrant.port" . | int) }}
 {{- $apiKey := include "bifrost.qdrant.apiKey" . }}
@@ -256,32 +259,96 @@ false
 {{- else }}
 {{- $_ := set $qdrantConfig "use_tls" false }}
 {{- end }}
-{{- $_ := set $vectorStore "qdrant" $qdrantConfig }}
+{{- $_ := set $vectorStore "config" $qdrantConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
+{{- /* MCP */ -}}
 {{- if .Values.bifrost.mcp.enabled }}
-{{- $_ := set $config "mcp" (dict "enabled" true "client_configs" .Values.bifrost.mcp.clientConfigs) }}
+{{- $_ := set $config "mcp" (dict "client_configs" .Values.bifrost.mcp.clientConfigs) }}
 {{- end }}
-{{- $plugins := dict }}
+{{- /* Plugins - as array per schema */ -}}
+{{- $plugins := list }}
 {{- if .Values.bifrost.plugins.telemetry.enabled }}
-{{- $_ := set $plugins "telemetry" (dict "enabled" true "config" .Values.bifrost.plugins.telemetry.config) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "telemetry" "config" .Values.bifrost.plugins.telemetry.config) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.logging.enabled }}
-{{- $_ := set $plugins "logging" (dict "enabled" true "config" .Values.bifrost.plugins.logging.config) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "logging" "config" .Values.bifrost.plugins.logging.config) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.governance.enabled }}
-{{- $_ := set $plugins "governance" (dict "enabled" true "config" .Values.bifrost.plugins.governance.config) }}
+{{- $governanceConfig := dict }}
+{{- if hasKey .Values.bifrost.plugins.governance.config "is_vk_mandatory" }}
+{{- $_ := set $governanceConfig "is_vk_mandatory" .Values.bifrost.plugins.governance.config.is_vk_mandatory }}
+{{- end }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.maxim.enabled }}
-{{- $_ := set $plugins "maxim" (dict "enabled" true "config" .Values.bifrost.plugins.maxim.config) }}
+{{- $maximConfig := dict }}
+{{- if .Values.bifrost.plugins.maxim.config.api_key }}
+{{- $_ := set $maximConfig "api_key" .Values.bifrost.plugins.maxim.config.api_key }}
+{{- end }}
+{{- if .Values.bifrost.plugins.maxim.config.log_repo_id }}
+{{- $_ := set $maximConfig "log_repo_id" .Values.bifrost.plugins.maxim.config.log_repo_id }}
+{{- end }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "maxim" "config" $maximConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
-{{- $semanticCacheConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
-{{- $_ := set $plugins "semantic_cache" (dict "enabled" true "config" $semanticCacheConfig) }}
+{{- $scConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
+{{- if $inputConfig.provider }}
+{{- $_ := set $scConfig "provider" $inputConfig.provider }}
+{{- end }}
+{{- if $inputConfig.keys }}
+{{- $_ := set $scConfig "keys" $inputConfig.keys }}
+{{- end }}
+{{- if $inputConfig.embedding_model }}
+{{- $_ := set $scConfig "embedding_model" $inputConfig.embedding_model }}
+{{- end }}
+{{- if $inputConfig.dimension }}
+{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
+{{- end }}
+{{- if $inputConfig.threshold }}
+{{- $_ := set $scConfig "threshold" $inputConfig.threshold }}
+{{- end }}
+{{- if $inputConfig.ttl }}
+{{- $_ := set $scConfig "ttl" $inputConfig.ttl }}
+{{- end }}
+{{- if $inputConfig.vector_store_namespace }}
+{{- $_ := set $scConfig "vector_store_namespace" $inputConfig.vector_store_namespace }}
+{{- end }}
+{{- if hasKey $inputConfig "conversation_history_threshold" }}
+{{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
+{{- end }}
+{{- if hasKey $inputConfig "cache_by_model" }}
+{{- $_ := set $scConfig "cache_by_model" $inputConfig.cache_by_model }}
+{{- end }}
+{{- if hasKey $inputConfig "cache_by_provider" }}
+{{- $_ := set $scConfig "cache_by_provider" $inputConfig.cache_by_provider }}
+{{- end }}
+{{- if hasKey $inputConfig "exclude_system_prompt" }}
+{{- $_ := set $scConfig "exclude_system_prompt" $inputConfig.exclude_system_prompt }}
+{{- end }}
+{{- if hasKey $inputConfig "cleanup_on_shutdown" }}
+{{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
+{{- end }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "semanticcache" "config" $scConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
-{{- $_ := set $plugins "otel" (dict "enabled" true "config" .Values.bifrost.plugins.otel.config) }}
+{{- $otelConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
+{{- if $inputConfig.service_name }}
+{{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
+{{- end }}
+{{- if $inputConfig.collector_url }}
+{{- $_ := set $otelConfig "collector_url" $inputConfig.collector_url }}
+{{- end }}
+{{- if $inputConfig.trace_type }}
+{{- $_ := set $otelConfig "trace_type" $inputConfig.trace_type }}
+{{- end }}
+{{- if $inputConfig.protocol }}
+{{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
+{{- end }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
 {{- end }}
 {{- if $plugins }}
 {{- $_ := set $config "plugins" $plugins }}

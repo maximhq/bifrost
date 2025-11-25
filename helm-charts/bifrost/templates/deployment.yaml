@@ -1,3 +1,6 @@
+{{- if not .Values.image.tag }}
+{{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/maximhq/bifrost/tags" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,7 +39,7 @@ spec:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -53,8 +56,6 @@ spec:
               value: {{ .Values.bifrost.logLevel | quote }}
             - name: LOG_STYLE
               value: {{ .Values.bifrost.logStyle | quote }}
-            - name: CONFIG_PATH
-              value: /config/config.json
             {{- if .Values.bifrost.encryptionKeySecret }}
             - name: BIFROST_ENCRYPTION_KEY
               valueFrom:
@@ -83,13 +84,14 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            - name: config
-              mountPath: /config
-              readOnly: true
             {{- if eq .Values.storage.mode "sqlite" }}
             - name: data
               mountPath: {{ .Values.bifrost.appDir }}
             {{- end }}
+            - name: config
+              mountPath: {{ .Values.bifrost.appDir }}/config.json
+              subPath: config.json
+              readOnly: true
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

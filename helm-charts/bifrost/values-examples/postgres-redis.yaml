@@ -68,7 +68,7 @@ bifrost:
       config:
         provider: "openai"
         # keys are injected from the secret via environment variable
-        embeddingModel: "text-embedding-3-small"
+        embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.8
         ttl: "5m"

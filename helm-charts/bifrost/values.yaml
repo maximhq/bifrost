@@ -8,9 +8,10 @@ replicaCount: 1
 image:
   repository: docker.io/maximhq/bifrost
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
+  # REQUIRED: Specify the image tag (e.g., v1.3.5, v1.3.36, latest)
   # Docker images are tagged with v prefix (e.g., v1.3.5)
-  tag: "v1.3.5"
+  # See available tags at: https://hub.docker.com/r/maximhq/bifrost/tags
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -167,33 +168,34 @@ bifrost:
     governance:
       enabled: false
       config:
-        isVkMandatory: false
+        is_vk_mandatory: false
     
     maxim:
       enabled: false
       config:
-        apiKey: ""
-        logRepoId: ""
+        api_key: ""
+        log_repo_id: ""
     
     semanticCache:
       enabled: false
       config:
         provider: "openai"
         keys: []
-        embeddingModel: "text-embedding-3-small"
+        embedding_model: "text-embedding-3-small"
         dimension: 1536
         threshold: 0.8
         ttl: "5m"
-        conversationHistoryThreshold: 3
-        cacheByModel: true
-        cacheByProvider: true
-        excludeSystemPrompt: false
+        conversation_history_threshold: 3
+        cache_by_model: true
+        cache_by_provider: true
+        exclude_system_prompt: false
     
     otel:
       enabled: false
       config:
-        collectorUrl: ""
-        traceType: "otel"
+        service_name: "bifrost"
+        collector_url: ""
+        trace_type: "otel"
         protocol: "grpc"
 
 # Storage configuration
