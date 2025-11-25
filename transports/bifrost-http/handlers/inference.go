@@ -18,23 +18,26 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
-	client       *bifrost.Bifrost
-	handlerStore lib.HandlerStore
-	config       *lib.Config
+	client          *bifrost.Bifrost
+	handlerStore    lib.HandlerStore
+	config          *lib.Config
+	governanceStore *governance.GovernanceStore
 }
 
 // NewInferenceHandler creates a new completion handler instance
-func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *CompletionHandler {
+func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config, governanceStore *governance.GovernanceStore) *CompletionHandler {
 	return &CompletionHandler{
-		client:       client,
-		handlerStore: config,
-		config:       config,
+		client:          client,
+		handlerStore:    config,
+		config:          config,
+		governanceStore: governanceStore,
 	}
 }
 
@@ -255,6 +258,72 @@ func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]in
 	return extraParams, nil
 }
 
+// getVirtualKeyProviders returns allowed providers and models from virtual key
+func getVirtualKeyProviders(governanceStore *governance.GovernanceStore, bifrostCtx *context.Context) map[schemas.ModelProvider][]string {
+	if governanceStore == nil || bifrostCtx == nil {
+		return nil
+	}
+
+	vkValue := (*bifrostCtx).Value(schemas.BifrostContextKeyVirtualKey)
+	if vkValue == nil {
+		return nil
+	}
+
+	vkString, ok := vkValue.(string)
+	if !ok || vkString == "" {
+		return nil
+	}
+
+	vk, exists := governanceStore.GetVirtualKey(vkString)
+	if !exists || !vk.IsActive {
+		return nil
+	}
+
+	// If no provider configs, all providers allowed
+	if len(vk.ProviderConfigs) == 0 {
+		return make(map[schemas.ModelProvider][]string)
+	}
+
+	allowedProviders := make(map[schemas.ModelProvider][]string, len(vk.ProviderConfigs))
+	for _, pc := range vk.ProviderConfigs {
+		provider := schemas.ModelProvider(pc.Provider)
+		allowedProviders[provider] = pc.AllowedModels
+	}
+
+	return allowedProviders
+}
+
+// filterModelsByAllowedModels filters models based on allowed models list
+func filterModelsByAllowedModels(allowedProviders map[schemas.ModelProvider][]string, models []schemas.Model) []schemas.Model {
+	if allowedProviders == nil || len(allowedProviders) == 0 {
+		return models
+	}
+
+	filteredModels := []schemas.Model{}
+	for _, model := range models {
+		modelProvider, modelName := schemas.ParseModelString(model.ID, "")
+
+		allowedModels, providerAllowed := allowedProviders[modelProvider]
+		if !providerAllowed {
+			continue
+		}
+
+		if len(allowedModels) == 0 {
+			filteredModels = append(filteredModels, model)
+			continue
+		}
+
+		for _, allowedModel := range allowedModels {
+			if allowedModel == modelName || allowedModel == model.ID {
+				filteredModels = append(filteredModels, model)
+				break
+			}
+		}
+	}
+
+	return filteredModels
+}
+
 const (
 	// Maximum file size (25MB)
 	MaxFileSize = 25 * 1024 * 1024
@@ -298,6 +367,12 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Check virtual key and get allowed providers
+	var allowedProviders map[schemas.ModelProvider][]string
+	if h.config.ClientConfig.EnableGovernance {
+		allowedProviders = getVirtualKeyProviders(h.governanceStore, bifrostCtx)
+	}
+
 	var resp *schemas.BifrostListModelsResponse
 	var bifrostErr *schemas.BifrostError
 
@@ -327,24 +402,76 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		bifrostListModelsReq.ExtraParams = extraParams
 	}
 
-	// If provider is empty, list all models from all providers
-	if provider == "" {
-		resp, bifrostErr = h.client.ListAllModels(*bifrostCtx, bifrostListModelsReq)
+	// Determine which providers to query based on VK restrictions
+	var providersToFetch []schemas.ModelProvider
+
+	if allowedProviders != nil && len(allowedProviders) > 0 {
+		// Virtual key has provider restrictions
+		if provider != "" {
+			// Check if specific provider is allowed by VK
+			if _, providerAllowed := allowedProviders[schemas.ModelProvider(provider)]; !providerAllowed {
+				SendError(ctx, fasthttp.StatusForbidden, "Provider not allowed by virtual key")
+				return
+			}
+			providersToFetch = []schemas.ModelProvider{schemas.ModelProvider(provider)}
+		} else {
+			// Use all VK-allowed providers
+			providersToFetch = make([]schemas.ModelProvider, 0, len(allowedProviders))
+			for p := range allowedProviders {
+				providersToFetch = append(providersToFetch, p)
+			}
+		}
 	} else {
+		// No VK restrictions - use provider query param or all configured providers
+		if provider != "" {
+			providersToFetch = []schemas.ModelProvider{schemas.ModelProvider(provider)}
+		} else {
+			configuredProviders, err := h.client.GetConfiguredProviders()
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get configured providers: %v", err))
+				return
+			}
+			providersToFetch = configuredProviders
+		}
+	}
+
+	// Fetch models from providers
+	if len(providersToFetch) == 1 {
+		// Ensure provider is set in request
+		bifrostListModelsReq.Provider = providersToFetch[0]
 		resp, bifrostErr = h.client.ListModelsRequest(*bifrostCtx, bifrostListModelsReq)
+	} else {
+		resp, bifrostErr = h.client.ListModelsFromProviders(*bifrostCtx, providersToFetch, bifrostListModelsReq)
+		if bifrostErr == nil && resp != nil {
+			resp = resp.ApplyPagination(bifrostListModelsReq.PageSize, bifrostListModelsReq.PageToken)
+		}
 	}
 
 	if bifrostErr != nil {
+		if bifrostErr.Error != nil && bifrostErr.Error.Message == "provider not found for list models request" {
+			SendJSON(ctx, &schemas.BifrostListModelsResponse{
+				Data: []schemas.Model{},
+			})
+			return
+		}
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
 
-	// Add pricing data to the response
+	// Apply model-level filtering based on VK's allowed_models
+	if allowedProviders != nil && len(allowedProviders) > 0 {
+		resp.Data = filterModelsByAllowedModels(allowedProviders, resp.Data)
+	}
+
+	// Attach pricing data if not already present
 	if len(resp.Data) > 0 && h.config.PricingManager != nil {
 		for i, modelEntry := range resp.Data {
+			if modelEntry.Pricing != nil {
+				continue
+			}
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
 			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
-			if pricingEntry != nil && modelEntry.Pricing == nil {
+			if pricingEntry != nil {
 				pricing := &schemas.Pricing{
 					Prompt:     bifrost.Ptr(fmt.Sprintf("%f", pricingEntry.InputCostPerToken)),
 					Completion: bifrost.Ptr(fmt.Sprintf("%f", pricingEntry.OutputCostPerToken)),
