@@ -143,7 +143,7 @@ func listModelsByKey(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "", providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 		return nil, bifrostErr
 	}
 
@@ -264,7 +264,7 @@ func HandleOpenAITextCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, ParseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -405,7 +405,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
+		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -645,7 +645,7 @@ func HandleOpenAIChatCompletionRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -812,7 +812,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -1108,7 +1108,8 @@ func HandleOpenAIResponsesRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model)
+		err := ParseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
+		return nil, err
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1253,7 +1254,7 @@ func HandleOpenAIResponsesStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
+		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -1456,7 +1457,7 @@ func HandleOpenAIEmbeddingRequest(
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1530,7 +1531,7 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	// Get the binary audio data from the response body
@@ -1646,7 +1647,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
+		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	// Create response channel
@@ -1805,7 +1806,7 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1920,7 +1921,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	// Create response channel
@@ -2077,10 +2078,10 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 }
 
 // ParseOpenAIError parses OpenAI error responses.
-func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string, shouldSendBackRawResponse bool) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
 
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, shouldSendBackRawResponse)
 
 	if errorResp.EventID != nil {
 		bifrostErr.EventID = errorResp.EventID
@@ -2097,20 +2098,19 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 		if errorResp.Error.EventID != nil {
 			bifrostErr.Error.EventID = errorResp.Error.EventID
 		}
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		}
+
+		bifrostErr.ExtraFields.ModelRequested = model
+		bifrostErr.ExtraFields.Provider = providerName
+		bifrostErr.ExtraFields.RequestType = requestType
 	}
 
 	return bifrostErr
 }
 
 // parseStreamOpenAIError parses OpenAI streaming error responses.
-func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
+func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string, sendBackRawResponse bool) *schemas.BifrostError {
 	var errorResp schemas.BifrostError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, sendBackRawResponse)
 	if errorResp.EventID != nil {
 		bifrostErr.EventID = errorResp.EventID
 	}
@@ -2125,11 +2125,9 @@ func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.Request
 		if errorResp.Error.EventID != nil {
 			bifrostErr.Error.EventID = errorResp.Error.EventID
 		}
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		}
+		bifrostErr.ExtraFields.Provider = providerName
+		bifrostErr.ExtraFields.ModelRequested = model
+		bifrostErr.ExtraFields.RequestType = requestType
 	}
 
 	return bifrostErr

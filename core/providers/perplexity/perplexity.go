@@ -90,7 +90,7 @@ func (provider *PerplexityProvider) completeRequest(ctx context.Context, jsonDat
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-		return nil, latency, openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), model)
+		return nil, latency, openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), model, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)

@@ -91,7 +91,7 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "")
+		bifrostErr := openai.ParseOpenAIError(resp, schemas.ListModelsRequest, providerName, "", providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		return nil, bifrostErr
 	}
 

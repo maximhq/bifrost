@@ -314,26 +314,32 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.
 // errorResp must be a pointer to the target struct for unmarshaling.
-func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
+// If sendBackRawResponse is true, the raw error response body is included in ExtraFields.RawResponse
+func HandleProviderAPIError(resp *fasthttp.Response, errorResp any, sendBackRawResponse bool) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
+	body := resp.Body()
 
-	if err := sonic.Unmarshal(resp.Body(), errorResp); err != nil {
-		rawResponse := resp.Body()
-		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: message,
-			},
-		}
-	}
-
-	return &schemas.BifrostError{
+	bifrostErr := &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
 		Error:          &schemas.ErrorField{},
 	}
+
+	if err := sonic.Unmarshal(body, errorResp); err != nil {
+		message := fmt.Sprintf("provider API error: %s", string(body))
+		bifrostErr.Error.Message = message
+	} else {
+		bifrostErr.Error.Message = "unknown provider error"
+	}
+
+	if sendBackRawResponse {
+		var rawErrInterface interface{}
+		if err := sonic.Unmarshal(body, &rawErrInterface); err == nil {
+			bifrostErr.ExtraFields.RawResponse = rawErrInterface
+		}
+	}
+
+	return bifrostErr
 }
 
 // HandleProviderResponse handles common response parsing logic for provider responses.

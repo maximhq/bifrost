@@ -123,7 +123,7 @@ func (provider *CohereProvider) buildRequestURL(ctx context.Context, defaultPath
 // completeRequest sends a request to Cohere's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string, shouldSendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -154,7 +154,7 @@ func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []
 
 		var errorResp CohereError
 
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, shouldSendBackRawResponse)
 		bifrostErr.Type = &errorResp.Type
 		if bifrostErr.Error == nil {
 			bifrostErr.Error = &schemas.ErrorField{}
@@ -222,7 +222,7 @@ func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp CohereError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		bifrostErr.Error.Message = errorResp.Message
 		return nil, bifrostErr
 	}
@@ -301,7 +301,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +517,7 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	}
 
 	// Convert to Cohere v2 request
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}
@@ -749,7 +749,7 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	}
 
 	// Create Bifrost request for conversion
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}

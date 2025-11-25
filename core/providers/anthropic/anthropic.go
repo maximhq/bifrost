@@ -121,7 +121,7 @@ func (provider *AnthropicProvider) buildRequestURL(ctx context.Context, defaultP
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string, shouldSendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -153,7 +153,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData
 
 		var errorResp AnthropicError
 
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, shouldSendBackRawResponse)
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
 
@@ -202,7 +202,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx context.Context, key sche
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp AnthropicError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		bifrostErr.Error.Type = &errorResp.Error.Type
 		bifrostErr.Error.Message = errorResp.Error.Message
 		return nil, bifrostErr
@@ -266,7 +266,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}
@@ -620,7 +620,7 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if err != nil {
 		return nil, err
 	}
