@@ -63,12 +63,62 @@ spec:
                   name: {{ .Values.bifrost.encryptionKeySecret.name }}
                   key: {{ .Values.bifrost.encryptionKeySecret.key }}
             {{- end }}
-            {{- if and .Values.bifrost.plugins.semanticCache.enabled .Values.bifrost.plugins.semanticCache.secretRef }}
+            {{- if and .Values.bifrost.plugins.semanticCache.enabled .Values.bifrost.plugins.semanticCache.secretRef .Values.bifrost.plugins.semanticCache.secretRef.name }}
             - name: SEMANTIC_CACHE_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.bifrost.plugins.semanticCache.secretRef.name }}
-                  key: {{ .Values.bifrost.plugins.semanticCache.secretRef.key }}
+                  key: {{ .Values.bifrost.plugins.semanticCache.secretRef.key | default "api-key" }}
+            {{- end }}
+            {{- /* PostgreSQL password from existing secret */ -}}
+            {{- if and (eq .Values.storage.mode "postgres") .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}
+            - name: BIFROST_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgresql.external.existingSecret }}
+                  key: {{ .Values.postgresql.external.passwordKey | default "password" }}
+            {{- end }}
+            {{- /* Redis password from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.external.enabled .Values.vectorStore.redis.external.existingSecret }}
+            - name: BIFROST_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.redis.external.existingSecret }}
+                  key: {{ .Values.vectorStore.redis.external.passwordKey | default "password" }}
+            {{- end }}
+            {{- /* Weaviate API key from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.external.enabled .Values.vectorStore.weaviate.external.existingSecret }}
+            - name: BIFROST_WEAVIATE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.weaviate.external.existingSecret }}
+                  key: {{ .Values.vectorStore.weaviate.external.apiKeyKey | default "api-key" }}
+            {{- end }}
+            {{- /* Qdrant API key from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "qdrant") .Values.vectorStore.qdrant.external.enabled .Values.vectorStore.qdrant.external.existingSecret }}
+            - name: BIFROST_QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.qdrant.external.existingSecret }}
+                  key: {{ .Values.vectorStore.qdrant.external.apiKeyKey | default "api-key" }}
+            {{- end }}
+            {{- /* Maxim API key from existing secret */ -}}
+            {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
+            - name: BIFROST_MAXIM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.bifrost.plugins.maxim.secretRef.name }}
+                  key: {{ .Values.bifrost.plugins.maxim.secretRef.key | default "api-key" }}
+            {{- end }}
+            {{- /* Provider secrets */ -}}
+            {{- range $provider, $secret := .Values.bifrost.providerSecrets }}
+            {{- if and $secret.existingSecret $secret.envVar }}
+            - name: {{ $secret.envVar }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret.existingSecret }}
+                  key: {{ $secret.key | default "api-key" }}
+            {{- end }}
             {{- end }}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}

@@ -134,15 +134,32 @@ bifrost:
     prometheusLabels: []
   
   # Provider configurations (add your provider keys here)
+  # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
+  # When using existingSecret in providerSecrets, the keys will be injected as env vars and
+  # you should use env.VAR_NAME syntax in the value field
   providers: {}
     # openai:
     #   keys:
-    #     - value: "sk-..."
+    #     - value: "sk-..."           # Direct value
+    #       weight: 1
+    #     - value: "env.OPENAI_KEY"   # Reference to environment variable
     #       weight: 1
     # anthropic:
     #   keys:
     #     - value: "sk-ant-..."
     #       weight: 1
+  
+  # Provider secrets - use existing Kubernetes secrets for provider API keys
+  # These will be injected as environment variables that can be referenced in providers config
+  providerSecrets: {}
+    # openai:
+    #   existingSecret: "my-openai-secret"
+    #   key: "api-key"
+    #   envVar: "OPENAI_API_KEY"  # Environment variable name to inject
+    # anthropic:
+    #   existingSecret: "my-anthropic-secret"
+    #   key: "api-key"
+    #   envVar: "ANTHROPIC_API_KEY"
   
   # MCP (Model Context Protocol) configuration
   mcp:
@@ -175,6 +192,10 @@ bifrost:
       config:
         api_key: ""
         log_repo_id: ""
+      # Use existing Kubernetes secret for API key (takes precedence over config.api_key)
+      secretRef:
+        name: ""
+        key: "api-key"
     
     semanticCache:
       enabled: false
@@ -238,8 +259,9 @@ postgresql:
     password: ""
     database: bifrost
     sslMode: disable
-    # existingSecret: ""  # Use existing secret for password
-    # passwordKey: "password"  # Key in the secret
+    # Use existing Kubernetes secret for password (takes precedence over password field)
+    existingSecret: ""
+    passwordKey: "password"
   
   # PostgreSQL image configuration
   image:
@@ -288,6 +310,9 @@ vectorStore:
       apiKey: ""
       grpcHost: ""
       grpcSecured: false
+      # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
+      existingSecret: ""
+      apiKeyKey: "api-key"
     
     # Weaviate subchart configuration (when weaviate.enabled is true)
     replicas: 1
@@ -328,8 +353,9 @@ vectorStore:
       port: 6379
       password: ""
       database: 0
-      # existingSecret: ""
-      # passwordKey: "password"
+      # Use existing Kubernetes secret for password (takes precedence over password field)
+      existingSecret: ""
+      passwordKey: "password"
     
     # Redis image configuration
     image:
@@ -370,6 +396,9 @@ vectorStore:
       port: 6334
       apiKey: ""
       useTls: false
+      # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
+      existingSecret: ""
+      apiKeyKey: "api-key"
 
     # Qdrant image configuration
     image:

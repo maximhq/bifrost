@@ -74,12 +74,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "bifrost.postgresql.password" -}}
-{{- if .Values.postgresql.external.enabled }}
-{{- .Values.postgresql.external.password }}
-{{- else }}
-{{- .Values.postgresql.auth.password }}
-{{- end }}
-{{- end }}
+{{- if .Values.postgresql.external.enabled -}}
+{{- if .Values.postgresql.external.existingSecret -}}
+env.BIFROST_POSTGRES_PASSWORD
+{{- else -}}
+{{- .Values.postgresql.external.password -}}
+{{- end -}}
+{{- else -}}
+{{- .Values.postgresql.auth.password -}}
+{{- end -}}
+{{- end -}}
 
 {{- define "bifrost.postgresql.sslMode" -}}
 {{- if .Values.postgresql.external.enabled -}}
@@ -105,6 +109,16 @@ http
 {{- end -}}
 {{- end -}}
 
+{{- define "bifrost.weaviate.apiKey" -}}
+{{- if .Values.vectorStore.weaviate.external.enabled -}}
+{{- if .Values.vectorStore.weaviate.external.existingSecret -}}
+env.BIFROST_WEAVIATE_API_KEY
+{{- else -}}
+{{- .Values.vectorStore.weaviate.external.apiKey -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "bifrost.redis.host" -}}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- .Values.vectorStore.redis.external.host }}
@@ -122,12 +136,16 @@ http
 {{- end -}}
 
 {{- define "bifrost.redis.password" -}}
-{{- if .Values.vectorStore.redis.external.enabled }}
-{{- .Values.vectorStore.redis.external.password }}
-{{- else }}
-{{- .Values.vectorStore.redis.auth.password }}
-{{- end }}
-{{- end }}
+{{- if .Values.vectorStore.redis.external.enabled -}}
+{{- if .Values.vectorStore.redis.external.existingSecret -}}
+env.BIFROST_REDIS_PASSWORD
+{{- else -}}
+{{- .Values.vectorStore.redis.external.password -}}
+{{- end -}}
+{{- else -}}
+{{- .Values.vectorStore.redis.auth.password -}}
+{{- end -}}
+{{- end -}}
 
 {{- define "bifrost.qdrant.host" -}}
 {{- if .Values.vectorStore.qdrant.external.enabled }}
@@ -146,10 +164,14 @@ http
 {{- end -}}
 
 {{- define "bifrost.qdrant.apiKey" -}}
-{{- if .Values.vectorStore.qdrant.external.enabled }}
-{{- .Values.vectorStore.qdrant.external.apiKey }}
-{{- end }}
-{{- end }}
+{{- if .Values.vectorStore.qdrant.external.enabled -}}
+{{- if .Values.vectorStore.qdrant.external.existingSecret -}}
+env.BIFROST_QDRANT_API_KEY
+{{- else -}}
+{{- .Values.vectorStore.qdrant.external.apiKey -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 
 {{- define "bifrost.qdrant.useTls" -}}
 {{- if .Values.vectorStore.qdrant.external.enabled -}}
@@ -220,8 +242,9 @@ false
 {{- if eq .Values.vectorStore.type "weaviate" }}
 {{- $weaviateConfig := dict "scheme" (include "bifrost.weaviate.scheme" .) "host" (include "bifrost.weaviate.host" .) }}
 {{- if .Values.vectorStore.weaviate.external.enabled }}
-{{- if .Values.vectorStore.weaviate.external.apiKey }}
-{{- $_ := set $weaviateConfig "api_key" .Values.vectorStore.weaviate.external.apiKey }}
+{{- $weaviateApiKey := include "bifrost.weaviate.apiKey" . }}
+{{- if $weaviateApiKey }}
+{{- $_ := set $weaviateConfig "api_key" $weaviateApiKey }}
 {{- end }}
 {{- if or .Values.vectorStore.weaviate.external.grpcHost (hasKey .Values.vectorStore.weaviate.external "grpcSecured") }}
 {{- $grpcConfig := dict }}
@@ -284,7 +307,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.plugins.maxim.enabled }}
 {{- $maximConfig := dict }}
-{{- if .Values.bifrost.plugins.maxim.config.api_key }}
+{{- if and .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
+{{- $_ := set $maximConfig "api_key" "env.BIFROST_MAXIM_API_KEY" }}
+{{- else if .Values.bifrost.plugins.maxim.config.api_key }}
 {{- $_ := set $maximConfig "api_key" .Values.bifrost.plugins.maxim.config.api_key }}
 {{- end }}
 {{- if .Values.bifrost.plugins.maxim.config.log_repo_id }}
