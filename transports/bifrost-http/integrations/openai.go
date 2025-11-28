@@ -2,7 +2,9 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -440,10 +442,703 @@ func setQueryParamsAndAzureEndpointPreHook(handlerStore lib.HandlerStore) PreReq
 	}
 }
 
+// CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.
+func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Create batch endpoint - POST /v1/batches
+	for _, path := range []string{
+		"/v1/batches",
+		"/batches",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostBatchCreateRequest{}
+			},
+			BatchCreateRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+				if openaiReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
+					if openaiReq.Provider == schemas.Gemini && openaiReq.InputFileID != "" {
+						openaiReq.InputFileID = strings.Replace(openaiReq.InputFileID, "files-", "files/", 1)
+					}
+					return &BatchRequest{
+						Type:          schemas.BatchCreateRequest,
+						CreateRequest: openaiReq,
+					}, nil
+				}
+				return nil, errors.New("invalid batch create request type")
+			},
+			BatchCreateResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
+						createReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
+						createReq.Provider = schemas.OpenAI
+					}
+				}
+				return AzureEndpointPreHook(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// List batches endpoint - GET /v1/batches
+	for _, path := range []string{
+		"/v1/batches",
+		"/batches",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostBatchListRequest{}
+			},
+			BatchCreateRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+				if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+					if listReq.Provider == "" {
+						listReq.Provider = schemas.OpenAI
+					}					
+					return &BatchRequest{
+						Type:        schemas.BatchListRequest,
+						ListRequest: listReq,
+					}, nil
+				}
+				return nil, errors.New("invalid batch list request type")
+			},
+			BatchListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					for i, batch := range resp.Data {
+						resp.Data[i].ID = strings.Replace(batch.ID, "batches/", "batches-", 1)
+					}
+				}
+				data,_ := json.Marshal(resp)
+				fmt.Println("gemini batch list response: " + string(data))
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+						listReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+						listReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractBatchListQueryParams(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// Retrieve batch endpoint - GET /v1/batches/{batch_id}
+	for _, path := range []string{
+		"/v1/batches/{batch_id}",
+		"/batches/{batch_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostBatchRetrieveRequest{}
+			},
+			BatchCreateRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+				if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
+					if retrieveReq.Provider == "" {
+						retrieveReq.Provider = schemas.OpenAI
+					}
+					if retrieveReq.Provider == schemas.Gemini {
+						retrieveReq.BatchID = strings.Replace(retrieveReq.BatchID, "batches-", "batches/", 1)
+					}
+					return &BatchRequest{
+						Type:            schemas.BatchRetrieveRequest,
+						RetrieveRequest: retrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid batch retrieve request type")
+			},
+			BatchRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
+						retrieveReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
+						retrieveReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractBatchIDFromPath(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// Cancel batch endpoint - POST /v1/batches/{batch_id}/cancel
+	for _, path := range []string{
+		"/v1/batches/{batch_id}/cancel",
+		"/batches/{batch_id}/cancel",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostBatchCancelRequest{}
+			},
+			BatchCreateRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+				if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
+					if cancelReq.Provider == "" {
+						cancelReq.Provider = schemas.OpenAI
+					}
+					if cancelReq.Provider == schemas.Gemini {
+						cancelReq.BatchID = strings.Replace(cancelReq.BatchID, "batches-", "batches/", 1)
+					}
+					return &BatchRequest{
+						Type:          schemas.BatchCancelRequest,
+						CancelRequest: cancelReq,
+					}, nil
+				}
+				return nil, errors.New("invalid batch cancel request type")
+			},
+			BatchCancelResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {				
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
+						cancelReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
+						cancelReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractBatchIDFromPath(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+	return routes
+}
+
+// CreateOpenAIFileRouteConfigs creates route configurations for OpenAI Files API endpoints.
+func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Upload file endpoint - POST /v1/files
+	for _, path := range []string{
+		"/v1/files",
+		"/files",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostFileUploadRequest{}
+			},
+			RequestParser: parseOpenAIFileUploadMultipartRequest,
+			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+				if uploadReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
+					return &FileRequest{
+						Type:          schemas.FileUploadRequest,
+						UploadRequest: uploadReq,
+					}, nil
+				}
+				return nil, errors.New("invalid file upload request type")
+			},
+			FileUploadResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				// First extract provider from header
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if bifrostReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
+						bifrostReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if bifrostReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
+						bifrostReq.Provider = schemas.OpenAI
+					}
+				}
+				return AzureEndpointPreHook(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// List files endpoint - GET /v1/files
+	for _, path := range []string{
+		"/v1/files",
+		"/files",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostFileListRequest{}
+			},
+			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+				if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
+					if listReq.Provider == "" {
+						listReq.Provider = schemas.OpenAI
+					}
+					return &FileRequest{
+						Type:        schemas.FileListRequest,
+						ListRequest: listReq,
+					}, nil
+				}
+				return nil, errors.New("invalid file list request type")
+			},
+			FileListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error) {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					for i, file := range resp.Data {
+						resp.Data[i].ID = strings.Replace(file.ID, "files/", "files-", 1)
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				// First extract provider from header
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
+						listReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
+						listReq.Provider = schemas.OpenAI
+					}
+				}
+
+				return extractFileListQueryParams(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// Retrieve file endpoint - GET /v1/files/{file_id}
+	for _, path := range []string{
+		"/v1/files/{file_id}",
+		"/files/{file_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostFileContentRequest{}
+			},
+			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+				if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+					if contentReq.Provider == "" {
+						contentReq.Provider = schemas.OpenAI
+					}
+					if contentReq.Provider == schemas.Gemini {
+						contentReq.FileID = strings.Replace(contentReq.FileID, "files-", "files/", 1)
+					}
+					return &FileRequest{
+						Type:           schemas.FileContentRequest,
+						ContentRequest: contentReq,
+					}, nil
+				}
+				return nil, errors.New("invalid file content request type")
+			},
+			FileRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
+				// if resp.ExtraFields.RawResponse != nil {
+				// 	return resp.ExtraFields.RawResponse, nil
+				// }
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				// First extract provider from header
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+						contentReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+						contentReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractFileIDFromPath(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// Delete file endpoint - DELETE /v1/files/{file_id}
+	for _, path := range []string{
+		"/v1/files/{file_id}",
+		"/files/{file_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "DELETE",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostFileDeleteRequest{}
+			},
+			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+				if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
+					if deleteReq.Provider == "" {
+						deleteReq.Provider = schemas.OpenAI
+					}
+					if deleteReq.Provider == schemas.Gemini {
+						deleteReq.FileID = strings.Replace(deleteReq.FileID, "files-", "files/", 1)
+					}
+					return &FileRequest{
+						Type:          schemas.FileDeleteRequest,
+						DeleteRequest: deleteReq,
+					}, nil
+				}
+				return nil, errors.New("invalid file delete request type")
+			},
+			FileDeleteResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.Gemini {
+					resp.ID = strings.Replace(resp.ID, "files/", "files-", 1)
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				// First extract provider from header
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
+						deleteReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
+						deleteReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractFileIDFromPath(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	// Get file content endpoint - GET /v1/files/{file_id}/content
+	for _, path := range []string{
+		"/v1/files/{file_id}/content",
+		"/files/{file_id}/content",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetRequestTypeInstance: func() interface{} {
+				return &schemas.BifrostFileContentRequest{}
+			},
+			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+				if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+					if contentReq.Provider == schemas.Gemini {
+						contentReq.FileID = strings.Replace(contentReq.FileID, "files-", "files/", 1)
+					}
+					if contentReq.Provider == "" {
+						contentReq.Provider = schemas.OpenAI
+					}
+					return &FileRequest{
+						Type:           schemas.FileContentRequest,
+						ContentRequest: contentReq,
+					}, nil
+				}
+				return nil, errors.New("invalid file content request type")
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+				// First extract provider from header
+				provider := ctx.Request.Header.Peek("x-model-provider")
+				if provider != nil {
+					if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+						contentReq.Provider = schemas.ModelProvider(provider)
+					}
+				} else {
+					if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
+						contentReq.Provider = schemas.OpenAI
+					}
+				}
+				return extractFileIDFromPath(handlerStore)(ctx, bifrostCtx, req)
+			},
+		})
+	}
+
+	return routes
+}
+
+// extractBatchListQueryParams extracts query parameters for batch list requests
+func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+	azureHook := AzureEndpointPreHook(handlerStore)
+
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		if azureHook != nil {
+			if err := azureHook(ctx, bifrostCtx, req); err != nil {
+				return err
+			}
+		}
+		if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+			if listReq.Provider == "" {
+				listReq.Provider = schemas.OpenAI
+			}
+
+			// Extract limit from query parameters
+			if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+				if limit, err := strconv.Atoi(limitStr); err == nil {
+					listReq.Limit = limit
+				}
+			}
+
+			// Extract after cursor
+			if after := string(ctx.QueryArgs().Peek("after")); after != "" {
+				listReq.After = &after
+			}
+		}
+
+		return nil
+	}
+}
+
+// extractBatchIDFromPath extracts batch_id from path parameters
+func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+	azureHook := AzureEndpointPreHook(handlerStore)
+
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		if azureHook != nil {
+			if err := azureHook(ctx, bifrostCtx, req); err != nil {
+				return err
+			}
+		}
+		batchID := ctx.UserValue("batch_id")
+		if batchID == nil {
+			return errors.New("batch_id is required")
+		}
+
+		batchIDStr, ok := batchID.(string)
+		if !ok || batchIDStr == "" {
+			return errors.New("batch_id must be a non-empty string")
+		}
+
+		switch r := req.(type) {
+		case *schemas.BifrostBatchRetrieveRequest:
+			r.BatchID = batchIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		case *schemas.BifrostBatchCancelRequest:
+			r.BatchID = batchIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		case *schemas.BifrostBatchResultsRequest:
+			r.BatchID = batchIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		}
+
+		return nil
+	}
+}
+
+// extractFileListQueryParams extracts query parameters for file list requests
+func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+	azureHook := AzureEndpointPreHook(handlerStore)
+
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		if azureHook != nil {
+			if err := azureHook(ctx, bifrostCtx, req); err != nil {
+				return err
+			}
+		}
+
+		if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
+			if listReq.Provider == "" {
+				listReq.Provider = schemas.OpenAI
+			}
+
+			// Extract purpose filter
+			if purpose := string(ctx.QueryArgs().Peek("purpose")); purpose != "" {
+				listReq.Purpose = purpose
+			}
+
+			// Extract limit
+			if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+				if limit, err := strconv.Atoi(limitStr); err == nil {
+					listReq.Limit = limit
+				}
+			}
+
+			// Extract after cursor
+			if after := string(ctx.QueryArgs().Peek("after")); after != "" {
+				listReq.After = &after
+			}
+
+			// Extract order
+			if order := string(ctx.QueryArgs().Peek("order")); order != "" {
+				listReq.Order = &order
+			}
+		}
+
+		return nil
+	}
+}
+
+// extractFileIDFromPath extracts file_id from path parameters
+func extractFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+	azureHook := AzureEndpointPreHook(handlerStore)
+
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		if azureHook != nil {
+			if err := azureHook(ctx, bifrostCtx, req); err != nil {
+				return err
+			}
+		}
+
+		fileID := ctx.UserValue("file_id")
+		if fileID == nil {
+			return errors.New("file_id is required")
+		}
+
+		fileIDStr, ok := fileID.(string)
+		if !ok || fileIDStr == "" {
+			return errors.New("file_id must be a non-empty string")
+		}
+
+		switch r := req.(type) {
+		case *schemas.BifrostFileRetrieveRequest:
+			r.FileID = fileIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		case *schemas.BifrostFileDeleteRequest:
+			r.FileID = fileIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		case *schemas.BifrostFileContentRequest:
+			r.FileID = fileIDStr
+			if r.Provider == "" {
+				r.Provider = schemas.OpenAI
+			}
+		}
+
+		return nil
+	}
+}
+
+// parseOpenAIFileUploadMultipartRequest parses multipart/form-data for file upload requests
+func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	uploadReq, ok := req.(*schemas.BifrostFileUploadRequest)
+	if !ok {
+		return errors.New("invalid request type for file upload")
+	}
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return err
+	}
+
+	// Extract purpose (required)
+	purposeValues := form.Value["purpose"]
+	if len(purposeValues) == 0 || purposeValues[0] == "" {
+		return errors.New("purpose field is required")
+	}
+	uploadReq.Purpose = purposeValues[0]
+
+	// Extract file (required)
+	fileHeaders := form.File["file"]
+	if len(fileHeaders) == 0 {
+		return errors.New("file field is required")
+	}
+
+	fileHeader := fileHeaders[0]
+	file, err := fileHeader.Open()
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Read file data
+	fileData := make([]byte, fileHeader.Size)
+	if _, err := file.Read(fileData); err != nil {
+		return err
+	}
+
+	uploadReq.File = fileData
+	uploadReq.Filename = fileHeader.Filename
+
+	return nil
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
+	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
+	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
+
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, append(CreateOpenAIRouteConfigs("/openai", handlerStore), CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...), logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
 	}
 }
 

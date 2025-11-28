@@ -55,6 +55,14 @@
     {
       "name": "Models",
       "description": "Endpoint for listing available models."
+    },
+    {
+      "name": "Batch",
+      "description": "Endpoints for batch processing operations."
+    },
+    {
+      "name": "Files",
+      "description": "Endpoints for file upload and management operations."
     }
   ],
   "paths": {
@@ -2849,6 +2857,448 @@
               "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostStream"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches": {
+      "post": {
+        "summary": "Create Batch",
+        "description": "Creates a new batch job for processing multiple requests asynchronously.",
+        "operationId": "createBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCreateResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Batches",
+        "description": "Lists all batch jobs for the authenticated user.",
+        "operationId": "listBatches",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider to use (e.g., openai, anthropic, azure, bedrock, gemini)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of batches to return"
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Cursor for pagination"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of batches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}": {
+      "get": {
+        "summary": "Retrieve Batch",
+        "description": "Retrieves details of a specific batch job.",
+        "operationId": "retrieveBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch to retrieve"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchRetrieveResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}/cancel": {
+      "post": {
+        "summary": "Cancel Batch",
+        "description": "Cancels a batch job that is in progress.",
+        "operationId": "cancelBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch to cancel"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCancelResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}/results": {
+      "get": {
+        "summary": "Get Batch Results",
+        "description": "Retrieves the results of a completed batch job.",
+        "operationId": "getBatchResults",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResultsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "summary": "Upload File",
+        "description": "Uploads a file for use with batch processing or other features.",
+        "operationId": "uploadFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "purpose",
+                  "provider"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The file to upload"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": ["batch", "fine-tune", "assistants", "vision"],
+                    "description": "The intended purpose of the file"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "The model provider (e.g., openai, azure, bedrock, gemini)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUploadResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Files",
+        "description": "Lists all uploaded files for the authenticated user.",
+        "operationId": "listFiles",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          },
+          {
+            "name": "purpose",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter by file purpose"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of files to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}": {
+      "get": {
+        "summary": "Retrieve File",
+        "description": "Retrieves metadata for a specific file.",
+        "operationId": "retrieveFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file to retrieve"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileRetrieveResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete File",
+        "description": "Deletes a file.",
+        "operationId": "deleteFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file to delete"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDeleteResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}/content": {
+      "get": {
+        "summary": "Get File Content",
+        "description": "Downloads the content of a file.",
+        "operationId": "getFileContent",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }
@@ -6826,6 +7276,421 @@
       },
       "ModelDefaultParameters": {
         "type": "object"
+      },
+      "BatchCreateRequest": {
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "The model provider (e.g., openai, anthropic, azure, bedrock, gemini)"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model identifier for batch routing"
+          },
+          "input_file_id": {
+            "type": "string",
+            "description": "ID of the uploaded JSONL file containing batch requests (OpenAI/Azure style)"
+          },
+          "requests": {
+            "type": "array",
+            "description": "Array of inline request items (Anthropic style)",
+            "items": {
+              "$ref": "#/components/schemas/BatchRequestItem"
+            }
+          },
+          "endpoint": {
+            "type": "string",
+            "enum": ["/v1/chat/completions", "/v1/embeddings", "/v1/completions", "/v1/messages"],
+            "description": "Target endpoint for batch requests"
+          },
+          "completion_window": {
+            "type": "string",
+            "description": "Time window for completion (e.g., 24h)",
+            "default": "24h"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "User-provided metadata"
+          }
+        }
+      },
+      "BatchRequestItem": {
+        "type": "object",
+        "required": ["custom_id"],
+        "properties": {
+          "custom_id": {
+            "type": "string",
+            "description": "User-provided unique ID for this request"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP method (typically POST)"
+          },
+          "url": {
+            "type": "string",
+            "description": "Endpoint URL"
+          },
+          "body": {
+            "type": "object",
+            "description": "Request body parameters"
+          }
+        }
+      },
+      "BatchCreateResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique batch ID"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (batch)"
+          },
+          "endpoint": {
+            "type": "string",
+            "description": "Target endpoint"
+          },
+          "input_file_id": {
+            "type": "string",
+            "description": "Input file ID"
+          },
+          "completion_window": {
+            "type": "string",
+            "description": "Completion window"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["validating", "failed", "in_progress", "finalizing", "completed", "expired", "cancelling", "cancelled"],
+            "description": "Batch status"
+          },
+          "request_counts": {
+            "$ref": "#/components/schemas/BatchRequestCounts"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp of creation"
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Unix timestamp of expiration"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchListResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchRetrieveResponse"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "first_id": {
+            "type": "string"
+          },
+          "last_id": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchRetrieveResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "input_file_id": {
+            "type": "string"
+          },
+          "completion_window": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["validating", "failed", "in_progress", "finalizing", "completed", "expired", "cancelling", "cancelled"]
+          },
+          "request_counts": {
+            "$ref": "#/components/schemas/BatchRequestCounts"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "integer"
+          },
+          "in_progress_at": {
+            "type": "integer"
+          },
+          "completed_at": {
+            "type": "integer"
+          },
+          "failed_at": {
+            "type": "integer"
+          },
+          "output_file_id": {
+            "type": "string"
+          },
+          "error_file_id": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchCancelResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "cancelling_at": {
+            "type": "integer"
+          },
+          "cancelled_at": {
+            "type": "integer"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchResultsResponse": {
+        "type": "object",
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchResultItem"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchRequestCounts": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        }
+      },
+      "BatchResultItem": {
+        "type": "object",
+        "properties": {
+          "custom_id": {
+            "type": "string"
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "status_code": {
+                "type": "integer"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "body": {
+                "type": "object"
+              }
+            }
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "FileUploadResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique file ID"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (file)"
+          },
+          "bytes": {
+            "type": "integer",
+            "description": "File size in bytes"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp of creation"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original filename"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "File purpose"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["uploaded", "processed", "processing", "error", "deleted"],
+            "description": "File processing status"
+          },
+          "storage_backend": {
+            "type": "string",
+            "enum": ["api", "s3", "gcs", "memory"],
+            "description": "Storage backend type"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileListResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileObject"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileRetrieveResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "storage_backend": {
+            "type": "string"
+          },
+          "storage_uri": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileDeleteResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileObject": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
       }
     },
     "responses": {

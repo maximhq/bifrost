@@ -46,32 +46,32 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 }
 
 // ToBifrostTextCompletionRequest converts an Anthropic text request back to Bifrost format
-func (request *AnthropicTextRequest) ToBifrostTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
-	if request == nil {
+func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
+	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, schemas.Anthropic)
+	provider, model := schemas.ParseModelString(req.Model, schemas.Anthropic)
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,
 		Model:    model,
 		Input: &schemas.TextCompletionInput{
-			PromptStr: &request.Prompt,
+			PromptStr: &req.Prompt,
 		},
 		Params: &schemas.TextCompletionParameters{
-			MaxTokens:   &request.MaxTokensToSample,
-			Temperature: request.Temperature,
-			TopP:        request.TopP,
-			Stop:        request.StopSequences,
+			MaxTokens:   &req.MaxTokensToSample,
+			Temperature: req.Temperature,
+			TopP:        req.TopP,
+			Stop:        req.StopSequences,
 		},
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 
 	// Add extra params if present
-	if request.TopK != nil {
+	if req.TopK != nil {
 		bifrostReq.Params.ExtraParams = map[string]interface{}{
-			"top_k": *request.TopK,
+			"top_k": *req.TopK,
 		}
 	}
 

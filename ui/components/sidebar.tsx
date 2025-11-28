@@ -56,7 +56,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "./themeToggle";
-import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
 
 // Custom MCP Icon Component
@@ -205,9 +204,9 @@ const SidebarItemView = ({
 							<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
 							<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
 							{item.tag && (
-								<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+								<div  className="text-muted-foreground text-xs ml-auto pr-1">
 									{item.tag}
-								</Badge>
+								</div>
 							)}
 						</div>
 						{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
@@ -364,7 +363,7 @@ export default function AppSidebar() {
 			title: "Plugins",
 			url: "/workspace/plugins",
 			icon: Puzzle,
-			tag: "BETA",
+			tag: "β",
 			description: "Manage custom plugins",
 			hasAccess: hasPluginsAccess,
 		},
