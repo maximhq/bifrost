@@ -253,8 +253,10 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx context.Context, jsonD
 // using the provided AWS credentials.
 // Returns a BifrostError if signing fails.
 func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string, providerName schemas.ModelProvider) *schemas.BifrostError {
-	// Set required headers before signing
-	req.Header.Set("Content-Type", "application/json")
+	// Set required headers before signing (only if not already set)
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
 	}
@@ -276,6 +278,9 @@ func signAWSRequest(ctx context.Context, req *http.Request, accessKey, secretKey
 		hash := sha256.Sum256([]byte{})
 		bodyHash = hex.EncodeToString(hash[:])
 	}
+
+	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
+	req.Header.Set("x-amz-content-sha256", bodyHash)
 
 	var cfg aws.Config
 	var err error

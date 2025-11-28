@@ -48,7 +48,19 @@ Tests all core scenarios using OpenAI SDK directly:
 37. Responses API - streaming with tools
 38. Responses API - reasoning
 39. Text Completions - simple prompt
-42. Text Completions - streaming
+40. Text Completions - streaming
+41. Files API - file upload
+42. Files API - file list
+43. Files API - file retrieve
+44. Files API - file delete
+45. Files API - file content
+46. Batch API - batch create with Files API
+47. Batch API - batch list
+48. Batch API - batch retrieve
+49. Batch API - batch cancel
+50. Batch API - end-to-end with Files API
+
+Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
 
 import pytest
@@ -129,6 +141,14 @@ from .utils.common import (
     TEXT_COMPLETION_STREAMING_PROMPT,
     assert_valid_text_completion_response,
     collect_text_completion_streaming_content,
+    # Files API utilities
+    create_batch_jsonl_content,
+    assert_valid_file_response,
+    assert_valid_file_list_response,
+    assert_valid_file_delete_response,
+    # Batch API utilities
+    assert_valid_batch_response,
+    assert_valid_batch_list_response,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
@@ -180,6 +200,23 @@ def convert_to_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return [{"type": "function", "function": tool} for tool in tools]
 
 
+def get_provider_openai_client(provider):
+    """Create OpenAI client with x-model-provider header for given provider"""
+    from .utils.config_loader import get_integration_url, get_config
+
+    api_key = get_api_key(provider)
+    base_url = get_integration_url("openai")
+    config = get_config()
+    api_config = config.get_api_config()
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=api_config.get("timeout", 300),
+        default_headers={"x-model-provider": provider},
+    )
+
+
 @pytest.fixture
 def openai_client():
     """Create OpenAI client for testing"""
@@ -198,6 +235,9 @@ def openai_client():
         "base_url": base_url,
         "timeout": api_config.get("timeout", 300),
         "max_retries": api_config.get("max_retries", 3),
+        "default_headers": {
+            "x-model-provider": "openai",
+        },
     }
 
     # Add optional OpenAI-specific settings
@@ -1592,3 +1632,502 @@ class TestOpenAIIntegration:
         assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
 
         print(f"Success: Streamed haiku ({chunk_count} chunks): {content}")
+
+    # =========================================================================
+    # FILES API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_41_file_upload(self, openai_client, test_config, provider, model):
+        """Test Case 41: Upload a file for batch processing"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        # Create JSONL content for batch with provider-specific model
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            num_requests=2,
+            provider=provider
+        )
+        
+        # Upload the file
+        response = client.files.create(
+            file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        
+        # Validate response
+        assert_valid_file_response(response, expected_purpose="batch")
+        
+        print(f"Success: Uploaded file with ID: {response.id} for provider {provider}")
+        
+        try:
+            # List files and verify uploaded file exists
+            list_response = client.files.list()
+            assert_valid_file_list_response(list_response, min_count=1)
+            
+            # Check that our uploaded file is in the list
+            file_ids = [f.id for f in list_response.data]
+            assert response.id in file_ids, (
+                f"Uploaded file {response.id} should be in file list"
+            )
+            
+            print(f"Success: Verified file {response.id} exists in file list")
+            
+        finally:
+            # Clean up - delete the file
+            try:
+                client.files.delete(response.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
+    def test_42_file_list(self, openai_client, test_config, provider, model):
+        """Test Case 42: List uploaded files"""
+        # First upload a file to ensure we have at least one
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            num_requests=1,
+            provider=provider            
+        )
+        
+        client = get_provider_openai_client(provider)
+
+        uploaded_file = client.files.create(
+            file=("test_list.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        
+        try:
+            # List files
+            response = client.files.list()
+            
+            # Validate response
+            assert_valid_file_list_response(response, min_count=1)
+            
+            # Check that our uploaded file is in the list
+            file_ids = [f.id for f in response.data]
+            assert uploaded_file.id in file_ids, (
+                f"Uploaded file {uploaded_file.id} should be in file list"
+            )
+            
+            print(f"Success: Listed {len(response.data)} files")
+            
+        finally:
+            # Clean up
+            try:
+                client.files.delete(uploaded_file.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_retrieve"))
+    def test_43_file_retrieve(self, openai_client, test_config, provider, model):
+        """Test Case 43: Retrieve file metadata by ID"""
+        # First upload a file
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            provider=provider,
+            num_requests=1
+        )
+
+        client = get_provider_openai_client(provider)
+        
+        uploaded_file = client.files.create(
+            file=("test_retrieve.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        
+        try:
+            # Retrieve file metadata
+            response = client.files.retrieve(uploaded_file.id)
+            
+            # Validate response
+            assert_valid_file_response(response, expected_purpose="batch")
+            assert response.id == uploaded_file.id, (
+                f"Retrieved file ID should match: expected {uploaded_file.id}, got {response.id}"
+            )
+            assert response.filename == "test_retrieve.jsonl", (
+                f"Filename should match: expected 'test_retrieve.jsonl', got {response.filename}"
+            )
+            
+            print(f"Success: Retrieved file metadata for {response.id}")
+            
+        finally:
+            # Clean up
+            try:
+                client.files.delete(uploaded_file.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_delete"))
+    def test_44_file_delete(self, openai_client, test_config, provider, model):
+        """Test Case 44: Delete an uploaded file"""
+        # First upload a file
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            provider=provider,
+            num_requests=1
+        )
+
+        client = get_provider_openai_client(provider)
+        
+        uploaded_file = client.files.create(
+            file=("test_delete.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        
+        # Delete the file
+        response = client.files.delete(uploaded_file.id)
+        
+        # Validate response
+        assert_valid_file_delete_response(response, expected_id=uploaded_file.id)
+        
+        print(f"Success: Deleted file {response.id}")
+        
+        # Verify file is no longer retrievable
+        with pytest.raises(Exception):
+            client.files.retrieve(uploaded_file.id)
+
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_content"))
+    def test_45_file_content(self, openai_client, test_config, provider, model):
+        """Test Case 45: Download file content"""
+
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_download scenario")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Create and upload a file with known content
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            provider=provider,
+            num_requests=2
+        )
+        
+        uploaded_file = client.files.create(
+            file=("test_content.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+
+        print(f"Success: Uploaded file with ID: {uploaded_file.id} for provider {provider}")
+        
+        try:
+            # Download file content
+            response = client.files.content(uploaded_file.id)
+                        
+            # Validate content
+            assert response is not None, "File content should not be None"
+            
+            # The response might be bytes or have a read method
+            if hasattr(response, "read"):
+                content = response.read()
+            elif hasattr(response, "content"):
+                content = response.content
+            else:
+                content = response
+            
+            # Decode if bytes
+            if isinstance(content, bytes):
+                content = content.decode("utf-8")
+            
+            # Verify content contains expected JSONL structure
+            assert "custom_id" in content, "Content should contain 'custom_id'"
+            assert "request-1" in content, "Content should contain 'request-1'"
+            
+            print(f"Success: Downloaded file content ({len(content)} bytes)")
+            
+        finally:
+            # Clean up
+            try:
+                client.files.delete(uploaded_file.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    # =========================================================================
+    # BATCH API TEST CASES
+    # =========================================================================
+    
+    # -------------------------------------------------------------------------
+    # Batch Create Tests - Provider-Specific Input Methods
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_46_batch_create_with_file(self, openai_client, test_config, provider, model):
+        """Test Case 46: Create a batch job using Files API
+        
+        This test uploads a JSONL file first, then creates a batch using the file ID.
+        Uses OpenAI SDK with x-model-provider header to route to different providers.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+
+        
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        # First upload a file for batch processing
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            num_requests=2,
+            provider=provider,            
+        )
+        
+        uploaded_file = client.files.create(
+            file=("batch_create_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        
+        batch = None
+        try:
+            # Create batch job using file ID
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+            )
+            
+            # Validate response
+            assert_valid_batch_response(batch)
+            assert batch.input_file_id == uploaded_file.id, (
+                f"Input file ID should match: expected {uploaded_file.id}, got {batch.input_file_id}"
+            )
+            
+            print(f"Success: Created file-based batch with ID: {batch.id}, status: {batch.status} for provider {provider}")
+            
+        finally:
+            # Clean up - cancel batch if created, then delete file
+            if batch:
+                try:
+                    client.batches.cancel(batch.id)
+                except Exception as e:
+                    print(f"Info: Could not cancel batch (may already be processed): {e}")
+            
+            try:
+                client.files.delete(uploaded_file.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
+    def test_47_batch_list(self, openai_client, test_config, provider, model):
+        """Test Case 47: List batch jobs
+        
+        Tests batch listing across all providers using OpenAI SDK.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_list scenario")
+        
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        # Use OpenAI SDK for batch list
+        response = client.batches.list(limit=10)
+        assert_valid_batch_list_response(response, min_count=0)
+        batch_count = len(response.data)
+        
+        print(f"Success: Listed {batch_count} batches for provider {provider}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_retrieve"))
+    def test_48_batch_retrieve(self, openai_client, test_config, provider, model):
+        """Test Case 48: Retrieve batch status by ID
+        
+        Creates a batch using file-based method, then retrieves it using OpenAI SDK.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_retrieve scenario")
+        
+
+        if provider== "anthropic" or provider== "bedrock":
+            pytest.skip("Anthropic does not support file-based batching")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        batch_id = None
+        uploaded_file = None
+        
+        try:
+            # Create file for batch processing            
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+            print(f"Creating file for batch processing: {jsonl_content}")
+            uploaded_file = client.files.create(
+                file=("batch_retrieve_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+            )
+            
+            # Create batch using file ID
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+            )
+            batch_id = batch.id
+            
+            # Retrieve using SDK
+            retrieved_batch = client.batches.retrieve(batch_id)
+            assert_valid_batch_response(retrieved_batch)
+            assert retrieved_batch.id == batch_id
+            print(f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status} for provider {provider}")
+                
+        finally:
+            # Clean up
+            if batch_id:
+                try:
+                    client.batches.cancel(batch_id)
+                except Exception:
+                    pass
+            if uploaded_file:
+                try:
+                    client.files.delete(uploaded_file.id)
+                except Exception:
+                    pass
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_cancel"))
+    def test_49_batch_cancel(self, openai_client, test_config, provider, model):
+        """Test Case 49: Cancel a batch job
+        
+        Creates a batch using file-based method, then cancels it using OpenAI SDK.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_cancel scenario")
+
+        
+        if provider== "anthropic" or provider== "bedrock":
+            pytest.skip("Anthropic does not support file-based batching")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        batch_id = None
+        uploaded_file = None
+        
+        try:
+            # Create file for batch processing
+            jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+            uploaded_file = client.files.create(
+                file=("batch_cancel_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+            )
+            
+            # Create batch using file ID
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+            )
+            batch_id = batch.id
+            
+            # Cancel using SDK
+            cancelled_batch = client.batches.cancel(batch_id)
+            assert cancelled_batch is not None
+            assert cancelled_batch.id == batch_id
+            assert cancelled_batch.status in ["cancelling", "cancelled"]
+            print(f"Success: Cancelled batch {batch_id}, status: {cancelled_batch.status} for provider {provider}")
+                
+        finally:
+            # Clean up
+            if uploaded_file:
+                try:
+                    client.files.delete(uploaded_file.id)
+                except Exception:
+                    pass
+
+    # -------------------------------------------------------------------------
+    # Batch End-to-End Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_50_batch_e2e_file_api(self, openai_client, test_config, provider, model):
+        """Test Case 50: End-to-end batch workflow using Files API
+        
+        Complete workflow: upload file -> create batch -> poll status -> verify in list.
+        Uses OpenAI SDK with x-model-provider header to route to different providers.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        if provider== "anthropic" or provider== "bedrock":
+            pytest.skip("Anthropic does not support file-based batching")
+
+        import time
+        
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+        
+        # Step 1: Create and upload batch input file
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            num_requests=2,
+            provider=provider
+        )
+        
+        print(f"Step 1: Uploading batch input file for provider {provider}...")
+        uploaded_file = client.files.create(
+            file=("batch_e2e_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+        )
+        assert_valid_file_response(uploaded_file, expected_purpose="batch")
+        print(f"  Uploaded file: {uploaded_file.id}")
+        
+        batch = None
+        try:
+            # Step 2: Create batch job using file ID
+            print("Step 2: Creating batch job with file ID...")
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={"test": "e2e_file", "source": "bifrost-integration-tests", "provider": provider},
+            )
+            assert_valid_batch_response(batch)
+            print(f"  Created batch: {batch.id}, status: {batch.status}")
+            
+            # Step 3: Poll batch status (with timeout)
+            print("Step 3: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+            
+            for i in range(max_polls):
+                retrieved_batch = client.batches.retrieve(batch.id)
+                print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+                
+                if retrieved_batch.status in ["completed", "failed", "expired", "cancelled"]:
+                    print(f"  Batch reached terminal state: {retrieved_batch.status}")
+                    break
+                
+                if hasattr(retrieved_batch, "request_counts") and retrieved_batch.request_counts:
+                    counts = retrieved_batch.request_counts
+                    print(f"    Request counts - total: {counts.total}, completed: {counts.completed}, failed: {counts.failed}")
+                
+                time.sleep(poll_interval)
+            
+            # Step 4: Verify batch is in the list
+            print("Step 4: Verifying batch in list...")
+            batch_list = client.batches.list(limit=20)
+            batch_ids = [b.id for b in batch_list.data]
+            assert batch.id in batch_ids, f"Batch {batch.id} should be in the batch list"
+            print(f"  Verified batch {batch.id} is in list")
+            
+            print(f"Success: File API E2E completed for batch {batch.id} (provider: {provider})")
+            
+        finally:
+            if batch:
+                try:
+                    client.batches.cancel(batch.id)
+                    print(f"Cleanup: Cancelled batch {batch.id}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not cancel batch: {e}")
+            
+            try:
+                client.files.delete(uploaded_file.id)
+                print(f"Cleanup: Deleted file {uploaded_file.id}")
+            except Exception as e:
+                print(f"Cleanup warning: Failed to delete file: {e}")
+
