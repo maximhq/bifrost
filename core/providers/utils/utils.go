@@ -356,10 +356,7 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 // If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
-func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
-	var rawRequest interface{}
-	var rawResponse interface{}
-
+func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	var wg sync.WaitGroup
 	var structuredErr, rawRequestErr, rawResponseErr error
 
@@ -543,6 +540,14 @@ func NewProviderAPIError(message string, err error, statusCode int, providerType
 			Provider: providerType,
 		},
 	}
+}
+
+// RequestMetadata contains metadata about a request for error reporting.
+// This struct is used to pass request context to parseError functions.
+type RequestMetadata struct {
+	Provider    schemas.ModelProvider
+	Model       string
+	RequestType schemas.RequestType
 }
 
 // ShouldSendBackRawRequest checks if the raw request should be sent back.

@@ -36,11 +36,24 @@ Tests all core scenarios using Google GenAI SDK directly:
 26. Speech generation - streaming (if supported)
 27. Extended thinking/reasoning (non-streaming)
 28. Extended thinking/reasoning (streaming)
+26. Files API - file upload
+27. Files API - file list
+28. Files API - file retrieve
+29. Files API - file delete
+30. Batch API - batch create with file
+31. Batch API - batch create inline
+32. Batch API - batch list
+33. Batch API - batch retrieve
+34. Batch API - batch cancel
+35. Batch API - end-to-end with Files API
 """
 
 import pytest
 import base64
+import json
 import requests
+import tempfile
+import os
 from PIL import Image
 import io
 import wave
@@ -86,6 +99,8 @@ from .utils.common import (
     # Gemini-specific test data
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
+    # Batch API utilities
+    BATCH_INLINE_PROMPTS,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
@@ -94,27 +109,37 @@ from .utils.parametrize import (
 )
 
 
-@pytest.fixture
-def google_client():
-    """Configure Google GenAI client for testing"""
-    from .utils.config_loader import get_integration_url
+def get_provider_google_client(provider: str = "gemini"):
+    """Create Google GenAI client with x-model-provider header for given provider"""
+    from .utils.config_loader import get_integration_url, get_config
 
-    api_key = get_api_key("google")
+    api_key = get_api_key(provider)
     base_url = get_integration_url("google")
+    config = get_config()
+    api_config = config.get_api_config()
 
     client_kwargs = {
         "api_key": api_key,
     }
 
-    # Add base URL support and timeout through HttpOptions
-    http_options_kwargs = {}
+    # Add base URL support, timeout, and x-model-provider header through HttpOptions
+    http_options_kwargs = {
+        "headers": {"x-model-provider": provider},
+    }
     if base_url:
         http_options_kwargs["base_url"] = base_url
+    if api_config.get("timeout"):
+        http_options_kwargs["timeout"] = api_config.get("timeout", 300)
 
-    if http_options_kwargs:
-        client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
+    client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
 
     return genai.Client(**client_kwargs)
+
+
+@pytest.fixture
+def google_client():
+    """Configure Google GenAI client for testing with default gemini provider"""
+    return get_provider_google_client(provider="gemini")
 
 
 @pytest.fixture
@@ -226,6 +251,164 @@ def convert_pcm_to_wav(pcm_data: bytes, channels: int = 1, sample_rate: int = 24
         wav_file.writeframes(pcm_data)
     wav_buffer.seek(0)
     return wav_buffer.read()
+
+
+# =============================================================================
+# Google GenAI Files and Batch API Helper Functions
+# =============================================================================
+
+def create_google_batch_json_content(model: str, num_requests: int = 2) -> str:
+    """
+    Create JSON content for Google GenAI batch API.
+    
+    Google batch format uses newline-delimited JSON with 'key' and 'request' fields:
+    {"key":"request_1", "request": {"contents": [{"parts": [{"text": "..."}]}]}}
+    
+    Args:
+        model: The model to use (not included in request, passed to batches.create)
+        num_requests: Number of requests to include
+        
+    Returns:
+        Newline-delimited JSON string
+    """
+    requests_list = []
+    
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+        request = {
+            "key": f"request_{i+1}",
+            "request": {
+                "contents": [
+                    {
+                        "parts": [{"text": prompt}],
+                        "role": "user"
+                    }
+                ]
+            }
+        }
+        requests_list.append(json.dumps(request))
+    
+    return "\n".join(requests_list)
+
+
+def create_google_batch_inline_requests(num_requests: int = 2) -> List[Dict[str, Any]]:
+    """
+    Create inline requests for Google GenAI batch API.
+    
+    Args:
+        num_requests: Number of requests to include
+        
+    Returns:
+        List of inline request dictionaries
+    """
+    requests_list = []
+    
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+        request = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}],
+                    "role": "user"
+                }
+            ],
+            "config": {"response_modalities": ["TEXT"]}
+        }
+        requests_list.append(request)
+    
+    return requests_list
+
+
+# Google GenAI batch job states
+GOOGLE_BATCH_VALID_STATES = [
+    "JOB_STATE_UNSPECIFIED",
+    "JOB_STATE_QUEUED",
+    "JOB_STATE_PENDING",
+    "JOB_STATE_RUNNING",
+    "JOB_STATE_SUCCEEDED",
+    "JOB_STATE_FAILED",
+    "JOB_STATE_CANCELLING",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_PAUSED",
+]
+
+GOOGLE_BATCH_TERMINAL_STATES = [
+    "JOB_STATE_SUCCEEDED",
+    "JOB_STATE_FAILED",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_PAUSED",
+]
+
+
+def assert_valid_google_file_response(response, expected_display_name: str | None = None) -> None:
+    """
+    Assert that a Google GenAI file upload/retrieve response is valid.
+    
+    Args:
+        response: The file response object
+        expected_display_name: Expected display_name field (optional)
+    """
+    assert response is not None, "File response should not be None"
+    assert hasattr(response, "name"), "File response should have 'name' attribute"
+    assert response.name is not None, "File name should not be None"
+    assert len(response.name) > 0, "File name should not be empty"
+    
+    # Google files have display_name instead of filename
+    if hasattr(response, "display_name") and expected_display_name:
+        assert response.display_name == expected_display_name, (
+            f"Display name should be '{expected_display_name}', got {response.display_name}"
+        )
+    
+    # Check for size_bytes if available
+    if hasattr(response, "size_bytes"):
+        assert response.size_bytes >= 0, "File size_bytes should be non-negative"
+
+
+def assert_valid_google_batch_response(response, expected_state: str | None = None) -> None:
+    """
+    Assert that a Google GenAI batch create/retrieve response is valid.
+    
+    Args:
+        response: The batch job response object
+        expected_state: Expected state (optional)
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "name"), "Batch response should have 'name' attribute"
+    assert response.name is not None, "Batch job name should not be None"
+    assert len(response.name) > 0, "Batch job name should not be empty"
+    
+    # Google uses 'state' instead of 'status'
+    if hasattr(response, "state"):
+        assert response.state in GOOGLE_BATCH_VALID_STATES, (
+            f"State should be one of {GOOGLE_BATCH_VALID_STATES}, got {response.state}"
+        )
+        
+        if expected_state:
+            assert response.state == expected_state, (
+                f"State should be '{expected_state}', got {response.state}"
+            )
+
+
+def assert_valid_google_batch_list_response(pager, min_count: int = 0) -> None:
+    """
+    Assert that a Google GenAI batch list response is valid.
+    
+    Args:
+        pager: The batch list pager/iterator
+        min_count: Minimum expected number of batches
+    """
+    assert pager is not None, "Batch list response should not be None"
+    
+    # Google returns a pager object, count items
+    count = 0
+    for job in pager:
+        count += 1
+        # Each job should have a name
+        assert hasattr(job, "name"), "Each batch job should have 'name' attribute"
+    
+    assert count >= min_count, (
+        f"Should have at least {min_count} batches, got {count}"
+    )
 
 
 class TestGoogleIntegration:
@@ -1050,6 +1233,489 @@ Joe: Pretty good, thanks for asking."""
         
         print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:150]}...")
 
+    # =========================================================================
+    # FILES API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_26_file_upload(self, test_config, provider, model):
+        """Test Case 26: Upload a file for batch processing"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        response = None
+        try:
+            print(f"Uploading file to {temp_file_path}")
+            # Upload the file
+            response = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_test_{provider}')
+            )
+            
+            print(f"Response: {response}")
+            # Validate response
+            assert_valid_google_file_response(response)
+            
+            print(f"Success: Uploaded file with name: {response.name} for provider {provider}")
+            
+            # Verify file exists in list
+            found = False
+            for f in client.files.list(config={'page_size': 50}):
+                if f.name == response.name:
+                    found = True
+                    break
+            
+            assert found, f"Uploaded file {response.name} should be in file list"
+            print(f"Success: Verified file {response.name} exists in file list")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up uploaded file
+            if response is not None:
+                try:
+                    client.files.delete(name=response.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
+    def test_27_file_list(self, test_config, provider, model):
+        """Test Case 27: List uploaded files"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_list scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file to ensure we have at least one
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'list_test_{provider}')
+            )
+            
+            # List files
+            file_count = 0
+            found_uploaded = False
+            
+            for f in client.files.list(config={'page_size': 50}):
+                file_count += 1
+                if f.name == uploaded_file.name:
+                    found_uploaded = True
+            
+            assert file_count >= 1, "Should have at least one file"
+            assert found_uploaded, f"Uploaded file {uploaded_file.name} should be in file list"
+            
+            print(f"Success: Listed {file_count} files for provider {provider}")
+            
+        finally:
+            # Clean up
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            if uploaded_file is not None:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_retrieve"))
+    def test_28_file_retrieve(self, test_config, provider, model):
+        """Test Case 28: Retrieve file metadata by name"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_retrieve scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'retrieve_test_{provider}')
+            )
+            
+            # Retrieve file metadata
+            response = client.files.get(name=uploaded_file.name)
+            
+            # Validate response
+            assert_valid_google_file_response(response)
+            assert response.name == uploaded_file.name, (
+                f"Retrieved file name should match: expected {uploaded_file.name}, got {response.name}"
+            )
+            
+            print(f"Success: Retrieved file metadata for {response.name}")
+            
+        finally:
+            # Clean up
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            if uploaded_file is not None:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_delete"))
+    def test_29_file_delete(self, test_config, provider, model):
+        """Test Case 29: Delete an uploaded file"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'delete_test_{provider}')
+            )
+            
+            file_name = uploaded_file.name
+            
+            # Delete the file
+            client.files.delete(name=file_name)
+            
+            print(f"Success: Deleted file {file_name}")
+            
+            # Verify file is no longer retrievable
+            with pytest.raises(Exception):
+                client.files.get(name=file_name)
+            
+            print(f"Success: Verified file {file_name} no longer exists")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+    # =========================================================================
+    # BATCH API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_30_batch_create_with_file(self, test_config, provider, model):
+        """Test Case 30: Create a batch job using uploaded file
+        
+        This test uploads a JSON file first, then creates a batch using the file reference.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        batch_job = None
+        uploaded_file = None
+        
+        try:
+            # Upload the file
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}')
+            )
+            
+            # Create batch job using file reference
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=uploaded_file.name,
+            )
+            
+            # Validate response
+            assert_valid_google_batch_response(batch_job)
+            
+            print(f"Success: Created file-based batch with name: {batch_job.name}, state: {batch_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+            
+            # Clean up uploaded file
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_inline"))
+    def test_31_batch_create_inline(self, test_config, provider, model):
+        """Test Case 31: Create a batch job with inline requests"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_inline scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests
+            inline_requests = create_google_batch_inline_requests(num_requests=2)
+            
+            # Create batch job with inline requests
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Validate response
+            assert_valid_google_batch_response(batch_job)
+            
+            print(f"Success: Created inline batch with name: {batch_job.name}, state: {batch_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
+    def test_32_batch_list(self, test_config, provider, model):
+        """Test Case 32: List batch jobs"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_list scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # List batch jobs
+        batch_count = 0
+        for job in client.batches.list(config=types.ListBatchJobsConfig(page_size=10)):
+            batch_count += 1
+            # Each job should have a name and state
+            assert hasattr(job, "name"), "Batch job should have 'name' attribute"
+            if batch_count >= 10:  # Limit iteration for the test
+                break
+        
+        print(f"Success: Listed {batch_count} batches for provider {provider}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_retrieve"))
+    def test_33_batch_retrieve(self, test_config, provider, model):
+        """Test Case 33: Retrieve batch status by name"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_retrieve scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests for batch
+            inline_requests = create_google_batch_inline_requests(num_requests=1)
+            
+            # Create batch job
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Retrieve batch job by name
+            retrieved_job = client.batches.get(name=batch_job.name)
+            
+            # Validate response
+            assert_valid_google_batch_response(retrieved_job)
+            assert retrieved_job.name == batch_job.name, (
+                f"Retrieved batch name should match: expected {batch_job.name}, got {retrieved_job.name}"
+            )
+            
+            print(f"Success: Retrieved batch {batch_job.name}, state: {retrieved_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_cancel"))
+    def test_34_batch_cancel(self, test_config, provider, model):
+        """Test Case 34: Cancel a batch job"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_cancel scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests for batch
+            inline_requests = create_google_batch_inline_requests(num_requests=2)
+            
+            # Create batch job
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Cancel the batch job
+            cancelled_job = client.batches.cancel(name=batch_job.name)
+            
+            # Validate response - job should be cancelling or cancelled
+            assert cancelled_job is not None, "Cancel should return a response"
+            
+            # Check state after cancel
+            retrieved_job = client.batches.get(name=batch_job.name)
+            assert retrieved_job.state in ["JOB_STATE_CANCELLING", "JOB_STATE_CANCELLED"], (
+                f"Job state should be cancelling or cancelled, got {retrieved_job.state}"
+            )
+            
+            print(f"Success: Cancelled batch {batch_job.name}, state: {retrieved_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_35_batch_e2e_file_api(self, test_config, provider, model):
+        """Test Case 35: End-to-end batch workflow using Files API
+        
+        Complete workflow: upload file -> create batch -> poll status -> verify in list.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        import time
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        batch_job = None
+        uploaded_file = None
+        
+        try:
+            # Step 1: Upload batch input file
+            print(f"Step 1: Uploading batch input file for provider {provider}...")
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_e2e_test_{provider}')
+            )
+            assert_valid_google_file_response(uploaded_file)
+            print(f"  Uploaded file: {uploaded_file.name}")
+            
+            # Step 2: Create batch job using file
+            print("Step 2: Creating batch job with file...")
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=uploaded_file.name,
+            )
+            assert_valid_google_batch_response(batch_job)
+            print(f"  Created batch: {batch_job.name}, state: {batch_job.state}")
+            
+            # Step 3: Poll batch status (with timeout)
+            print("Step 3: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+            
+            for i in range(max_polls):
+                retrieved_job = client.batches.get(name=batch_job.name)
+                print(f"  Poll {i+1}: state = {retrieved_job.state}")
+                
+                if retrieved_job.state in GOOGLE_BATCH_TERMINAL_STATES:
+                    print(f"  Batch reached terminal state: {retrieved_job.state}")
+                    break
+                
+                time.sleep(poll_interval)
+            
+            # Step 4: Verify batch is in the list
+            print("Step 4: Verifying batch in list...")
+            found_in_list = False
+            for job in client.batches.list(config=types.ListBatchJobsConfig(page_size=20)):
+                if job.name == batch_job.name:
+                    found_in_list = True
+                    break
+            
+            assert found_in_list, f"Batch {batch_job.name} should be in the batch list"
+            print(f"  Verified batch {batch_job.name} is in list")
+            
+            print(f"Success: File API E2E completed for batch {batch_job.name} (provider: {provider})")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                    print(f"Cleanup: Deleted batch {batch_job.name}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete batch: {e}")
+            
+            # Clean up uploaded file
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                    print(f"Cleanup: Deleted file {uploaded_file.name}")
+                except Exception as e:
+                    print(f"Cleanup warning: Failed to delete file: {e}")
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

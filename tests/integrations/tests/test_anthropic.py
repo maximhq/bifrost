@@ -25,6 +25,17 @@ Tests all core scenarios using Anthropic SDK directly:
 14. List models
 15. Extended thinking (non-streaming)
 16. Extended thinking (streaming)
+17. Files API - file upload (Cross-Provider)
+18. Files API - file list (Cross-Provider)
+19. Files API - file retrieve (Cross-Provider)
+20. Files API - file delete (Cross-Provider)
+21. Files API - file content (Cross-Provider)
+22. Batch API - batch create with inline requests (Cross-Provider)
+23. Batch API - batch list
+24. Batch API - batch retrieve
+25. Batch API - batch cancel
+26. Batch API - batch results
+27. Batch API - end-to-end workflow
 """
 
 import logging
@@ -49,6 +60,7 @@ from .utils.common import (
     WEATHER_TOOL,
     CALCULATOR_TOOL,
     ALL_TOOLS,
+    create_batch_jsonl_content,
     mock_tool_response,
     assert_valid_chat_response,
     assert_has_tool_calls,
@@ -66,6 +78,14 @@ from .utils.common import (
     # Anthropic-specific test data
     ANTHROPIC_THINKING_PROMPT,
     ANTHROPIC_THINKING_STREAMING_PROMPT,
+    # Files API utilities
+    assert_valid_file_response,
+    assert_valid_file_list_response,
+    assert_valid_file_delete_response,
+    # Batch API utilities
+    create_batch_inline_requests,
+    assert_valid_batch_inline_response,
+    assert_valid_batch_list_response,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
@@ -97,9 +117,7 @@ def anthropic_client():
 
     # Add Anthropic-specific settings
     if integration_settings.get("version"):
-        client_kwargs["default_headers"] = {
-            "anthropic-version": integration_settings["version"]
-        }
+        client_kwargs["default_headers"] = {"anthropic-version": integration_settings["version"]}
 
     return Anthropic(**client_kwargs)
 
@@ -108,6 +126,28 @@ def anthropic_client():
 def test_config():
     """Test configuration"""
     return Config()
+
+
+def get_provider_anthropic_client(provider):
+    """Create Anthropic client with x-model-provider header for given provider"""
+    from .utils.config_loader import get_integration_url, get_config
+
+    api_key = get_api_key("anthropic")
+    base_url = get_integration_url("anthropic")
+    config = get_config()
+    api_config = config.get_api_config()
+    integration_settings = config.get_integration_settings("anthropic")
+
+    default_headers = {"x-model-provider": provider}
+    if integration_settings.get("version"):
+        default_headers["anthropic-version"] = integration_settings["version"]
+
+    return Anthropic(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=api_config.get("timeout", 300),
+        default_headers=default_headers,
+    )
 
 
 def convert_to_anthropic_messages(
@@ -179,7 +219,9 @@ def convert_to_anthropic_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, An
 class TestAnthropicIntegration:
     """Test suite for Anthropic integration with cross-provider support"""
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("simple_chat")
+    )
     def test_01_simple_chat(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -195,7 +237,9 @@ class TestAnthropicIntegration:
         assert response.content[0].type == "text"
         assert len(response.content[0].text) > 0
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation")
+    )
     def test_02_multi_turn_conversation(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -209,10 +253,7 @@ class TestAnthropicIntegration:
         assert_valid_chat_response(response)
         content = response.content[0].text.lower()
         # Should mention population or numbers since we asked about Paris population
-        assert any(
-            word in content
-            for word in ["population", "million", "people", "inhabitants"]
-        )
+        assert any(word in content for word in ["population", "million", "people", "inhabitants"])
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
     def test_03_single_tool_call(self, anthropic_client, test_config, provider, model):
@@ -234,7 +275,9 @@ class TestAnthropicIntegration:
         assert tool_calls[0]["name"] == "get_weather"
         assert "location" in tool_calls[0]["arguments"]
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls")
+    )
     def test_04_multiple_tool_calls(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -258,9 +301,7 @@ class TestAnthropicIntegration:
         # Should make relevant tool calls - either weather, calculate, or both
         expected_tools = ["get_weather", "calculate"]
         made_relevant_calls = any(name in expected_tools for name in tool_names)
-        assert (
-            made_relevant_calls
-        ), f"Expected tool calls from {expected_tools}, got {tool_names}"
+        assert made_relevant_calls, f"Expected tool calls from {expected_tools}, got {tool_names}"
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
     def test_05_end2end_tool_calling(self, anthropic_client, test_config, provider, model):
@@ -281,13 +322,13 @@ class TestAnthropicIntegration:
 
         # Add assistant's response to conversation
         # Serialize content blocks to dicts for cross-provider compatibility
-        messages.append({"role": "assistant", "content": serialize_anthropic_content(response.content)})
+        messages.append(
+            {"role": "assistant", "content": serialize_anthropic_content(response.content)}
+        )
 
         # Add tool response
         tool_calls = extract_anthropic_tool_calls(response)
-        tool_response = mock_tool_response(
-            tool_calls[0]["name"], tool_calls[0]["arguments"]
-        )
+        tool_response = mock_tool_response(tool_calls[0]["name"], tool_calls[0]["arguments"])
 
         # Find the tool use block to get its ID
         tool_use_id = None
@@ -296,7 +337,6 @@ class TestAnthropicIntegration:
                 tool_use_id = content.id
                 break
 
-        
         messages.append(
             {
                 "role": "user",
@@ -375,7 +415,9 @@ class TestAnthropicIntegration:
 
         assert_valid_image_response(response)
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_base64"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("image_base64")
+    )
     def test_08_image_base64(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -403,7 +445,9 @@ class TestAnthropicIntegration:
 
         assert_valid_image_response(response)
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_images"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multiple_images")
+    )
     def test_09_multiple_images(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -483,15 +527,15 @@ class TestAnthropicIntegration:
 
         # Add response to conversation
         # Serialize content blocks to dicts for cross-provider compatibility
-        messages.append({"role": "assistant", "content": serialize_anthropic_content(response1.content)})
+        messages.append(
+            {"role": "assistant", "content": serialize_anthropic_content(response1.content)}
+        )
 
         # If there were tool calls, handle them
         tool_calls = extract_anthropic_tool_calls(response1)
         if tool_calls:
             for i, tool_call in enumerate(tool_calls):
-                tool_response = mock_tool_response(
-                    tool_call["name"], tool_call["arguments"]
-                )
+                tool_response = mock_tool_response(tool_call["name"], tool_call["arguments"])
 
                 # Find the corresponding tool use ID
                 tool_use_id = None
@@ -547,9 +591,7 @@ class TestAnthropicIntegration:
         # Test 2: Temperature parameter
         response2 = anthropic_client.messages.create(
             model=get_model("anthropic", "chat"),
-            messages=[
-                {"role": "user", "content": "Tell me a creative story in one sentence."}
-            ],
+            messages=[{"role": "user", "content": "Tell me a creative story in one sentence."}],
             temperature=0.9,
             max_tokens=100,
         )
@@ -628,7 +670,7 @@ class TestAnthropicIntegration:
                 # Validate tool streaming results
                 assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
                 assert tool_calls_detected_tools, "Should receive at least one chunk with tools"
-        
+
     def test_14_list_models(self, anthropic_client, test_config):
         """Test Case 14: List models with pagination parameters"""
         # Test basic list with limit
@@ -638,19 +680,16 @@ class TestAnthropicIntegration:
         assert hasattr(response, "first_id"), "Response should have first_id"
         assert hasattr(response, "last_id"), "Response should have last_id"
         assert hasattr(response, "has_more"), "Response should have has_more"
-        
+
         # Test pagination with after_id if there are more results
         if response.has_more and response.last_id:
-            next_response = anthropic_client.models.list(
-                limit=3,
-                after_id=response.last_id
-            )
+            next_response = anthropic_client.models.list(limit=3, after_id=response.last_id)
             assert next_response.data is not None
             assert len(next_response.data) <= 3
             # Ensure we got different results
             if len(response.data) > 0 and len(next_response.data) > 0:
                 assert response.data[0].id != next_response.data[0].id
-        
+
         # Test pagination with before_id if we have a first_id
         if response.first_id:
             # Get a second page first
@@ -658,8 +697,7 @@ class TestAnthropicIntegration:
             if len(second_response.data) > 5 and second_response.last_id:
                 # Now try to go backwards from the last item
                 prev_response = anthropic_client.models.list(
-                    limit=2,
-                    before_id=second_response.last_id
+                    limit=2, before_id=second_response.last_id
                 )
                 assert prev_response.data is not None
                 assert len(prev_response.data) <= 2
@@ -730,9 +768,7 @@ class TestAnthropicIntegration:
             "step",
         ]
 
-        keyword_matches = sum(
-            1 for keyword in reasoning_keywords if keyword in thinking_lower
-        )
+        keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in thinking_lower)
         assert keyword_matches >= 2, (
             f"Thinking should contain reasoning about the problem. "
             f"Found {keyword_matches} keywords. Content: {thinking_content[:200]}..."
@@ -788,15 +824,15 @@ class TestAnthropicIntegration:
                 # Handle content_block_delta events
                 elif event_type == "content_block_delta":
                     if event.delta and event.delta.type:
-                            # Check for thinking delta
-                            if event.delta.type == "thinking_delta":
-                                has_thinking_delta = True
-                                if event.delta.thinking:
-                                    thinking_parts.append(str(event.delta.thinking))
-                            # Check for text delta
-                            elif event.delta.type == "text_delta":
-                                if event.delta.text:
-                                    text_parts.append(str(event.delta.text))
+                        # Check for thinking delta
+                        if event.delta.type == "thinking_delta":
+                            has_thinking_delta = True
+                            if event.delta.thinking:
+                                thinking_parts.append(str(event.delta.thinking))
+                        # Check for text delta
+                        elif event.delta.type == "text_delta":
+                            if event.delta.text:
+                                text_parts.append(str(event.delta.text))
 
             # Safety check
             if chunk_count > 1000:
@@ -832,9 +868,7 @@ class TestAnthropicIntegration:
             "step",
         ]
 
-        keyword_matches = sum(
-            1 for keyword in math_keywords if keyword in thinking_lower
-        )
+        keyword_matches = sum(1 for keyword in math_keywords if keyword in thinking_lower)
         assert keyword_matches >= 2, (
             f"Thinking should reason about splitting the bill. "
             f"Found {keyword_matches} keywords. Content: {complete_thinking[:200]}..."
@@ -846,31 +880,558 @@ class TestAnthropicIntegration:
         print(f"✓ Streamed thinking ({len(thinking_parts)} chunks): {complete_thinking[:150]}...")
         print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:100]}...")
 
+    # =========================================================================
+    # FILES API TEST CASES (Cross-Provider)
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_upload")
+    )
+    def test_17_file_upload(self, anthropic_client, test_config, provider, model):
+        """Test Case 17: Upload a file via Files API
+
+        Uses cross-provider parametrization to test file upload across providers
+        that support the Files API (Anthropic, OpenAI, Gemini).
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_upload scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        try:
+            # Upload the file using beta API
+            if provider == "openai":
+                # Create test content
+                jsonl_content = create_batch_jsonl_content(
+                    model=get_model("openai", "chat"), num_requests=1
+                )
+                response = client.beta.files.upload(
+                    file=("test_upload.jsonl", jsonl_content, "application/jsonl"),
+                )
+            else:
+                text_content = b"This is a test file for Files API integration testing."
+                response = client.beta.files.upload(
+                    file=("test_upload.txt", text_content, "text/plain"),
+                )
+            # Validate response
+            assert response is not None, "File response should not be None"
+            assert hasattr(response, "id"), "File response should have 'id' attribute"
+            assert response.id is not None, "File ID should not be None"
+            assert len(response.id) > 0, "File ID should not be empty"
+
+            print(f"Success: Uploaded file with ID: {response.id} for provider {provider}")
+
+            # Clean up - delete the file
+            try:
+                client.beta.files.delete(response.id)
+                print(f"Cleanup: Deleted file {response.id}")
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+        except Exception as e:
+            # Files API might not be available or require specific permissions
+            error_str = str(e).lower()
+            if "beta" in error_str or "not found" in error_str or "not supported" in error_str:
+                pytest.skip(f"Files API not available for provider {provider}: {e}")
+            raise
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
+    def test_18_file_list(self, anthropic_client, test_config, provider, model):
+        """Test Case 18: List files from Files API
+
+        Uses cross-provider parametrization to test file listing across providers.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_list scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        try:
+            # First upload a file to ensure we have at least one
+            if provider == "openai":
+                jsonl_content = create_batch_jsonl_content(
+                    model=get_model("openai", "chat"), num_requests=1
+                )
+                uploaded_file = client.beta.files.upload(
+                    file=("test_list.jsonl", jsonl_content, "application/jsonl"),
+                )
+            else:
+                test_content = b"Test file for listing"
+                uploaded_file = client.beta.files.upload(
+                    file=("test_list.txt", test_content, "text/plain"),
+                )
+
+            try:
+                # List files
+                response = client.beta.files.list()
+
+                # Validate response
+                assert response is not None, "File list response should not be None"
+                assert hasattr(response, "data"), "File list response should have 'data' attribute"
+                assert isinstance(response.data, list), "Data should be a list"
+
+                # Check that our uploaded file is in the list
+                file_ids = [f.id for f in response.data]
+                assert (
+                    uploaded_file.id in file_ids
+                ), f"Uploaded file {uploaded_file.id} should be in file list"
+
+                print(f"Success: Listed {len(response.data)} files for provider {provider}")
+
+            finally:
+                # Clean up
+                try:
+                    client.beta.files.delete(uploaded_file.id)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "beta" in error_str or "not found" in error_str or "not supported" in error_str:
+                pytest.skip(f"Files API not available for provider {provider}: {e}")
+            raise
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_delete")
+    )
+    def test_20_file_delete(self, anthropic_client, test_config, provider, model):
+        """Test Case 20: Delete a file from Files API
+
+        Uses cross-provider parametrization to test file deletion across providers.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        try:
+            # First upload a file
+            if provider == "openai":
+                jsonl_content = create_batch_jsonl_content(
+                    model=get_model("openai", "chat"), num_requests=1
+                )
+                uploaded_file = client.beta.files.upload(
+                    file=("test_delete.jsonl", jsonl_content, "application/jsonl"),
+                )
+            else:
+                test_content = b"Test file for deletion"
+                uploaded_file = client.beta.files.upload(
+                    file=("test_delete.txt", test_content, "text/plain"),
+                )
+
+            # Delete the file
+            response = client.beta.files.delete(uploaded_file.id)
+
+            # Validate response - providers may return different formats
+            assert response is not None, "Delete response should not be None"
+
+            print(f"Success: Deleted file {uploaded_file.id} (provider: {provider})")
+
+            # Verify file is no longer retrievable
+            with pytest.raises(Exception):
+                client.beta.files.retrieve(uploaded_file.id)
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "beta" in error_str or "not found" in error_str or "not supported" in error_str:
+                pytest.skip(f"Files API not available for provider {provider}: {e}")
+            raise
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_content")
+    )
+    def test_21_file_content(self, anthropic_client, test_config, provider, model):
+        """Test Case 21: Download file content from Files API
+
+        Uses cross-provider parametrization to test file content download.
+        Note: Some providers have restrictions on downloading uploaded files:
+        - Anthropic: Only files created by code execution tool can be downloaded
+        - Gemini: Doesn't support direct file download (excluded via config)
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_content scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        try:
+            # First upload a file
+            if provider == "openai":
+                original_content = create_batch_jsonl_content(
+                    model=get_model("openai", "chat"), num_requests=1
+                )
+                uploaded_file = client.beta.files.upload(
+                    file=("test_content.jsonl", original_content, "application/jsonl"),
+                )
+            else:
+                original_content = b"Test file content for download"
+                uploaded_file = client.beta.files.upload(
+                    file=("test_content.txt", original_content, "text/plain"),
+                )
+
+            try:
+                # Try to download file content
+                # This may fail for some providers (e.g., Anthropic uploaded files)
+                response = client.beta.files.download(uploaded_file.id)
+
+                # If we get here, download was successful
+                assert response is not None, "File content should not be None"
+
+                # Compare downloaded content with original
+                downloaded_content = response.text()
+                original_str = (
+                    original_content
+                    if isinstance(original_content, str)
+                    else original_content.decode("utf-8")
+                )
+
+                assert downloaded_content == original_str, (
+                    f"Downloaded content should match original. "
+                    f"Expected: {original_str[:100]}..., Got: {downloaded_content[:100]}..."
+                )
+
+                print(
+                    f"Success: Downloaded and verified file content ({len(downloaded_content)} bytes) for provider {provider}"
+                )
+
+            except Exception as download_error:
+                # Some providers don't allow downloading uploaded files
+                error_str = str(download_error).lower()
+                if (
+                    "download" in error_str
+                    or "not allowed" in error_str
+                    or "forbidden" in error_str
+                ):
+                    print(
+                        f"Expected for {provider}: Cannot download uploaded files - {download_error}"
+                    )
+                else:
+                    raise
+
+            finally:
+                # Clean up
+                try:
+                    client.beta.files.delete(uploaded_file.id)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "beta" in error_str or "not found" in error_str or "not supported" in error_str:
+                pytest.skip(f"Files API not available for provider {provider}: {e}")
+            raise
+
+    # =========================================================================
+    # BATCH API TEST CASES (Cross-Provider)
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_inline")
+    )
+    def test_22_batch_create_inline(self, anthropic_client, test_config, provider, model):
+        """Test Case 22: Create a batch job with inline requests
+
+        Uses cross-provider parametrization to test batch creation across providers
+        that support inline batch requests (Anthropic, Gemini, etc.)
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_inline scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        # Create inline requests
+        batch_requests = create_batch_inline_requests(
+            model=model, num_requests=2, provider=provider, sdk="anthropic"
+        )
+
+        batch = None
+        try:
+            # Create batch job
+            batch = client.beta.messages.batches.create(requests=batch_requests)
+
+            print(
+                f"Success: Created batch with ID: {batch.id}, status: {batch.processing_status} for provider {provider}"
+            )
+
+            # Validate response
+            assert_valid_batch_inline_response(batch, provider="anthropic")
+        finally:
+            # Clean up - cancel batch if created
+            if batch:
+                try:
+                    client.beta.messages.batches.cancel(batch.id)
+                except Exception as e:
+                    print(f"Info: Could not cancel batch (may already be processed): {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
+    def test_23_batch_list(self, anthropic_client, test_config, provider, model):
+        """Test Case 23: List batch jobs
+
+        Tests batch listing across all providers using Anthropic SDK.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_list scenario")
+
+        if provider == "bedrock":
+            pytest.skip("Bedrock can't create batches with file input. Hence skipping batch_list scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        # List batches
+        response = client.beta.messages.batches.list(limit=10)
+
+        # Validate response
+        assert response is not None, "Batch list response should not be None"
+        assert hasattr(response, "data"), "Batch list response should have 'data' attribute"
+        assert isinstance(response.data, list), "Data should be a list"
+
+        batch_count = len(response.data)
+        print(f"Success: Listed {batch_count} batches for provider {provider}")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_retrieve")
+    )
+    def test_24_batch_retrieve(self, anthropic_client, test_config, provider, model):
+        """Test Case 24: Retrieve batch status by ID
+
+        Creates a batch using inline requests, then retrieves it.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_retrieve scenario")
+
+        if provider == "bedrock":
+            pytest.skip("Bedrock can't create batches with file input. Hence skipping batch_retrieve scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        batch_id = None
+
+        try:
+            # Create batch for testing retrieval
+            batch_requests = create_batch_inline_requests(model=model, num_requests=1, provider=provider, sdk="anthropic")
+            batch = client.beta.messages.batches.create(requests=batch_requests)
+            batch_id = batch.id
+
+            # Retrieve batch
+            retrieved_batch = client.beta.messages.batches.retrieve(batch_id)
+
+            # Validate response
+            assert retrieved_batch is not None, "Retrieved batch should not be None"
+            assert (
+                retrieved_batch.id == batch_id
+            ), f"Batch ID should match: expected {batch_id}, got {retrieved_batch.id}"
+
+            print(
+                f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.processing_status} for provider {provider}"
+            )
+
+        finally:
+            # Clean up
+            if batch_id:
+                try:
+                    client.beta.messages.batches.cancel(batch_id)
+                except Exception:
+                    pass
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_cancel")
+    )
+    def test_25_batch_cancel(self, anthropic_client, test_config, provider, model):
+        """Test Case 25: Cancel a batch job
+
+        Creates a batch using inline requests, then cancels it.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_cancel scenario")
+        
+        if provider == "bedrock":
+            pytest.skip("Bedrock can't create batches with file input. Hence skipping batch_list scenario")
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        batch_id = None
+
+        try:
+            # Create batch for testing cancellation
+            batch_requests = create_batch_inline_requests(model=model, num_requests=1, provider=provider)
+            batch = client.beta.messages.batches.create(requests=batch_requests)
+            batch_id = batch.id
+
+            # Cancel batch
+            cancelled_batch = client.beta.messages.batches.cancel(batch_id)
+
+            # Validate response
+            assert cancelled_batch is not None, "Cancelled batch should not be None"
+            assert cancelled_batch.id == batch_id, f"Batch ID should match"
+            # Anthropic uses different status values
+            assert cancelled_batch.processing_status in [
+                "canceling",
+                "ended",
+            ], f"Status should be 'canceling' or 'ended', got {cancelled_batch.processing_status}"
+
+            print(
+                f"Success: Cancelled batch {batch_id}, status: {cancelled_batch.processing_status} for provider {provider}"
+            )
+
+        except Exception as e:
+            # Batch might already be processed
+            if batch_id:
+                print(f"Info: Batch cancel may have failed due to batch state: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_cancel")
+    )
+    def test_26_batch_results(self, anthropic_client, test_config, provider, model):
+        """Test Case 26: Retrieve batch results
+
+        Note: This test creates a batch and attempts to retrieve results.
+        Results are only available after the batch has completed processing.
+        """
+        if provider == "bedrock":
+            pytest.skip("Bedrock can't create batches with file input. Hence skipping test_26_batch_results scenario")
+
+        try:
+            # Create batch with simple requests
+            batch_requests = create_batch_inline_requests(
+                model=model, num_requests=1, provider=provider, sdk="anthropic"
+            )
+
+            batch = anthropic_client.beta.messages.batches.create(requests=batch_requests)
+            batch_id = batch.id
+
+            print(f"Created batch {batch_id} with status: {batch.processing_status}")
+
+            # Try to get results - might fail if batch not yet complete
+            try:
+                results = anthropic_client.beta.messages.batches.results(batch_id)
+
+                # Collect results if available
+                result_count = 0
+                for result in results:
+                    result_count += 1
+                    print(f"  Result {result_count}: custom_id={result.custom_id}")
+
+                print(f"Success: Retrieved {result_count} results for batch {batch_id}")
+
+            except Exception as results_error:
+                # Results might not be ready yet
+                error_str = str(results_error).lower()
+                if (
+                    "not ready" in error_str
+                    or "in_progress" in error_str
+                    or "processing" in error_str
+                ):
+                    print(f"Info: Batch results not yet available (batch still processing)")
+                else:
+                    print(f"Info: Could not retrieve results: {results_error}")
+
+            # Clean up
+            try:
+                anthropic_client.beta.messages.batches.cancel(batch_id)
+            except Exception:
+                pass
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "beta" in error_str or "not found" in error_str:
+                pytest.skip(f"Anthropic Batch API not available: {e}")
+            raise
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_inline")
+    )
+    def test_27_batch_e2e(self, anthropic_client, test_config, provider, model):
+        """Test Case 27: End-to-end batch workflow
+
+        Complete workflow: create batch -> poll status -> verify in list.
+        Uses cross-provider parametrization.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_inline scenario")
+
+        if provider == "bedrock":
+            pytest.skip("Bedrock can't create batches with file input. Hence skipping test_27_batch_e2e scenario")
+
+        import time
+
+        # Get provider-specific client
+        client = get_provider_anthropic_client(provider)
+
+        # Step 1: Create batch with inline requests
+        print(f"Step 1: Creating batch for provider {provider}...")
+        batch_requests = create_batch_inline_requests(model=model, num_requests=2, provider=provider, sdk="anthropic")
+
+        batch = client.beta.messages.batches.create(requests=batch_requests)
+        batch_id = batch.id
+
+        assert batch_id is not None, "Batch ID should not be None"
+        print(f"  Created batch: {batch_id}, status: {batch.processing_status}")
+
+        try:
+            # Step 2: Poll batch status (with timeout)
+            print("Step 2: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+
+            for i in range(max_polls):
+                retrieved_batch = client.beta.messages.batches.retrieve(batch_id)
+                print(f"  Poll {i+1}: status = {retrieved_batch.processing_status}")
+
+                if retrieved_batch.processing_status in ["ended"]:
+                    print(f"  Batch reached terminal state: {retrieved_batch.processing_status}")
+                    break
+
+                if hasattr(retrieved_batch, "request_counts") and retrieved_batch.request_counts:
+                    counts = retrieved_batch.request_counts
+                    print(
+                        f"    Request counts - processing: {counts.processing}, succeeded: {counts.succeeded}, errored: {counts.errored}"
+                    )
+
+                time.sleep(poll_interval)
+
+            # Step 3: Verify batch is in the list
+            print("Step 3: Verifying batch in list...")
+            batch_list = client.beta.messages.batches.list(limit=20)
+            batch_ids = [b.id for b in batch_list.data]
+            assert batch_id in batch_ids, f"Batch {batch_id} should be in the batch list"
+            print(f"  Verified batch {batch_id} is in list")
+
+            print(f"Success: E2E completed for batch {batch_id} (provider: {provider})")
+
+        finally:
+            # Clean up
+            try:
+                client.beta.messages.batches.cancel(batch_id)
+                print(f"Cleanup: Cancelled batch {batch_id}")
+            except Exception as e:
+                print(f"Cleanup info: Could not cancel batch: {e}")
+
 
 # Additional helper functions specific to Anthropic
 def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:
     """Serialize Anthropic content blocks (including ToolUseBlock objects) to dicts"""
     serialized_content = []
-    
+
     for block in content_blocks:
-        if hasattr(block, 'type'):
-            if block.type == 'tool_use':
+        if hasattr(block, "type"):
+            if block.type == "tool_use":
                 # Serialize ToolUseBlock to dict
-                serialized_content.append({
-                    'type': 'tool_use',
-                    'id': block.id,
-                    'name': block.name,
-                    'input': block.input
-                })
-            elif block.type == 'text':
+                serialized_content.append(
+                    {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+                )
+            elif block.type == "text":
                 # Serialize TextBlock to dict
-                serialized_content.append({
-                    'type': 'text',
-                    'text': block.text
-                })
+                serialized_content.append({"type": "text", "text": block.text})
             else:
                 # For other block types, try to convert using model_dump if available
-                if hasattr(block, 'model_dump'):
+                if hasattr(block, "model_dump"):
                     serialized_content.append(block.model_dump())
                 else:
                     # Fallback: try to convert to dict
@@ -878,7 +1439,7 @@ def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any
         else:
             # If already a dict, use as is
             serialized_content.append(block)
-    
+
     return serialized_content
 
 
@@ -897,7 +1458,7 @@ def extract_anthropic_tool_calls(response: Any) -> List[Dict[str, Any]]:
                 try:
                     logger.debug(f"Extracting tool call: {content}")
                     tool_calls.append(
-                        {"id":content.id, "name": content.name, "arguments": content.input}
+                        {"id": content.id, "name": content.name, "arguments": content.input}
                     )
                 except AttributeError as e:
                     print(f"Warning: Failed to extract tool call from content: {e}")

@@ -574,3 +574,97 @@ type BedrockModel struct {
 type BedrockListModelsResponse struct {
 	ModelSummaries []BedrockModel `json:"modelSummaries"`
 }
+
+// ==================== FILE TYPES (S3 WRAPPER) ====================
+
+// BedrockFileUploadRequest wraps S3 PutObject for Bedrock file operations
+type BedrockFileUploadRequest struct {
+	Bucket   string `json:"bucket"`             // S3 bucket name
+	Key      string `json:"key,omitempty"`      // S3 object key (optional, auto-generated if empty)
+	Body     []byte `json:"-"`                  // File content (not serialized to JSON)
+	Filename string `json:"filename,omitempty"` // Original filename
+	Purpose  string `json:"purpose,omitempty"`  // Purpose of the file (e.g., "batch")
+}
+
+// BedrockFileUploadResponse wraps S3 PutObject response
+type BedrockFileUploadResponse struct {
+	S3Uri       string `json:"s3Uri"`                 // Full S3 URI (s3://bucket/key)
+	ETag        string `json:"etag,omitempty"`        // S3 ETag
+	Bucket      string `json:"bucket"`                // S3 bucket name
+	Key         string `json:"key"`                   // S3 object key
+	SizeBytes   int64  `json:"sizeBytes"`             // File size in bytes
+	ContentType string `json:"contentType,omitempty"` // MIME content type
+	CreatedAt   int64  `json:"createdAt,omitempty"`   // Unix timestamp of creation
+}
+
+// BedrockFileListRequest wraps S3 ListObjectsV2 request
+type BedrockFileListRequest struct {
+	Bucket            string `json:"bucket"`                      // S3 bucket name
+	Prefix            string `json:"prefix,omitempty"`            // S3 key prefix filter
+	MaxKeys           int    `json:"maxKeys,omitempty"`           // Maximum number of keys to return
+	ContinuationToken string `json:"continuationToken,omitempty"` // Pagination token
+}
+
+// BedrockFileListResponse wraps S3 ListObjectsV2 response
+type BedrockFileListResponse struct {
+	Files                 []BedrockFileInfo `json:"files"`                           // List of file info
+	IsTruncated           bool              `json:"isTruncated"`                     // Whether there are more results
+	NextContinuationToken string            `json:"nextContinuationToken,omitempty"` // Token for next page
+}
+
+// BedrockFileInfo represents S3 object metadata
+type BedrockFileInfo struct {
+	S3Uri        string `json:"s3Uri"`                  // Full S3 URI
+	Key          string `json:"key"`                    // S3 object key
+	SizeBytes    int64  `json:"sizeBytes"`              // File size in bytes
+	LastModified int64  `json:"lastModified,omitempty"` // Unix timestamp of last modification
+	ETag         string `json:"etag,omitempty"`         // S3 ETag
+}
+
+// BedrockFileRetrieveRequest wraps S3 HeadObject request
+type BedrockFileRetrieveRequest struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix"`
+	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
+	ETag string `json:"etag"` // S3 ETag
+}
+
+// BedrockFileRetrieveResponse wraps S3 HeadObject response
+type BedrockFileRetrieveResponse struct {
+	S3Uri        string `json:"s3Uri"`                  // Full S3 URI
+	Key          string `json:"key"`                    // S3 object key
+	SizeBytes    int64  `json:"sizeBytes"`              // File size in bytes
+	LastModified int64  `json:"lastModified,omitempty"` // Unix timestamp of last modification
+	ContentType  string `json:"contentType,omitempty"`  // MIME content type
+	ETag         string `json:"etag,omitempty"`         // S3 ETag
+}
+
+// BedrockFileDeleteRequest wraps S3 DeleteObject request
+type BedrockFileDeleteRequest struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix"`
+	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
+	ETag string `json:"etag"` // S3 ETag
+}
+
+// BedrockFileDeleteResponse wraps S3 DeleteObject response
+type BedrockFileDeleteResponse struct {
+	S3Uri   string `json:"s3Uri"`   // Full S3 URI that was deleted
+	Deleted bool   `json:"deleted"` // Whether deletion was successful
+}
+
+// BedrockFileContentRequest wraps S3 GetObject request
+type BedrockFileContentRequest struct {
+	Bucket string `json:"bucket"`
+	Prefix string `json:"prefix,omitempty"`
+	S3Uri  string `json:"s3Uri"` // Full S3 URI (s3://bucket/key)
+	ETag string `json:"etag"` // S3 ETag
+}
+
+// BedrockFileContentResponse wraps S3 GetObject response
+type BedrockFileContentResponse struct {
+	S3Uri       string `json:"s3Uri"`                 // Full S3 URI
+	Content     []byte `json:"-"`                     // File content (not serialized to JSON)
+	ContentType string `json:"contentType,omitempty"` // MIME content type
+	SizeBytes   int64  `json:"sizeBytes"`             // File size in bytes
+}

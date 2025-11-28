@@ -41,6 +41,16 @@ type TestScenarios struct {
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
 	ListModels            bool // List available models functionality
+	BatchCreate           bool // Batch API create functionality
+	BatchList             bool // Batch API list functionality
+	BatchRetrieve         bool // Batch API retrieve functionality
+	BatchCancel           bool // Batch API cancel functionality
+	BatchResults          bool // Batch API results functionality
+	FileUpload            bool // File API upload functionality
+	FileList              bool // File API list functionality
+	FileRetrieve          bool // File API retrieve functionality
+	FileDelete            bool // File API delete functionality
+	FileContent           bool // File API content download functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -538,6 +548,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
 			ListModels:            true,
+			BatchCreate:           true, // OpenAI supports batch API
+			BatchList:             true, // OpenAI supports batch API
+			BatchRetrieve:         true, // OpenAI supports batch API
+			BatchCancel:           true, // OpenAI supports batch API
+			BatchResults:          true, // OpenAI supports batch API
+			FileUpload:            true, // OpenAI supports file API
+			FileList:              true, // OpenAI supports file API
+			FileRetrieve:          true, // OpenAI supports file API
+			FileDelete:            true, // OpenAI supports file API
+			FileContent:           true, // OpenAI supports file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -566,6 +586,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
 			ListModels:            true,
+			BatchCreate:           true, // Anthropic supports batch API
+			BatchList:             true, // Anthropic supports batch API
+			BatchRetrieve:         true, // Anthropic supports batch API
+			BatchCancel:           true, // Anthropic supports batch API
+			BatchResults:          true, // Anthropic supports batch API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -594,6 +619,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Bedrock supports batch via Model Invocation Jobs (requires S3 config)
+			BatchList:             true, // Bedrock supports listing batch jobs
+			BatchRetrieve:         true, // Bedrock supports retrieving batch jobs
+			BatchCancel:           true, // Bedrock supports stopping batch jobs
+			BatchResults:          true, // Bedrock batch results via S3
+			FileUpload:            true, // Bedrock file upload to S3 (requires S3 config)
+			FileList:              true, // Bedrock file list from S3 (requires S3 config)
+			FileRetrieve:          true, // Bedrock file retrieve from S3 (requires S3 config)
+			FileDelete:            true, // Bedrock file delete from S3 (requires S3 config)
+			FileContent:           true, // Bedrock file content from S3 (requires S3 config)
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -650,6 +685,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported yet
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Azure supports batch API
+			BatchList:             true, // Azure supports batch API
+			BatchRetrieve:         true, // Azure supports batch API
+			BatchCancel:           true, // Azure supports batch API
+			BatchResults:          true, // Azure supports batch API
+			FileUpload:            true, // Azure supports file API
+			FileList:              true, // Azure supports file API
+			FileRetrieve:          true, // Azure supports file API
+			FileDelete:            true, // Azure supports file API
+			FileContent:           true, // Azure supports file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -820,6 +865,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   true,
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false, // Gemini doesn't support direct content download
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

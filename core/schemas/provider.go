@@ -175,6 +175,16 @@ type AllowedRequests struct {
 	SpeechStream         bool `json:"speech_stream"`
 	Transcription        bool `json:"transcription"`
 	TranscriptionStream  bool `json:"transcription_stream"`
+	BatchCreate          bool `json:"batch_create"`
+	BatchList            bool `json:"batch_list"`
+	BatchRetrieve        bool `json:"batch_retrieve"`
+	BatchCancel          bool `json:"batch_cancel"`
+	BatchResults         bool `json:"batch_results"`
+	FileUpload           bool `json:"file_upload"`
+	FileList             bool `json:"file_list"`
+	FileRetrieve         bool `json:"file_retrieve"`
+	FileDelete           bool `json:"file_delete"`
+	FileContent          bool `json:"file_content"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -208,6 +218,26 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Transcription
 	case TranscriptionStreamRequest:
 		return ar.TranscriptionStream
+	case BatchCreateRequest:
+		return ar.BatchCreate
+	case BatchListRequest:
+		return ar.BatchList
+	case BatchRetrieveRequest:
+		return ar.BatchRetrieve
+	case BatchCancelRequest:
+		return ar.BatchCancel
+	case BatchResultsRequest:
+		return ar.BatchResults
+	case FileUploadRequest:
+		return ar.FileUpload
+	case FileListRequest:
+		return ar.FileList
+	case FileRetrieveRequest:
+		return ar.FileRetrieve
+	case FileDeleteRequest:
+		return ar.FileDelete
+	case FileContentRequest:
+		return ar.FileContent
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -306,4 +336,24 @@ type Provider interface {
 	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
 	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
+	// BatchCreate creates a new batch job for asynchronous processing
+	BatchCreate(ctx context.Context, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
+	// BatchList lists batch jobs
+	BatchList(ctx context.Context, keys []Key, request *BifrostBatchListRequest) (*BifrostBatchListResponse, *BifrostError)
+	// BatchRetrieve retrieves a specific batch job
+	BatchRetrieve(ctx context.Context, key Key, request *BifrostBatchRetrieveRequest) (*BifrostBatchRetrieveResponse, *BifrostError)
+	// BatchCancel cancels a batch job
+	BatchCancel(ctx context.Context, key Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
+	// BatchResults retrieves results from a completed batch job
+	BatchResults(ctx context.Context, key Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
+	// FileUpload uploads a file to the provider
+	FileUpload(ctx context.Context, key Key, request *BifrostFileUploadRequest) (*BifrostFileUploadResponse, *BifrostError)
+	// FileList lists files from the provider
+	FileList(ctx context.Context, keys []Key, request *BifrostFileListRequest) (*BifrostFileListResponse, *BifrostError)
+	// FileRetrieve retrieves file metadata from the provider
+	FileRetrieve(ctx context.Context, key Key, request *BifrostFileRetrieveRequest) (*BifrostFileRetrieveResponse, *BifrostError)
+	// FileDelete deletes a file from the provider
+	FileDelete(ctx context.Context, key Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
+	// FileContent downloads file content from the provider
+	FileContent(ctx context.Context, key Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
 }

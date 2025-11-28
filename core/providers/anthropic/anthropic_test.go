@@ -48,6 +48,16 @@ func TestAnthropic(t *testing.T) {
 			Embedding:             false,
 			Reasoning:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           true,
 		},
 	}
 

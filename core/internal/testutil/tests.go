@@ -51,6 +51,19 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunListModelsTest,
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
+		RunBatchCreateTest,
+		RunBatchListTest,
+		RunBatchRetrieveTest,
+		RunBatchCancelTest,
+		RunBatchResultsTest,
+		RunBatchUnsupportedTest,
+		RunFileUploadTest,
+		RunFileListTest,
+		RunFileRetrieveTest,
+		RunFileDeleteTest,
+		RunFileContentTest,
+		RunFileUnsupportedTest,
+		RunFileAndBatchIntegrationTest,
 	}
 
 	// Execute all test scenarios
@@ -90,6 +103,19 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ResponsesReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ListModels", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
+		{"BatchCreate", testConfig.Scenarios.BatchCreate},
+		{"BatchList", testConfig.Scenarios.BatchList},
+		{"BatchRetrieve", testConfig.Scenarios.BatchRetrieve},
+		{"BatchCancel", testConfig.Scenarios.BatchCancel},
+		{"BatchResults", testConfig.Scenarios.BatchResults},
+		{"BatchUnsupported", !testConfig.Scenarios.BatchCreate && !testConfig.Scenarios.BatchList && !testConfig.Scenarios.BatchRetrieve && !testConfig.Scenarios.BatchCancel && !testConfig.Scenarios.BatchResults},
+		{"FileUpload", testConfig.Scenarios.FileUpload},
+		{"FileList", testConfig.Scenarios.FileList},
+		{"FileRetrieve", testConfig.Scenarios.FileRetrieve},
+		{"FileDelete", testConfig.Scenarios.FileDelete},
+		{"FileContent", testConfig.Scenarios.FileContent},
+		{"FileUnsupported", !testConfig.Scenarios.FileUpload && !testConfig.Scenarios.FileList && !testConfig.Scenarios.FileRetrieve && !testConfig.Scenarios.FileDelete && !testConfig.Scenarios.FileContent},
+		{"FileAndBatchIntegration", testConfig.Scenarios.FileUpload && testConfig.Scenarios.BatchCreate},
 	}
 
 	supported := 0

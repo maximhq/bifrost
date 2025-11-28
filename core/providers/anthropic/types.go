@@ -13,6 +13,8 @@ import (
 const (
 	AnthropicDefaultMaxTokens = 4096
 	MinimumReasoningMaxTokens = 1024
+	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
+	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
 )
 
 // ==================== REQUEST TYPES ====================
@@ -33,8 +35,8 @@ type AnthropicTextRequest struct {
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *AnthropicTextRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (req *AnthropicTextRequest) IsStreamingRequested() bool {
+	return req.Stream != nil && *req.Stream
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -466,4 +468,130 @@ type AnthropicError struct {
 type AnthropicStreamError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// ==================== FILE TYPES ====================
+
+// AnthropicFileUploadRequest represents a request to upload a file.
+type AnthropicFileUploadRequest struct {
+	File     []byte `json:"-"`        // Raw file content (not serialized)
+	Filename string `json:"filename"` // Original filename
+	Purpose  string `json:"purpose"`  // Purpose of the file (e.g., "batch")
+}
+
+// AnthropicFileRetrieveRequest represents a request to retrieve a file.
+type AnthropicFileRetrieveRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileListRequest represents a request to list files.
+type AnthropicFileListRequest struct {
+	Limit int     `json:"limit"`
+	After *string `json:"after"`
+	Order *string `json:"order"`
+}
+
+// AnthropicFileDeleteRequest represents a request to delete a file.
+type AnthropicFileDeleteRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileContentRequest represents a request to get the content of a file.
+type AnthropicFileContentRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileResponse represents an Anthropic file response.
+type AnthropicFileResponse struct {
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	CreatedAt    string `json:"created_at"`
+	Downloadable bool   `json:"downloadable"`
+}
+
+// AnthropicFileListResponse represents the response from listing files.
+type AnthropicFileListResponse struct {
+	Data    []AnthropicFileResponse `json:"data"`
+	HasMore bool                    `json:"has_more"`
+	FirstID *string                 `json:"first_id,omitempty"`
+	LastID  *string                 `json:"last_id,omitempty"`
+}
+
+// AnthropicFileDeleteResponse represents the response from deleting a file.
+type AnthropicFileDeleteResponse struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// ToBifrostFileUploadResponse converts an Anthropic file response to Bifrost file upload response.
+func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
+	resp := &schemas.BifrostFileUploadResponse{
+		ID:             r.ID,
+		Object:         r.Type,
+		Bytes:          r.SizeBytes,
+		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
+		Filename:       r.Filename,
+		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageAPI,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileUploadRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		resp.ExtraFields.RawRequest = rawRequest
+	}
+
+	if sendBackRawResponse {
+		resp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return resp
+}
+
+// ToBifrostFileRetrieveResponse converts an Anthropic file response to Bifrost file retrieve response.
+func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
+	resp := &schemas.BifrostFileRetrieveResponse{
+		ID:             r.ID,
+		Object:         r.Type,
+		Bytes:          r.SizeBytes,
+		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
+		Filename:       r.Filename,
+		Purpose:        schemas.FilePurposeBatch,
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageAPI,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileRetrieveRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		resp.ExtraFields.RawRequest = rawRequest
+	}
+
+	if sendBackRawResponse {
+		resp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return resp
+}
+
+// parseAnthropicFileTimestamp converts Anthropic ISO timestamp to Unix timestamp.
+func parseAnthropicFileTimestamp(timestamp string) int64 {
+	if timestamp == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }

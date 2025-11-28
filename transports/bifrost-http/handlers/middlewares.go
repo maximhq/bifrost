@@ -21,12 +21,13 @@ import (
 func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			logger.Debug("CorsMiddleware: %s", ctx.Request.URI().Path())
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
 			// Check if origin is allowed (localhost always allowed + configured origins)
 			if allowed {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
@@ -138,7 +139,7 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 }
 
 // validateSession checks if a session token is valid
-func validateSession(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, token string) bool {
+func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, token string) bool {
 	session, err := store.GetSession(context.Background(), token)
 	if err != nil || session == nil {
 		return false
