@@ -192,7 +192,8 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"o1": "o1",
+						"claude-opus-4-5": "claude-opus-4-5",
+						"o1":              "o1",
 					},
 				},
 			},
@@ -647,7 +648,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
 		Provider:  schemas.Azure,
 		ChatModel: "gpt-4o",
-		TextModel: "", // Azure OpenAI doesn't support text completion in newer models
+		TextModel: "", // Azure doesn't support text completion in newer models
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

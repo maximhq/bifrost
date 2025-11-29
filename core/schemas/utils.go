@@ -1038,3 +1038,13 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 
 	return copy
 }
+
+// IsAnthropicModel checks if the model is an Anthropic model in Vertex.
+func IsAnthropicModel(model string) bool {
+	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
+}
+
+// IsMistralModel checks if the model is a Mistral or Codestral model in Vertex.
+func IsMistralModel(model string) bool {
+	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}

@@ -38,6 +38,12 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 }
 
+// Retry backoff constants for validation
+const (
+	MinRetryBackoff = 100 * time.Millisecond     // Minimum retry backoff: 100ms
+	MaxRetryBackoff = 1000000 * time.Millisecond // Maximum retry backoff: 1000000ms (1000 seconds)
+)
+
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
 // It contains the client configuration, provider configurations, MCP configuration,
 // vector store configuration, config store configuration, and logs store configuration.

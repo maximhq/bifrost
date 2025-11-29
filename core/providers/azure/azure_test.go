@@ -29,9 +29,9 @@ func TestAzure(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
 		},
-		TextModel:      "", // Azure OpenAI doesn't support text completion in newer models
+		TextModel:      "", // Azure doesn't support text completion in newer models
 		EmbeddingModel: "text-embedding-ada-002",
-		ReasoningModel: "o1",
+		ReasoningModel: "claude-opus-4-5",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

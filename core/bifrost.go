@@ -2022,6 +2022,7 @@ func executeRequestWithRetries[T any](
 
 			// Calculate and apply backoff
 			backoff := calculateBackoff(attempts-1, config)
+			logger.Debug("sleeping for %s", backoff)
 			time.Sleep(backoff)
 		}
 
@@ -2063,7 +2064,7 @@ func executeRequestWithRetries[T any](
 
 	// Add retry information to error
 	if attempts > 0 {
-		logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "retries", false: "retry"}[attempts > 1])
+		logger.Debug("request failed after %d %s", attempts, map[bool]string{true: "attempts", false: "attempt"}[attempts > 1])
 	}
 
 	return result, bifrostError

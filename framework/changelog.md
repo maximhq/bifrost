@@ -1,0 +1,4 @@
+- chore: version update core to 1.2.32
+- fix: cache read input token cost calculation bug
+- enhancement: made bedrock model lookup more robust
+- enhancement: added support for deployment lookup in pricing

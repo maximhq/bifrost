@@ -1,1 +1,6 @@
 - feat: support added for x-goog-api-key header for Google Gemini style for virtual key lookup and direct api key bypass
+- feat: added support for Anthropic models in Azure
+- chore: version update core to 1.2.32 and framework to 1.1.41
+- fix: provider retry config time conversion issue
+- fix: cache read input token cost calculation bug
+- enhancement: made model lookup for pricing more robust

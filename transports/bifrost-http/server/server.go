@@ -815,9 +815,7 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
 	}
 	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-
 	s.Config.PricingManager.AddModelDataToPool(allModels)
-
 	return nil
 }
 
@@ -826,9 +824,7 @@ func (s *BifrostHTTPServer) DeleteModelsForProvider(ctx context.Context, provide
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-
 	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-
 	return nil
 }
 

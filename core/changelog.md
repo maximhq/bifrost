@@ -1,0 +1,3 @@
+- feat: added support for Anthropic models in Azure
+- enhancement: using naive anthropic converters for Vertex Anthropic responses and responses stream
+- [breaking change] NetworkConfig retry backoff values (RetryBackoffInitial and RetryBackoffMax) now handle milliseconds in JSON while storing as time.Duration internally. Custom MarshalJSON/UnmarshalJSON methods ensure values are always interpreted as milliseconds when serializing/deserializing from JSON, fixing issues where values were incorrectly interpreted as nanoseconds.

@@ -740,16 +740,6 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 	return defaultProvider
 }
 
-// IsVertexAnthropicModel checks if the model is an Anthropic model in Vertex.
-func IsVertexAnthropicModel(model string) bool {
-	return strings.Contains(model, "claude")
-}
-
-// IsVertexMistralModel checks if the model is a Mistral or Codestral model in Vertex.
-func IsVertexMistralModel(model string) bool {
-	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
-}
-
 // ProviderSendsDoneMarker returns true if the provider sends the [DONE] marker in streaming responses.
 // Some OpenAI-compatible providers (like Cerebras) don't send [DONE] and instead end the stream
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
