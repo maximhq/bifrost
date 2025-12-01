@@ -18,6 +18,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -757,7 +758,6 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		defer resp.Body.Close()
 
 		// Process AWS Event Stream format
-		var messageID string
 		usage := &schemas.BifrostLLMUsage{}
 		var finishReason *string
 		chunkIndex := 0
@@ -767,6 +767,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+
+		// Bedrock does not provide a unique identifier for the stream, so we generate one ourselves
+		id := uuid.New().String()
 
 		for {
 			// Decode a single EventStream message
@@ -853,7 +856,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 					return
 				}
 				if response != nil {
-					response.ID = messageID
+					response.ID = id
 					response.Model = request.Model
 					response.ExtraFields = schemas.BifrostResponseExtraFields{
 						RequestType:     schemas.ChatCompletionStreamRequest,
@@ -876,7 +879,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		}
 
 		// Send final response
-		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 		response.ExtraFields.ModelDeployment = deployment
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)

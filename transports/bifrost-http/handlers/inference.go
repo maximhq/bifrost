@@ -74,7 +74,7 @@ var chatParamsKnownFields = map[string]bool{
 	"parallel_tool_calls":   true,
 	"presence_penalty":      true,
 	"prompt_cache_key":      true,
-	"reasoning_effort":      true,
+	"reasoning":             true,
 	"response_format":       true,
 	"safety_identifier":     true,
 	"service_tier":          true,
@@ -166,6 +166,38 @@ type ChatRequest struct {
 	*schemas.ChatParameters
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for ChatRequest.
+// This is needed because ChatParameters has a custom UnmarshalJSON method,
+// which interferes with sonic's handling of the embedded BifrostParams struct.
+func (cr *ChatRequest) UnmarshalJSON(data []byte) error {
+	// First, unmarshal BifrostParams fields directly
+	type bifrostAlias BifrostParams
+	var bp bifrostAlias
+	if err := sonic.Unmarshal(data, &bp); err != nil {
+		return err
+	}
+	cr.BifrostParams = BifrostParams(bp)
+
+	// Unmarshal messages
+	var msgStruct struct {
+		Messages []schemas.ChatMessage `json:"messages"`
+	}
+	if err := sonic.Unmarshal(data, &msgStruct); err != nil {
+		return err
+	}
+	cr.Messages = msgStruct.Messages
+
+	// Unmarshal ChatParameters (which has its own custom unmarshaller)
+	if cr.ChatParameters == nil {
+		cr.ChatParameters = &schemas.ChatParameters{}
+	}
+	if err := sonic.Unmarshal(data, cr.ChatParameters); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ResponsesRequestInput is a union of string and array of responses messages
 type ResponsesRequestInput struct {
 	ResponsesRequestInputStr   *string
@@ -236,7 +268,7 @@ func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]interface{}, error) {
 	// Parse JSON to extract unknown fields
 	var rawData map[string]json.RawMessage
-	if err := json.Unmarshal(data, &rawData); err != nil {
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
 		return nil, err
 	}
 
@@ -245,7 +277,7 @@ func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]in
 	for key, value := range rawData {
 		if !knownFields[key] {
 			var v interface{}
-			if err := json.Unmarshal(value, &v); err != nil {
+			if err := sonic.Unmarshal(value, &v); err != nil {
 				continue // Skip fields that can't be unmarshaled
 			}
 			extraParams[key] = v
@@ -441,7 +473,9 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
 func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
-	var req ChatRequest
+	req := ChatRequest{
+		ChatParameters: &schemas.ChatParameters{},
+	}
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return

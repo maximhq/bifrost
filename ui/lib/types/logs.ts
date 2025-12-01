@@ -119,7 +119,17 @@ export interface ChatMessage {
 	refusal?: string;
 	annotations?: Annotation[];
 	tool_calls?: ToolCall[]; // For backward compatibility, tool calls are now in the content
-	thought?: string;
+	reasoning?: string;
+	reasoning_details?: ReasoningDetails[];
+}
+
+export interface ReasoningDetails {
+	index: number;
+	type: "reasoning.summary" | "reasoning.encrypted" | "reasoning.text";
+	summary?: string;
+	text?: string;
+	signature?: string;
+	data?: string;
 }
 
 export interface BifrostEmbedding {
