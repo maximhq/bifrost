@@ -58,7 +58,7 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 
 // completeRequest sends a request to Azure's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
-// Returns the response body, request latency, or an error if the request fails.
+// Returns the response body, deployment, request latency, or an error if the request fails.
 func (provider *AzureProvider) completeRequest(ctx context.Context, jsonData []byte, path string, key schemas.Key, model string, requestType schemas.RequestType) ([]byte, string, time.Duration, *schemas.BifrostError) {
 	var deployment string
 	var ok bool

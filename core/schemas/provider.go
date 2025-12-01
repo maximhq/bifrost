@@ -231,4 +231,10 @@ type Provider interface {
 	Transcription(ctx context.Context, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
 	TranscriptionStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
+	// ImageGeneration performs a image generation request
+	ImageGeneration(ctx context.Context, key Key, request *BifrostImageGenerationRequest) (
+		*BifrostImageGenerationResponse, *BifrostError)
+	// ImageGenerationStream performs a image genration stream request
+	ImageGenerationStream(ctx context.Context, postHookRunner PostHookRunner, key Key,
+		request *BifrostImageGenerationRequest) (chan *BifrostStream, *BifrostError)
 }

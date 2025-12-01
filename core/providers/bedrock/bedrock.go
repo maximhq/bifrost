@@ -1234,6 +1234,16 @@ func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHo
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, schemas.Bedrock)
 }
 
+// ImageGeneration is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
 func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) (string, string) {
 	// Format the path with proper model identifier for streaming
 	path := fmt.Sprintf("%s/%s", model, basePath)
