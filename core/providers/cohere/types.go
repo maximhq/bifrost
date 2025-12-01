@@ -533,8 +533,9 @@ type CohereStreamMessage struct {
 
 // CohereStreamContent represents content in streaming events
 type CohereStreamContent struct {
-	Type CohereContentBlockType `json:"type,omitempty"` // For content-start
-	Text *string                `json:"text,omitempty"` // For content deltas
+	Type     CohereContentBlockType `json:"type,omitempty"`     // For content-start
+	Text     *string                `json:"text,omitempty"`     // For content deltas
+	Thinking *string                `json:"thinking,omitempty"` // For thinking deltas
 }
 
 // ==================== ERROR TYPES ====================

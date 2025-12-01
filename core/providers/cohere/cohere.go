@@ -279,7 +279,7 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereChatCompletionRequest(request), nil },
+		func() (any, error) { return ToCohereChatCompletionRequest(request) },
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -329,10 +329,11 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 		ctx,
 		request,
 		func() (any, error) {
-			reqBody := ToCohereChatCompletionRequest(request)
-			if reqBody != nil {
-				reqBody.Stream = schemas.Ptr(true)
+			reqBody, err := ToCohereChatCompletionRequest(request)
+			if err != nil {
+				return nil, err
 			}
+			reqBody.Stream = schemas.Ptr(true)
 			return reqBody, nil
 		},
 		provider.GetProviderKey())
