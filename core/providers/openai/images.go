@@ -63,7 +63,13 @@ func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas
 		return nil, err
 	}
 
-	return ToBifrostImageResponse(resp, openaiReq.Model, latency), nil
+	bifrostResp := ToBifrostImageResponse(resp, openaiReq.Model, latency)
+
+	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResp.ExtraFields.ModelRequested = openaiReq.Model
+	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
+
+	return bifrostResp, nil
 }
 
 // ToOpenAIImageRequest converts a Bifrost Image Request to OpenAI format
@@ -94,7 +100,7 @@ func mapImageParams(p *schemas.ImageGenerationParameters, req *OpenAIImageReques
 	req.User = p.User
 }
 
-// ToBifrostImageResponse converts a OpenAI Image Response to OpenAI format.
+// ToBifrostImageResponse converts an OpenAI Image Response to Bifrost format
 func ToBifrostImageResponse(openaiResponse *OpenAIImageResponse, requestModel string, latency time.Duration) *schemas.BifrostImageGenerationResponse {
 	if openaiResponse == nil {
 		return nil

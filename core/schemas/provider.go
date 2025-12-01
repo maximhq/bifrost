@@ -234,7 +234,7 @@ type Provider interface {
 	// ImageGeneration performs a image generation request
 	ImageGeneration(ctx context.Context, key Key, request *BifrostImageGenerationRequest) (
 		*BifrostImageGenerationResponse, *BifrostError)
-	// ImageGenerationStream performs a image genration stream request
+	// ImageGenerationStream performs a image generation stream request
 	ImageGenerationStream(ctx context.Context, postHookRunner PostHookRunner, key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStream, *BifrostError)
 }
