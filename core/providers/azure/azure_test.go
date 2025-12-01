@@ -52,13 +52,6 @@ func TestAzure(t *testing.T) {
 		},
 	}
 
-	// Disable embedding if embeddings key is not provided
-	if os.Getenv("AZURE_EMB_API_KEY") == "" {
-		t.Logf("AZURE_EMB_API_KEY not set; disabling Azure embedding tests")
-		testConfig.EmbeddingModel = ""
-		testConfig.Scenarios.Embedding = false
-	}
-
 	t.Run("AzureTests", func(t *testing.T) {
 		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})

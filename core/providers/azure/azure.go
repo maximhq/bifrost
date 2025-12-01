@@ -98,7 +98,11 @@ func (provider *AzureProvider) completeRequest(
 		if apiVersion == nil {
 			apiVersion = schemas.Ptr(AzureAPIVersionDefault)
 		}
-		url = fmt.Sprintf("%s/%s?api-version=%s", key.AzureKeyConfig.Endpoint, path, *apiVersion)
+		if path == "openai/v1/responses" {
+			url = fmt.Sprintf("%s/%s?api-version=preview", key.AzureKeyConfig.Endpoint, path)
+		} else {
+			url = fmt.Sprintf("%s/%s?api-version=%s", key.AzureKeyConfig.Endpoint, path, *apiVersion)
+		}
 	}
 
 	req.SetRequestURI(url)
@@ -553,7 +557,7 @@ func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, r
 	if schemas.IsAnthropicModel(deployment) {
 		path = "anthropic/v1/messages"
 	} else {
-		path = fmt.Sprintf("openai/deployments/%s/responses", deployment)
+		path = "openai/v1/responses"
 	}
 
 	responseBody, deployment, latency, err := provider.completeRequest(
@@ -661,11 +665,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 		} else {
 			authHeader["api-key"] = key.Value
 		}
-		apiVersion := key.AzureKeyConfig.APIVersion
-		if apiVersion == nil {
-			apiVersion = schemas.Ptr(AzureAPIVersionDefault)
-		}
-		url = fmt.Sprintf("%s/openai/deployments/%s/responses?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
+		url = fmt.Sprintf("%s/openai/v1/responses?api-version=preview", key.AzureKeyConfig.Endpoint)
 
 		postRequestConverter := func(req *openai.OpenAIResponsesRequest) *openai.OpenAIResponsesRequest {
 			req.Model = deployment

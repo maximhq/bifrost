@@ -169,31 +169,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"gpt-4o":        "gpt-4o",
-						"gpt-4o-backup": "gpt-4o-3",
-					},
-				},
-			},
-			{
-				Value:  os.Getenv("AZURE_EMB_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: os.Getenv("AZURE_EMB_ENDPOINT"),
-					Deployments: map[string]string{
+						"gpt-4o":                 "gpt-4o",
+						"gpt-4o-backup":          "gpt-4o-3",
+						"claude-opus-4-5":        "claude-opus-4-5",
+						"o1":                     "o1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
-					},
-				},
-			},
-			{
-				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: os.Getenv("AZURE_ENDPOINT"),
-					Deployments: map[string]string{
-						"claude-opus-4-5": "claude-opus-4-5",
-						"o1":              "o1",
 					},
 				},
 			},
