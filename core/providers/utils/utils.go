@@ -316,9 +316,10 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // errorResp must be a pointer to the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
+	body := append([]byte(nil), resp.Body()...)
 
-	if err := sonic.Unmarshal(resp.Body(), errorResp); err != nil {
-		rawResponse := resp.Body()
+	if err := sonic.Unmarshal(body, errorResp); err != nil {
+		rawResponse := body
 		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
 		return &schemas.BifrostError{
 			IsBifrostError: false,
