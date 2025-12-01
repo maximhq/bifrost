@@ -96,7 +96,7 @@ func (provider *GeminiProvider) completeRequest(ctx context.Context, model strin
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, nil, latency, parseGeminiError(providerName, resp)
+		return nil, nil, latency, parseGeminiError(resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -154,8 +154,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		bifrostErr := parseGeminiError(providerName, resp)
-		return nil, bifrostErr
+		return nil, parseGeminiError(resp)
 	}
 
 	// Parse Gemini's response
@@ -250,15 +249,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		var errorResp []GeminiGenerationError
-
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		errorMessage := ""
-		for _, error := range errorResp {
-			errorMessage += error.Error.Message + "\n"
-		}
-		bifrostErr.Error.Message = errorMessage
-		return nil, bifrostErr
+		return nil, parseGeminiError(resp)
 	}
 
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
@@ -485,7 +476,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamGeminiError(providerName, resp)
+		return nil, parseGeminiError(resp)
 	}
 
 	// Create response channel
@@ -733,7 +724,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamGeminiError(providerName, resp)
+		return nil, parseGeminiError(resp)
 	}
 
 	// Create response channel
