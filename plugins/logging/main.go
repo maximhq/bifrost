@@ -375,8 +375,11 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 			logMsg.Latency = 0
 		}
 
+		disableContentLogging := p.disableContentLogging == nil || !*p.disableContentLogging
+
 		// If response is nil, and there is an error, we update log with error
 		if result == nil && bifrostErr != nil {
+
 			// If request type is streaming, then we trigger cleanup as well
 			if bifrost.IsStreamRequestType(requestType) {
 				p.accumulator.CleanupStreamAccumulator(requestID)
@@ -386,6 +389,12 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				Status:       "error",
 				ErrorDetails: bifrostErr,
 			}
+
+			// do not log raw response if disableContentLogging is true
+			if disableContentLogging && bifrostErr.ExtraFields.RawResponse != nil {
+				logMsg.UpdateData.RawResponse = bifrostErr.ExtraFields.RawResponse
+			}
+
 			processingErr := retryOnNotFound(p.ctx, func() error {
 				return p.updateLogEntry(
 					p.ctx,
@@ -461,6 +470,11 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				// Error case
 				updateData.Status = "error"
 				updateData.ErrorDetails = bifrostErr
+
+				// do not log raw response if disableContentLogging is true
+				if disableContentLogging && bifrostErr.ExtraFields.RawResponse != nil {
+					updateData.RawResponse = bifrostErr.ExtraFields.RawResponse
+				}
 			} else if result != nil {
 				// Success case
 				updateData.Status = "success"

@@ -253,7 +253,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp []GeminiGenerationError
 
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		errorMessage := ""
 		for _, error := range errorResp {
 			errorMessage += error.Error.Message + "\n"

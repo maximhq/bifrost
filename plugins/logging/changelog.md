@@ -1,0 +1,1 @@
+fix: does not log raw response if disable content logging option is enabled

@@ -1,0 +1,1 @@
+fix: sends raw error response if send back raw response option is enabled and disable content logging option (in logging plugin) is disabled

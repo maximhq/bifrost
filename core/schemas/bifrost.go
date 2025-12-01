@@ -421,4 +421,5 @@ type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider"`
 	ModelRequested string        `json:"model_requested"`
 	RequestType    RequestType   `json:"request_type"`
+	RawResponse    interface{}   `json:"raw_response,omitempty"` // Raw provider error response (when send_back_raw_response is enabled)
 }
