@@ -150,14 +150,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-
-		var errorResp AnthropicError
-
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Type = &errorResp.Error.Type
-		bifrostErr.Error.Message = errorResp.Error.Message
-
-		return nil, latency, bifrostErr
+		return nil, latency, parseAnthropicError(resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -201,11 +194,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx context.Context, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		var errorResp AnthropicError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Type = &errorResp.Error.Type
-		bifrostErr.Error.Message = errorResp.Error.Message
-		return nil, bifrostErr
+		return nil, parseAnthropicError(resp)
 	}
 
 	// Parse Anthropic's response
@@ -459,7 +448,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamAnthropicError(resp, providerName)
+		return nil, parseAnthropicError(resp)
 	}
 
 	// Create response channel
@@ -807,7 +796,7 @@ func HandleAnthropicResponsesStream(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamAnthropicError(resp, providerName)
+		return nil, parseAnthropicError(resp)
 	}
 
 	// Create response channel
@@ -1014,11 +1003,4 @@ func (provider *AnthropicProvider) Transcription(ctx context.Context, key schema
 // TranscriptionStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
-}
-
-// parseStreamAnthropicError parses Anthropic streaming error responses.
-func parseStreamAnthropicError(resp *fasthttp.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
-	statusCode := resp.StatusCode()
-	body := resp.Body()
-	return providerUtils.NewProviderAPIError(string(body), nil, statusCode, providerType, nil, nil)
 }
