@@ -280,7 +280,10 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 
 			if schemas.IsAnthropicModel(deployment) {
 				// Use centralized Anthropic converter
-				reqBody := anthropic.ToAnthropicChatRequest(request)
+				reqBody, err := anthropic.ToAnthropicChatRequest(request)
+				if err != nil {
+					return nil, err
+				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
@@ -512,9 +515,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			ctx,
 			request,
 			func() (any, error) {
-				reqBody := anthropic.ToAnthropicChatRequest(request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("chat completion input is not provided")
+				reqBody, err := anthropic.ToAnthropicChatRequest(request)
+				if err != nil {
+					return nil, err
 				}
 
 				reqBody.Model = deployment
@@ -682,11 +685,10 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 				var requestBody map[string]interface{}
 
 				// Use centralized Anthropic converter
-				reqBody := anthropic.ToAnthropicResponsesRequest(request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("responses input is not provided")
+				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
+				if err != nil {
+					return nil, err
 				}
-
 				reqBody.Model = deployment
 
 				// Convert struct to map for Vertex API
@@ -840,11 +842,10 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			ctx,
 			request,
 			func() (any, error) {
-				reqBody := anthropic.ToAnthropicResponsesRequest(request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("responses input is not provided")
+				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
+				if err != nil {
+					return nil, err
 				}
-
 				reqBody.Model = deployment
 				reqBody.Stream = schemas.Ptr(true)
 

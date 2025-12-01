@@ -666,8 +666,8 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	if params.PromptCacheKey != nil {
 		metadata["prompt_cache_key"] = *params.PromptCacheKey
 	}
-	if params.ReasoningEffort != nil {
-		metadata["reasoning_effort"] = *params.ReasoningEffort
+	if params.Reasoning != nil && params.Reasoning.Effort != nil {
+		metadata["reasoning_effort"] = *params.Reasoning.Effort
 	}
 	if params.ResponseFormat != nil {
 		metadata["response_format"] = params.ResponseFormat

@@ -162,7 +162,7 @@ type ChatParameters struct {
 	ParallelToolCalls   *bool               `json:"parallel_tool_calls,omitempty"`
 	PresencePenalty     *float64            `json:"presence_penalty,omitempty"`  // Penalizes repeated tokens
 	PromptCacheKey      *string             `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	ReasoningEffort     *string             `json:"reasoning_effort,omitempty"`  // "minimal" | "low" | "medium" | "high"
+	Reasoning           *ChatReasoning      `json:"reasoning,omitempty"`         // Reasoning parameters
 	ResponseFormat      *interface{}        `json:"response_format,omitempty"`   // Format for the response
 	SafetyIdentifier    *string             `json:"safety_identifier,omitempty"` // Safety identifier
 	Seed                *int                `json:"seed,omitempty"`
@@ -181,6 +181,48 @@ type ChatParameters struct {
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ChatParameters.
+func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
+	// Alias to avoid recursion
+	type Alias ChatParameters
+
+	// Aux struct adds reasoning_effort for decoding
+	var aux struct {
+		*Alias
+		ReasoningEffort *string `json:"reasoning_effort"` // only for input
+	}
+
+	aux.Alias = (*Alias)(cp)
+
+	// Single unmarshal
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled
+
+	// If both are non-nil, they were both set in JSON
+	if aux.Alias != nil && aux.Alias.Reasoning != nil && aux.ReasoningEffort != nil {
+		return fmt.Errorf("both reasoning_effort and reasoning fields cannot be present at the same time")
+	}
+
+	// If reasoning_effort is set, convert it into Reasoning
+	if aux.ReasoningEffort != nil {
+		cp.Reasoning = &ChatReasoning{
+			Effort: aux.ReasoningEffort,
+		}
+	}
+
+	// ExtraParams etc. are already handled by the alias
+	return nil
+}
+
+// Not in OpenAI's spec, but needed to support extra parameters for reasoning.
+type ChatReasoning struct {
+	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
+	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
 
 // ChatStreamOptions represents the stream options for a chat completion.
@@ -435,6 +477,49 @@ type ChatMessage struct {
 	*ChatAssistantMessage
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for ChatMessage.
+// This is needed because ChatAssistantMessage has a custom UnmarshalJSON method,
+// which interferes with sonic's handling of other fields in ChatMessage.
+func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
+	// Unmarshal the base fields directly
+	type baseFields struct {
+		Name    *string             `json:"name,omitempty"`
+		Role    ChatMessageRole     `json:"role,omitempty"`
+		Content *ChatMessageContent `json:"content,omitempty"`
+	}
+	var base baseFields
+	if err := sonic.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	cm.Name = base.Name
+	cm.Role = base.Role
+	cm.Content = base.Content
+
+	// Unmarshal ChatToolMessage fields
+	type toolMsgAlias ChatToolMessage
+	var toolMsg toolMsgAlias
+	if err := sonic.Unmarshal(data, &toolMsg); err != nil {
+		return err
+	}
+	if toolMsg.ToolCallID != nil {
+		cm.ChatToolMessage = (*ChatToolMessage)(&toolMsg)
+	}
+
+	// Unmarshal ChatAssistantMessage (which has its own custom unmarshaller)
+	var assistantMsg ChatAssistantMessage
+	if err := sonic.Unmarshal(data, &assistantMsg); err != nil {
+		return err
+	}
+	// Only set if any field is populated
+	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
+		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
+		len(assistantMsg.ToolCalls) > 0 {
+		cm.ChatAssistantMessage = &assistantMsg
+	}
+
+	return nil
+}
+
 // ChatMessageContent represents a content in a message.
 type ChatMessageContent struct {
 	ContentStr    *string
@@ -539,9 +624,46 @@ type ChatToolMessage struct {
 
 // ChatAssistantMessage represents a message in a chat conversation.
 type ChatAssistantMessage struct {
-	Refusal     *string                          `json:"refusal,omitempty"`
-	Annotations []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
-	ToolCalls   []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	Refusal          *string                          `json:"refusal,omitempty"`
+	Reasoning        *string                          `json:"reasoning,omitempty"`
+	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+}
+
+// UnmarshalJSON implements custom unmarshalling for ChatAssistantMessage.
+// If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
+// ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
+func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
+	if cm == nil {
+		return nil
+	}
+
+	// Alias to avoid infinite recursion
+	type Alias ChatAssistantMessage
+
+	var aux Alias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Copy decoded data back into the original type
+	*cm = ChatAssistantMessage(aux)
+
+	// If Reasoning is present and there are no reasoning_details,
+	// synthesize a text reasoning_details entry.
+	if cm.Reasoning != nil && len(cm.ReasoningDetails) == 0 {
+		text := *cm.Reasoning
+		cm.ReasoningDetails = []ChatReasoningDetails{
+			{
+				Index: 0,
+				Type:  BifrostReasoningDetailsTypeText,
+				Text:  &text,
+			},
+		}
+	}
+
+	return nil
 }
 
 // ChatAssistantMessageAnnotation represents an annotation in a response.
@@ -589,6 +711,24 @@ type BifrostResponseChoice struct {
 	*ChatStreamResponseChoice
 }
 
+type BifrostReasoningDetailsType string
+
+const (
+	BifrostReasoningDetailsTypeSummary   BifrostReasoningDetailsType = "reasoning.summary"
+	BifrostReasoningDetailsTypeEncrypted BifrostReasoningDetailsType = "reasoning.encrypted"
+	BifrostReasoningDetailsTypeText      BifrostReasoningDetailsType = "reasoning.text"
+)
+
+// Not in OpenAI's spec, but needed to support inter provider reasoning capabilities.
+type ChatReasoningDetails struct {
+	Index     int                         `json:"index"`
+	Type      BifrostReasoningDetailsType `json:"type"`
+	Summary   *string                     `json:"summary,omitempty"`
+	Text      *string                     `json:"text,omitempty"`
+	Signature *string                     `json:"signature,omitempty"`
+	Data      *string                     `json:"data,omitempty"` // for encrypted data
+}
+
 // BifrostLogProbs represents the log probabilities for different aspects of a response.
 type BifrostLogProbs struct {
 	Content []ContentLogProb `json:"content,omitempty"`
@@ -614,11 +754,43 @@ type ChatStreamResponseChoice struct {
 
 // ChatStreamResponseChoiceDelta represents a delta in the stream response
 type ChatStreamResponseChoiceDelta struct {
-	Role      *string                        `json:"role,omitempty"`       // Only in the first chunk
-	Content   *string                        `json:"content,omitempty"`    // May be empty string or null
-	Thought   *string                        `json:"thought,omitempty"`    // May be empty string or null
-	Refusal   *string                        `json:"refusal,omitempty"`    // Refusal content if any
-	ToolCalls []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+	Role             *string                        `json:"role,omitempty"`      // Only in the first chunk
+	Content          *string                        `json:"content,omitempty"`   // May be empty string or null
+	Refusal          *string                        `json:"refusal,omitempty"`   // Refusal content if any
+	Reasoning        *string                        `json:"reasoning,omitempty"` // May be empty string or null
+	ReasoningDetails []ChatReasoningDetails         `json:"reasoning_details,omitempty"`
+	ToolCalls        []ChatAssistantMessageToolCall `json:"tool_calls,omitempty"` // If tool calls used (supports incremental updates)
+}
+
+// UnmarshalJSON implements custom unmarshalling for ChatStreamResponseChoiceDelta.
+// If Reasoning is non-nil and ReasoningDetails is nil/empty, it adds a single
+// ChatReasoningDetails entry of type "reasoning.text" with the text set to Reasoning.
+func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
+	// Alias to avoid infinite recursion
+	type Alias ChatStreamResponseChoiceDelta
+
+	var aux Alias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Copy decoded data back into the original type
+	*d = ChatStreamResponseChoiceDelta(aux)
+
+	// If Reasoning is present and there are no reasoning_details,
+	// synthesize a text reasoning_details entry.
+	if d.Reasoning != nil && len(d.ReasoningDetails) == 0 {
+		text := *d.Reasoning
+		d.ReasoningDetails = []ChatReasoningDetails{
+			{
+				Index: 0,
+				Type:  BifrostReasoningDetailsTypeText,
+				Text:  &text,
+			},
+		}
+	}
+
+	return nil
 }
 
 // LogProb represents the log probability of a token.
@@ -660,6 +832,7 @@ type ChatCompletionTokensDetails struct {
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
 	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
+	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 
 	// This means the number of input tokens used to create the cache entry. (cache creation tokens)

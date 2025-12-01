@@ -27,11 +27,11 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 		perplexityReq.ResponseFormat = bifrostReq.Params.ResponseFormat
 
 		// Handle reasoning effort mapping
-		if bifrostReq.Params.ReasoningEffort != nil {
-			if *bifrostReq.Params.ReasoningEffort == "minimal" {
+		if bifrostReq.Params.Reasoning != nil && bifrostReq.Params.Reasoning.Effort != nil {
+			if *bifrostReq.Params.Reasoning.Effort == "minimal" {
 				perplexityReq.ReasoningEffort = schemas.Ptr("low")
 			} else {
-				perplexityReq.ReasoningEffort = bifrostReq.Params.ReasoningEffort
+				perplexityReq.ReasoningEffort = bifrostReq.Params.Reasoning.Effort
 			}
 		}
 

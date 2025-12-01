@@ -35,7 +35,9 @@ func ToBedrockChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Be
 	}
 
 	// Convert parameters and configurations
-	convertChatParameters(bifrostReq, bedrockReq)
+	if err := convertChatParameters(bifrostReq, bedrockReq); err != nil {
+		return nil, fmt.Errorf("failed to convert chat parameters: %w", err)
+	}
 
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(bifrostReq, bedrockReq)
@@ -53,6 +55,8 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*s
 	var contentStr *string
 	var contentBlocks []schemas.ChatContentBlock
 	var toolCalls []schemas.ChatAssistantMessageToolCall
+	var reasoningDetails []schemas.ChatReasoningDetails
+	var reasoningText string
 
 	if response.Output.Message != nil {
 		if len(response.Output.Message.Content) == 1 && response.Output.Message.Content[0].Text != nil {
@@ -95,8 +99,24 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*s
 						},
 					})
 				}
+
+				// Handle reasoning content
+				if contentBlock.ReasoningContent != nil {
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index:     len(reasoningDetails),
+						Type:      schemas.BifrostReasoningDetailsTypeText,
+						Text:      schemas.Ptr(contentBlock.ReasoningContent.ReasoningText.Text),
+						Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
+					})
+					reasoningText += contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+				}
 			}
 		}
+	}
+
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
 	}
 
 	// Create the message content
@@ -111,6 +131,13 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*s
 		assistantMessage = &schemas.ChatAssistantMessage{
 			ToolCalls: toolCalls,
 		}
+	}
+	if len(reasoningDetails) > 0 {
+		if assistantMessage == nil {
+			assistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		assistantMessage.ReasoningDetails = reasoningDetails
+		assistantMessage.Reasoning = schemas.Ptr(reasoningText)
 	}
 
 	// Create the response choice
@@ -259,6 +286,56 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 						},
 					},
 				},
+			}
+
+			return streamResponse, nil, false
+
+		case chunk.Delta.ReasoningContent != nil:
+			// Handle reasoning content delta
+			reasoningContentDelta := chunk.Delta.ReasoningContent
+
+			var streamResponse *schemas.BifrostChatResponse
+			if reasoningContentDelta.Text != "" {
+				streamResponse = &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									Reasoning: schemas.Ptr(reasoningContentDelta.Text),
+									ReasoningDetails: []schemas.ChatReasoningDetails{
+										{
+											Index: 0,
+											Type:  schemas.BifrostReasoningDetailsTypeText,
+											Text:  schemas.Ptr(reasoningContentDelta.Text),
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			} else if reasoningContentDelta.Signature != nil {
+				streamResponse = &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ReasoningDetails: []schemas.ChatReasoningDetails{
+										{
+											Index:     0,
+											Type:      schemas.BifrostReasoningDetailsTypeText,
+											Signature: reasoningContentDelta.Signature,
+										},
+									},
+								},
+							},
+						},
+					},
+				}
 			}
 
 			return streamResponse, nil, false

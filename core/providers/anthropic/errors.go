@@ -6,6 +6,30 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ToAnthropicChatCompletionError converts a BifrostError to AnthropicMessageError
+func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *AnthropicMessageError {
+	if bifrostErr == nil {
+		return nil
+	}
+
+	// Provide blank strings for nil pointer fields
+	errorType := ""
+	if bifrostErr.Type != nil {
+		errorType = *bifrostErr.Type
+	}
+
+	// Handle nested error fields with nil checks
+	errorStruct := AnthropicMessageErrorStruct{
+		Type:    errorType,
+		Message: bifrostErr.Error.Message,
+	}
+
+	return &AnthropicMessageError{
+		Type:  "error", // always "error" for Anthropic
+		Error: errorStruct,
+	}
+}
+
 func parseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {
 	var errorResp AnthropicError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
