@@ -10,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// AzureImagRequest is the struct for Image Generation requests.
+// AzureImagRequest is the struct for Image Generation requests by Azure.
 type AzureImageRequest struct {
 	Model          string  `json:"model"`
 	Prompt         string  `json:"prompt"`
@@ -22,6 +22,7 @@ type AzureImageRequest struct {
 	User           *string `json:"user,omitempty"`
 }
 
+// AzureImageResponse is the struct for Image Generation responses by Azure.
 type AzureImageResponse struct {
 	Created int64 `json:"created"`
 	Data    []struct {
@@ -43,19 +44,25 @@ type AzureImageGenerationUsage struct {
 	} `json:"input_tokens_details,omitempty"`
 }
 
+// ImageGeneration performs an Image Generation request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
 
+	// Convert bifrost request to Azure format.
 	azureReq := ToAzureImageRequest(request)
 
+	// Make request
 	resp, deployment, latency, err := provider.DoRequest(ctx, key, azureReq)
 	if err != nil {
 		return nil, err
 	}
 
+	// Convert Azure response to Bifrost format.
 	bifrostResp := ToBifrostImageResponse(resp, azureReq.Model, latency)
 
 	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
@@ -148,7 +155,7 @@ func (provider *AzureProvider) DoRequest(ctx context.Context, key schemas.Key, a
 	}
 	azureResponse := &AzureImageResponse{}
 	if err := sonic.Unmarshal(response, azureResponse); err != nil {
-		return nil, "", 0, providerUtils.NewBifrostOperationError("Error unmarshalling image response from azure", err, schemas.Azure)
+		return nil, "", 0, providerUtils.NewBifrostOperationError("failed to unmarshal Azure image response", err, schemas.Azure)
 	}
 
 	return azureResponse, deployment, latency, nil

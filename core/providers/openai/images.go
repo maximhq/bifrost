@@ -13,6 +13,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// OpenAIImageRequest is the struct for Image Generation requests by OpenAI.
 type OpenAIImageRequest struct {
 	Model          string  `json:"model"`
 	Prompt         string  `json:"prompt"`
@@ -24,6 +25,7 @@ type OpenAIImageRequest struct {
 	User           *string `json:"user,omitempty"`
 }
 
+// OpenAIImageResponse is the struct for Image Generation responses by OpenAI.
 type OpenAIImageResponse struct {
 	Created int64 `json:"created"`
 	Data    []struct {
@@ -45,6 +47,9 @@ type OpenAIImageGenerationUsage struct {
 	} `json:"input_tokens_details,omitempty"`
 }
 
+// ImageGeneration performs an Image Generation request to OpenAI's API.
+// It formats the request, sends it to OpenAI, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas.Key,
 	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 
@@ -89,6 +94,7 @@ func mapImageParams(p *schemas.ImageGenerationParameters, req *OpenAIImageReques
 	req.User = p.User
 }
 
+// ToBifrostImageResponse converts a OpenAI Image Response to OpenAI format.
 func ToBifrostImageResponse(openaiResponse *OpenAIImageResponse, requestModel string, latency time.Duration) *schemas.BifrostImageGenerationResponse {
 	if openaiResponse == nil {
 		return nil
