@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -345,23 +346,25 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 
 	// Convert additional model request fields to extra params
 	if len(request.AdditionalModelRequestFields) > 0 {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		reasoningConfig, ok := schemas.SafeExtractFromMap(request.AdditionalModelRequestFields, "reasoning_config")
+		if ok {
+			if reasoningConfigMap, ok := reasoningConfig.(map[string]interface{}); ok {
+				if typeStr, ok := schemas.SafeExtractString(reasoningConfigMap["type"]); ok {
+					if typeStr == "enabled" {
+						if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
+							bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+								Effort:    schemas.Ptr("auto"),
+								MaxTokens: schemas.Ptr(maxTokens),
+							}
+						}
+					} else {
+						bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+							Effort: schemas.Ptr("none"),
+						}
+					}
+				}
+			}
 		}
-		// Convert OrderedMap to map[string]interface{} for ExtraParams
-		requestFieldsMap := make(map[string]interface{})
-		for k, v := range request.AdditionalModelRequestFields {
-			requestFieldsMap[k] = v
-		}
-		bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"] = requestFieldsMap
-	}
-
-	// Convert additional model response field paths to extra params
-	if len(request.AdditionalModelResponseFieldPaths) > 0 {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
-		}
-		bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"] = request.AdditionalModelResponseFieldPaths
 	}
 
 	// Convert performance config to extra params
@@ -445,6 +448,27 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 		}
 		if bifrostReq.Params.TopP != nil {
 			inferenceConfig.TopP = bifrostReq.Params.TopP
+		}
+		if bifrostReq.Params.Reasoning != nil {
+			if bedrockReq.AdditionalModelRequestFields == nil {
+				bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
+			}
+			if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
+				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
+					"type": "disabled",
+				}
+			} else {
+				if bifrostReq.Params.Reasoning.MaxTokens == nil {
+					return nil, fmt.Errorf("reasoning.max_tokens is required for reasoning")
+				} else if schemas.IsAnthropicModel(bedrockReq.ModelID) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+					return nil, fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", anthropic.MinimumReasoningMaxTokens)
+				} else {
+					bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+						"type":          "enabled",
+						"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+					}
+				}
+			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
@@ -635,6 +659,12 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.
 		CreatedAt: int(time.Now().Unix()),
 	}
 
+	// Convert output message to Responses format
+	if response.Output != nil && response.Output.Message != nil {
+		outputMessages := convertBedrockMessageToResponsesMessages(*response.Output.Message)
+		bifrostResp.Output = outputMessages
+	}
+
 	if response.Usage != nil {
 		// Convert usage information
 		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
@@ -653,12 +683,6 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.
 				CachedTokens: response.Usage.CacheWriteInputTokens,
 			}
 		}
-	}
-
-	// Convert output message to Responses format
-	if response.Output != nil && response.Output.Message != nil {
-		outputMessages := convertBedrockMessageToResponsesMessages(*response.Output.Message)
-		bifrostResp.Output = outputMessages
 	}
 
 	if response.ServiceTier != nil && response.ServiceTier.Type != "" {

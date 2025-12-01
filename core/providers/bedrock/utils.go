@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // convertParameters handles parameter conversion
-func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) {
+func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
 	if bifrostReq.Params == nil {
-		return
+		return nil
 	}
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
@@ -26,6 +27,28 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 	// Convert tool config
 	if toolConfig := convertToolConfig(bifrostReq.Params); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
+	}
+
+	// Convert reasoning config
+	if bifrostReq.Params.Reasoning != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
+		}
+		if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
+				"type": "disabled",
+			}
+		} else {
+			if bifrostReq.Params.Reasoning.MaxTokens == nil {
+				return fmt.Errorf("reasoning.max_tokens is required for reasoning")
+			} else if schemas.IsAnthropicModel(bedrockReq.ModelID) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				return fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", anthropic.MinimumReasoningMaxTokens)
+			}
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+			}
+		}
 	}
 
 	// If response_format was converted to a tool, add it to the tool config
@@ -131,6 +154,7 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 			}
 		}
 	}
+	return nil
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -675,8 +699,14 @@ func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
 		}
 	}
 
+	// Safely extract message from nested error
+	message := ""
+	if bifrostErr.Error != nil {
+		message = bifrostErr.Error.Message
+	}
+
 	bedrockErr := &BedrockError{
-		Message: bifrostErr.Error.Message,
+		Message: message,
 	}
 
 	// Map error type/code

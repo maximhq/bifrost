@@ -187,6 +187,18 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	if request.OutputFormat != nil {
 		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(request.OutputFormat)
 	}
+	if request.Thinking != nil {
+		if request.Thinking.Type == "enabled" {
+			params.Reasoning = &schemas.ResponsesParametersReasoning{
+				Effort:    schemas.Ptr("auto"),
+				MaxTokens: request.Thinking.BudgetTokens,
+			}
+		} else {
+			params.Reasoning = &schemas.ResponsesParametersReasoning{
+				Effort: schemas.Ptr("none"),
+			}
+		}
+	}
 
 	// Add trucation parameter if computer tool is being used
 	if provider == schemas.OpenAI && request.Tools != nil {
@@ -281,7 +293,11 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 }
 
 // ToAnthropicResponsesRequest converts a BifrostRequest with Responses structure back to AnthropicMessageRequest
-func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *AnthropicMessageRequest {
+func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*AnthropicMessageRequest, error) {
+	if bifrostReq == nil {
+		return nil, fmt.Errorf("bifrost request is nil")
+	}
+
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
 		MaxTokens: AnthropicDefaultMaxTokens,
@@ -306,6 +322,28 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 		if bifrostReq.Params.Text != nil {
 			anthropicReq.OutputFormat = convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
 		}
+		if bifrostReq.Params.Reasoning != nil {
+			if bifrostReq.Params.Reasoning.Effort != nil {
+				if *bifrostReq.Params.Reasoning.Effort != "none" {
+					if bifrostReq.Params.Reasoning.MaxTokens != nil {
+						if *bifrostReq.Params.Reasoning.MaxTokens < MinimumReasoningMaxTokens {
+							return nil, fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", MinimumReasoningMaxTokens)
+						} else {
+							anthropicReq.Thinking = &AnthropicThinking{
+								Type:         "enabled",
+								BudgetTokens: bifrostReq.Params.Reasoning.MaxTokens,
+							}
+						}
+					} else {
+						return nil, fmt.Errorf("reasoning.max_tokens is required for reasoning")
+					}
+				} else {
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type: "disabled",
+					}
+				}
+			}
+		}
 		if bifrostReq.Params.ExtraParams != nil {
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
@@ -313,22 +351,6 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				anthropicReq.StopSequences = stop
-			}
-			if thinking, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
-				if anthropicThinking, ok := thinking.(*AnthropicThinking); ok {
-					anthropicReq.Thinking = anthropicThinking
-				} else if thinkingMap, ok := thinking.(map[string]interface{}); ok {
-					anthropicThinking := &AnthropicThinking{}
-					if thinkingType, ok := thinkingMap["type"].(string); ok {
-						anthropicThinking.Type = thinkingType
-					}
-					// Handle budget_tokens - JSON numbers can be float64 or int
-					budgetTokens, ok := schemas.SafeExtractInt(thinkingMap["budget_tokens"])
-					if ok {
-						anthropicThinking.BudgetTokens = &budgetTokens
-					}
-					anthropicReq.Thinking = anthropicThinking
-				}
 			}
 		}
 
@@ -379,7 +401,7 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *A
 		anthropicReq.Messages = anthropicMessages
 	}
 
-	return anthropicReq
+	return anthropicReq, nil
 }
 
 // ToBifrostResponsesResponse converts an Anthropic response to BifrostResponse with Responses structure
@@ -1405,11 +1427,17 @@ func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
 		return ""
 	}
 
+	// Safely extract message from nested error
+	message := ""
+	if bifrostErr.Error != nil {
+		message = bifrostErr.Error.Message
+	}
+
 	streamResp := &AnthropicStreamEvent{
 		Type: AnthropicStreamEventTypeError,
 		Error: &AnthropicStreamError{
 			Type:    "error",
-			Message: bifrostErr.Error.Message,
+			Message: message,
 		},
 	}
 

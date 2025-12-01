@@ -105,6 +105,9 @@ type BedrockContentBlock struct {
 	// Guard content (for guardrails)
 	GuardContent *BedrockGuardContent `json:"guardContent,omitempty"`
 
+	// Reasoning content
+	ReasoningContent *BedrockReasoningContent `json:"reasoningContent,omitempty"`
+
 	// For Tool Call Result content
 	JSON interface{} `json:"json,omitempty"`
 }
@@ -149,6 +152,15 @@ type BedrockToolResult struct {
 // BedrockGuardContent represents guard content for guardrails
 type BedrockGuardContent struct {
 	Text *BedrockGuardContentText `json:"text,omitempty"`
+}
+
+type BedrockReasoningContent struct {
+	ReasoningText *BedrockReasoningContentText `json:"reasoningText,omitempty"`
+}
+
+type BedrockReasoningContentText struct {
+	Text      string  `json:"text"`
+	Signature *string `json:"signature,omitempty"`
 }
 
 // BedrockGuardContentText represents text content for guardrails
@@ -429,8 +441,9 @@ type BedrockToolUseStart struct {
 
 // BedrockContentBlockDelta represents the incremental content
 type BedrockContentBlockDelta struct {
-	Text    *string              `json:"text,omitempty"`    // Text content delta
-	ToolUse *BedrockToolUseDelta `json:"toolUse,omitempty"` // Tool use delta
+	Text             *string                      `json:"text,omitempty"`             // Text content delta
+	ReasoningContent *BedrockReasoningContentText `json:"reasoningContent,omitempty"` // Reasoning content delta
+	ToolUse          *BedrockToolUseDelta         `json:"toolUse,omitempty"`          // Tool use delta
 }
 
 // BedrockToolUseDelta represents incremental tool use content

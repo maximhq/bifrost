@@ -470,10 +470,23 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 		generationID, ok := (*ctx).Value(GenerationIDKey).(string)
 		if ok {
 			if bifrostErr != nil {
+				// Safely extract message from nested error
+				message := ""
+				code := ""
+				errorType := ""
+				if bifrostErr.Error != nil {
+					message = bifrostErr.Error.Message
+					if bifrostErr.Error.Code != nil {
+						code = *bifrostErr.Error.Code
+					}
+					if bifrostErr.Error.Type != nil {
+						errorType = *bifrostErr.Error.Type
+					}
+				}
 				genErr := logging.GenerationError{
-					Message: bifrostErr.Error.Message,
-					Code:    bifrostErr.Error.Code,
-					Type:    bifrostErr.Error.Type,
+					Message: message,
+					Code:    &code,
+					Type:    &errorType,
 				}
 				logger.SetGenerationError(generationID, &genErr)
 

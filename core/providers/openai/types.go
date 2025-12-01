@@ -39,8 +39,8 @@ type OpenAIEmbeddingRequest struct {
 
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
-	Model    string                `json:"model"`
-	Messages []schemas.ChatMessage `json:"messages"`
+	Model    string          `json:"model"`
+	Messages []OpenAIMessage `json:"messages"`
 
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
@@ -51,6 +51,56 @@ type OpenAIChatRequest struct {
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+type OpenAIMessage struct {
+	Name    *string                     `json:"name,omitempty"` // for chat completions
+	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
+	Content *schemas.ChatMessageContent `json:"content,omitempty"`
+
+	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
+	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
+	*schemas.ChatToolMessage
+	*OpenAIChatAssistantMessage
+}
+
+type OpenAIChatAssistantMessage struct {
+	Refusal     *string                                  `json:"refusal,omitempty"`
+	Reasoning   *string                                  `json:"reasoning,omitempty"`
+	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
+	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshalling for OpenAIChatRequest.
+// It excludes the reasoning field and instead marshals reasoning_effort
+// with the value of Reasoning.Effort if not nil.
+func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
+	if r == nil {
+		return []byte("null"), nil
+	}
+	type Alias OpenAIChatRequest
+
+	// Aux struct:
+	// - Alias embeds all original fields
+	// - Reasoning shadows the embedded ChatParameters.Reasoning
+	//   so that "reasoning" is not emitted
+	// - ReasoningEffort is emitted as "reasoning_effort"
+	aux := struct {
+		*Alias
+		// Shadow the embedded "reasoning" field and omit it
+		Reasoning       *schemas.ChatReasoning `json:"reasoning,omitempty"`
+		ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	// DO NOT set aux.Reasoning → it stays nil and is omitted via omitempty, and also due to double reference to the same json field.
+
+	if r.Reasoning != nil && r.Reasoning.Effort != nil {
+		aux.ReasoningEffort = r.Reasoning.Effort
+	}
+
+	return sonic.Marshal(aux)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
