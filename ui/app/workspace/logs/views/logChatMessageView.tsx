@@ -26,7 +26,7 @@ const renderContentBlock = (block: ContentBlock, index: number) => {
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
 					) : (
-						<div className="px-6 py-2 font-mono text-xs whitespace-pre-wrap">{block.text}</div>
+						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{block.text}</div>
 					)}
 				</>
 			)}

@@ -592,7 +592,7 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	accumulator.mu.Lock()
 	defer func() {
 		if isFinalChunk {
-			// Cleanup BEFORE unlocking to prevent other goroutines from accessing chunks being returned to pool			
+			// Cleanup BEFORE unlocking to prevent other goroutines from accessing chunks being returned to pool
 			a.cleanupStreamAccumulator(requestID)
 		}
 		accumulator.mu.Unlock()
@@ -683,7 +683,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	// For OpenAI-compatible providers, the last chunk already contains the whole accumulated response
 	// so just return it as is
-	if provider == schemas.OpenAI || provider == schemas.OpenRouter || provider == schemas.Azure {
+	if provider == schemas.OpenAI || provider == schemas.OpenRouter || (provider == schemas.Azure && !schemas.IsAnthropicModel(model)) {
 		isFinalChunk := bifrost.IsFinalChunk(ctx)
 		if isFinalChunk {
 			// For OpenAI, the final chunk contains the complete response

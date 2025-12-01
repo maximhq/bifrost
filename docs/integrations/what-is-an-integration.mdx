@@ -85,11 +85,11 @@ response2 = client.chat.completions.create(
 )
 ```
 </Tab>
-<Tab title="Azure OpenAI">
+<Tab title="Azure">
 ```python
 import openai
 
-# Azure OpenAI models
+# Azure models
 response4 = client.chat.completions.create(
     model="azure/gpt-4o",
     messages=[{"role": "user", "content": "Hello!"}]

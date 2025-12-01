@@ -189,6 +189,7 @@ func (p *LoggerPlugin) GetName() string {
 //   - url: The URL of the request
 //   - headers: The request headers
 //   - body: The request body
+//
 // Returns:
 //   - map[string]string: The updated request headers
 //   - map[string]any: The updated request body
@@ -201,6 +202,7 @@ func (p *LoggerPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url str
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request
+//
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
@@ -278,12 +280,10 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		logMsg.RequestID = requestID
 	}
 
-	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
-	logMsg.NumberOfRetries = numberOfRetries
 	logMsg.FallbackIndex = fallbackIndex
 
 	go func(msg *LogMessage) {
@@ -293,7 +293,6 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			msg.RequestID,
 			msg.ParentRequestID,
 			msg.Timestamp,
-			msg.NumberOfRetries,
 			msg.FallbackIndex,
 			msg.InitialData,
 		); err != nil {
@@ -310,7 +309,6 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 					Object:                      msg.InitialData.Object,
 					Provider:                    msg.InitialData.Provider,
 					Model:                       msg.InitialData.Model,
-					NumberOfRetries:             msg.NumberOfRetries,
 					FallbackIndex:               msg.FallbackIndex,
 					InputHistoryParsed:          msg.InitialData.InputHistory,
 					ResponsesInputHistoryParsed: msg.InitialData.ResponsesInputHistory,
@@ -333,6 +331,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
 //   - bifrostErr: The Bifrost error to be processed
+//
 // Returns:
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error
@@ -357,6 +356,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
 	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
 	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
 	go func() {
 		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
@@ -367,6 +367,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 		logMsg.VirtualKeyID = virtualKeyID
 		logMsg.SelectedKeyName = selectedKeyName
 		logMsg.VirtualKeyName = virtualKeyName
+		logMsg.NumberOfRetries = numberOfRetries
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
 		if result != nil {
@@ -395,6 +396,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,
 				)
@@ -433,6 +435,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 						logMsg.SelectedKeyName,
 						logMsg.VirtualKeyID,
 						logMsg.VirtualKeyName,
+						logMsg.NumberOfRetries,
 						logMsg.SemanticCacheDebug,
 						logMsg.StreamResponse,
 						streamResponse.Type == streaming.StreamResponseTypeFinal,
@@ -559,6 +562,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,
 				)

@@ -526,14 +526,14 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 	// Handle model-specific response conversion
 	var bifrostResponse *schemas.BifrostTextCompletionResponse
 	switch {
-	case strings.Contains(request.Model, "anthropic.") || strings.Contains(request.Model, "claude"):
+	case schemas.IsAnthropicModel(deployment):
 		var response BedrockAnthropicTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing anthropic response", err, providerName)
 		}
 		bifrostResponse = response.ToBifrostTextCompletionResponse()
 
-	case strings.Contains(request.Model, "mistral."):
+	case schemas.IsMistralModel(deployment):
 		var response BedrockMistralTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing mistral response", err, providerName)

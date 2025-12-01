@@ -332,16 +332,9 @@ response, err := client.TranscriptionRequest(context.Background(), &schemas.Bifr
 })
 ```
 
-## Provider Support
-
-Different providers support different multimodal capabilities:
-
-| Provider | Vision | Text-to-Speech | Speech-to-Text |
-|----------|--------|----------------|----------------|
-| OpenAI | ✅ GPT-4V, GPT-4o | ✅ TTS-1, TTS-1-HD | ✅ Whisper |
-| Anthropic | ✅ Claude 3 Sonnet/Opus | ❌ | ❌ |
-| Google Vertex | ✅ Gemini Pro Vision | ✅ | ✅ |
-| Azure OpenAI | ✅ GPT-4V | ✅ | ✅ Whisper |
+<Info>
+Check the [Unified Interface](../../features/unified-interface.mdx) page for more information on multimodal capabilities supported by each provider.
+</Info>
 
 ## Next Steps
 

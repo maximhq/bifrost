@@ -381,9 +381,9 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 	return bifrostResponse
 }
 
-// ToAnthropicChatCompletionRequest converts a Bifrost request to Anthropic format
+// ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
-func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *AnthropicMessageRequest {
+func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) *AnthropicMessageRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
