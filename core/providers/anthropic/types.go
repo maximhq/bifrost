@@ -386,10 +386,10 @@ type AnthropicMessageErrorStruct struct {
 // AnthropicError represents the error response structure from Anthropic's API (legacy)
 type AnthropicError struct {
 	Type  string `json:"type"` // always "error"
-	Error struct {
+	Error *struct {
 		Type    string `json:"type"`    // Error type
 		Message string `json:"message"` // Error message
-	} `json:"error"` // Error details
+	} `json:"error,omitempty"` // Error details
 }
 
 // AnthropicStreamError represents error events in the streaming response
