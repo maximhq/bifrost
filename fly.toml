@@ -1,0 +1,57 @@
+# Fly.io configuration for Bifrost AI Gateway
+# Documentation: https://fly.io/docs/reference/configuration/
+#
+# To deploy:
+#   1. Install flyctl: curl -L https://fly.io/install.sh | sh
+#   2. Login: flyctl auth login
+#   3. Create app: flyctl launch --name your-app-name --no-deploy
+#   4. Deploy: flyctl deploy
+#
+# Or use the Makefile:
+#   make deploy-to-fly-io APP_NAME=your-app-name
+
+app = 'bifrost'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'transports/Dockerfile'
+
+[env]
+  APP_HOST = '0.0.0.0'
+  APP_PORT = '8080'
+  LOG_LEVEL = 'info'
+  LOG_STYLE = 'json'
+  APP_DIR = '/app/data'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [http_service.concurrency]
+    type = 'requests'
+    hard_limit = 250
+    soft_limit = 200
+
+[[vm]]
+  memory = '2gb'
+  cpu_kind = 'shared'
+  cpus = 2
+
+[checks]
+  [checks.health]
+    port = 8080
+    type = 'http'
+    interval = '30s'
+    timeout = '10s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/metrics'
+
+[[mounts]]
+  source = 'bifrost_data'
+  destination = '/app/data'
+  initial_size = '1gb'
