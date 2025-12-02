@@ -140,8 +140,9 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							blocks = append(blocks, AnthropicContentBlock{
-								Type: "text",
-								Text: block.Text,
+								Type:         AnthropicContentBlockTypeText,
+								Text:         block.Text,
+								CacheControl: block.CacheControl,
 							})
 						}
 					}
@@ -174,8 +175,9 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 							for _, block := range toolMsg.Content.ContentBlocks {
 								if block.Text != nil {
 									blocks = append(blocks, AnthropicContentBlock{
-										Type: "text",
-										Text: block.Text,
+										Type:         AnthropicContentBlockTypeText,
+										Text:         block.Text,
+										CacheControl: block.CacheControl,
 									})
 								} else if block.ImageURLStruct != nil {
 									blocks = append(blocks, ConvertToAnthropicImageBlock(block))

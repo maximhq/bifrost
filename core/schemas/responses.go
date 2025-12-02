@@ -403,6 +403,9 @@ type ResponsesMessageContentBlock struct {
 
 	*ResponsesOutputMessageContentText    // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal // Model refusal to answer
+
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type ResponsesInputMessageContentBlockImage struct {

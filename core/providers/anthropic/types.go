@@ -145,17 +145,18 @@ const (
 
 // AnthropicContentBlock represents content in Anthropic message format
 type AnthropicContentBlock struct {
-	Type       AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
-	Text       *string                   `json:"text,omitempty"`        // For text content
-	Thinking   *string                   `json:"thinking,omitempty"`    // For thinking content
-	Signature  *string                   `json:"signature,omitempty"`   // For signature content
-	ToolUseID  *string                   `json:"tool_use_id,omitempty"` // For tool_result content
-	ID         *string                   `json:"id,omitempty"`          // For tool_use content
-	Name       *string                   `json:"name,omitempty"`        // For tool_use content
-	Input      any                       `json:"input,omitempty"`       // For tool_use content
-	ServerName *string                   `json:"server_name,omitempty"` // For mcp_tool_use content
-	Content    *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
-	Source     *AnthropicImageSource     `json:"source,omitempty"`      // For image content
+	Type         AnthropicContentBlockType `json:"type"`                  // "text", "image", "tool_use", "tool_result", "thinking"
+	Text         *string                   `json:"text,omitempty"`        // For text content
+	Thinking     *string                   `json:"thinking,omitempty"`    // For thinking content
+	Signature    *string                   `json:"signature,omitempty"`   // For signature content
+	ToolUseID    *string                   `json:"tool_use_id,omitempty"` // For tool_result content
+	ID           *string                   `json:"id,omitempty"`          // For tool_use content
+	Name         *string                   `json:"name,omitempty"`        // For tool_use content
+	Input        any                       `json:"input,omitempty"`       // For tool_use content
+	ServerName   *string                   `json:"server_name,omitempty"` // For mcp_tool_use content
+	Content      *AnthropicContent         `json:"content,omitempty"`     // For tool_result content
+	Source       *AnthropicImageSource     `json:"source,omitempty"`      // For image content
+	CacheControl *schemas.CacheControl     `json:"cache_control,omitempty"`
 }
 
 // AnthropicImageSource represents image source in Anthropic format

@@ -594,6 +594,20 @@ type ChatContentBlock struct {
 	ImageURLStruct *ChatInputImage      `json:"image_url,omitempty"`
 	InputAudio     *ChatInputAudio      `json:"input_audio,omitempty"`
 	File           *ChatInputFile       `json:"file,omitempty"`
+
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+type CacheControlType string
+
+const (
+	CacheControlTypeEphemeral CacheControlType = "ephemeral"
+)
+
+type CacheControl struct {
+	Type CacheControlType `json:"type"`
+	TTL  *string          `json:"ttl,omitempty"` // "1m" | "1h"
 }
 
 // ChatInputImage represents image data in a message.

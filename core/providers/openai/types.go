@@ -134,6 +134,23 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(*r.OpenAIResponsesRequestInputStr)
 	}
 	if r.OpenAIResponsesRequestInputArray != nil {
+		// Set CacheControl to nil for all content blocks to exclude it from marshaling
+		for _, msg := range r.OpenAIResponsesRequestInputArray {
+			// Remove CacheControl from message content blocks
+			if msg.Content != nil && msg.Content.ContentBlocks != nil {
+				for i := range msg.Content.ContentBlocks {
+					msg.Content.ContentBlocks[i].CacheControl = nil
+				}
+			}
+			// Remove CacheControl from tool message output blocks
+			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil {
+				if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+					for i := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks[i].CacheControl = nil
+					}
+				}
+			}
+		}
 		return sonic.Marshal(r.OpenAIResponsesRequestInputArray)
 	}
 	return sonic.Marshal(nil)

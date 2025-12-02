@@ -66,8 +66,9 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(model string) (*s
 				// Handle text content
 				if contentBlock.Text != nil && *contentBlock.Text != "" {
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-						Type: schemas.ChatContentBlockTypeText,
-						Text: contentBlock.Text,
+						Type:         schemas.ChatContentBlockTypeText,
+						Text:         contentBlock.Text,
+						CacheControl: contentBlock.CacheControl,
 					})
 				}
 

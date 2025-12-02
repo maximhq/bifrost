@@ -216,30 +216,32 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Handle system message - convert Anthropic system field to first message with role "system"
+	// Add system message if present
 	if request.System != nil {
-		var systemText string
-		if request.System.ContentStr != nil {
-			systemText = *request.System.ContentStr
-		} else if request.System.ContentBlocks != nil {
-			// Combine text blocks from system content
-			var textParts []string
-			for _, block := range request.System.ContentBlocks {
-				if block.Text != nil {
-					textParts = append(textParts, *block.Text)
-				}
-			}
-			systemText = strings.Join(textParts, "\n")
-		}
-
-		if systemText != "" {
-			systemMsg := schemas.ResponsesMessage{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		if request.System.ContentStr != nil && *request.System.ContentStr != "" {
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
 				Content: &schemas.ResponsesMessageContent{
-					ContentStr: &systemText,
+					ContentStr: request.System.ContentStr,
 				},
+			})
+		} else if request.System.ContentBlocks != nil {
+			contentBlocks := []schemas.ResponsesMessageContentBlock{}
+			for _, block := range request.System.ContentBlocks {
+				if block.Text != nil { // System messages will only have text content
+					contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+						Type:         schemas.ResponsesOutputMessageContentTypeText,
+						Text:         block.Text,
+						CacheControl: block.CacheControl,
+					})
+				}
 			}
-			bifrostMessages = append(bifrostMessages, systemMsg)
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: contentBlocks,
+				},
+			})
 		}
 	}
 
@@ -1456,7 +1458,13 @@ func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: schemas.Ptr(schemas.ResponsesMessageRoleType(msg.Role)),
 						Content: &schemas.ResponsesMessageContent{
-							ContentStr: block.Text,
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:         schemas.ResponsesOutputMessageContentTypeText,
+									Text:         block.Text,
+									CacheControl: block.CacheControl,
+								},
+							},
 						},
 					}
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -1521,8 +1529,9 @@ func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []
 								case AnthropicContentBlockTypeText:
 									if contentBlock.Text != nil {
 										toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-											Type: schemas.ResponsesInputMessageContentBlockTypeText,
-											Text: contentBlock.Text,
+											Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+											Text:         contentBlock.Text,
+											CacheControl: contentBlock.CacheControl,
 										})
 									}
 								case AnthropicContentBlockTypeImage:
@@ -1576,8 +1585,9 @@ func convertAnthropicMessageToBifrostResponsesMessages(msg *AnthropicMessage) []
 								if contentBlock.Type == AnthropicContentBlockTypeText {
 									if contentBlock.Text != nil {
 										toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
-											Type: schemas.ResponsesInputMessageContentBlockTypeText,
-											Text: contentBlock.Text,
+											Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+											Text:         contentBlock.Text,
+											CacheControl: contentBlock.CacheControl,
 										})
 									}
 								}
@@ -2313,8 +2323,9 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 					Content: &schemas.ResponsesMessageContent{
 						ContentBlocks: []schemas.ResponsesMessageContentBlock{
 							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: block.Text,
+								Type:         schemas.ResponsesOutputMessageContentTypeText,
+								Text:         block.Text,
+								CacheControl: block.CacheControl,
 							},
 						},
 					},
@@ -2409,8 +2420,9 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 							case AnthropicContentBlockTypeText:
 								if cb.Text != nil {
 									outBlocks = append(outBlocks, schemas.ResponsesMessageContentBlock{
-										Type: schemas.ResponsesInputMessageContentBlockTypeText,
-										Text: cb.Text,
+										Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+										Text:         cb.Text,
+										CacheControl: cb.CacheControl,
 									})
 								}
 							case AnthropicContentBlockTypeImage:
@@ -2469,8 +2481,9 @@ func convertAnthropicContentBlocksToResponsesMessages(content []AnthropicContent
 							if cb.Type == AnthropicContentBlockTypeText {
 								if cb.Text != nil {
 									outBlocks = append(outBlocks, schemas.ResponsesMessageContentBlock{
-										Type: schemas.ResponsesOutputMessageContentTypeText,
-										Text: cb.Text,
+										Type:         schemas.ResponsesOutputMessageContentTypeText,
+										Text:         cb.Text,
+										CacheControl: cb.CacheControl,
 									})
 								}
 							}
@@ -2501,7 +2514,7 @@ func convertBifrostMessagesToAnthropicContent(messages []schemas.ResponsesMessag
 				if msg.Content != nil {
 					if msg.Content.ContentStr != nil {
 						contentBlocks = append(contentBlocks, AnthropicContentBlock{
-							Type: "text",
+							Type: AnthropicContentBlockTypeText,
 							Text: msg.Content.ContentStr,
 						})
 					} else if msg.Content.ContentBlocks != nil {
@@ -2686,8 +2699,9 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
-				Type: AnthropicContentBlockTypeText,
-				Text: block.Text,
+				Type:         AnthropicContentBlockTypeText,
+				Text:         block.Text,
+				CacheControl: block.CacheControl,
 			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
@@ -2698,6 +2712,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 				ImageURLStruct: &schemas.ChatInputImage{
 					URL: *block.ResponsesInputMessageContentBlockImage.ImageURL,
 				},
+				CacheControl: block.CacheControl,
 			}
 			anthropicBlock := ConvertToAnthropicImageBlock(chatBlock)
 			return &anthropicBlock
@@ -2705,8 +2720,9 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
-				Type:     AnthropicContentBlockTypeThinking,
-				Thinking: block.Text,
+				Type:         AnthropicContentBlockTypeThinking,
+				Thinking:     block.Text,
+				CacheControl: block.CacheControl,
 			}
 		}
 	}
@@ -2736,6 +2752,7 @@ func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.Respon
 		ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 			ImageURL: schemas.Ptr(getImageURLFromBlock(block)),
 		},
+		CacheControl: block.CacheControl,
 	}
 }
 

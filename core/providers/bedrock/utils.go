@@ -272,7 +272,8 @@ func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 			case schemas.ChatContentBlockTypeText:
 				if block.Text != nil {
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						Text: block.Text,
+						Text:         block.Text,
+						CacheControl: block.CacheControl,
 					})
 				}
 			case schemas.ChatContentBlockTypeImage:
@@ -282,7 +283,8 @@ func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 						return BedrockMessage{}, fmt.Errorf("failed to convert image in tool result: %w", err)
 					}
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						Image: imageSource,
+						Image:        imageSource,
+						CacheControl: block.CacheControl,
 					})
 				}
 			}
@@ -330,7 +332,8 @@ func convertContentBlock(block schemas.ChatContentBlock) (BedrockContentBlock, e
 	switch block.Type {
 	case schemas.ChatContentBlockTypeText:
 		return BedrockContentBlock{
-			Text: block.Text,
+			Text:         block.Text,
+			CacheControl: block.CacheControl,
 		}, nil
 
 	case schemas.ChatContentBlockTypeImage:
@@ -343,7 +346,8 @@ func convertContentBlock(block schemas.ChatContentBlock) (BedrockContentBlock, e
 			return BedrockContentBlock{}, fmt.Errorf("failed to convert image: %w", err)
 		}
 		return BedrockContentBlock{
-			Image: imageSource,
+			Image:        imageSource,
+			CacheControl: block.CacheControl,
 		}, nil
 
 	case schemas.ChatContentBlockTypeInputAudio:

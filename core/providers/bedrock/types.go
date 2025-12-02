@@ -105,6 +105,8 @@ type BedrockContentBlock struct {
 
 	// For Tool Call Result content
 	JSON interface{} `json:"json,omitempty"`
+
+	CacheControl *schemas.CacheControl `json:"cache_control,omitempty"`
 }
 
 // BedrockImageSource represents image content
