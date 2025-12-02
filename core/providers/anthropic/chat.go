@@ -725,7 +725,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 				Object: "chat.completion.chunk",
 				Choices: []schemas.BifrostResponseChoice{
 					{
-						Index: *chunk.Index,
+						Index: 0,
 						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
@@ -760,7 +760,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Content: chunk.Delta.Text,
@@ -781,7 +781,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
@@ -809,7 +809,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Thought: chunk.Delta.Thinking,

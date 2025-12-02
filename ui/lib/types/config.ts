@@ -76,6 +76,7 @@ export interface ModelProviderKey {
 	value?: string;
 	models?: string[];
 	weight: number;
+	enabled?: boolean;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
@@ -88,6 +89,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	value: "",
 	models: [],
 	weight: 1.0,
+	enabled: true,
 };
 
 // NetworkConfig matching Go's schemas.NetworkConfig

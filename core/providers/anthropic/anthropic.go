@@ -931,9 +931,7 @@ func HandleAnthropicResponsesStream(
 						if response.Response == nil {
 							response.Response = &schemas.BifrostResponsesResponse{}
 						}
-						if usage != nil {
-							response.Response.Usage = usage
-						}
+						response.Response.Usage = usage
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)

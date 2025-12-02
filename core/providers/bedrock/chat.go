@@ -187,12 +187,6 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 		return streamResponse, nil, false
 
 	case chunk.Start != nil && chunk.Start.ToolUse != nil:
-		// Handle tool use start event
-		contentBlockIndex := 0
-		if chunk.ContentBlockIndex != nil {
-			contentBlockIndex = *chunk.ContentBlockIndex
-		}
-
 		toolUseStart := chunk.Start.ToolUse
 
 		// Create tool call structure for start event
@@ -206,7 +200,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			Object: "chat.completion.chunk",
 			Choices: []schemas.BifrostResponseChoice{
 				{
-					Index: contentBlockIndex,
+					Index: 0,
 					ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 						Delta: &schemas.ChatStreamResponseChoiceDelta{
 							ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
@@ -218,10 +212,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 
 		return streamResponse, nil, false
 
-	case chunk.ContentBlockIndex != nil && chunk.Delta != nil:
-		// Handle contentBlockDelta event
-		contentBlockIndex := *chunk.ContentBlockIndex
-
+	case chunk.Delta != nil:
 		switch {
 		case chunk.Delta.Text != nil:
 			// Handle text delta
@@ -231,7 +222,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 					Object: "chat.completion.chunk",
 					Choices: []schemas.BifrostResponseChoice{
 						{
-							Index: contentBlockIndex,
+							Index: 0,
 							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 								Delta: &schemas.ChatStreamResponseChoiceDelta{
 									Content: &text,
@@ -260,7 +251,7 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 				Object: "chat.completion.chunk",
 				Choices: []schemas.BifrostResponseChoice{
 					{
-						Index: contentBlockIndex,
+						Index: 0,
 						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},

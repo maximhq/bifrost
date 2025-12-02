@@ -19,6 +19,7 @@ type TableKey struct {
 	Value      string    `gorm:"type:text;not null" json:"value"`
 	ModelsJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
 	Weight     float64   `gorm:"default:1.0" json:"weight"`
+	Enabled    *bool     `gorm:"default:true" json:"enabled,omitempty"`
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 
@@ -62,6 +63,11 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.ModelsJSON = string(data)
 	} else {
 		k.ModelsJSON = "[]"
+	}
+
+	if k.Enabled == nil {
+		enabled := true // DB default
+		k.Enabled = &enabled
 	}
 
 	if k.AzureKeyConfig != nil {
@@ -166,6 +172,11 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(k.ModelsJSON), &k.Models); err != nil {
 			return err
 		}
+	}
+
+	if k.Enabled == nil {
+		enabled := true // DB default
+		k.Enabled = &enabled
 	}
 
 	// Reconstruct Azure config if fields are present

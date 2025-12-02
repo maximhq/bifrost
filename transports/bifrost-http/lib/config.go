@@ -1383,10 +1383,11 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 	redactedConfig.Keys = make([]schemas.Key, len(config.Keys))
 	for i, key := range config.Keys {
 		redactedConfig.Keys[i] = schemas.Key{
-			ID:     key.ID,
-			Name:   key.Name,
-			Models: key.Models, // Copy slice reference - read-only so safe
-			Weight: key.Weight,
+			ID:      key.ID,
+			Name:    key.Name,
+			Models:  key.Models, // Copy slice reference - read-only so safe
+			Weight:  key.Weight,
+			Enabled: key.Enabled,
 		}
 
 		// Redact API key value
