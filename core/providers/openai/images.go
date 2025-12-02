@@ -57,6 +57,9 @@ func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas
 		return nil, err // Handle error
 	}
 	openaiReq := ToOpenAIImageRequest(req)
+	if openaiReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
+	}
 
 	resp, latency, err := provider.DoRequest(ctx, key, openaiReq)
 	if err != nil {
@@ -189,6 +192,9 @@ func (provider *OpenAIProvider) DoRequest(ctx context.Context, key schemas.Key, 
 }
 
 // ImageGenerationStream is not implemented at this time.
-func (provider *OpenAIProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ImageGenerationStream(ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }

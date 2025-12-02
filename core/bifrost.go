@@ -2230,6 +2230,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.TranscriptionResponse = transcriptionResponse
+	case schemas.ImageGenerationRequest:
+		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageGenerationResponse = imageResponse
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -2254,6 +2260,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.SpeechStream(req.Context, postHookRunner, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, key, req.BifrostRequest.TranscriptionRequest)
+	case schemas.ImageGenerationStreamRequest:
+		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -2619,4 +2627,54 @@ func (bifrost *Bifrost) Shutdown() {
 		}
 	}
 	bifrost.logger.Info("all request channels closed")
+}
+
+// Add public methods
+func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation request is nil",
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || response.ImageGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+		}
+	}
+
+	return response.ImageGenerationResponse, nil
+}
+
+func (b *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error: &schemas.ErrorField{
+			Message: "streaming image generation not implemented",
+		},
+	}
 }

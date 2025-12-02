@@ -5,6 +5,8 @@ package handlers
 import (
 	"bufio"
 	"context"
+
+	// "core/schemas"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -136,6 +139,19 @@ var speechParamsKnownFields = map[string]bool{
 	"speed":           true,
 }
 
+var imageParamsKnownFields = map[string]bool{
+	"model":           true,
+	"prompt":          true,
+	"fallbacks":       true,
+	"stream":          true,
+	"n":               true,
+	"size":            true,
+	"quality":         true,
+	"style":           true,
+	"response_format": true,
+	"user":            true,
+}
+
 var transcriptionParamsKnownFields = map[string]bool{
 	"model":           true,
 	"file":            true,
@@ -170,6 +186,12 @@ type ChatRequest struct {
 type ResponsesRequestInput struct {
 	ResponsesRequestInputStr   *string
 	ResponsesRequestInputArray []schemas.ResponsesMessage
+}
+
+type ImageGenerationHTTPRequest struct {
+	*schemas.ImageGenerationInput
+	*schemas.ImageGenerationParameters
+	BifrostParams
 }
 
 // UnmarshalJSON unmarshals the responses request input
@@ -282,6 +304,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
+	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, middlewares...))
 }
 
 // listModels handles GET /v1/models - Process list models requests
@@ -1108,4 +1131,79 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 	}
 
 	return nil
+}
+
+// imageGeneration handles POST /v1/images/generations - Processes image generation requests
+func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
+
+	var req ImageGenerationHTTPRequest
+
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Parse model format provider/model
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	if req.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt can not be empty")
+		return
+	}
+	// Extract extra params
+	if req.ImageGenerationParameters == nil {
+		req.ImageGenerationParameters = &schemas.ImageGenerationParameters{}
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
+    // Continue witout extra params
+	} else {
+		req.ImageGenerationParameters.ExtraParams = extraParams
+	}
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Create Bifrost request
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     &schemas.ImageGenerationInput{Prompt: req.Prompt},
+		Params:    req.ImageGenerationParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	// Streaming not supported yet
+	if req.Stream != nil && *req.Stream {
+		// TODO: Handle streaming logic here
+		// h.handleStreamingImageGeneration
+		SendError(ctx, fasthttp.StatusNotImplemented, "Streaming image generation not implemented")
+		return
+	}
+
+	// Execute request
+	resp, bifrostErr := h.client.ImageGenerationRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
 }

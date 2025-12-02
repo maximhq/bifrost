@@ -10,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// AzureImagRequest is the struct for Image Generation requests by Azure.
+// AzureImageRequest is the struct for Image Generation requests by Azure.
 type AzureImageRequest struct {
 	Model          string  `json:"model"`
 	Prompt         string  `json:"prompt"`
@@ -55,6 +55,9 @@ func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.
 
 	// Convert bifrost request to Azure format.
 	azureReq := ToAzureImageRequest(request)
+	if azureReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
+	}
 
 	// Make request
 	resp, deployment, latency, err := provider.DoRequest(ctx, key, azureReq)
@@ -81,7 +84,8 @@ func ToAzureImageRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *Azu
 
 	req := &AzureImageRequest{
 		Model:  bifrostReq.Model,
-		Prompt: bifrostReq.Input.Prompt}
+		Prompt: bifrostReq.Input.Prompt,
+	}
 
 	mapImageParams(bifrostReq.Params, req)
 	return req

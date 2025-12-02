@@ -66,7 +66,7 @@ import (
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
 )
 
-//go:embed all:ui
+
 var uiContent embed.FS
 
 var Version string

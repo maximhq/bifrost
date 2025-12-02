@@ -1,11 +1,5 @@
 package schemas
 
-// Request Types
-const (
-	ImageGenerationRequest       RequestType = "image_generation"
-	ImageGenerationStreamRequest RequestType = "image_generation_stream"
-)
-
 // BifrostImageGenerationRequest represents an image generation request
 type BifrostImageGenerationRequest struct {
 	Provider       ModelProvider              `json:"provider"`
@@ -54,12 +48,13 @@ type ImageUsage struct {
 
 // Streaming Response
 type BifrostImageStreamResponse struct {
-	ID            string        `json:"id"`
-	Type          string        `json:"type"`                     // "image.chunk", "image.complete", "error"
-	Index         int           `json:"index"`                    // Which image (0-N)
-	ChunkIndex    int           `json:"chunk_index"`              // Chunk order within image
-	PartialB64    string        `json:"partial_b64,omitempty"`    // Base64 chunk
-	RevisedPrompt string        `json:"revised_prompt,omitempty"` // On first chunk
-	Usage         *ImageUsage   `json:"usage,omitempty"`          // On final chunk
-	Error         *BifrostError `json:"error,omitempty"`
+	ID            string                     `json:"id"`
+	Type          string                     `json:"type"`                     // "image.chunk", "image.complete", "error"
+	Index         int                        `json:"index"`                    // Which image (0-N)
+	ChunkIndex    int                        `json:"chunk_index"`              // Chunk order within image
+	PartialB64    string                     `json:"partial_b64,omitempty"`    // Base64 chunk
+	RevisedPrompt string                     `json:"revised_prompt,omitempty"` // On first chunk
+	Usage         *ImageUsage                `json:"usage,omitempty"`          // On final chunk
+	Error         *BifrostError              `json:"error,omitempty"`
+	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
 }
