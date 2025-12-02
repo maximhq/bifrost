@@ -558,6 +558,24 @@ func HandleAnthropicChatCompletionStreaming(
 				if calculatedTotal > usage.TotalTokens {
 					usage.TotalTokens = calculatedTotal
 				}
+				// Handle cached tokens if present
+				if usageToProcess.CacheReadInputTokens > 0 {
+					if usage.PromptTokensDetails == nil {
+						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+					}
+					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
+						usage.PromptTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
+					}
+				}
+				// Handle cached tokens if present
+				if usageToProcess.CacheCreationInputTokens > 0 {
+					if usage.CompletionTokensDetails == nil {
+						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					}
+					if usageToProcess.CacheCreationInputTokens > usage.CompletionTokensDetails.CachedTokens {
+						usage.CompletionTokensDetails.CachedTokens = usageToProcess.CacheCreationInputTokens
+					}
+				}
 			}
 
 			if event.Delta != nil && event.Delta.StopReason != nil {
@@ -888,6 +906,24 @@ func HandleAnthropicResponsesStream(
 				calculatedTotal := usage.InputTokens + usage.OutputTokens
 				if calculatedTotal > usage.TotalTokens {
 					usage.TotalTokens = calculatedTotal
+				}
+				// Handle cached tokens if present
+				if usageToProcess.CacheReadInputTokens > 0 {
+					if usage.InputTokensDetails == nil {
+						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+					}
+					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
+						usage.InputTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
+					}
+				}
+				// Handle cached tokens if present
+				if usageToProcess.CacheCreationInputTokens > 0 {
+					if usage.OutputTokensDetails == nil {
+						usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+					}
+					if usageToProcess.CacheCreationInputTokens > usage.OutputTokensDetails.CachedTokens {
+						usage.OutputTokensDetails.CachedTokens = usageToProcess.CacheCreationInputTokens
+					}
 				}
 			}
 
