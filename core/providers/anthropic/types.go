@@ -298,9 +298,9 @@ type AnthropicTextResponse struct {
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
 	InputTokens              int                         `json:"input_tokens"`
-	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int                         `json:"cache_read_input_tokens,omitempty"`
-	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
 	OutputTokens             int                         `json:"output_tokens"`
 }
 

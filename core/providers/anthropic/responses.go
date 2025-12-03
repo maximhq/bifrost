@@ -392,11 +392,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					},
 				}
 
-				// Preserve signature if present
-				if chunk.ContentBlock.Signature != nil {
-					item.ResponsesReasoning.EncryptedContent = chunk.ContentBlock.Signature
-				}
-
 				// Track that this content index is a reasoning block
 				if chunk.Index != nil {
 					state.ReasoningContentIndices[*chunk.Index] = true
@@ -694,32 +689,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				delete(state.MCPCallOutputIndices, outputIndex)
 			}
 
-			// Check if this is a reasoning item and we have a signature
-			// If so, include the signature in the reasoning item
-			if signature, hasSignature := state.ReasoningSignatures[outputIndex]; hasSignature && signature != "" {
-				itemID := state.ItemIDs[outputIndex]
-				// Find if we have a reasoning item in responses or create one
-				var reasoningItem *schemas.ResponsesMessage
-				for _, resp := range responses {
-					if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeReasoning {
-						reasoningItem = resp.Item
-						break
-					}
-				}
-				if reasoningItem == nil {
-					reasoningItem = &schemas.ResponsesMessage{
-						ID:   &itemID,
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-					}
-				}
-				if reasoningItem.ResponsesReasoning == nil {
-					reasoningItem.ResponsesReasoning = &schemas.ResponsesReasoning{
-						Summary: []schemas.ResponsesReasoningSummary{},
-					}
-				}
-				reasoningItem.ResponsesReasoning.EncryptedContent = &signature
-			}
-
 			// Emit output_item.done for all content blocks (text, tool, etc.)
 			statusCompleted := "completed"
 			doneItemID := state.ItemIDs[outputIndex]
@@ -728,15 +697,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 			if doneItemID != "" {
 				doneItem.ID = &doneItemID
-			}
-			// Include signature if this is a reasoning item
-			if signature, hasSignature := state.ReasoningSignatures[outputIndex]; hasSignature && signature != "" {
-				if doneItem.ResponsesReasoning == nil {
-					doneItem.ResponsesReasoning = &schemas.ResponsesReasoning{
-						Summary: []schemas.ResponsesReasoningSummary{},
-					}
-				}
-				doneItem.ResponsesReasoning.EncryptedContent = &signature
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
@@ -753,6 +713,29 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if chunk.Delta.StopReason != nil {
 			state.StopReason = schemas.Ptr(ConvertAnthropicFinishReasonToBifrost(*chunk.Delta.StopReason))
 		}
+		// if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
+		// 	var usage *schemas.ResponsesResponseUsage
+		// 	if chunk.Usage != nil {
+		// 		usage = &schemas.ResponsesResponseUsage{
+		// 			InputTokens:  chunk.Usage.InputTokens,
+		// 			OutputTokens: chunk.Usage.OutputTokens,
+		// 			TotalTokens:  chunk.Usage.InputTokens + chunk.Usage.OutputTokens,
+		// 			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+		// 				CachedTokens: chunk.Usage.CacheReadInputTokens,
+		// 			},
+		// 			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+		// 				CachedTokens: chunk.Usage.CacheCreationInputTokens,
+		// 			},
+		// 		}
+		// 	}
+		// 	return []*schemas.BifrostResponsesStreamResponse{{
+		// 		Type:           "anthropic.message_delta",
+		// 		SequenceNumber: sequenceNumber,
+		// 		Response: &schemas.BifrostResponsesResponse{
+		// 			Usage: usage,
+		// 		},
+		// 	}}, nil, false
+		// }
 		// Message-level updates (like stop reason, usage, etc.)
 		// Note: We don't emit output_item.done here because items are already closed
 		// by content_block_stop. This event is informational only.
@@ -808,7 +791,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 }
 
 // ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response to Anthropic SSE string format
-func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
+func ToAnthropicResponsesStreamResponse(ctx context.Context, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	if bifrostResp == nil {
 		return nil
 	}
@@ -1189,6 +1172,17 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			}
 		}
 
+	// case "anthropic.message_delta":
+	// 	if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
+	// 		streamResp.Type = AnthropicStreamEventTypeMessageDelta
+	// 		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
+	// 			streamResp.Usage = &AnthropicUsage{
+	// 				InputTokens:  bifrostResp.Response.Usage.InputTokens,
+	// 				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
+	// 			}
+	// 		}
+	// 	}
+
 	default:
 		// Unknown event type, return empty
 		return nil
@@ -1230,16 +1224,13 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest() *schemas.Bif
 	if request.StopSequences != nil {
 		params.ExtraParams["stop"] = request.StopSequences
 	}
-	if request.Thinking != nil {
-		params.ExtraParams["thinking"] = request.Thinking
-	}
 	if request.OutputFormat != nil {
 		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(request.OutputFormat)
 	}
 	if request.Thinking != nil {
 		if request.Thinking.Type == "enabled" {
 			params.Reasoning = &schemas.ResponsesParametersReasoning{
-				Effort:    schemas.Ptr("auto"),
+				Effort:    schemas.Ptr("medium"), // TODO: add a relative measure with budget tokens and max tokens
 				MaxTokens: request.Thinking.BudgetTokens,
 			}
 		} else {
@@ -1614,6 +1605,23 @@ func ConvertBifrostMessagesToAnthropicMessages(bifrostMessages []schemas.Respons
 			if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
 				systemContent = convertBifrostMessageToAnthropicSystemContent(&msg)
 				continue
+			}
+
+			// If there are pending reasoning blocks and this is a user message,
+			// flush them into a separate assistant message first
+			// (thinking blocks can only appear in assistant messages in Anthropic)
+			if len(pendingReasoningContentBlocks) > 0 && (msg.Role == nil || *msg.Role == schemas.ResponsesInputMessageRoleUser) {
+				// Copy the pending reasoning content blocks
+				copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+				copy(copied, pendingReasoningContentBlocks)
+				assistantReasoningMsg := AnthropicMessage{
+					Role: AnthropicMessageRoleAssistant,
+					Content: AnthropicContent{
+						ContentBlocks: copied,
+					},
+				}
+				anthropicMessages = append(anthropicMessages, assistantReasoningMsg)
+				pendingReasoningContentBlocks = nil
 			}
 
 			// Regular user/assistant message
@@ -2072,7 +2080,8 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 	}
 
 	// Add any pending reasoning content blocks to the message
-	if len(*pendingReasoningContentBlocks) > 0 {
+	// Only add reasoning blocks to assistant messages (thinking blocks can only appear in assistant messages in Anthropic)
+	if len(*pendingReasoningContentBlocks) > 0 && anthropicMsg.Role == AnthropicMessageRoleAssistant {
 		// copy the pending reasoning content blocks
 		copied := make([]AnthropicContentBlock, len(*pendingReasoningContentBlocks))
 		copy(copied, *pendingReasoningContentBlocks)

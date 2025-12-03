@@ -319,6 +319,20 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	statusCode := resp.StatusCode()
 	body := append([]byte(nil), resp.Body()...)
 
+	// decode body
+	decodedBody, err := CheckAndDecodeBody(resp)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+		}
+	}
+
+	body = decodedBody
+
 	if err := sonic.Unmarshal(body, errorResp); err != nil {
 		rawResponse := body
 		message := fmt.Sprintf("provider API error: %s", string(rawResponse))

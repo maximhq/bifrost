@@ -23,6 +23,7 @@ type BedrockResponsesStreamState struct {
 	CurrentOutputIndex        int            // Current output index counter
 	MessageID                 *string        // Message ID (generated)
 	Model                     *string        // Model name
+	StopReason                *string        // Stop reason for the message
 	CreatedAt                 int            // Timestamp for created_at consistency
 	HasEmittedCreated         bool           // Whether we've emitted response.created
 	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
@@ -91,6 +92,7 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
+	state.StopReason = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
@@ -145,6 +147,7 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
+	state.StopReason = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
@@ -214,6 +217,158 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 		// Check if this is a tool use start
 		if chunk.Start.ToolUse != nil {
 			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// Close any open reasoning blocks first (Anthropic sends content_block_stop before starting new blocks)
+			for prevContentIndex := range state.ReasoningContentIndices {
+				prevOutputIndex, prevExists := state.ContentIndexToOutputIndex[prevContentIndex]
+				if !prevExists {
+					continue
+				}
+
+				// Skip already completed output indices
+				if state.CompletedOutputIndices[prevOutputIndex] {
+					continue
+				}
+
+				itemID := state.ItemIDs[prevOutputIndex]
+
+				// For reasoning items, content_index is always 0
+				reasoningContentIndex := 0
+
+				// Emit reasoning_summary_text.done
+				emptyText := ""
+				reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(prevOutputIndex),
+					ContentIndex:   &reasoningContentIndex,
+					Text:           &emptyText,
+				}
+				if itemID != "" {
+					reasoningDoneResponse.ItemID = &itemID
+				}
+				responses = append(responses, reasoningDoneResponse)
+
+				// Emit content_part.done for reasoning
+				partDoneResponse := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(prevOutputIndex),
+					ContentIndex:   &reasoningContentIndex,
+				}
+				if itemID != "" {
+					partDoneResponse.ItemID = &itemID
+				}
+				responses = append(responses, partDoneResponse)
+
+				// Emit output_item.done for reasoning
+				statusCompleted := "completed"
+				doneItem := &schemas.ResponsesMessage{
+					Status: &statusCompleted,
+				}
+				if itemID != "" {
+					doneItem.ID = &itemID
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(prevOutputIndex),
+					ContentIndex:   &reasoningContentIndex,
+					Item:           doneItem,
+				})
+
+				// Mark this output index as completed
+				state.CompletedOutputIndices[prevOutputIndex] = true
+			}
+			// Clear reasoning content indices after closing them
+			clear(state.ReasoningContentIndices)
+
+			// Close any open tool call blocks before starting a new one (Anthropic completes each block before starting next)
+			for prevContentIndex, prevOutputIndex := range state.ContentIndexToOutputIndex {
+				// Skip reasoning blocks (already handled above)
+				if state.ReasoningContentIndices[prevContentIndex] {
+					continue
+				}
+
+				// Skip already completed output indices
+				if state.CompletedOutputIndices[prevOutputIndex] {
+					continue
+				}
+
+				// Check if this is a tool call
+				prevToolCallID := state.ToolCallIDs[prevOutputIndex]
+				if prevToolCallID == "" {
+					continue // Not a tool call
+				}
+
+				prevItemID := state.ItemIDs[prevOutputIndex]
+				prevToolName := state.ToolCallNames[prevOutputIndex]
+				accumulatedArgs := state.ToolArgumentBuffers[prevOutputIndex]
+
+				// Emit content_part.done for tool call
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(prevOutputIndex),
+					ContentIndex:   schemas.Ptr(prevContentIndex),
+					ItemID:         &prevItemID,
+				})
+
+				// Emit function_call_arguments.done with full arguments
+				if accumulatedArgs != "" {
+					var doneItem *schemas.ResponsesMessage
+					if prevToolCallID != "" || prevToolName != "" {
+						doneItem = &schemas.ResponsesMessage{
+							ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+						}
+						if prevToolCallID != "" {
+							doneItem.ResponsesToolMessage.CallID = &prevToolCallID
+						}
+						if prevToolName != "" {
+							doneItem.ResponsesToolMessage.Name = &prevToolName
+						}
+					}
+
+					argsDoneResponse := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(prevOutputIndex),
+						Arguments:      &accumulatedArgs,
+					}
+					if prevItemID != "" {
+						argsDoneResponse.ItemID = &prevItemID
+					}
+					if doneItem != nil {
+						argsDoneResponse.Item = doneItem
+					}
+					responses = append(responses, argsDoneResponse)
+				}
+
+				// Emit output_item.done for tool call
+				statusCompleted := "completed"
+				toolDoneItem := &schemas.ResponsesMessage{
+					ID:     &prevItemID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: &statusCompleted,
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &prevToolCallID,
+						Name:      &prevToolName,
+						Arguments: &accumulatedArgs,
+					},
+				}
+
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(prevOutputIndex),
+					ContentIndex:   schemas.Ptr(prevContentIndex),
+					ItemID:         &prevItemID,
+					Item:           toolDoneItem,
+				})
+
+				// Mark this output index as completed
+				state.CompletedOutputIndices[prevOutputIndex] = true
+			}
 
 			// Create new output index for this tool use
 			outputIndex := state.CurrentOutputIndex
@@ -560,7 +715,19 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 		}
 
 	case chunk.StopReason != nil:
-		// Stop reason - don't use it to close items, just return nil
+		// Stop reason - track it for the final response
+		var stopReason string
+		switch *chunk.StopReason {
+		case "tool_use":
+			stopReason = "tool_calls"
+		case "end_turn":
+			stopReason = "stop"
+		case "max_tokens":
+			stopReason = "length"
+		default:
+			stopReason = *chunk.StopReason
+		}
+		state.StopReason = &stopReason
 		// Items should be closed explicitly when content blocks end
 		return nil, nil, false
 	}
@@ -777,6 +944,23 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 
 	if state.Model != nil {
 		response.Model = *state.Model
+	}
+	if state.StopReason != nil {
+		response.StopReason = state.StopReason
+	} else {
+		// Infer stop reason based on whether tool calls are present
+		hasToolCalls := false
+		for _, toolCallID := range state.ToolCallIDs {
+			if toolCallID != "" {
+				hasToolCalls = true
+				break
+			}
+		}
+		if hasToolCalls {
+			response.StopReason = schemas.Ptr("tool_calls")
+		} else {
+			response.StopReason = schemas.Ptr("stop")
+		}
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
