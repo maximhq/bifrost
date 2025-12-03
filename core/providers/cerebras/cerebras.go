@@ -109,6 +109,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, post
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamMaxTokenSize,
 	)
 }
 
@@ -151,6 +152,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.StreamMaxTokenSize,
 	)
 }
 
