@@ -30,6 +30,11 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
+		if openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
+			openaiReq.ChatParameters.MaxCompletionTokens = schemas.Ptr(MinMaxCompletionTokens)
+		}
+		// Drop user field if it exceeds OpenAI's 64 character limit
+		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 	}
 
 	switch bifrostReq.Provider {

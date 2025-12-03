@@ -34,6 +34,7 @@ func TestGroq(t *testing.T) {
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
 		EmbeddingModel: "", // Groq doesn't support embedding
+		ReasoningModel: "openai/gpt-oss-120b",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true, // Supported via chat completion conversion
 			TextCompletionStream:  true, // Supported via chat completion streaming conversion
@@ -51,6 +52,7 @@ func TestGroq(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			ListModels:            true,
+			Reasoning:             true,
 		},
 	}
 

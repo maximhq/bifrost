@@ -1675,7 +1675,6 @@ func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.Ta
 	} else {
 		txDB = s.db
 	}
-	s.logger.Debug("updating budgets: %+v", budgets)
 	for _, b := range budgets {
 		if err := txDB.WithContext(ctx).Save(b).Error; err != nil {
 			return s.parseGormError(err)

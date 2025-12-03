@@ -184,6 +184,57 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									)}
 								</div>
 							</div>
+							{(() => {
+								const params = log.params as any;
+								const reasoning = params?.reasoning;
+								if (!reasoning || typeof reasoning !== "object" || Object.keys(reasoning).length === 0) {
+									return null;
+								}
+								return (
+									<>
+										<DottedSeparator />
+										<div className="space-y-4">
+											<BlockHeader title="Reasoning Parameters" icon={<FileText className="h-5 w-5 text-gray-600" />} />
+											<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
+												{reasoning.effort && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Effort"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{reasoning.effort}
+															</Badge>
+														}
+													/>
+												)}
+												{reasoning.summary && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Summary"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{reasoning.summary}
+															</Badge>
+														}
+													/>
+												)}
+												{reasoning.generate_summary && (
+													<LogEntryDetailsView
+														className="w-full"
+														label="Generate Summary"
+														value={
+															<Badge variant="secondary" className="uppercase">
+																{reasoning.generate_summary}
+															</Badge>
+														}
+													/>
+												)}
+												{reasoning.max_tokens && <LogEntryDetailsView className="w-full" label="Max Tokens" value={reasoning.max_tokens} />}
+											</div>
+										</div>
+									</>
+								);
+							})()}
 							{log.cache_debug && (
 								<>
 									<DottedSeparator />

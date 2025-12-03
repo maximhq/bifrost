@@ -92,7 +92,7 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 			}
 			for _, plugin := range plugins {
 				// Call TransportInterceptor on all plugins
-				pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)				
+				pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
 				cancel()
 				if err != nil {

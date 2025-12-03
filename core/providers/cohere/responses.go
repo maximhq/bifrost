@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -278,9 +279,6 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				} else {
 					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
 				}
-				if state.MessageID == nil {
-					itemID = fmt.Sprintf("item_%d", outputIndex)
-				}
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
@@ -321,10 +319,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				role := schemas.ResponsesInputMessageRoleAssistant
 
 				// Generate stable ID for reasoning item
-				itemID := fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
-				if state.MessageID == nil {
-					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
-				}
+				itemID := "rs_" + providerUtils.GetRandomString(50)
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
@@ -894,9 +889,9 @@ func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigF
 }
 
 // ToCohereResponsesRequest converts a BifrostRequest (Responses structure) to CohereChatRequest
-func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *CohereChatRequest {
+func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*CohereChatRequest, error) {
 	if bifrostReq == nil {
-		return nil
+		return nil, nil
 	}
 
 	cohereReq := &CohereChatRequest{
@@ -914,6 +909,36 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 		if bifrostReq.Params.TopP != nil {
 			cohereReq.P = bifrostReq.Params.TopP
 		}
+
+		// Convert reasoning
+		if bifrostReq.Params.Reasoning != nil {
+			if bifrostReq.Params.Reasoning.MaxTokens != nil {
+				cohereReq.Thinking = &CohereThinking{
+					Type:        ThinkingTypeEnabled,
+					TokenBudget: bifrostReq.Params.Reasoning.MaxTokens,
+				}
+			} else {
+				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+					maxOutputTokens := DefaultCompletionMaxTokens
+					if bifrostReq.Params.MaxOutputTokens != nil {
+						maxOutputTokens = *bifrostReq.Params.MaxOutputTokens
+					}
+					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, maxOutputTokens)
+					if err != nil {
+						return nil, err
+					}
+					cohereReq.Thinking = &CohereThinking{
+						Type:        ThinkingTypeEnabled,
+						TokenBudget: schemas.Ptr(budgetTokens),
+					}
+				} else {
+					cohereReq.Thinking = &CohereThinking{
+						Type: ThinkingTypeDisabled,
+					}
+				}
+			}
+		}
+
 		if bifrostReq.Params.Text != nil && bifrostReq.Params.Text.Format != nil {
 			cohereReq.ResponseFormat = convertResponsesTextFormatToCohere(bifrostReq.Params.Text.Format)
 		}
@@ -977,7 +1002,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Cohe
 		cohereReq.Messages = ConvertBifrostMessagesToCohereMessages(bifrostReq.Input)
 	}
 
-	return cohereReq
+	return cohereReq, nil
 }
 
 // ToBifrostResponsesResponse converts CohereChatResponse to BifrostResponse (Responses structure)
@@ -1182,8 +1207,11 @@ func convertBifrostToolChoiceToCohereToolChoice(toolChoice schemas.ResponsesTool
 		case "none":
 			choice := ToolChoiceNone
 			return &choice
-		case "required", "auto", "function":
+		case "required", "function":
 			choice := ToolChoiceRequired
+			return &choice
+		case "auto":
+			choice := ToolChoiceAuto
 			return &choice
 		default:
 			choice := ToolChoiceRequired
@@ -1290,7 +1318,7 @@ func convertBifrostFunctionCallToCohereMessage(msg *schemas.ResponsesMessage) *C
 		Function: &CohereFunction{},
 	}
 
-	if msg.CallID != nil {
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
 		toolCall.ID = msg.CallID
 	}
 
@@ -1380,7 +1408,10 @@ func convertSingleCohereMessageToBifrostMessages(cohereMsg *CohereMessage, isOut
 						Text: block.Thinking,
 					})
 				} else {
-					contentBlocks = append(contentBlocks, convertCohereContentBlockToBifrost(block))
+					converted := convertCohereContentBlockToBifrost(block)
+					if converted.Type != "" {
+						contentBlocks = append(contentBlocks, converted)
+					}
 				}
 			}
 		}

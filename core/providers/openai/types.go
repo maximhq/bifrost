@@ -8,6 +8,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const (
+	MinMaxCompletionTokens = 16
+)
+
 // REQUEST TYPES
 
 // OpenAITextCompletionRequest represents an OpenAI text completion request
@@ -99,6 +103,39 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	return sonic.Marshal(aux)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for OpenAIChatRequest.
+// This is needed because ChatParameters has a custom UnmarshalJSON method,
+// which would otherwise "hijack" the unmarshalling and ignore the other fields
+// (Model, Messages, Stream, MaxTokens, Fallbacks).
+func (r *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
+	// Unmarshal the request-specific fields directly
+	type baseFields struct {
+		Model     string          `json:"model"`
+		Messages  []OpenAIMessage `json:"messages"`
+		Stream    *bool           `json:"stream,omitempty"`
+		MaxTokens *int            `json:"max_tokens,omitempty"`
+		Fallbacks []string        `json:"fallbacks,omitempty"`
+	}
+	var base baseFields
+	if err := sonic.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	r.Model = base.Model
+	r.Messages = base.Messages
+	r.Stream = base.Stream
+	r.MaxTokens = base.MaxTokens
+	r.Fallbacks = base.Fallbacks
+
+	// Unmarshal ChatParameters (which has its own custom unmarshaller)
+	var params schemas.ChatParameters
+	if err := sonic.Unmarshal(data, &params); err != nil {
+		return err
+	}
+	r.ChatParameters = params
+
+	return nil
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

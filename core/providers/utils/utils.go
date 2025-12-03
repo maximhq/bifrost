@@ -319,6 +319,20 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	statusCode := resp.StatusCode()
 	body := append([]byte(nil), resp.Body()...)
 
+	// decode body
+	decodedBody, err := CheckAndDecodeBody(resp)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+		}
+	}
+
+	body = decodedBody
+
 	if err := sonic.Unmarshal(body, errorResp); err != nil {
 		rawResponse := body
 		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
@@ -1011,6 +1025,9 @@ func HandleMultipleListModelsRequests(
 
 // GetRandomString generates a random alphanumeric string of the given length.
 func GetRandomString(length int) string {
+	if length <= 0 {
+		return ""
+	}
 	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
 	letters := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
 	b := make([]rune, length)
@@ -1018,4 +1035,87 @@ func GetRandomString(length int) string {
 		b[i] = letters[randomSource.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+// GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.
+// Valid values: none, low, medium, high
+func GetReasoningEffortFromBudgetTokens(
+	budgetTokens int,
+	minBudgetTokens int,
+	maxTokens int,
+) string {
+	if budgetTokens <= 0 {
+		return "none"
+	}
+
+	// Defensive defaults
+	if maxTokens <= 0 {
+		return "medium"
+	}
+
+	// Normalize budget
+	if budgetTokens < minBudgetTokens {
+		budgetTokens = minBudgetTokens
+	}
+	if budgetTokens > maxTokens {
+		budgetTokens = maxTokens
+	}
+
+	// Avoid division by zero
+	if maxTokens <= minBudgetTokens {
+		return "high"
+	}
+
+	ratio := float64(budgetTokens-minBudgetTokens) / float64(maxTokens-minBudgetTokens)
+
+	switch {
+	case ratio <= 0.25:
+		return "low"
+	case ratio <= 0.60:
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+// GetBudgetTokensFromReasoningEffort converts OpenAI reasoning effort
+// into a reasoning token budget.
+// effort ∈ {"none", "minimal", "low", "medium", "high"}
+func GetBudgetTokensFromReasoningEffort(
+	effort string,
+	minBudgetTokens int,
+	maxTokens int,
+) (int, error) {
+	if effort == "none" {
+		return 0, nil
+	}
+
+	if minBudgetTokens > maxTokens {
+		return 0, fmt.Errorf("max_tokens must be greater than %d for reasoning", minBudgetTokens)
+	}
+
+	// Defensive defaults
+	if maxTokens <= minBudgetTokens {
+		return minBudgetTokens, nil
+	}
+
+	var ratio float64
+
+	switch effort {
+	case "minimal":
+		ratio = 0.025
+	case "low":
+		ratio = 0.15
+	case "medium":
+		ratio = 0.425
+	case "high":
+		ratio = 0.80
+	default:
+		// Unknown effort → safe default
+		ratio = 0.425
+	}
+
+	budget := minBudgetTokens + int(ratio*float64(maxTokens-minBudgetTokens))
+
+	return budget, nil
 }

@@ -8,6 +8,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const MinimumReasoningMaxTokens = 1
+const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+
 // ==================== REQUEST TYPES ====================
 
 // CohereChatRequest represents a Cohere  chat completion request

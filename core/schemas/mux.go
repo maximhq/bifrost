@@ -896,7 +896,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 			responsesMessages := choice.ChatNonStreamResponseChoice.Message.ToResponsesMessages()
 			outputMessages = append(outputMessages, responsesMessages...)
 		}
-		// Note: Stream choices would need different handling if needed
 	}
 
 	if len(outputMessages) > 0 {

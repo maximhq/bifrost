@@ -1035,7 +1035,6 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 			// Decode a single EventStream message
 			message, err := decoder.Decode(resp.Body, payloadBuf)
 			if err != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				if err == io.EOF {
 					// End of stream - finalize any open items
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage)
@@ -1057,6 +1056,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 
 						if i == len(finalResponses)-1 {
 							// Set raw request if enabled
+							ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 							if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 								providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
 							}
@@ -1067,6 +1067,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 					}
 					break
 				}
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				provider.logger.Warn(fmt.Sprintf("Error decoding %s EventStream message: %v", providerName, err))
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 				return

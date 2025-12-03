@@ -56,7 +56,6 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
 			if len(message.ResponsesReasoning.Summary) > 0 &&
 				strings.Contains(bifrostReq.Model, "gpt-oss") &&
-				len(message.ResponsesReasoning.Summary) > 0 &&
 				message.Content == nil {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
@@ -95,6 +94,11 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
+			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
+		}
+		// Drop user field if it exceeds OpenAI's 64 character limit
+		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
 		// Filter out tools that OpenAI doesn't support
 		req.filterUnsupportedTools()
 	}

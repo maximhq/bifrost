@@ -46,6 +46,7 @@ func TestMistral(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			ListModels:            false,
+			Reasoning:             false, // Not supported right now because we are not using native mistral converters
 		},
 	}
 

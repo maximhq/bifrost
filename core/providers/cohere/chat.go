@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -101,21 +101,29 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		cohereReq.FrequencyPenalty = bifrostReq.Params.FrequencyPenalty
 		cohereReq.PresencePenalty = bifrostReq.Params.PresencePenalty
 
+		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
-			if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
+			if bifrostReq.Params.Reasoning.MaxTokens != nil {
 				cohereReq.Thinking = &CohereThinking{
-					Type: ThinkingTypeDisabled,
+					Type:        ThinkingTypeEnabled,
+					TokenBudget: bifrostReq.Params.Reasoning.MaxTokens,
+				}
+			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+				maxCompletionTokens := DefaultCompletionMaxTokens
+				if bifrostReq.Params.MaxCompletionTokens != nil {
+					maxCompletionTokens = *bifrostReq.Params.MaxCompletionTokens
+				}
+				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, maxCompletionTokens)
+				if err != nil {
+					return nil, err
+				}
+				cohereReq.Thinking = &CohereThinking{
+					Type:        ThinkingTypeEnabled,
+					TokenBudget: schemas.Ptr(budgetTokens), // Max tokens for reasoning
 				}
 			} else {
-				if bifrostReq.Params.Reasoning.MaxTokens == nil {
-					return nil, fmt.Errorf("reasoning.max_tokens is required for reasoning")
-				} else if *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", anthropic.MinimumReasoningMaxTokens)
-				} else {
-					cohereReq.Thinking = &CohereThinking{
-						Type:        ThinkingTypeEnabled,
-						TokenBudget: bifrostReq.Params.Reasoning.MaxTokens,
-					}
+				cohereReq.Thinking = &CohereThinking{
+					Type: ThinkingTypeDisabled,
 				}
 			}
 		}
@@ -429,6 +437,7 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 
 				return streamResponse, nil, false
 			} else if chunk.Delta.Message.Content.CohereStreamContentObject.Thinking != nil {
+				thinkingText := *chunk.Delta.Message.Content.CohereStreamContentObject.Thinking
 				streamResponse := &schemas.BifrostChatResponse{
 					Object: "chat.completion.chunk",
 					Choices: []schemas.BifrostResponseChoice{
@@ -436,12 +445,12 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 							Index: 0,
 							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 								Delta: &schemas.ChatStreamResponseChoiceDelta{
-									Reasoning: chunk.Delta.Message.Content.CohereStreamContentObject.Thinking,
+									Reasoning: schemas.Ptr(thinkingText),
 									ReasoningDetails: []schemas.ChatReasoningDetails{
 										{
 											Index: 0,
 											Type:  schemas.BifrostReasoningDetailsTypeText,
-											Text:  chunk.Delta.Message.Content.CohereStreamContentObject.Thinking,
+											Text:  schemas.Ptr(thinkingText),
 										},
 									},
 								},
