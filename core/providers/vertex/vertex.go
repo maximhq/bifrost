@@ -919,6 +919,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
+			provider.networkConfig.StreamMaxTokenSize,
 		)
 	} else {
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)

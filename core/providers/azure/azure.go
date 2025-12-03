@@ -647,6 +647,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
+			provider.networkConfig.StreamMaxTokenSize,
 		)
 	} else {
 		// Set Azure authentication - either Bearer token or api-key
