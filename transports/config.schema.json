@@ -1337,6 +1337,12 @@
           "type": "integer",
           "minimum": 0,
           "description": "Maximum retry backoff in milliseconds"
+        },
+        "stream_max_token_size": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 104857600,
+          "description": "Maximum token size for streaming scanner buffer in bytes (default: 10MB, min: 1MB, max: 100MB)"
         }
       },
       "additionalProperties": false
