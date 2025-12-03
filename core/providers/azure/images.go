@@ -2,10 +2,12 @@ package azure
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -166,7 +168,57 @@ func (provider *AzureProvider) DoRequest(ctx context.Context, key schemas.Key, a
 
 }
 
-// ImageGenerationStream is not implemented at this time.
-func (provider *AzureProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+// ImageGenerationStream performs a streaming image generation request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *AzureProvider) ImageGenerationStream(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	//
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
+
+	// Prepare Azure-specific headers
+	authHeader := make(map[string]string)
+
+	// Set Azure authentication - either Bearer token or api-key
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
+	} else {
+		authHeader["api-key"] = key.Value
+	}
+
+	return openai.HandleOpenAIImageGenerationStreaming(
+		ctx,
+		provider.client,
+		url,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil, nil,
+		provider.logger,
+	)
+
 }

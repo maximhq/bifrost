@@ -10,6 +10,11 @@ type BifrostImageGenerationRequest struct {
 	RawRequestBody []byte                     `json:"-"`
 }
 
+// GetRawRequestBody implements utils.RequestBodyGetter.
+func (b *BifrostImageGenerationRequest) GetRawRequestBody() []byte {
+	return b.RawRequestBody
+}
+
 type ImageGenerationInput struct {
 	Prompt string `json:"prompt"`
 }
@@ -20,11 +25,12 @@ type ImageGenerationParameters struct {
 	Quality        *string                `json:"quality,omitempty"`         // "standard", "hd"
 	Style          *string                `json:"style,omitempty"`           // "natural", "vivid"
 	ResponseFormat *string                `json:"response_format,omitempty"` // "url", "b64_json"
+	Stream         *bool                  `json:"stream,omitempty"`          // true, false
 	User           *string                `json:"user,omitempty"`
 	ExtraParams    map[string]interface{} `json:"extra_params,omitempty"`
 }
 
-// BifrostImageGenerationResponse represents the response
+// BifrostImageGenerationResponse represents the image generation response in bifrost format
 type BifrostImageGenerationResponse struct {
 	ID          string                     `json:"id"`
 	Created     int64                      `json:"created"`
@@ -47,7 +53,7 @@ type ImageUsage struct {
 }
 
 // Streaming Response
-type BifrostImageStreamResponse struct {
+type BifrostImageGenerationStreamResponse struct {
 	ID            string                     `json:"id"`
 	Type          string                     `json:"type"`                     // "image.chunk", "image.complete", "error"
 	Index         int                        `json:"index"`                    // Which image (0-N)

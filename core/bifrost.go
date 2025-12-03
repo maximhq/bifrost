@@ -2432,6 +2432,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.EmbeddingRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
+	req.ImageGenerationRequest = nil
 }
 
 // getBifrostRequest gets a BifrostRequest from the pool
@@ -2669,12 +2670,29 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
 	return response.ImageGenerationResponse, nil
 }
 
-func (b *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
+// ImageGenerationStreamRequest sends a image generation stream request to the specified provider.
+func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
 	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Message: "streaming image generation not implemented",
-		},
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation stream request is nil",
+			},
+		}
 	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation stream request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationStreamRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }

@@ -404,7 +404,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 					response.ExtraFields.RawResponse = audioChunk
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan)
 			}
 		}
 
@@ -422,7 +422,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 		}
 
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil), responseChan)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil

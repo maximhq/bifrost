@@ -662,7 +662,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx context.Context, postH
 					},
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(textResponse, nil, nil, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(textResponse, nil, nil, nil, nil, nil), responseChan)
 			}
 		}
 	}()
@@ -870,7 +870,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						response.ExtraFields.RawResponse = string(message.Payload)
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 				}
 			}
 		}
@@ -880,7 +880,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		response.ExtraFields.ModelDeployment = deployment
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -1027,7 +1027,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 							finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						}
 
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, finalResponse, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, finalResponse, nil, nil, nil), responseChan)
 					}
 					break
 				}
@@ -1108,7 +1108,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 							response.ExtraFields.RawResponse = string(message.Payload)
 						}
 
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 					}
 				}
 			}

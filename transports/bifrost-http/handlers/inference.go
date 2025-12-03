@@ -1162,7 +1162,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
-    // Continue witout extra params
+		// Continue witout extra params
 	} else {
 		req.ImageGenerationParameters.ExtraParams = extraParams
 	}
@@ -1193,8 +1193,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	// Streaming not supported yet
 	if req.Stream != nil && *req.Stream {
 		// TODO: Handle streaming logic here
-		// h.handleStreamingImageGeneration
-		SendError(ctx, fasthttp.StatusNotImplemented, "Streaming image generation not implemented")
+		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
 		return
 	}
 
@@ -1206,4 +1205,17 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, resp)
+}
+
+// handleStreamingImageGeneration handles streaming image generation requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageGenerationRequest, bifrostCtx *context.Context, cancel context.CancelFunc) {
+	// Use the cancellable context from ConvertToBifrostContext
+	// See router.go for detailed explanation of why we need a cancellable context
+	streamCtx := *bifrostCtx
+
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.ImageGenerationStreamRequest(streamCtx, req)
+	}
+
+	h.handleStreamingResponse(ctx, getStream, cancel)
 }

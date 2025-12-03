@@ -260,16 +260,17 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
-	TextCompletionResponse      *BifrostTextCompletionResponse
-	ChatResponse                *BifrostChatResponse
-	ResponsesResponse           *BifrostResponsesResponse
-	ResponsesStreamResponse     *BifrostResponsesStreamResponse
-	EmbeddingResponse           *BifrostEmbeddingResponse
-	SpeechResponse              *BifrostSpeechResponse
-	SpeechStreamResponse        *BifrostSpeechStreamResponse
-	TranscriptionResponse       *BifrostTranscriptionResponse
-	TranscriptionStreamResponse *BifrostTranscriptionStreamResponse
-	ImageGenerationResponse     *BifrostImageGenerationResponse
+	TextCompletionResponse        *BifrostTextCompletionResponse
+	ChatResponse                  *BifrostChatResponse
+	ResponsesResponse             *BifrostResponsesResponse
+	ResponsesStreamResponse       *BifrostResponsesStreamResponse
+	EmbeddingResponse             *BifrostEmbeddingResponse
+	SpeechResponse                *BifrostSpeechResponse
+	SpeechStreamResponse          *BifrostSpeechStreamResponse
+	TranscriptionResponse         *BifrostTranscriptionResponse
+	TranscriptionStreamResponse   *BifrostTranscriptionStreamResponse
+	ImageGenerationResponse       *BifrostImageGenerationResponse
+	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
 }
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
@@ -340,7 +341,7 @@ type BifrostStream struct {
 	*BifrostResponsesStreamResponse
 	*BifrostSpeechStreamResponse
 	*BifrostTranscriptionStreamResponse
-	*BifrostImageStreamResponse
+	*BifrostImageGenerationStreamResponse
 	*BifrostError
 }
 
@@ -357,8 +358,8 @@ func (bs BifrostStream) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(bs.BifrostSpeechStreamResponse)
 	} else if bs.BifrostTranscriptionStreamResponse != nil {
 		return sonic.Marshal(bs.BifrostTranscriptionStreamResponse)
-	} else if bs.BifrostImageStreamResponse != nil {
-		return sonic.Marshal(bs.BifrostImageStreamResponse)
+	} else if bs.BifrostImageGenerationStreamResponse != nil {
+		return sonic.Marshal(bs.BifrostImageGenerationStreamResponse)
 	} else if bs.BifrostError != nil {
 		return sonic.Marshal(bs.BifrostError)
 	}
