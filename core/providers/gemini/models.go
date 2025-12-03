@@ -12,7 +12,7 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 	}
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
-		Data:          make([]schemas.Model, 0, len(response.Models)),
+		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
 	for _, model := range response.Models {
@@ -39,7 +39,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 	}
 
 	geminiResponse := &GeminiListModelsResponse{
-		Models: make([]GeminiModel, 0, len(resp.Data)),
+		Models:        make([]GeminiModel, 0, len(resp.Data)),
 		NextPageToken: resp.NextPageToken,
 	}
 

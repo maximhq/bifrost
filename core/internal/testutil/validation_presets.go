@@ -3,7 +3,6 @@ package testutil
 import (
 	"regexp"
 
-
 	"github.com/maximhq/bifrost/core/schemas"
 )
 

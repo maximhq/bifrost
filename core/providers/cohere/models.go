@@ -8,7 +8,7 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 	}
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
-		Data:          make([]schemas.Model, 0, len(response.Models)),
+		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
 	for _, model := range response.Models {

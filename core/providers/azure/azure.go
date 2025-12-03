@@ -342,6 +342,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 		postHookRunner,
 		customPostResponseConverter,
 		provider.logger,
+		provider.networkConfig.StreamMaxTokenSize,
 	)
 }
 
@@ -484,6 +485,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
+			provider.networkConfig.StreamMaxTokenSize,
 		)
 	} else {
 		// Set Azure authentication - either Bearer token or api-key
@@ -513,6 +515,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 			nil,
 			postResponseConverter,
 			provider.logger,
+			provider.networkConfig.StreamMaxTokenSize,
 		)
 	}
 }
@@ -686,6 +689,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 			postRequestConverter,
 			postResponseConverter,
 			provider.logger,
+			provider.networkConfig.StreamMaxTokenSize,
 		)
 	}
 }

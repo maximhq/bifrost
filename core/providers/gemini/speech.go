@@ -156,7 +156,7 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)
 					}
 					bifrostResp.Audio = wavData
-				}else{
+				} else {
 					bifrostResp.Audio = audioData
 				}
 			}
