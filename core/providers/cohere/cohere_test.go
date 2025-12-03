@@ -28,6 +28,7 @@ func TestCohere(t *testing.T) {
 		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
 		TextModel:      "",                         // Cohere focuses on chat
 		EmbeddingModel: "embed-v4.0",
+		ReasoningModel: "command-a-reasoning-08-2025",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,

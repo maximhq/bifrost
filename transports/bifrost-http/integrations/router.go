@@ -309,6 +309,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set send back raw response flag for all integration requests
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySendBackRawResponse, true)
 
+		// Set integration type to context
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyIntegrationType, string(config.Type))
+
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet {
 			if config.RequestParser != nil {
@@ -703,7 +706,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *co
 			eventStreamEncoder = eventstream.NewEncoder()
 		}
 
-		var shouldSendDoneMarker bool
+		shouldSendDoneMarker := true
+		if config.Type == RouteConfigTypeAnthropic || strings.Contains(config.Path, "/responses") {
+			shouldSendDoneMarker = false
+		}
 
 		// Process streaming responses
 		for chunk := range streamChan {
@@ -800,10 +806,6 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *co
 					convertedResponse, err = nil, fmt.Errorf("no response converter found for request type: %s", requestType)
 				}
 
-				if eventType == "" {
-					shouldSendDoneMarker = true
-				}
-
 				if convertedResponse == nil && err == nil {
 					// Skip streaming chunk if no response is available and no error is returned
 					continue
@@ -878,7 +880,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *co
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
 					// Example: "event: content_block_delta\ndata: {...}\n\n"
-					if !strings.HasPrefix(sseString, "data: ") {
+					if !strings.HasPrefix(sseString, "data: ") && !strings.HasPrefix(sseString, "event: ") {
 						sseString = fmt.Sprintf("data: %s\n\n", sseString)
 					}
 					if _, err := fmt.Fprint(w, sseString); err != nil {

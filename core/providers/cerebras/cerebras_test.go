@@ -31,6 +31,7 @@ func TestCerebras(t *testing.T) {
 		},
 		TextModel:      "llama3.1-8b",
 		EmbeddingModel: "", // Cerebras doesn't support embedding
+		ReasoningModel: "gpt-oss-120b",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
@@ -48,6 +49,7 @@ func TestCerebras(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			ListModels:            true,
+			Reasoning:             true,
 		},
 	}
 

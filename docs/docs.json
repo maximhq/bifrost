@@ -71,13 +71,6 @@
             ]
           },
           {
-            "group": "Models Catalog",
-            "icon": "box",
-            "pages": [
-              "models-catalog/list"
-            ]
-          },
-          {
             "group": "Provider Integrations",
             "icon": "plug",
             "pages": [

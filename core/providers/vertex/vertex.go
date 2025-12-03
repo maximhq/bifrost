@@ -701,38 +701,7 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 	deployment := provider.getModelDeployment(key, request.Model)
 
 	if schemas.IsAnthropicModel(deployment) {
-		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (any, error) {
-				//TODO: optimize this double Marshal
-				// Format messages for Vertex API
-				var requestBody map[string]interface{}
-
-				// Use centralized Anthropic converter
-				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					reqBody.Model = deployment
-				}
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-				}
-				if _, exists := requestBody["anthropic_version"]; !exists {
-					requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
-				}
-				delete(requestBody, "model")
-				delete(requestBody, "region")
-				return requestBody, nil
-			},
-			provider.GetProviderKey())
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -869,38 +838,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
 
-		// Use Anthropic-style streaming for Claude models
-		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (any, error) {
-				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					reqBody.Model = deployment
-					reqBody.Stream = schemas.Ptr(true)
-				}
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				var requestBody map[string]interface{}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-				}
-
-				if _, exists := requestBody["anthropic_version"]; !exists {
-					requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
-				}
-
-				delete(requestBody, "model")
-				delete(requestBody, "region")
-				return requestBody, nil
-			},
-			provider.GetProviderKey())
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, true)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -943,7 +881,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			ctx,
 			provider.client,
 			url,
-			jsonData,
+			jsonBody,
 			headers,
 			provider.networkConfig.ExtraHeaders,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

@@ -40,7 +40,7 @@ function getMessage(log?: LogEntry) {
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
-		return log.transcription_input.prompt || "Audio file";
+		return "Audio file";
 	}
 	return "";
 }

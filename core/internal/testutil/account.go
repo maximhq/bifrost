@@ -139,6 +139,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 						"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 						"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+						"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 					},
 				},
 			},
