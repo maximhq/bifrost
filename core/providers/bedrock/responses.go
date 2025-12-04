@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -17,13 +18,14 @@ type BedrockResponsesStreamState struct {
 	ItemIDs                   map[int]string // Maps output_index to item ID for stable IDs
 	ToolCallIDs               map[int]string // Maps output_index to tool call ID (callID)
 	ToolCallNames             map[int]string // Maps output_index to tool call name
+	ReasoningContentIndices   map[int]bool   // Tracks which content indices are reasoning blocks
+	CompletedOutputIndices    map[int]bool   // Tracks which output indices have been completed
 	CurrentOutputIndex        int            // Current output index counter
 	MessageID                 *string        // Message ID (generated)
 	Model                     *string        // Model name
 	CreatedAt                 int            // Timestamp for created_at consistency
 	HasEmittedCreated         bool           // Whether we've emitted response.created
 	HasEmittedInProgress      bool           // Whether we've emitted response.in_progress
-	TextItemClosed            bool           // Whether text item has been closed
 }
 
 // bedrockResponsesStreamStatePool provides a pool for Bedrock responses stream state objects.
@@ -35,11 +37,12 @@ var bedrockResponsesStreamStatePool = sync.Pool{
 			ItemIDs:                   make(map[int]string),
 			ToolCallIDs:               make(map[int]string),
 			ToolCallNames:             make(map[int]string),
+			ReasoningContentIndices:   make(map[int]bool),
+			CompletedOutputIndices:    make(map[int]bool),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
 			HasEmittedInProgress:      false,
-			TextItemClosed:            false,
 		}
 	},
 }
@@ -74,6 +77,16 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	} else {
 		clear(state.ToolCallNames)
 	}
+	if state.ReasoningContentIndices == nil {
+		state.ReasoningContentIndices = make(map[int]bool)
+	} else {
+		clear(state.ReasoningContentIndices)
+	}
+	if state.CompletedOutputIndices == nil {
+		state.CompletedOutputIndices = make(map[int]bool)
+	} else {
+		clear(state.CompletedOutputIndices)
+	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -81,7 +94,6 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
-	state.TextItemClosed = false
 	return state
 }
 
@@ -120,13 +132,887 @@ func (state *BedrockResponsesStreamState) flush() {
 	} else {
 		clear(state.ToolCallNames)
 	}
+	if state.ReasoningContentIndices == nil {
+		state.ReasoningContentIndices = make(map[int]bool)
+	} else {
+		clear(state.ReasoningContentIndices)
+	}
+	if state.CompletedOutputIndices == nil {
+		state.CompletedOutputIndices = make(map[int]bool)
+	} else {
+		clear(state.CompletedOutputIndices)
+	}
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.Model = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
-	state.TextItemClosed = false
+}
+
+// ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
+// Returns a slice of responses to support cases where a single event produces multiple responses
+func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *BedrockResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
+	switch {
+	case chunk.Role != nil:
+		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		// Generate message ID if not already set
+		if state.MessageID == nil {
+			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
+			state.MessageID = &messageID
+		}
+
+		// Emit response.created
+		if !state.HasEmittedCreated {
+			response := &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				CreatedAt: state.CreatedAt,
+			}
+			if state.Model != nil {
+				response.Model = *state.Model
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeCreated,
+				SequenceNumber: sequenceNumber,
+				Response:       response,
+			})
+			state.HasEmittedCreated = true
+		}
+
+		// Emit response.in_progress
+		if !state.HasEmittedInProgress {
+			response := &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				CreatedAt: state.CreatedAt, // Use same timestamp
+			}
+			if state.Model != nil {
+				response.Model = *state.Model
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeInProgress,
+				SequenceNumber: sequenceNumber + len(responses),
+				Response:       response,
+			})
+			state.HasEmittedInProgress = true
+		}
+
+		// Don't pre-create any items here - let each content block create its own item when it first appears
+
+		if len(responses) > 0 {
+			return responses, nil, false
+		}
+
+	case chunk.Start != nil:
+		// Handle content block start (text content or tool use)
+		contentBlockIndex := 0
+		if chunk.ContentBlockIndex != nil {
+			contentBlockIndex = *chunk.ContentBlockIndex
+		}
+
+		// Check if this is a tool use start
+		if chunk.Start.ToolUse != nil {
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// Create new output index for this tool use
+			outputIndex := state.CurrentOutputIndex
+			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
+			state.CurrentOutputIndex++ // Increment for next use
+
+			// Store tool use ID as item ID and call ID
+			toolUseID := chunk.Start.ToolUse.ToolUseID
+			toolName := chunk.Start.ToolUse.Name
+			state.ItemIDs[outputIndex] = toolUseID
+			state.ToolCallIDs[outputIndex] = toolUseID
+			state.ToolCallNames[outputIndex] = toolName
+
+			statusInProgress := "in_progress"
+			item := &schemas.ResponsesMessage{
+				ID:     &toolUseID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: &statusInProgress,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &toolUseID,
+					Name:      &toolName,
+					Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
+				},
+			}
+
+			// Initialize argument buffer for this tool call
+			state.ToolArgumentBuffers[outputIndex] = ""
+
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   schemas.Ptr(contentBlockIndex),
+				Item:           item,
+			})
+
+			return responses, nil, false
+		}
+		// Text content start is handled by Role event, so we can ignore Start for text
+
+	case chunk.ContentBlockIndex != nil && chunk.Delta != nil:
+		// Handle contentBlockDelta event
+		contentBlockIndex := *chunk.ContentBlockIndex
+		outputIndex, exists := state.ContentIndexToOutputIndex[contentBlockIndex]
+		if !exists {
+			// Check if this is a new content block that should close previous reasoning blocks
+			var responses []*schemas.BifrostResponsesStreamResponse
+
+			// If this is a text delta with a new content block index, close any open reasoning blocks
+			if chunk.Delta.Text != nil && contentBlockIndex > 0 {
+				for prevContentIndex := range state.ReasoningContentIndices {
+					if prevContentIndex < contentBlockIndex {
+						prevOutputIndex, prevExists := state.ContentIndexToOutputIndex[prevContentIndex]
+						if !prevExists {
+							continue
+						}
+
+						itemID := state.ItemIDs[prevOutputIndex]
+
+						// For reasoning items, content_index is always 0
+						reasoningContentIndex := 0
+
+						// Emit reasoning_summary_text.done
+						emptyText := ""
+						reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
+							SequenceNumber: sequenceNumber + len(responses),
+							OutputIndex:    schemas.Ptr(prevOutputIndex),
+							ContentIndex:   &reasoningContentIndex,
+							Text:           &emptyText,
+						}
+						if itemID != "" {
+							reasoningDoneResponse.ItemID = &itemID
+						}
+						responses = append(responses, reasoningDoneResponse)
+
+						// Emit content_part.done for reasoning
+						partDoneResponse := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+							SequenceNumber: sequenceNumber + len(responses),
+							OutputIndex:    schemas.Ptr(prevOutputIndex),
+							ContentIndex:   &reasoningContentIndex,
+						}
+						if itemID != "" {
+							partDoneResponse.ItemID = &itemID
+						}
+						responses = append(responses, partDoneResponse)
+
+						// Emit output_item.done for reasoning
+						statusCompleted := "completed"
+						doneItem := &schemas.ResponsesMessage{
+							Status: &statusCompleted,
+						}
+						if itemID != "" {
+							doneItem.ID = &itemID
+						}
+						responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: sequenceNumber + len(responses),
+							OutputIndex:    schemas.Ptr(prevOutputIndex),
+							ContentIndex:   &reasoningContentIndex,
+							Item:           doneItem,
+						})
+
+						// Clear the reasoning content index tracking
+						delete(state.ReasoningContentIndices, prevContentIndex)
+
+						// Mark this output index as completed
+						state.CompletedOutputIndices[prevOutputIndex] = true
+					}
+				}
+			}
+
+			// Create new output index for this content block
+			outputIndex = state.CurrentOutputIndex
+			state.CurrentOutputIndex++
+			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
+
+			// If this is a text delta for a new content block, create the text item
+			if chunk.Delta.Text != nil {
+				// Generate stable ID for text item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("item_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				// Create text item
+				messageType := schemas.ResponsesMessageTypeMessage
+				role := schemas.ResponsesInputMessageRoleAssistant
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
+					},
+				}
+
+				// Emit output_item.added for text
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					Item:           item,
+				})
+
+				// Emit content_part.added with empty output_text part
+				emptyText := ""
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					ItemID:         &itemID,
+					Part:           part,
+				})
+			}
+
+			// If this is a text delta for a new content block, also emit the text delta in the same batch
+			if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
+				text := *chunk.Delta.Text
+				itemID := state.ItemIDs[outputIndex]
+				textDeltaResponse := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					Delta:          &text,
+				}
+				if itemID != "" {
+					textDeltaResponse.ItemID = &itemID
+				}
+				responses = append(responses, textDeltaResponse)
+			}
+
+			// If we have responses to return (either from closing reasoning or creating text item), return them first
+			if len(responses) > 0 {
+				return responses, nil, false
+			}
+		}
+
+		switch {
+		case chunk.Delta.Text != nil:
+			// Handle text delta
+			text := *chunk.Delta.Text
+			if text != "" {
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					Delta:          &text,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+			}
+
+		case chunk.Delta.ToolUse != nil:
+			// Handle tool use delta - function call arguments
+			toolUseDelta := chunk.Delta.ToolUse
+
+			if toolUseDelta.Input != "" {
+				// Accumulate argument deltas
+				state.ToolArgumentBuffers[outputIndex] += toolUseDelta.Input
+
+				itemID := state.ItemIDs[outputIndex]
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					Delta:          &toolUseDelta.Input,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+			}
+
+		case chunk.Delta.ReasoningContent != nil:
+			// Handle reasoning content delta
+			reasoningDelta := chunk.Delta.ReasoningContent
+
+			// Check if this is the first reasoning delta for this content block
+			if !state.ReasoningContentIndices[contentBlockIndex] {
+				// First reasoning delta - emit output_item.added and content_part.added
+				var responses []*schemas.BifrostResponsesStreamResponse
+
+				// Generate stable ID for reasoning item
+				var itemID string
+				if state.MessageID == nil {
+					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+				} else {
+					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+				}
+				state.ItemIDs[outputIndex] = itemID
+
+				// Create reasoning item
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+				item := &schemas.ResponsesMessage{
+					ID:   &itemID,
+					Type: &messageType,
+					Role: &role,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary: []schemas.ResponsesReasoningSummary{},
+					},
+				}
+
+				// Preserve signature if present
+				if reasoningDelta.Signature != nil {
+					item.ResponsesReasoning.EncryptedContent = reasoningDelta.Signature
+				}
+
+				// Track that this content index is a reasoning block
+				state.ReasoningContentIndices[contentBlockIndex] = true
+
+				// Emit output_item.added
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					SequenceNumber: sequenceNumber,
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					Item:           item,
+				})
+
+				// Emit content_part.added with empty reasoning_text part
+				emptyText := ""
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text: &emptyText,
+				}
+				// Preserve signature in the content part if present
+				if reasoningDelta.Signature != nil {
+					part.Signature = reasoningDelta.Signature
+				}
+				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					ContentIndex:   &contentBlockIndex,
+					ItemID:         &itemID,
+					Part:           part,
+				})
+
+				// If there's text content, also emit the delta
+				if reasoningDelta.Text != "" {
+					deltaResponse := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+						SequenceNumber: sequenceNumber + len(responses),
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   &contentBlockIndex,
+						Delta:          &reasoningDelta.Text,
+						ItemID:         &itemID,
+					}
+					responses = append(responses, deltaResponse)
+				}
+
+				return responses, nil, false
+			} else {
+				// Subsequent reasoning deltas - just emit the delta
+				if reasoningDelta.Text != "" {
+					itemID := state.ItemIDs[outputIndex]
+					response := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   &contentBlockIndex,
+						Delta:          &reasoningDelta.Text,
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+				}
+
+				// Handle signature deltas
+				if reasoningDelta.Signature != nil {
+					itemID := state.ItemIDs[outputIndex]
+					response := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   &contentBlockIndex,
+						Signature:      reasoningDelta.Signature, // Use signature field instead of delta
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+				}
+			}
+		}
+
+	case chunk.StopReason != nil:
+		// Stop reason - don't use it to close items, just return nil
+		// Items should be closed explicitly when content blocks end
+		return nil, nil, false
+	}
+
+	return nil, nil, false
+}
+
+// FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
+func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Close any open items (text items and tool calls)
+	for contentIndex, outputIndex := range state.ContentIndexToOutputIndex {
+		// Skip reasoning blocks
+		if state.ReasoningContentIndices[contentIndex] {
+			continue
+		}
+
+		// Skip already completed output indices
+		if state.CompletedOutputIndices[outputIndex] {
+			continue
+		}
+
+		itemID := state.ItemIDs[outputIndex]
+		if itemID == "" {
+			continue
+		}
+
+		// Check if this is a tool call by looking at the tool call IDs
+		toolCallID := state.ToolCallIDs[outputIndex]
+		isToolCall := toolCallID != ""
+
+		if isToolCall {
+			// This is a tool call that needs to be closed
+
+			// Emit content_part.done for tool call
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   &contentIndex,
+				ItemID:         &itemID,
+			})
+
+			// Emit function_call_arguments.done with full arguments
+			toolName := state.ToolCallNames[outputIndex]
+			accumulatedArgs := state.ToolArgumentBuffers[outputIndex]
+			if accumulatedArgs != "" {
+				var doneItem *schemas.ResponsesMessage
+				if toolCallID != "" || toolName != "" {
+					doneItem = &schemas.ResponsesMessage{
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{},
+					}
+					if toolCallID != "" {
+						doneItem.ResponsesToolMessage.CallID = &toolCallID
+					}
+					if toolName != "" {
+						doneItem.ResponsesToolMessage.Name = &toolName
+					}
+				}
+
+				response := &schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+					SequenceNumber: sequenceNumber + len(responses),
+					OutputIndex:    schemas.Ptr(outputIndex),
+					Arguments:      &accumulatedArgs,
+				}
+				if itemID != "" {
+					response.ItemID = &itemID
+				}
+				if doneItem != nil {
+					response.Item = doneItem
+				}
+				responses = append(responses, response)
+			}
+
+			// Emit output_item.done for tool call
+			statusCompleted := "completed"
+			doneItem := &schemas.ResponsesMessage{
+				ID:     &itemID,
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status: &statusCompleted,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &toolCallID,
+					Name:      &toolName,
+					Arguments: &accumulatedArgs,
+				},
+			}
+
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   &contentIndex,
+				ItemID:         &itemID,
+				Item:           doneItem,
+			})
+		} else {
+			// This is likely a text item that needs to be closed
+
+			// Emit output_text.done (without accumulated text, just the event)
+			emptyText := ""
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   &contentIndex,
+				ItemID:         &itemID,
+				Text:           &emptyText,
+			})
+
+			// Emit content_part.done for text
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   &contentIndex,
+				ItemID:         &itemID,
+			})
+
+			// Emit output_item.done for text
+			statusCompleted := "completed"
+			doneItem := &schemas.ResponsesMessage{
+				Status: &statusCompleted,
+			}
+			if itemID != "" {
+				doneItem.ID = &itemID
+			}
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + len(responses),
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   &contentIndex,
+				Item:           doneItem,
+			})
+		}
+
+		// Mark this output index as completed
+		state.CompletedOutputIndices[outputIndex] = true
+	}
+
+	// Close any open reasoning items
+	for contentIndex := range state.ReasoningContentIndices {
+		outputIndex, exists := state.ContentIndexToOutputIndex[contentIndex]
+		if !exists {
+			continue
+		}
+
+		// Skip already completed output indices
+		if state.CompletedOutputIndices[outputIndex] {
+			continue
+		}
+
+		itemID := state.ItemIDs[outputIndex]
+
+		// For reasoning items, content_index is always 0 (reasoning content is the first and only content part)
+		reasoningContentIndex := 0
+
+		// Emit reasoning_summary_text.done
+		emptyText := ""
+		reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   &reasoningContentIndex,
+			Text:           &emptyText,
+		}
+		if itemID != "" {
+			reasoningDoneResponse.ItemID = &itemID
+		}
+		responses = append(responses, reasoningDoneResponse)
+
+		// Emit content_part.done for reasoning
+		partDoneResponse := &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   &reasoningContentIndex,
+		}
+		if itemID != "" {
+			partDoneResponse.ItemID = &itemID
+		}
+		responses = append(responses, partDoneResponse)
+
+		// Emit output_item.done for reasoning
+		statusCompleted := "completed"
+		doneItem := &schemas.ResponsesMessage{
+			Status: &statusCompleted,
+		}
+		if itemID != "" {
+			doneItem.ID = &itemID
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   &reasoningContentIndex,
+			Item:           doneItem,
+		})
+
+		// Mark this output index as completed
+		state.CompletedOutputIndices[outputIndex] = true
+	}
+
+	// Note: Tool calls are already closed in the first loop above.
+	// This section is intentionally left empty to avoid duplicate events.
+
+	// Emit response.completed
+	response := &schemas.BifrostResponsesResponse{
+		ID:        state.MessageID,
+		CreatedAt: state.CreatedAt,
+		Usage:     usage,
+	}
+
+	if state.Model != nil {
+		response.Model = *state.Model
+	}
+
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		SequenceNumber: sequenceNumber + len(responses),
+		Response:       response,
+	})
+
+	return responses
+}
+
+// ToBedrockConverseStreamResponse converts a Bifrost Responses stream response to Bedrock streaming format
+// Returns a BedrockStreamEvent that represents the streaming event in Bedrock's format
+func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) (*BedrockStreamEvent, error) {
+	if bifrostResp == nil {
+		return nil, fmt.Errorf("bifrost stream response is nil")
+	}
+
+	event := &BedrockStreamEvent{}
+
+	switch bifrostResp.Type {
+	case schemas.ResponsesStreamResponseTypeCreated:
+		// Message start - emit role event
+		// Always set role for message start event
+		role := "assistant"
+		event.Role = &role
+
+	case schemas.ResponsesStreamResponseTypeInProgress:
+		// In progress - no-op for Bedrock (it doesn't have an explicit in_progress event)
+		// Return nil to skip this event
+		return nil, nil
+
+	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		// Content block start
+		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil {
+			// Tool use start
+			if bifrostResp.Item.ResponsesToolMessage.Name != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+				contentBlockIndex := 0
+				if bifrostResp.ContentIndex != nil {
+					contentBlockIndex = *bifrostResp.ContentIndex
+				}
+				event.ContentBlockIndex = &contentBlockIndex
+				event.Start = &BedrockContentBlockStart{
+					ToolUse: &BedrockToolUseStart{
+						ToolUseID: *bifrostResp.Item.ResponsesToolMessage.CallID,
+						Name:      *bifrostResp.Item.ResponsesToolMessage.Name,
+					},
+				}
+			}
+		} else if bifrostResp.Item != nil {
+			// Text item added - Bedrock doesn't have an explicit text start event, so we skip it
+			// Check if it's a text message (has content blocks or is a message type)
+			if bifrostResp.Item.Content != nil || (bifrostResp.Item.Type != nil && *bifrostResp.Item.Type == schemas.ResponsesMessageTypeMessage) {
+				return nil, nil
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+		// Text delta
+		if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			event.ContentBlockIndex = &contentBlockIndex
+			event.Delta = &BedrockContentBlockDelta{
+				Text: bifrostResp.Delta,
+			}
+		} else {
+			// Skip empty deltas
+			return nil, nil
+		}
+
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+		// Tool use delta (function call arguments)
+		if bifrostResp.Delta != nil {
+			contentBlockIndex := 0
+			if bifrostResp.ContentIndex != nil {
+				contentBlockIndex = *bifrostResp.ContentIndex
+			}
+			event.ContentBlockIndex = &contentBlockIndex
+			event.Delta = &BedrockContentBlockDelta{
+				ToolUse: &BedrockToolUseDelta{
+					Input: *bifrostResp.Delta,
+				},
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		// Reasoning content delta
+		contentBlockIndex := 0
+		if bifrostResp.ContentIndex != nil {
+			contentBlockIndex = *bifrostResp.ContentIndex
+		}
+		event.ContentBlockIndex = &contentBlockIndex
+
+		// Check if this is a signature delta or text delta
+		if bifrostResp.Signature != nil {
+			// This is a signature delta
+			event.Delta = &BedrockContentBlockDelta{
+				ReasoningContent: &BedrockReasoningContentText{
+					Signature: bifrostResp.Signature,
+				},
+			}
+		} else if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
+			// This is reasoning text delta
+			event.Delta = &BedrockContentBlockDelta{
+				ReasoningContent: &BedrockReasoningContentText{
+					Text: *bifrostResp.Delta,
+				},
+			}
+		} else {
+			// Skip empty deltas
+			return nil, nil
+		}
+
+	case schemas.ResponsesStreamResponseTypeOutputTextDone,
+		schemas.ResponsesStreamResponseTypeContentPartDone,
+		schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
+		// Content block done - Bedrock doesn't have explicit done events, so we skip them
+		return nil, nil
+
+	case schemas.ResponsesStreamResponseTypeOutputItemDone:
+		// Item done - Bedrock doesn't have explicit done events, so we skip them
+		return nil, nil
+
+	case schemas.ResponsesStreamResponseTypeCompleted:
+		// Message stop - always set stopReason
+		stopReason := "end_turn"
+		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
+			stopReason = bifrostResp.Response.IncompleteDetails.Reason
+		}
+		event.StopReason = &stopReason
+
+		// Add usage if available
+		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
+			event.Usage = &BedrockTokenUsage{
+				InputTokens:  bifrostResp.Response.Usage.InputTokens,
+				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
+				TotalTokens:  bifrostResp.Response.Usage.TotalTokens,
+			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeError:
+		// Error - errors are handled separately by the router via BifrostError in the stream chunk
+		// Return nil to skip this chunk
+		return nil, nil
+
+	default:
+		// Unknown type - skip
+		return nil, nil
+	}
+
+	return event, nil
+}
+
+// BedrockEncodedEvent represents a single event ready for encoding to AWS Event Stream
+type BedrockEncodedEvent struct {
+	EventType string
+	Payload   interface{}
+}
+
+// BedrockInvokeStreamChunkEvent represents the chunk event for invoke-with-response-stream
+type BedrockInvokeStreamChunkEvent struct {
+	Bytes []byte `json:"bytes"`
+}
+
+// ToEncodedEvents converts the flat BedrockStreamEvent into a sequence of specific events
+func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
+	var events []BedrockEncodedEvent
+
+	if event.InvokeModelRawChunk != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "chunk",
+			Payload: BedrockInvokeStreamChunkEvent{
+				Bytes: event.InvokeModelRawChunk,
+			},
+		})
+	}
+
+	if event.Role != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "messageStart",
+			Payload: BedrockMessageStartEvent{
+				Role: *event.Role,
+			},
+		})
+	}
+
+	if event.Start != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "contentBlockStart",
+			Payload: struct {
+				Start             *BedrockContentBlockStart `json:"start"`
+				ContentBlockIndex *int                      `json:"contentBlockIndex"`
+			}{
+				Start:             event.Start,
+				ContentBlockIndex: event.ContentBlockIndex,
+			},
+		})
+	}
+
+	if event.Delta != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "contentBlockDelta",
+			Payload: struct {
+				Delta             *BedrockContentBlockDelta `json:"delta"`
+				ContentBlockIndex *int                      `json:"contentBlockIndex"`
+			}{
+				Delta:             event.Delta,
+				ContentBlockIndex: event.ContentBlockIndex,
+			},
+		})
+	}
+
+	if event.StopReason != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "messageStop",
+			Payload: BedrockMessageStopEvent{
+				StopReason: *event.StopReason,
+			},
+		})
+	}
+
+	if event.Usage != nil || event.Metrics != nil {
+		events = append(events, BedrockEncodedEvent{
+			EventType: "metadata",
+			Payload: BedrockMetadataEvent{
+				Usage:   event.Usage,
+				Metrics: event.Metrics,
+				Trace:   event.Trace,
+			},
+		})
+	}
+
+	return events
 }
 
 // ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format
@@ -144,127 +1030,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 		Params:   &schemas.ResponsesParameters{},
 	}
 
-	// Convert system messages first (they should appear at the top)
-	if len(request.System) > 0 {
-		for _, sysMsg := range request.System {
-			if sysMsg.Text != nil {
-				systemRole := schemas.ResponsesInputMessageRoleSystem
-				bifrostMsg := schemas.ResponsesMessage{
-					Role: &systemRole,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesInputMessageContentBlockTypeText,
-								Text: sysMsg.Text,
-							},
-						},
-					},
-				}
-				bifrostReq.Input = append(bifrostReq.Input, bifrostMsg)
-			}
-		}
-	}
-
-	// Convert regular messages
-	for _, msg := range request.Messages {
-		var role schemas.ResponsesMessageRoleType
-		switch msg.Role {
-		case BedrockMessageRoleUser:
-			role = schemas.ResponsesInputMessageRoleUser
-		case BedrockMessageRoleAssistant:
-			role = schemas.ResponsesInputMessageRoleAssistant
-		default:
-			continue
-		}
-
-		// Convert content blocks - each content block may become its own message
-		// (e.g., tool calls and tool results are separate items in Responses API)
-		for _, content := range msg.Content {
-			if content.ToolUse != nil {
-				// Tool calls are separate function_call type items (no role field)
-				callType := schemas.ResponsesMessageTypeFunctionCall
-				callStatus := "in_progress"
-				toolCallMsg := schemas.ResponsesMessage{
-					Type:   &callType,
-					Status: &callStatus,
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:    &content.ToolUse.ToolUseID,
-						Name:      &content.ToolUse.Name,
-						Arguments: schemas.Ptr(schemas.JsonifyInput(content.ToolUse.Input)),
-					},
-				}
-				bifrostReq.Input = append(bifrostReq.Input, toolCallMsg)
-			} else if content.ToolResult != nil {
-				// Tool results are separate function_call_output type items (no role field)
-				resultType := schemas.ResponsesMessageTypeFunctionCallOutput
-				resultStatus := "completed"
-				var toolResultContent []schemas.ResponsesMessageContentBlock
-				for _, resultContent := range content.ToolResult.Content {
-					if resultContent.Text != nil {
-						toolResultContent = append(toolResultContent, schemas.ResponsesMessageContentBlock{
-							Type: schemas.ResponsesInputMessageContentBlockTypeText,
-							Text: resultContent.Text,
-						})
-					}
-				}
-				toolResultMsg := schemas.ResponsesMessage{
-					Type:   &resultType,
-					Status: &resultStatus,
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: &content.ToolResult.ToolUseID,
-						Output: &schemas.ResponsesToolMessageOutputStruct{
-							ResponsesFunctionToolCallOutputBlocks: toolResultContent,
-						},
-					},
-				}
-				bifrostReq.Input = append(bifrostReq.Input, toolResultMsg)
-			} else if content.Text != nil {
-				// Regular text content - use role-based message
-				// For assistant messages (previous model outputs), use output_text type
-				// For user/system messages, use input_text type
-				textBlockType := schemas.ResponsesInputMessageContentBlockTypeText
-				if msg.Role == BedrockMessageRoleAssistant {
-					textBlockType = schemas.ResponsesOutputMessageContentTypeText
-				}
-				bifrostMsg := schemas.ResponsesMessage{
-					Role: &role,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: textBlockType,
-								Text: content.Text,
-							},
-						},
-					},
-				}
-				bifrostReq.Input = append(bifrostReq.Input, bifrostMsg)
-			} else if content.Image != nil {
-				// Image content - use role-based message
-				imageBlock := schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
-				}
-				if content.Image.Source.Bytes != nil {
-					// Construct proper data URI from format and base64 bytes
-					// Format should be "png", "jpeg", "gif", "webp" etc.
-					format := content.Image.Format
-					if format == "" {
-						format = "jpeg" // default to jpeg if format not specified
-					}
-					dataURI := fmt.Sprintf("data:image/%s;base64,%s", format, *content.Image.Source.Bytes)
-					imageBlock.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
-						ImageURL: &dataURI,
-					}
-				}
-				bifrostMsg := schemas.ResponsesMessage{
-					Role: &role,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{imageBlock},
-					},
-				}
-				bifrostReq.Input = append(bifrostReq.Input, bifrostMsg)
-			}
-		}
-	}
+	// Convert messages using the new conversion method
+	convertedMessages := ConvertBedrockMessagesToBifrostMessages(request.Messages, request.System, false)
+	bifrostReq.Input = convertedMessages
 
 	// Convert inference config to parameters
 	if request.InferenceConfig != nil {
@@ -424,9 +1192,9 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 		ModelID: bifrostReq.Model,
 	}
 
-	// map bifrost messages to bedrock messages
+	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
-		messages, systemMessages, err := convertResponsesItemsToBedrockMessages(bifrostReq.Input)
+		messages, systemMessages, err := ConvertBifrostMessagesToBedrockMessages(bifrostReq.Input)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert Responses messages: %w", err)
 		}
@@ -572,6 +1340,118 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 	return bedrockReq, nil
 }
 
+// ToBifrostResponsesResponse converts BedrockConverseResponse to BifrostResponsesResponse
+func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.BifrostResponsesResponse, error) {
+	if response == nil {
+		return nil, fmt.Errorf("bedrock response is nil")
+	}
+
+	bifrostResp := &schemas.BifrostResponsesResponse{
+		ID:        schemas.Ptr(uuid.New().String()),
+		CreatedAt: int(time.Now().Unix()),
+	}
+
+	// Convert output message to Responses format using the new conversion method
+	if response.Output != nil && response.Output.Message != nil {
+		outputMessages := ConvertBedrockMessagesToBifrostMessages([]BedrockMessage{*response.Output.Message}, []BedrockSystemMessage{}, true)
+		bifrostResp.Output = outputMessages
+	}
+
+	if response.Usage != nil {
+		// Convert usage information
+		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  response.Usage.InputTokens,
+			OutputTokens: response.Usage.OutputTokens,
+			TotalTokens:  response.Usage.TotalTokens,
+		}
+		// Handle cached tokens if present
+		if response.Usage.CacheReadInputTokens > 0 {
+			bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+				CachedTokens: response.Usage.CacheReadInputTokens,
+			}
+		}
+		if response.Usage.CacheWriteInputTokens > 0 {
+			bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
+				CachedTokens: response.Usage.CacheWriteInputTokens,
+			}
+		}
+	}
+
+	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
+		bifrostResp.ServiceTier = &response.ServiceTier.Type
+	}
+
+	return bifrostResp, nil
+}
+
+// ToBedrockConverseResponse converts Bifrost Responses response to Bedrock Converse response
+func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*BedrockConverseResponse, error) {
+	if bifrostResp == nil {
+		return nil, fmt.Errorf("bifrost response is nil")
+	}
+
+	bedrockResp := &BedrockConverseResponse{
+		Output:  &BedrockConverseOutput{},
+		Usage:   &BedrockTokenUsage{},
+		Metrics: &BedrockConverseMetrics{},
+	}
+
+	var hasToolUse bool
+	message := &BedrockMessage{
+		Role:    BedrockMessageRoleAssistant,
+		Content: []BedrockContentBlock{},
+	}
+
+	if len(bifrostResp.Output) > 0 {
+		// Convert Bifrost messages back to Bedrock messages using the new conversion method
+		bedrockMessages, _, err := ConvertBifrostMessagesToBedrockMessages(bifrostResp.Output)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert bifrost output messages: %w", err)
+		}
+
+		// Merge all content blocks from converted messages into a single message
+		for _, bedrockMsg := range bedrockMessages {
+			message.Content = append(message.Content, bedrockMsg.Content...)
+		}
+
+		// Check for tool use in the content blocks
+		for _, block := range message.Content {
+			if block.ToolUse != nil {
+				hasToolUse = true
+				break
+			}
+		}
+	}
+
+	bedrockResp.Output.Message = message
+
+	// Find stop reason from incomplete details or derive from response
+	// Priority: IncompleteDetails > tool_use detection > end_turn
+	stopReason := "end_turn"
+	if bifrostResp.IncompleteDetails != nil {
+		stopReason = bifrostResp.IncompleteDetails.Reason
+	} else if hasToolUse {
+		stopReason = "tool_use"
+	}
+	bedrockResp.StopReason = stopReason
+
+	// Convert usage stats
+	if bifrostResp.Usage != nil {
+		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
+		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
+		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
+	}
+
+	// Set metrics
+	if bifrostResp.ExtraFields.Latency > 0 {
+		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
+	}
+
+	return bedrockResp, nil
+}
+
+// Helper functions
+
 // ensureResponsesToolConfigForConversation ensures toolConfig is present when tool content exists
 func ensureResponsesToolConfigForConversation(bifrostReq *schemas.BifrostResponsesRequest, bedrockReq *BedrockConverseRequest) {
 	if bedrockReq.ToolConfig != nil {
@@ -649,51 +1529,6 @@ func extractToolsFromResponsesConversationHistory(messages []schemas.ResponsesMe
 	return hasToolContent, tools
 }
 
-// ToBifrostResponsesResponse converts BedrockConverseResponse to BifrostResponsesResponse
-func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.BifrostResponsesResponse, error) {
-	if response == nil {
-		return nil, fmt.Errorf("bedrock response is nil")
-	}
-
-	bifrostResp := &schemas.BifrostResponsesResponse{
-		CreatedAt: int(time.Now().Unix()),
-	}
-
-	// Convert output message to Responses format
-	if response.Output != nil && response.Output.Message != nil {
-		outputMessages := convertBedrockMessageToResponsesMessages(*response.Output.Message)
-		bifrostResp.Output = outputMessages
-	}
-
-	if response.Usage != nil {
-		// Convert usage information
-		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
-			TotalTokens:  response.Usage.TotalTokens,
-		}
-		// Handle cached tokens if present
-		if response.Usage.CacheReadInputTokens > 0 {
-			bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: response.Usage.CacheReadInputTokens,
-			}
-		}
-		if response.Usage.CacheWriteInputTokens > 0 {
-			bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-				CachedTokens: response.Usage.CacheWriteInputTokens,
-			}
-		}
-	}
-
-	if response.ServiceTier != nil && response.ServiceTier.Type != "" {
-		bifrostResp.ServiceTier = &response.ServiceTier.Type
-	}
-
-	return bifrostResp, nil
-}
-
-// Helper functions
-
 func convertResponsesToolChoice(toolChoice schemas.ResponsesToolChoice) *BedrockToolChoice {
 	// Check if it's a string choice
 	if toolChoice.ResponsesToolChoiceStr != nil {
@@ -734,17 +1569,21 @@ func convertResponsesToolChoice(toolChoice schemas.ResponsesToolChoice) *Bedrock
 	return nil
 }
 
-// convertResponsesItemsToBedrockMessages converts Responses items back to Bedrock messages
-func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
+// ConvertBifrostMessagesToBedrockMessages converts an array of Bifrost ResponsesMessage to Bedrock message format
+// This is the main conversion method from Bifrost to Bedrock - handles all message types and returns messages + system messages
+func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.ResponsesMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
 	var bedrockMessages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
+	var pendingReasoningContentBlocks []BedrockContentBlock
+	var currentAssistantMessage *BedrockMessage
 
-	for _, msg := range messages {
-		// Handle Responses items
+	for _, msg := range bifrostMessages {
+		// Handle nil Type as regular message
 		msgType := schemas.ResponsesMessageTypeMessage
 		if msg.Type != nil {
 			msgType = *msg.Type
 		}
+
 		switch msgType {
 		case schemas.ResponsesMessageTypeMessage:
 			// Check if Role is present, skip message if not
@@ -757,209 +1596,335 @@ func convertResponsesItemsToBedrockMessages(messages []schemas.ResponsesMessage)
 
 			if role == schemas.ResponsesInputMessageRoleSystem {
 				// Convert to system message
-				// Ensure Content and ContentStr are present
-				if msg.Content != nil {
-					if msg.Content.ContentStr != nil {
-						systemMessages = append(systemMessages, BedrockSystemMessage{
-							Text: msg.Content.ContentStr,
-						})
-					} else if msg.Content.ContentBlocks != nil {
-						for _, block := range msg.Content.ContentBlocks {
-							if block.Text != nil {
-								systemMessages = append(systemMessages, BedrockSystemMessage{
-									Text: block.Text,
-								})
-							}
-						}
-					}
-				}
-				// Skip system messages with no content
+				systemMsgs := convertBifrostMessageToBedrockSystemMessages(&msg)
+				systemMessages = append(systemMessages, systemMsgs...)
 			} else {
 				// Convert regular message
-				// Ensure Content is present
-				if msg.Content == nil {
-					// Skip messages without content or create with empty content
-					continue
+				bedrockMsg := convertBifrostMessageToBedrockMessage(&msg)
+				if bedrockMsg != nil {
+					if role == schemas.ResponsesInputMessageRoleAssistant {
+						// Add any pending reasoning content blocks to the message
+						if len(pendingReasoningContentBlocks) > 0 {
+							// copy the pending reasoning content blocks
+							copied := make([]BedrockContentBlock, len(pendingReasoningContentBlocks))
+							copy(copied, pendingReasoningContentBlocks)
+							contentBlocks := copied
+							pendingReasoningContentBlocks = nil
+							// Add content blocks after pending reasoning content blocks are added
+							if msg.Content != nil {
+								msgContentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(*msg.Content)
+								if err == nil {
+									contentBlocks = append(contentBlocks, msgContentBlocks...)
+								}
+							}
+							bedrockMsg.Content = contentBlocks
+						}
+						// Store assistant message for potential reasoning blocks
+						currentAssistantMessage = bedrockMsg
+					} else {
+						// Flush any pending assistant message first for non-assistant messages
+						if currentAssistantMessage != nil {
+							if len(pendingReasoningContentBlocks) > 0 {
+								currentAssistantMessage.Content = append(currentAssistantMessage.Content, pendingReasoningContentBlocks...)
+								pendingReasoningContentBlocks = nil
+							}
+							bedrockMessages = append(bedrockMessages, *currentAssistantMessage)
+							currentAssistantMessage = nil
+						}
+						bedrockMessages = append(bedrockMessages, *bedrockMsg)
+					}
 				}
+			}
 
-				bedrockMsg := BedrockMessage{
-					Role: BedrockMessageRole(role),
+		case schemas.ResponsesMessageTypeReasoning:
+			// Handle reasoning as reasoning content blocks
+			reasoningBlocks := convertBifrostReasoningToBedrockReasoning(&msg)
+			if len(reasoningBlocks) > 0 {
+				if currentAssistantMessage == nil {
+					currentAssistantMessage = &BedrockMessage{
+						Role:    BedrockMessageRoleAssistant,
+						Content: []BedrockContentBlock{},
+					}
 				}
-
-				// Convert content
-				contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(*msg.Content)
-				if err != nil {
-					return nil, nil, fmt.Errorf("failed to convert content blocks: %w", err)
-				}
-				bedrockMsg.Content = contentBlocks
-
-				bedrockMessages = append(bedrockMessages, bedrockMsg)
+				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCall:
+			// Flush any pending reasoning blocks first
+			if len(pendingReasoningContentBlocks) > 0 && currentAssistantMessage != nil {
+				currentAssistantMessage.Content = append(currentAssistantMessage.Content, pendingReasoningContentBlocks...)
+				bedrockMessages = append(bedrockMessages, *currentAssistantMessage)
+				pendingReasoningContentBlocks = nil
+				currentAssistantMessage = nil
+			}
+
 			// Handle function calls from Responses
-			if msg.ResponsesToolMessage != nil {
-				// Create tool use content block
-				var toolUseID string
-				if msg.ResponsesToolMessage.CallID != nil {
-					toolUseID = *msg.ResponsesToolMessage.CallID
-				}
-
-				// Get function name from ToolMessage
-				var functionName string
-				if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
-					functionName = *msg.ResponsesToolMessage.Name
-				}
-
-				// Parse JSON arguments into interface{}
-				var input interface{} = map[string]interface{}{}
-				if msg.ResponsesToolMessage.Arguments != nil {
-					var parsedInput interface{}
-					if err := json.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &parsedInput); err != nil {
-						return nil, nil, fmt.Errorf("failed to parse tool arguments JSON: %w", err)
-					}
-					input = parsedInput
-				}
-
-				toolUseBlock := BedrockContentBlock{
-					ToolUse: &BedrockToolUse{
-						ToolUseID: toolUseID,
-						Name:      functionName,
-						Input:     input,
-					},
-				}
-
-				// Create assistant message with tool use
-				assistantMsg := BedrockMessage{
-					Role:    BedrockMessageRoleAssistant,
-					Content: []BedrockContentBlock{toolUseBlock},
-				}
-				bedrockMessages = append(bedrockMessages, assistantMsg)
-
+			assistantMsg := convertBifrostFunctionCallToBedrockMessage(&msg)
+			if assistantMsg != nil {
+				bedrockMessages = append(bedrockMessages, *assistantMsg)
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
 			// Handle function call outputs from Responses
-			if msg.ResponsesToolMessage != nil {
-				// Check if we have output or error
-				hasOutput := msg.ResponsesToolMessage.Output != nil &&
-					(msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil ||
-						msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil)
-				hasError := msg.ResponsesToolMessage.Error != nil
-
-				if hasOutput || hasError {
-					var toolUseID string
-					if msg.ResponsesToolMessage.CallID != nil {
-						toolUseID = *msg.ResponsesToolMessage.CallID
-					}
-
-					status := "success"
-					if hasError {
-						status = "error"
-					}
-
-					toolResultBlock := BedrockContentBlock{
-						ToolResult: &BedrockToolResult{
-							ToolUseID: toolUseID,
-							Status:    schemas.Ptr(status),
-						},
-					}
-
-					// Set content based on available data
-					if hasError {
-						toolResultBlock.ToolResult.Content = []BedrockContentBlock{
-							{Text: msg.ResponsesToolMessage.Error},
-						}
-					} else if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						raw := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-						var parsed interface{}
-						if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
-							toolResultBlock.ToolResult.Content = []BedrockContentBlock{
-								{JSON: parsed},
-							}
-						} else {
-							toolResultBlock.ToolResult.Content = []BedrockContentBlock{
-								{Text: &raw},
-							}
-						}
-					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-						toolResultContent, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(schemas.ResponsesMessageContent{
-							ContentBlocks: msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks,
-						})
-						if err != nil {
-							return nil, nil, fmt.Errorf("failed to convert tool result content blocks: %w", err)
-						}
-						toolResultBlock.ToolResult.Content = toolResultContent
-					}
-
-					// Create user message with tool result
-					userMsg := BedrockMessage{
-						Role:    BedrockMessageRoleUser,
-						Content: []BedrockContentBlock{toolResultBlock},
-					}
-					bedrockMessages = append(bedrockMessages, userMsg)
-				}
+			userMsg := convertBifrostFunctionCallOutputToBedrockMessage(&msg)
+			if userMsg != nil {
+				bedrockMessages = append(bedrockMessages, *userMsg)
 			}
 		}
+	}
+
+	// Flush any remaining pending reasoning blocks
+	if len(pendingReasoningContentBlocks) > 0 && currentAssistantMessage != nil {
+		currentAssistantMessage.Content = append(currentAssistantMessage.Content, pendingReasoningContentBlocks...)
+		bedrockMessages = append(bedrockMessages, *currentAssistantMessage)
+	} else if currentAssistantMessage != nil {
+		bedrockMessages = append(bedrockMessages, *currentAssistantMessage)
 	}
 
 	return bedrockMessages, systemMessages, nil
 }
 
-// convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks
-func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
-	var blocks []BedrockContentBlock
+// ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
+// This is the main conversion method from Bedrock to Bifrost - handles all message types and content blocks
+func ConvertBedrockMessagesToBifrostMessages(bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+	var bifrostMessages []schemas.ResponsesMessage
 
-	if content.ContentStr != nil {
-		blocks = append(blocks, BedrockContentBlock{
-			Text: content.ContentStr,
-		})
-	} else if content.ContentBlocks != nil {
-		for _, block := range content.ContentBlocks {
+	// Convert system messages first
+	for _, sysMsg := range systemMessages {
+		systemBifrostMsgs := convertBedrockSystemMessageToBifrostMessages(&sysMsg)
+		bifrostMessages = append(bifrostMessages, systemBifrostMsgs...)
+	}
 
-			bedrockBlock := BedrockContentBlock{}
+	// Convert regular messages
+	for _, msg := range bedrockMessages {
+		convertedMessages := convertSingleBedrockMessageToBifrostMessages(&msg, isOutputMessage)
+		bifrostMessages = append(bifrostMessages, convertedMessages...)
+	}
 
-			switch block.Type {
-			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
-				bedrockBlock.Text = block.Text
-			case schemas.ResponsesInputMessageContentBlockTypeImage:
-				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-					imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
-					if err != nil {
-						return nil, fmt.Errorf("failed to convert image in responses content block: %w", err)
-					}
-					bedrockBlock.Image = imageSource
+	return bifrostMessages
+}
+
+// Helper functions for converting individual Bedrock message types
+
+// convertBifrostMessageToBedrockSystemMessages converts a Bifrost system message to Bedrock system messages
+func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage) []BedrockSystemMessage {
+	var systemMessages []BedrockSystemMessage
+
+	if msg.Content != nil {
+		if msg.Content.ContentStr != nil {
+			systemMessages = append(systemMessages, BedrockSystemMessage{
+				Text: msg.Content.ContentStr,
+			})
+		} else if msg.Content.ContentBlocks != nil {
+			for _, block := range msg.Content.ContentBlocks {
+				if block.Text != nil {
+					systemMessages = append(systemMessages, BedrockSystemMessage{
+						Text: block.Text,
+					})
 				}
-			default:
-				// Don't add anything
 			}
-
-			blocks = append(blocks, bedrockBlock)
 		}
 	}
 
-	return blocks, nil
+	return systemMessages
 }
 
-// convertBedrockMessageToResponsesMessages converts Bedrock message to ChatMessage output format
-func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schemas.ResponsesMessage {
-	var outputMessages []schemas.ResponsesMessage
+// convertBifrostMessageToBedrockMessage converts a regular Bifrost message to Bedrock message
+func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
+	// Ensure Content is present
+	if msg.Content == nil {
+		return nil
+	}
 
-	for _, block := range bedrockMsg.Content {
+	bedrockMsg := BedrockMessage{
+		Role: BedrockMessageRole(*msg.Role),
+	}
+
+	// Convert content
+	contentBlocks, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(*msg.Content)
+	if err != nil {
+		return nil
+	}
+	bedrockMsg.Content = contentBlocks
+
+	return &bedrockMsg
+}
+
+// convertBifrostFunctionCallToBedrockMessage converts a Bifrost function call to Bedrock message
+func convertBifrostFunctionCallToBedrockMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
+	if msg.ResponsesToolMessage != nil {
+		// Create tool use content block
+		var toolUseID string
+		if msg.ResponsesToolMessage.CallID != nil {
+			toolUseID = *msg.ResponsesToolMessage.CallID
+		}
+
+		// Get function name from ToolMessage
+		var functionName string
+		if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
+			functionName = *msg.ResponsesToolMessage.Name
+		}
+
+		// Parse JSON arguments into interface{}
+		var input interface{} = map[string]interface{}{}
+		if msg.ResponsesToolMessage.Arguments != nil {
+			var parsedInput interface{}
+			if err := json.Unmarshal([]byte(*msg.ResponsesToolMessage.Arguments), &parsedInput); err == nil {
+				input = parsedInput
+			}
+		}
+
+		toolUseBlock := BedrockContentBlock{
+			ToolUse: &BedrockToolUse{
+				ToolUseID: toolUseID,
+				Name:      functionName,
+				Input:     input,
+			},
+		}
+
+		// Create assistant message with tool use
+		return &BedrockMessage{
+			Role:    BedrockMessageRoleAssistant,
+			Content: []BedrockContentBlock{toolUseBlock},
+		}
+	}
+	return nil
+}
+
+// convertBifrostFunctionCallOutputToBedrockMessage converts a Bifrost function call output to Bedrock message
+func convertBifrostFunctionCallOutputToBedrockMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
+	if msg.ResponsesToolMessage != nil {
+		// Check if we have output or error
+		hasOutput := msg.ResponsesToolMessage.Output != nil &&
+			(msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil ||
+				msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil)
+		hasError := msg.ResponsesToolMessage.Error != nil
+
+		if hasOutput || hasError {
+			var toolUseID string
+			if msg.ResponsesToolMessage.CallID != nil {
+				toolUseID = *msg.ResponsesToolMessage.CallID
+			}
+
+			status := "success"
+			if hasError {
+				status = "error"
+			}
+
+			toolResultBlock := BedrockContentBlock{
+				ToolResult: &BedrockToolResult{
+					ToolUseID: toolUseID,
+					Status:    schemas.Ptr(status),
+				},
+			}
+
+			// Set content based on available data
+			if hasError {
+				toolResultBlock.ToolResult.Content = []BedrockContentBlock{
+					{Text: msg.ResponsesToolMessage.Error},
+				}
+			} else if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+				raw := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+				var parsed interface{}
+				if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+					toolResultBlock.ToolResult.Content = []BedrockContentBlock{
+						{JSON: parsed},
+					}
+				} else {
+					toolResultBlock.ToolResult.Content = []BedrockContentBlock{
+						{Text: &raw},
+					}
+				}
+			} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				toolResultContent, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(schemas.ResponsesMessageContent{
+					ContentBlocks: msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks,
+				})
+				if err == nil {
+					toolResultBlock.ToolResult.Content = toolResultContent
+				}
+			}
+
+			// Create user message with tool result
+			return &BedrockMessage{
+				Role:    BedrockMessageRoleUser,
+				Content: []BedrockContentBlock{toolResultBlock},
+			}
+		}
+	}
+	return nil
+}
+
+// convertBedrockSystemMessageToBifrostMessages converts a Bedrock system message to Bifrost messages
+func convertBedrockSystemMessageToBifrostMessages(sysMsg *BedrockSystemMessage) []schemas.ResponsesMessage {
+	if sysMsg.Text != nil {
+		systemRole := schemas.ResponsesInputMessageRoleSystem
+		return []schemas.ResponsesMessage{{
+			Role: &systemRole,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesInputMessageContentBlockTypeText,
+						Text: sysMsg.Text,
+					},
+				},
+			},
+		}}
+	}
+	return []schemas.ResponsesMessage{}
+}
+
+// convertSingleBedrockMessageToBifrostMessages converts a single Bedrock message to Bifrost messages
+func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+	var outputMessages []schemas.ResponsesMessage
+	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
+
+	for _, block := range msg.Content {
 		if block.Text != nil {
 			// Text content
-			outputMessages = append(outputMessages, schemas.ResponsesMessage{
+			var role schemas.ResponsesMessageRoleType
+			switch msg.Role {
+			case BedrockMessageRoleUser:
+				role = schemas.ResponsesInputMessageRoleUser
+			case BedrockMessageRoleAssistant:
+				role = schemas.ResponsesInputMessageRoleAssistant
+			default:
+				role = schemas.ResponsesInputMessageRoleUser
+			}
+
+			// For assistant messages (previous model outputs), use output_text type
+			// For user/system messages, use input_text type
+			textBlockType := schemas.ResponsesInputMessageContentBlockTypeText
+			if isOutputMessage || msg.Role == BedrockMessageRoleAssistant {
+				textBlockType = schemas.ResponsesOutputMessageContentTypeText
+			}
+
+			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Role: &role,
 				Content: &schemas.ResponsesMessageContent{
 					ContentBlocks: []schemas.ResponsesMessageContentBlock{
 						{
-							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Type: textBlockType,
 							Text: block.Text,
 						},
 					},
 				},
-			})
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
+
+		} else if block.ReasoningContent != nil {
+			// Reasoning content - collect to create a single reasoning message
+			if block.ReasoningContent.ReasoningText != nil {
+				reasoningContentBlocks = append(reasoningContentBlocks, schemas.ResponsesMessageContentBlock{
+					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text:      &block.ReasoningContent.ReasoningText.Text,
+					Signature: block.ReasoningContent.ReasoningText.Signature,
+				})
+			}
+
 		} else if block.ToolUse != nil {
 			// Tool use content
 			// Create copies of the values to avoid range loop variable capture
@@ -967,7 +1932,6 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 			toolUseName := block.ToolUse.Name
 
 			toolMsg := schemas.ResponsesMessage{
-				Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 				Status: schemas.Ptr("completed"),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
@@ -976,7 +1940,13 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 					Arguments: schemas.Ptr(schemas.JsonifyInput(block.ToolUse.Input)),
 				},
 			}
+			if isOutputMessage {
+				toolMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+				role := schemas.ResponsesInputMessageRoleAssistant
+				toolMsg.Role = &role
+			}
 			outputMessages = append(outputMessages, toolMsg)
+
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
 			// Prefer JSON payloads without unmarshalling; fallback to text
@@ -1004,15 +1974,6 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 			toolResultID := block.ToolResult.ToolUseID
 
 			resultMsg := schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeText,
-							Text: &resultContent,
-						},
-					},
-				},
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					CallID: &toolResultID,
@@ -1021,725 +1982,131 @@ func convertBedrockMessageToResponsesMessages(bedrockMsg BedrockMessage) []schem
 					},
 				},
 			}
+			if isOutputMessage {
+				resultMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+				role := schemas.ResponsesInputMessageRoleAssistant
+				resultMsg.Role = &role
+				resultMsg.Content = &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &resultContent,
+						},
+					},
+				}
+			}
 			outputMessages = append(outputMessages, resultMsg)
 		}
+	}
+
+	// Handle reasoning blocks - prepend reasoning message if we collected any
+	if len(reasoningContentBlocks) > 0 {
+		reasoningMessage := schemas.ResponsesMessage{
+			ID:   schemas.Ptr("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: reasoningContentBlocks,
+			},
+		}
+		// Prepend the reasoning message to the start of the messages list
+		outputMessages = append([]schemas.ResponsesMessage{reasoningMessage}, outputMessages...)
 	}
 
 	return outputMessages
 }
 
-// ToBedrockConverseResponse converts Bifrost Responses response to Bedrock Converse response
-func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*BedrockConverseResponse, error) {
-	if bifrostResp == nil {
-		return nil, fmt.Errorf("bifrost response is nil")
-	}
+// convertBifrostReasoningToBedrockReasoning converts a Bifrost reasoning message to Bedrock reasoning blocks
+func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
+	var reasoningBlocks []BedrockContentBlock
 
-	bedrockResp := &BedrockConverseResponse{
-		Output:  &BedrockConverseOutput{},
-		Usage:   &BedrockTokenUsage{},
-		Metrics: &BedrockConverseMetrics{},
-	}
-
-	var hasToolUse bool
-	message := &BedrockMessage{
-		Role:    BedrockMessageRoleAssistant,
-		Content: []BedrockContentBlock{},
-	}
-
-	if len(bifrostResp.Output) > 0 {
-		for _, outputMsg := range bifrostResp.Output {
-			// Check if this output message contains a tool use
-			if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCall {
-				hasToolUse = true
-			}
-			// Handle content blocks
-			if outputMsg.Content != nil && outputMsg.Content.ContentBlocks != nil {
-				for _, content := range outputMsg.Content.ContentBlocks {
-					switch content.Type {
-					case schemas.ResponsesOutputMessageContentTypeText:
-						if content.Text != nil {
-							message.Content = append(message.Content, BedrockContentBlock{
-								Text: content.Text,
-							})
-						}
-					}
-				}
-			}
-
-			// Handle tool calls and tool results
-			if outputMsg.ResponsesToolMessage != nil {
-				// Check if this is a tool use (function_call type)
-				if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCall {
-					// This is a tool use - ensure we have required fields
-					if outputMsg.ResponsesToolMessage.Name != nil && outputMsg.ResponsesToolMessage.CallID != nil {
-						var input interface{} = map[string]interface{}{}
-						if outputMsg.ResponsesToolMessage.Arguments != nil {
-							var parsed interface{}
-							if err := json.Unmarshal([]byte(*outputMsg.ResponsesToolMessage.Arguments), &parsed); err == nil {
-								input = parsed
-							} else {
-								// Fallback to raw string if it's not valid JSON
-								input = *outputMsg.ResponsesToolMessage.Arguments
-							}
-						}
-						message.Content = append(message.Content, BedrockContentBlock{
-							ToolUse: &BedrockToolUse{
-								ToolUseID: *outputMsg.ResponsesToolMessage.CallID,
-								Name:      *outputMsg.ResponsesToolMessage.Name,
-								Input:     input,
-							},
-						})
-					}
-				} else if outputMsg.Type != nil && *outputMsg.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
-					// This is a tool result - ensure we have required fields
-					if outputMsg.ResponsesToolMessage.CallID != nil && outputMsg.ResponsesToolMessage.Output != nil {
-						resultBlock := BedrockContentBlock{
-							ToolResult: &BedrockToolResult{
-								ToolUseID: *outputMsg.ResponsesToolMessage.CallID,
-								Status:    schemas.Ptr("success"),
-							},
-						}
-						var resultContent []BedrockContentBlock
-						if outputMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-							raw := *outputMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-							var parsed interface{}
-							if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
-								resultContent = append(resultContent, BedrockContentBlock{
-									JSON: parsed,
-								})
-							} else {
-								// Fallback to raw string if it's not valid JSON
-								resultContent = append(resultContent, BedrockContentBlock{
-									Text: &raw,
-								})
-							}
-						} else if outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-							converted, err := convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(schemas.ResponsesMessageContent{
-								ContentBlocks: outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks,
-							})
-							if err == nil {
-								resultContent = append(resultContent, converted...)
-							} else {
-								// Fallback to JSON string if conversion fails
-								fallback := schemas.JsonifyInput(outputMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
-								resultContent = append(resultContent, BedrockContentBlock{
-									Text: &fallback,
-								})
-							}
-						}
-						if len(resultContent) > 0 {
-							resultBlock.ToolResult.Content = resultContent
-							message.Content = append(message.Content, resultBlock)
-						}
-					}
-				}
-			}
-		}
-
-		// Also check the final message content for tool use blocks (more robust)
-		if !hasToolUse {
-			for _, block := range message.Content {
-				if block.ToolUse != nil {
-					hasToolUse = true
-					break
-				}
-			}
-		}
-	}
-
-	bedrockResp.Output.Message = message
-
-	// Find stop reason from incomplete details or derive from response
-	// Priority: IncompleteDetails > tool_use detection > end_turn
-	stopReason := "end_turn"
-	if bifrostResp.IncompleteDetails != nil {
-		stopReason = bifrostResp.IncompleteDetails.Reason
-	} else if hasToolUse {
-		stopReason = "tool_use"
-	}
-	bedrockResp.StopReason = stopReason
-
-	// Convert usage stats
-	if bifrostResp.Usage != nil {
-		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
-		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
-		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
-	}
-
-	// Set metrics
-	if bifrostResp.ExtraFields.Latency > 0 {
-		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
-	}
-
-	return bedrockResp, nil
-}
-
-// ToBifrostResponsesStream converts a Bedrock stream event to a Bifrost Responses Stream response
-// Returns a slice of responses to support cases where a single event produces multiple responses
-func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, state *BedrockResponsesStreamState) ([]*schemas.BifrostResponsesStreamResponse, *schemas.BifrostError, bool) {
-	switch {
-	case chunk.Role != nil:
-		// Message start - emit response.created and response.in_progress (OpenAI-style lifecycle)
-		var responses []*schemas.BifrostResponsesStreamResponse
-
-		// Generate message ID if not already set
-		if state.MessageID == nil {
-			messageID := fmt.Sprintf("msg_%d", state.CreatedAt)
-			state.MessageID = &messageID
-		}
-
-		// Emit response.created
-		if !state.HasEmittedCreated {
-			response := &schemas.BifrostResponsesResponse{
-				ID:        state.MessageID,
-				CreatedAt: state.CreatedAt,
-			}
-			if state.Model != nil {
-				response.Model = *state.Model
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeCreated,
-				SequenceNumber: sequenceNumber,
-				Response:       response,
-			})
-			state.HasEmittedCreated = true
-		}
-
-		// Emit response.in_progress
-		if !state.HasEmittedInProgress {
-			response := &schemas.BifrostResponsesResponse{
-				ID:        state.MessageID,
-				CreatedAt: state.CreatedAt, // Use same timestamp
-			}
-			if state.Model != nil {
-				response.Model = *state.Model
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeInProgress,
-				SequenceNumber: sequenceNumber + len(responses),
-				Response:       response,
-			})
-			state.HasEmittedInProgress = true
-		}
-
-		// Emit output_item.added for text message
-		outputIndex := 0
-		state.ContentIndexToOutputIndex[0] = outputIndex // Text is at content index 0
-
-		// Generate stable ID for text item
-		var itemID string
-		if state.MessageID == nil {
-			itemID = fmt.Sprintf("item_%d", outputIndex)
-		} else {
-			itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
-		}
-		state.ItemIDs[outputIndex] = itemID
-
-		messageType := schemas.ResponsesMessageTypeMessage
-		role := schemas.ResponsesInputMessageRoleAssistant
-
-		item := &schemas.ResponsesMessage{
-			ID:   &itemID,
-			Type: &messageType,
-			Role: &role,
-			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
-			},
-		}
-
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   schemas.Ptr(0),
-			Item:           item,
-		})
-
-		// Emit content_part.added with empty output_text part
-		emptyText := ""
-		part := &schemas.ResponsesMessageContentBlock{
-			Type: schemas.ResponsesOutputMessageContentTypeText,
-			Text: &emptyText,
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &itemID,
-			Part:           part,
-		})
-
-		if len(responses) > 0 {
-			return responses, nil, false
-		}
-
-	case chunk.Start != nil:
-		// Handle content block start (text content or tool use)
-		contentBlockIndex := 0
-		if chunk.ContentBlockIndex != nil {
-			contentBlockIndex = *chunk.ContentBlockIndex
-		}
-
-		// Check if this is a tool use start
-		if chunk.Start.ToolUse != nil {
-			// Close text item if it's still open
-			var responses []*schemas.BifrostResponsesStreamResponse
-			if !state.TextItemClosed {
-				outputIndex := 0
-				itemID := state.ItemIDs[outputIndex]
-
-				// Emit output_text.done (without accumulated text, just the event)
-				emptyText := ""
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   schemas.Ptr(0),
-					ItemID:         &itemID,
-					Text:           &emptyText,
-				})
-
-				// Emit content_part.done
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   schemas.Ptr(0),
-					ItemID:         &itemID,
-				})
-
-				// Emit output_item.done
-				statusCompleted := "completed"
-				doneItem := &schemas.ResponsesMessage{
-					Status: &statusCompleted,
-				}
-				if itemID != "" {
-					doneItem.ID = &itemID
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   schemas.Ptr(0),
-					Item:           doneItem,
-				})
-				state.TextItemClosed = true
-			}
-
-			// This is a function call starting - use output_index 1
-			outputIndex := 1
-			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
-			state.CurrentOutputIndex = 2 // Next available index
-
-			// Store tool use ID as item ID and call ID
-			toolUseID := chunk.Start.ToolUse.ToolUseID
-			toolName := chunk.Start.ToolUse.Name
-			state.ItemIDs[outputIndex] = toolUseID
-			state.ToolCallIDs[outputIndex] = toolUseID
-			state.ToolCallNames[outputIndex] = toolName
-
-			statusInProgress := "in_progress"
-			item := &schemas.ResponsesMessage{
-				ID:     &toolUseID,
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: &statusInProgress,
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &toolUseID,
-					Name:      &toolName,
-					Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
-				},
-			}
-
-			// Initialize argument buffer for this tool call
-			state.ToolArgumentBuffers[outputIndex] = ""
-
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   schemas.Ptr(contentBlockIndex),
-				Item:           item,
-			})
-
-			return responses, nil, false
-		}
-		// Text content start is handled by Role event, so we can ignore Start for text
-
-	case chunk.ContentBlockIndex != nil && chunk.Delta != nil:
-		// Handle contentBlockDelta event
-		contentBlockIndex := *chunk.ContentBlockIndex
-		outputIndex, exists := state.ContentIndexToOutputIndex[contentBlockIndex]
-		if !exists {
-			// Default to 0 for text if not mapped
-			outputIndex = 0
-			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
-		}
-
-		switch {
-		case chunk.Delta.Text != nil:
-			// Handle text delta
-			text := *chunk.Delta.Text
-			if text != "" {
-				itemID := state.ItemIDs[outputIndex]
-				response := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   &contentBlockIndex,
-					Delta:          &text,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
-				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
-			}
-
-		case chunk.Delta.ToolUse != nil:
-			// Handle tool use delta - function call arguments
-			toolUseDelta := chunk.Delta.ToolUse
-
-			if toolUseDelta.Input != "" {
-				// Accumulate argument deltas
-				state.ToolArgumentBuffers[outputIndex] += toolUseDelta.Input
-
-				itemID := state.ItemIDs[outputIndex]
-				response := &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   &contentBlockIndex,
-					Delta:          &toolUseDelta.Input,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
-				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
-			}
-		}
-
-	case chunk.StopReason != nil:
-		// Stop reason - don't use it to close items, just return nil
-		// Items should be closed explicitly when content blocks end
-		return nil, nil, false
-	}
-
-	return nil, nil, false
-}
-
-// FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
-func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber int, usage *schemas.ResponsesResponseUsage) []*schemas.BifrostResponsesStreamResponse {
-	var responses []*schemas.BifrostResponsesStreamResponse
-
-	// Close text item if still open
-	if !state.TextItemClosed {
-		outputIndex := 0
-		itemID := state.ItemIDs[outputIndex]
-
-		// Emit output_text.done (without accumulated text, just the event)
-		emptyText := ""
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &itemID,
-			Text:           &emptyText,
-		})
-
-		// Emit content_part.done
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &itemID,
-		})
-
-		// Emit output_item.done
-		statusCompleted := "completed"
-		doneItem := &schemas.ResponsesMessage{
-			Status: &statusCompleted,
-		}
-		if itemID != "" {
-			doneItem.ID = &itemID
-		}
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-			SequenceNumber: sequenceNumber + len(responses),
-			OutputIndex:    schemas.Ptr(outputIndex),
-			ContentIndex:   schemas.Ptr(0),
-			Item:           doneItem,
-		})
-		state.TextItemClosed = true
-	}
-
-	// Close any open tool call items and emit function_call_arguments.done
-	for outputIndex, args := range state.ToolArgumentBuffers {
-		if args != "" {
-			itemID := state.ItemIDs[outputIndex]
-			callID := state.ToolCallIDs[outputIndex]
-			toolName := state.ToolCallNames[outputIndex]
-
-			// Create item with tool message info for the done event
-			var doneItem *schemas.ResponsesMessage
-			if callID != "" || toolName != "" {
-				doneItem = &schemas.ResponsesMessage{
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-				}
-				if callID != "" {
-					doneItem.ResponsesToolMessage.CallID = &callID
-				}
-				if toolName != "" {
-					doneItem.ResponsesToolMessage.Name = &toolName
-				}
-			}
-
-			// Emit function_call_arguments.done with full arguments
-			response := &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				Arguments:      &args,
-			}
-			if itemID != "" {
-				response.ItemID = &itemID
-			}
-			if doneItem != nil {
-				response.Item = doneItem
-			}
-			responses = append(responses, response)
-
-			// Emit output_item.done for function call
-			statusCompleted := "completed"
-			outputItemDone := &schemas.ResponsesMessage{
-				Status: &statusCompleted,
-			}
-			if itemID != "" {
-				outputItemDone.ID = &itemID
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				Item:           outputItemDone,
-			})
-		}
-	}
-
-	// Emit response.completed
-	response := &schemas.BifrostResponsesResponse{
-		ID:        state.MessageID,
-		CreatedAt: state.CreatedAt,
-		Usage:     usage,
-	}
-
-	if state.Model != nil {
-		response.Model = *state.Model
-	}
-
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
-		SequenceNumber: sequenceNumber + len(responses),
-		Response:       response,
-	})
-
-	return responses
-}
-
-// ToBedrockConverseStreamResponse converts a Bifrost Responses stream response to Bedrock streaming format
-// Returns a BedrockStreamEvent that represents the streaming event in Bedrock's format
-func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStreamResponse) (*BedrockStreamEvent, error) {
-	if bifrostResp == nil {
-		return nil, fmt.Errorf("bifrost stream response is nil")
-	}
-
-	event := &BedrockStreamEvent{}
-
-	switch bifrostResp.Type {
-	case schemas.ResponsesStreamResponseTypeCreated:
-		// Message start - emit role event
-		// Always set role for message start event
-		role := "assistant"
-		event.Role = &role
-
-	case schemas.ResponsesStreamResponseTypeInProgress:
-		// In progress - no-op for Bedrock (it doesn't have an explicit in_progress event)
-		// Return nil to skip this event
-		return nil, nil
-
-	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-		// Content block start
-		if bifrostResp.Item != nil && bifrostResp.Item.ResponsesToolMessage != nil {
-			// Tool use start
-			if bifrostResp.Item.ResponsesToolMessage.Name != nil && bifrostResp.Item.ResponsesToolMessage.CallID != nil {
-				contentBlockIndex := 0
-				if bifrostResp.ContentIndex != nil {
-					contentBlockIndex = *bifrostResp.ContentIndex
-				}
-				event.ContentBlockIndex = &contentBlockIndex
-				event.Start = &BedrockContentBlockStart{
-					ToolUse: &BedrockToolUseStart{
-						ToolUseID: *bifrostResp.Item.ResponsesToolMessage.CallID,
-						Name:      *bifrostResp.Item.ResponsesToolMessage.Name,
+	if msg.Content != nil && msg.Content.ContentBlocks != nil {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+				reasoningBlock := BedrockContentBlock{
+					ReasoningContent: &BedrockReasoningContent{
+						ReasoningText: &BedrockReasoningContentText{
+							Text:      *block.Text,
+							Signature: block.Signature,
+						},
 					},
 				}
-			}
-		} else if bifrostResp.Item != nil {
-			// Text item added - Bedrock doesn't have an explicit text start event, so we skip it
-			// Check if it's a text message (has content blocks or is a message type)
-			if bifrostResp.Item.Content != nil || (bifrostResp.Item.Type != nil && *bifrostResp.Item.Type == schemas.ResponsesMessageTypeMessage) {
-				return nil, nil
+				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
 			}
 		}
-
-	case schemas.ResponsesStreamResponseTypeOutputTextDelta:
-		// Text delta
-		if bifrostResp.Delta != nil && *bifrostResp.Delta != "" {
-			contentBlockIndex := 0
-			if bifrostResp.ContentIndex != nil {
-				contentBlockIndex = *bifrostResp.ContentIndex
+	} else if msg.ResponsesReasoning != nil {
+		if msg.ResponsesReasoning.Summary != nil {
+			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
+				reasoningBlock := BedrockContentBlock{
+					ReasoningContent: &BedrockReasoningContent{
+						ReasoningText: &BedrockReasoningContentText{
+							Text: reasoningContent.Text,
+						},
+					},
+				}
+				reasoningBlocks = append(reasoningBlocks, reasoningBlock)
 			}
-			event.ContentBlockIndex = &contentBlockIndex
-			event.Delta = &BedrockContentBlockDelta{
-				Text: bifrostResp.Delta,
-			}
-		} else {
-			// Skip empty deltas
-			return nil, nil
-		}
-
-	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
-		// Tool use delta (function call arguments)
-		if bifrostResp.Delta != nil {
-			contentBlockIndex := 0
-			if bifrostResp.ContentIndex != nil {
-				contentBlockIndex = *bifrostResp.ContentIndex
-			}
-			event.ContentBlockIndex = &contentBlockIndex
-			event.Delta = &BedrockContentBlockDelta{
-				ToolUse: &BedrockToolUseDelta{
-					Input: *bifrostResp.Delta,
+		} else if msg.ResponsesReasoning.EncryptedContent != nil {
+			// Bedrock doesn't have a direct equivalent to encrypted content,
+			// so we'll store it as a regular reasoning block with a special marker
+			encryptedText := fmt.Sprintf("[ENCRYPTED_REASONING: %s]", *msg.ResponsesReasoning.EncryptedContent)
+			reasoningBlock := BedrockContentBlock{
+				ReasoningContent: &BedrockReasoningContent{
+					ReasoningText: &BedrockReasoningContentText{
+						Text: encryptedText,
+					},
 				},
 			}
+			reasoningBlocks = append(reasoningBlocks, reasoningBlock)
 		}
+	}
 
-	case schemas.ResponsesStreamResponseTypeOutputTextDone, schemas.ResponsesStreamResponseTypeContentPartDone:
-		// Content block done - Bedrock doesn't have explicit done events, so we skip them
-		return nil, nil
+	return reasoningBlocks
+}
 
-	case schemas.ResponsesStreamResponseTypeOutputItemDone:
-		// Item done - Bedrock doesn't have explicit done events, so we skip them
-		return nil, nil
+// convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks converts Bifrost content to Bedrock content blocks
+func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content schemas.ResponsesMessageContent) ([]BedrockContentBlock, error) {
+	var blocks []BedrockContentBlock
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
-		// Message stop - always set stopReason
-		stopReason := "end_turn"
-		if bifrostResp.Response != nil && bifrostResp.Response.IncompleteDetails != nil {
-			stopReason = bifrostResp.Response.IncompleteDetails.Reason
-		}
-		event.StopReason = &stopReason
+	if content.ContentStr != nil {
+		blocks = append(blocks, BedrockContentBlock{
+			Text: content.ContentStr,
+		})
+	} else if content.ContentBlocks != nil {
+		for _, block := range content.ContentBlocks {
 
-		// Add usage if available
-		if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
-			event.Usage = &BedrockTokenUsage{
-				InputTokens:  bifrostResp.Response.Usage.InputTokens,
-				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
-				TotalTokens:  bifrostResp.Response.Usage.TotalTokens,
+			bedrockBlock := BedrockContentBlock{}
+
+			switch block.Type {
+			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
+				bedrockBlock.Text = block.Text
+			case schemas.ResponsesInputMessageContentBlockTypeImage:
+				if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+					imageSource, err := convertImageToBedrockSource(*block.ResponsesInputMessageContentBlockImage.ImageURL)
+					if err != nil {
+						return nil, fmt.Errorf("failed to convert image in responses content block: %w", err)
+					}
+					bedrockBlock.Image = imageSource
+				}
+			case schemas.ResponsesOutputMessageContentTypeReasoning:
+				if block.Text != nil {
+					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
+						ReasoningText: &BedrockReasoningContentText{
+							Text:      *block.Text,
+							Signature: block.Signature,
+						},
+					}
+				}
+			default:
+				// Don't add anything for unknown types
+				continue
 			}
+
+			blocks = append(blocks, bedrockBlock)
 		}
-
-	case schemas.ResponsesStreamResponseTypeError:
-		// Error - errors are handled separately by the router via BifrostError in the stream chunk
-		// Return nil to skip this chunk
-		return nil, nil
-
-	default:
-		// Unknown type - skip
-		return nil, nil
 	}
 
-	return event, nil
-}
-
-// BedrockEncodedEvent represents a single event ready for encoding to AWS Event Stream
-type BedrockEncodedEvent struct {
-	EventType string
-	Payload   interface{}
-}
-
-// BedrockInvokeStreamChunkEvent represents the chunk event for invoke-with-response-stream
-type BedrockInvokeStreamChunkEvent struct {
-	Bytes []byte `json:"bytes"`
-}
-
-// ToEncodedEvents converts the flat BedrockStreamEvent into a sequence of specific events
-func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
-	var events []BedrockEncodedEvent
-
-	if event.InvokeModelRawChunk != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "chunk",
-			Payload: BedrockInvokeStreamChunkEvent{
-				Bytes: event.InvokeModelRawChunk,
-			},
-		})
-	}
-
-	if event.Role != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "messageStart",
-			Payload: BedrockMessageStartEvent{
-				Role: *event.Role,
-			},
-		})
-	}
-
-	if event.Start != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "contentBlockStart",
-			Payload: struct {
-				Start             *BedrockContentBlockStart `json:"start"`
-				ContentBlockIndex *int                      `json:"contentBlockIndex"`
-			}{
-				Start:             event.Start,
-				ContentBlockIndex: event.ContentBlockIndex,
-			},
-		})
-	}
-
-	if event.Delta != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "contentBlockDelta",
-			Payload: struct {
-				Delta             *BedrockContentBlockDelta `json:"delta"`
-				ContentBlockIndex *int                      `json:"contentBlockIndex"`
-			}{
-				Delta:             event.Delta,
-				ContentBlockIndex: event.ContentBlockIndex,
-			},
-		})
-	}
-
-	if event.StopReason != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "messageStop",
-			Payload: BedrockMessageStopEvent{
-				StopReason: *event.StopReason,
-			},
-		})
-	}
-
-	if event.Usage != nil || event.Metrics != nil {
-		events = append(events, BedrockEncodedEvent{
-			EventType: "metadata",
-			Payload: BedrockMetadataEvent{
-				Usage:   event.Usage,
-				Metrics: event.Metrics,
-				Trace:   event.Trace,
-			},
-		})
-	}
-
-	return events
+	return blocks, nil
 }

@@ -221,6 +221,38 @@ func (r *ResponsesRequestInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("invalid responses request input")
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for ResponsesRequest.
+// This is needed because ResponsesParameters has a custom UnmarshalJSON method,
+// which interferes with sonic's handling of the embedded BifrostParams struct.
+func (rr *ResponsesRequest) UnmarshalJSON(data []byte) error {
+	// First, unmarshal BifrostParams fields directly
+	type bifrostAlias BifrostParams
+	var bp bifrostAlias
+	if err := sonic.Unmarshal(data, &bp); err != nil {
+		return err
+	}
+	rr.BifrostParams = BifrostParams(bp)
+
+	// Unmarshal messages
+	var inputStruct struct {
+		Input ResponsesRequestInput `json:"input"`
+	}
+	if err := sonic.Unmarshal(data, &inputStruct); err != nil {
+		return err
+	}
+	rr.Input = inputStruct.Input
+
+	// Unmarshal ResponsesParameters (which has its own custom unmarshaller)
+	if rr.ResponsesParameters == nil {
+		rr.ResponsesParameters = &schemas.ResponsesParameters{}
+	}
+	if err := sonic.Unmarshal(data, rr.ResponsesParameters); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ResponsesRequest is a bifrost responses request
 type ResponsesRequest struct {
 	Input ResponsesRequestInput `json:"input"`
