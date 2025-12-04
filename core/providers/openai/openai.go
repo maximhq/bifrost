@@ -1154,6 +1154,9 @@ func HandleOpenAIResponsesRequest(
 		return nil, bifrostErr
 	}
 
+	fmt.Println("jsonData", string(jsonData))
+	fmt.Println("--------------------------------")
+
 	req.SetBody(jsonData)
 
 	// Make request
