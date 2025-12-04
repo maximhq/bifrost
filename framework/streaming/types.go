@@ -262,7 +262,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.ImageGenerationResponse = imageResp
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ImageGenerationRequest,
+			RequestType:    schemas.ImageGenerationStreamRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,

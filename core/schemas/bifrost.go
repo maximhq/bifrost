@@ -295,6 +295,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.TranscriptionStreamResponse.ExtraFields
 	case r.ImageGenerationResponse != nil:
 		return &r.ImageGenerationResponse.ExtraFields
+	case r.ImageGenerationStreamResponse != nil:
+		return &r.ImageGenerationStreamResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
