@@ -191,7 +191,9 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *contex
 		return
 	}
 
+	ctx.Response.Header.Set("Content-Length", fmt.Sprintf("%d", len(responseBody)))
 	ctx.SetBody(responseBody)
+	fmt.Printf("[DEBUG] sendSuccess: status=200, contentLen=%d, body=%s\n", len(responseBody), string(responseBody))
 }
 
 // extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest

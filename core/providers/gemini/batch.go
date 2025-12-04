@@ -839,3 +839,205 @@ func (provider *GeminiProvider) BatchResults(ctx context.Context, key schemas.Ke
 		},
 	}, nil
 }
+
+// ==================== SDK RESPONSE CONVERTERS ====================
+// These functions convert Bifrost batch responses to Google GenAI SDK format.
+
+// ToGeminiJobState converts Bifrost batch status to Gemini SDK job state.
+func ToGeminiJobState(status schemas.BatchStatus) string {
+	switch status {
+	case schemas.BatchStatusValidating:
+		return GeminiJobStatePending
+	case schemas.BatchStatusInProgress:
+		return GeminiJobStateRunning
+	case schemas.BatchStatusFinalizing:
+		return GeminiJobStateRunning
+	case schemas.BatchStatusCompleted:
+		return GeminiJobStateSucceeded
+	case schemas.BatchStatusFailed:
+		return GeminiJobStateFailed
+	case schemas.BatchStatusCancelling:
+		return GeminiJobStateCancelling
+	case schemas.BatchStatusCancelled:
+		return GeminiJobStateCancelled
+	case schemas.BatchStatusExpired:
+		return GeminiJobStateFailed
+	default:
+		return GeminiJobStatePending
+	}
+}
+
+// ToGeminiBatchJobResponse converts a BifrostBatchCreateResponse to Gemini SDK format.
+func ToGeminiBatchJobResponse(resp *schemas.BifrostBatchCreateResponse) *GeminiBatchJobResponseSDK {
+	if resp == nil {
+		return nil
+	}
+
+	result := &GeminiBatchJobResponseSDK{
+		Name:  resp.ID,
+		State: ToGeminiJobState(resp.Status),
+	}
+
+	// Add metadata if available
+	if resp.CreatedAt > 0 {
+		result.Metadata = &GeminiBatchMetadata{
+			Name:       resp.ID,
+			State:      ToGeminiJobState(resp.Status),
+			CreateTime: time.Unix(resp.CreatedAt, 0).Format(time.RFC3339),
+			BatchStats: &GeminiBatchStats{
+				RequestCount:           resp.RequestCounts.Total,
+				PendingRequestCount:    resp.RequestCounts.Total - resp.RequestCounts.Completed,
+				SuccessfulRequestCount: resp.RequestCounts.Completed - resp.RequestCounts.Failed,
+			},
+		}
+	}
+
+	return result
+}
+
+// ToGeminiBatchRetrieveResponse converts a BifrostBatchRetrieveResponse to Gemini SDK format.
+func ToGeminiBatchRetrieveResponse(resp *schemas.BifrostBatchRetrieveResponse) *GeminiBatchJobResponseSDK {
+	if resp == nil {
+		return nil
+	}
+
+	result := &GeminiBatchJobResponseSDK{
+		Name:  resp.ID,
+		State: ToGeminiJobState(resp.Status),
+	}
+
+	// Add metadata
+	result.Metadata = &GeminiBatchMetadata{
+		Name:       resp.ID,
+		State:      ToGeminiJobState(resp.Status),
+		CreateTime: time.Unix(resp.CreatedAt, 0).Format(time.RFC3339),
+		BatchStats: &GeminiBatchStats{
+			RequestCount:           resp.RequestCounts.Total,
+			PendingRequestCount:    resp.RequestCounts.Total - resp.RequestCounts.Completed,
+			SuccessfulRequestCount: resp.RequestCounts.Completed - resp.RequestCounts.Failed,
+		},
+	}
+
+	if resp.CompletedAt != nil {
+		result.Metadata.EndTime = time.Unix(*resp.CompletedAt, 0).Format(time.RFC3339)
+	}
+
+	// Add output file info if available
+	if resp.OutputFileID != nil {
+		result.Dest = &GeminiBatchDest{
+			FileName: *resp.OutputFileID,
+		}
+	}
+
+	return result
+}
+
+// ToGeminiBatchListResponse converts a BifrostBatchListResponse to Gemini SDK format.
+func ToGeminiBatchListResponse(resp *schemas.BifrostBatchListResponse) *GeminiBatchListResponseSDK {
+	if resp == nil {
+		return nil
+	}
+
+	jobs := make([]GeminiBatchJobResponseSDK, 0, len(resp.Data))
+	for _, batch := range resp.Data {
+		job := GeminiBatchJobResponseSDK{
+			Name:  batch.ID,
+			State: ToGeminiJobState(batch.Status),
+		}
+
+		// Add metadata
+		job.Metadata = &GeminiBatchMetadata{
+			Name:       batch.ID,
+			State:      ToGeminiJobState(batch.Status),
+			CreateTime: time.Unix(batch.CreatedAt, 0).Format(time.RFC3339),
+			BatchStats: &GeminiBatchStats{
+				RequestCount:           batch.RequestCounts.Total,
+				PendingRequestCount:    batch.RequestCounts.Total - batch.RequestCounts.Completed,
+				SuccessfulRequestCount: batch.RequestCounts.Completed - batch.RequestCounts.Failed,
+			},
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	result := &GeminiBatchListResponseSDK{
+		BatchJobs: jobs,
+	}
+
+	if resp.NextCursor != nil {
+		result.NextPageToken = *resp.NextCursor
+	}
+
+	return result
+}
+
+// ToGeminiBatchCancelResponse converts a BifrostBatchCancelResponse to Gemini SDK format.
+func ToGeminiBatchCancelResponse(resp *schemas.BifrostBatchCancelResponse) *GeminiBatchJobResponseSDK {
+	if resp == nil {
+		return nil
+	}
+
+	return &GeminiBatchJobResponseSDK{
+		Name:  resp.ID,
+		State: ToGeminiJobState(resp.Status),
+	}
+}
+
+// BatchDelete deletes a batch job for Gemini.
+func (provider *GeminiProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchDeleteRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, providerName)
+	}
+
+	// Create HTTP request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL for delete operation
+	batchID := request.BatchID
+	var url string
+	if strings.HasPrefix(batchID, "batches/") {
+		url = fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, batchID)
+	} else {
+		url = fmt.Sprintf("%s/batches/%s", provider.networkConfig.BaseURL, batchID)
+	}
+
+	provider.logger.Debug("gemini batch delete url: " + url)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodDelete)
+	if key.Value != "" {
+		req.Header.Set("x-goog-api-key", key.Value)
+	}
+	req.Header.SetContentType("application/json")
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle response
+	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
+		return nil, parseGeminiError(providerName, resp)
+	}
+
+	return &schemas.BifrostBatchDeleteResponse{
+		ID:      request.BatchID,
+		Object:  "batch",
+		Deleted: true,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchDeleteRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}, nil
+}

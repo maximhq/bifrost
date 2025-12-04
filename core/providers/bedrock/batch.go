@@ -928,3 +928,8 @@ func splitJSONL(data []byte) [][]byte {
 	}
 	return lines
 }
+
+// BatchDelete is not supported by Bedrock provider.
+func (provider *BedrockProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}

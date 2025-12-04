@@ -463,17 +463,23 @@ func (provider *GeminiProvider) FileContent(ctx context.Context, key schemas.Key
 }
 
 // ToGeminiFileUploadResponse converts a Bifrost file upload response to Gemini format.
-func ToGeminiFileUploadResponse(resp *schemas.BifrostFileUploadResponse) map[string]interface{} {
-	return map[string]interface{}{
-		"file": map[string]interface{}{
-			"name":           resp.ID,
-			"displayName":    resp.Filename,
-			"mimeType":       "application/octet-stream",
-			"sizeBytes":      fmt.Sprintf("%d", resp.Bytes),
-			"createTime":     formatGeminiTimestamp(resp.CreatedAt),
-			"state":          toGeminiFileState(resp.Status),
-			"uri":            resp.StorageURI,
-			"expirationTime": formatGeminiTimestamp(safeDerefInt64(resp.ExpiresAt)),
+// Uses snake_case field names to match Google's API format.
+// GeminiFileUploadResponseWrapper is a wrapper that contains the file response for the upload API.
+type GeminiFileUploadResponseWrapper struct {
+	File GeminiFileResponse `json:"file"`
+}
+
+func ToGeminiFileUploadResponse(resp *schemas.BifrostFileUploadResponse) *GeminiFileUploadResponseWrapper {
+	return &GeminiFileUploadResponseWrapper{
+		File: GeminiFileResponse{
+			Name:           resp.ID,
+			DisplayName:    resp.Filename,
+			MimeType:       "application/octet-stream",
+			SizeBytes:      fmt.Sprintf("%d", resp.Bytes),
+			CreateTime:     formatGeminiTimestamp(resp.CreatedAt),
+			State:          toGeminiFileState(resp.Status),
+			URI:            resp.StorageURI,
+			ExpirationTime: formatGeminiTimestamp(safeDerefInt64(resp.ExpiresAt)),
 		},
 	}
 }
