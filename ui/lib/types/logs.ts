@@ -409,13 +409,13 @@ export interface ResponsesToolMessage {
 }
 
 // Reasoning content
-export interface ResponsesReasoningContent {
+export interface ResponsesReasoningSummary {
 	type: "summary_text";
 	text: string;
 }
 
 export interface ResponsesReasoning {
-	summary: ResponsesReasoningContent[];
+	summary: ResponsesReasoningSummary[];
 	encrypted_content?: string;
 }
 
@@ -431,7 +431,7 @@ export interface ResponsesMessage {
 	name?: string;
 	arguments?: string;
 	// Reasoning fields (merged when type is "reasoning")
-	summary?: ResponsesReasoningContent[];
+	summary?: ResponsesReasoningSummary[];
 	encrypted_content?: string;
 	// Additional tool-specific fields
 	[key: string]: any;

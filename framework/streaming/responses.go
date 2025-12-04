@@ -494,6 +494,44 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			if resp.Delta != nil && len(messages) > 0 {
 				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta)
 			}
+
+		case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+			// Create new reasoning message if none exists, or find existing reasoning message to append delta to
+			if (resp.Delta != nil || resp.Signature != nil) && resp.ItemID != nil {
+				var targetMessage *schemas.ResponsesMessage
+
+				// Find the reasoning message by ItemID
+				for i := len(messages) - 1; i >= 0; i-- {
+					if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
+						targetMessage = &messages[i]
+						break
+					}
+				}
+
+				// If no message found, create a new reasoning message
+				if targetMessage == nil {
+					newMessage := schemas.ResponsesMessage{
+						ID:   resp.ItemID,
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary: []schemas.ResponsesReasoningSummary{},
+						},
+					}
+					messages = append(messages, newMessage)
+					targetMessage = &messages[len(messages)-1]
+				}
+
+				// Handle text delta
+				if resp.Delta != nil {
+					a.appendReasoningDeltaToResponsesMessage(targetMessage, *resp.Delta, resp.ContentIndex)
+				}
+
+				// Handle signature delta
+				if resp.Signature != nil {
+					a.appendReasoningSignatureToResponsesMessage(targetMessage, *resp.Signature, resp.ContentIndex)
+				}
+			}
 		}
 	}
 
@@ -582,6 +620,109 @@ func (a *Accumulator) appendFunctionArgumentsDeltaToResponsesMessage(message *sc
 		message.ResponsesToolMessage.Arguments = &arguments
 	} else {
 		*message.ResponsesToolMessage.Arguments += arguments
+	}
+}
+
+// appendReasoningDeltaToResponsesMessage appends reasoning delta to a responses message
+func (a *Accumulator) appendReasoningDeltaToResponsesMessage(message *schemas.ResponsesMessage, delta string, contentIndex *int) {
+	// Handle reasoning content in two ways:
+	// 1. Content blocks (for reasoning_text content blocks)
+	// 2. ResponsesReasoning.Summary (for reasoning summary accumulation)
+
+	// If we have a content index, this is reasoning content in content blocks
+	if contentIndex != nil {
+		if message.Content == nil {
+			message.Content = &schemas.ResponsesMessageContent{}
+		}
+
+		// If we don't have content blocks yet, create them
+		if message.Content.ContentBlocks == nil {
+			message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, *contentIndex+1)
+		}
+
+		// Ensure we have enough content blocks
+		for len(message.Content.ContentBlocks) <= *contentIndex {
+			message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
+		}
+
+		// Initialize the content block if needed
+		if message.Content.ContentBlocks[*contentIndex].Type == "" {
+			message.Content.ContentBlocks[*contentIndex].Type = schemas.ResponsesOutputMessageContentTypeReasoning
+		}
+
+		// Append to existing reasoning text or create new text
+		if message.Content.ContentBlocks[*contentIndex].Text == nil {
+			message.Content.ContentBlocks[*contentIndex].Text = &delta
+		} else {
+			*message.Content.ContentBlocks[*contentIndex].Text += delta
+		}
+	} else {
+		// No content index - this is reasoning summary accumulation
+		if message.ResponsesReasoning == nil {
+			message.ResponsesReasoning = &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			}
+		}
+
+		// For now, accumulate into a single summary entry
+		// In the future, this could be enhanced to handle multiple summary entries
+		if len(message.ResponsesReasoning.Summary) == 0 {
+			message.ResponsesReasoning.Summary = append(message.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
+				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				Text: delta,
+			})
+		} else {
+			// Append to the first (and typically only) summary entry
+			message.ResponsesReasoning.Summary[0].Text += delta
+		}
+	}
+}
+
+// appendReasoningSignatureToResponsesMessage appends reasoning signature to a responses message
+func (a *Accumulator) appendReasoningSignatureToResponsesMessage(message *schemas.ResponsesMessage, signature string, contentIndex *int) {
+	// Handle signature content in content blocks or ResponsesReasoning.EncryptedContent
+
+	// If we have a content index, this is signature content in content blocks
+	if contentIndex != nil {
+		if message.Content == nil {
+			message.Content = &schemas.ResponsesMessageContent{}
+		}
+
+		// If we don't have content blocks yet, create them
+		if message.Content.ContentBlocks == nil {
+			message.Content.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, *contentIndex+1)
+		}
+
+		// Ensure we have enough content blocks
+		for len(message.Content.ContentBlocks) <= *contentIndex {
+			message.Content.ContentBlocks = append(message.Content.ContentBlocks, schemas.ResponsesMessageContentBlock{})
+		}
+
+		// Initialize the content block if needed
+		if message.Content.ContentBlocks[*contentIndex].Type == "" {
+			message.Content.ContentBlocks[*contentIndex].Type = schemas.ResponsesOutputMessageContentTypeReasoning
+		}
+
+		// Set or append signature to the content block
+		if message.Content.ContentBlocks[*contentIndex].Signature == nil {
+			message.Content.ContentBlocks[*contentIndex].Signature = &signature
+		} else {
+			*message.Content.ContentBlocks[*contentIndex].Signature += signature
+		}
+	} else {
+		// No content index - this is encrypted content at the reasoning level
+		if message.ResponsesReasoning == nil {
+			message.ResponsesReasoning = &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			}
+		}
+
+		// Set or append to encrypted content
+		if message.ResponsesReasoning.EncryptedContent == nil {
+			message.ResponsesReasoning.EncryptedContent = &signature
+		} else {
+			*message.ResponsesReasoning.EncryptedContent += signature
+		}
 	}
 }
 
