@@ -100,6 +100,7 @@ const (
 	BatchRetrieveRequest        RequestType = "batch_retrieve"
 	BatchCancelRequest          RequestType = "batch_cancel"
 	BatchResultsRequest         RequestType = "batch_results"
+	BatchDeleteRequest          RequestType = "batch_delete"
 	FileUploadRequest           RequestType = "file_upload"
 	FileListRequest             RequestType = "file_list"
 	FileRetrieveRequest         RequestType = "file_retrieve"

@@ -377,3 +377,8 @@ func formatAnthropicTimestamp(unixTime int64) string {
 	}
 	return time.Unix(unixTime, 0).UTC().Format(time.RFC3339)
 }
+
+// BatchDelete is not supported by Anthropic provider.
+func (provider *AnthropicProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}

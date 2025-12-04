@@ -1260,6 +1260,84 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx context.Context, req *schemas.Bi
 	return response, nil
 }
 
+// BatchDeleteRequest deletes a batch job.
+func (bifrost *Bifrost) BatchDeleteRequest(ctx context.Context, req *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch delete request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch delete request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch delete request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch delete request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+		return provider.BatchDelete(ctx, key, req)
+	}, schemas.BatchDeleteRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchDeleteRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
 // FileUploadRequest uploads a file to the specified provider.
 func (bifrost *Bifrost) FileUploadRequest(ctx context.Context, req *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if req == nil {
