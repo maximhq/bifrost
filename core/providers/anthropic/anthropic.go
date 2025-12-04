@@ -885,7 +885,7 @@ func (provider *AnthropicProvider) ImageGeneration(ctx context.Context, key sche
 
 // ImageGenerationStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
 // parseStreamAnthropicError parses Anthropic streaming error responses.

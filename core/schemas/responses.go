@@ -559,11 +559,19 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
-	var imageGenerationCallOutput ResponsesImageGenerationCallOutput
-	if err := sonic.Unmarshal(data, &imageGenerationCallOutput); err == nil {
-		output.ResponsesImageGenerationCallOutput = &imageGenerationCallOutput
-		return nil
+
+	// Peek at the object to distinguish image-generation vs computer tool outputs.
+	var raw map[string]interface{}
+	if err := sonic.Unmarshal(data, &raw); err == nil {
+		if _, hasResult := raw["result"]; hasResult {
+			var imageGenerationCallOutput ResponsesImageGenerationCallOutput
+			if err := sonic.Unmarshal(data, &imageGenerationCallOutput); err == nil {
+				output.ResponsesImageGenerationCallOutput = &imageGenerationCallOutput
+				return nil
+			}
+		}
 	}
+
 	var computerToolCallOutput ResponsesComputerToolCallOutputData
 	if err := sonic.Unmarshal(data, &computerToolCallOutput); err == nil {
 		output.ResponsesComputerToolCallOutput = &computerToolCallOutput

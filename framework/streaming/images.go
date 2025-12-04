@@ -73,8 +73,16 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 	}
 
 	// Build final response
+	var responseID string
+	for _, chunk := range chunks {
+		if chunk.Delta != nil && chunk.Delta.ID != "" {
+			responseID = chunk.Delta.ID
+			break
+		}
+	}
+
 	finalResponse := &schemas.BifrostImageGenerationResponse{
-		ID:      chunks[0].Delta.ID,
+		ID:      responseID,
 		Created: time.Now().Unix(),
 		Model:   model,
 		Data:    imageData,

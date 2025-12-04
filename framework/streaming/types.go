@@ -95,7 +95,7 @@ type ResponsesStreamChunk struct {
 	ChunkIndex         int                                     // Index of the chunk in the stream
 }
 
-// ResponsesStreamChunk represents a single responses streaming chunk
+// ImageStreamChunk represents a single image streaming chunk
 type ImageStreamChunk struct {
 	Timestamp          time.Time                                     // When chunk was received
 	Delta              *schemas.BifrostImageGenerationStreamResponse // The actual stream response

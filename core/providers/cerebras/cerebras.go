@@ -211,5 +211,5 @@ func (provider *CerebrasProvider) ImageGeneration(ctx context.Context, key schem
 
 // ImageGenerationStream is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }

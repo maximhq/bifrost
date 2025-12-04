@@ -275,5 +275,5 @@ func (provider *OpenRouterProvider) ImageGeneration(ctx context.Context, key sch
 
 // ImageGenerationStream is not supported by the OpenRouter provider.
 func (provider *OpenRouterProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }

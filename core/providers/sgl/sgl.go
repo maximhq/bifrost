@@ -219,5 +219,5 @@ func (provider *SGLProvider) ImageGeneration(ctx context.Context, key schemas.Ke
 
 // ImageGenerationStream is not supported by the SGL provider.
 func (provider *SGLProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }

@@ -98,12 +98,12 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	a.responsesStreamChunkPool.Put(chunk)
 }
 
-// getImageStreamChunk gets a image stream chunk from the pool
+// getImageStreamChunk gets an image stream chunk from the pool
 func (a *Accumulator) getImageStreamChunk() *ImageStreamChunk {
 	return a.imageStreamChunkPool.Get().(*ImageStreamChunk)
 }
 
-// putImageStreamChunk returns a image stream chunk to the pool
+// putImageStreamChunk returns an image stream chunk to the pool
 func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
 	chunk.Timestamp = time.Time{}
 	chunk.Delta = nil
@@ -218,7 +218,7 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	return nil
 }
 
-// addImageStreamChunk addds a image stream chunk to the stream accumulator
+// addImageStreamChunk adds an image stream chunk to the stream accumulator
 func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamChunk, isFinalChunk bool) error {
 	acc := a.getOrCreateStreamAccumulator(requestID)
 	acc.mu.Lock()

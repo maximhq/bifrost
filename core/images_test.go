@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -468,7 +469,7 @@ func generateTestCacheKey(req *schemas.BifrostImageGenerationRequest) string {
 			sb.WriteString(*req.Params.Style)
 		}
 		if req.Params.N != nil {
-			sb.WriteString(string(rune(*req.Params.N)))
+			sb.WriteString(fmt.Sprintf("%d", *req.Params.N))
 		}
 	}
 

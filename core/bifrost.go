@@ -1139,6 +1139,14 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 //   - schemas.BifrostError: Any execution error
 func (bifrost *Bifrost) ExecuteImageGenerationTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 
+	if toolCall.Function.Arguments == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "tool call arguments are empty",
+			},
+		}
+	}
 	// Parse tool call arguments (JSON string)
 	//   - Use sonic.Unmarshal on toolCall.Function.Arguments
 	//   - Extract: prompt (required), size, quality, style, response_format, n, model (optional)
@@ -1307,6 +1315,14 @@ func (bifrost *Bifrost) ExecuteResponsesImageGenerationTool(ctx context.Context,
 	}
 
 	// Extract prompt (required)
+	if len(args) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "tool call arguments are empty",
+			},
+		}
+	}
 	prompt, ok := args["prompt"].(string)
 	if !ok || prompt == "" {
 		return nil, &schemas.BifrostError{
@@ -1858,6 +1874,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.TranscriptionRequest = &tmp
+	}
+	if req.ImageGenerationRequest != nil {
+		tmp := *req.ImageGenerationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageGenerationRequest = &tmp
 	}
 
 	return &fallbackReq
