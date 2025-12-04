@@ -179,6 +179,22 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// Accumulate raw response
+	if len(accumulator.ChatStreamChunks) > 0 {
+		// Sort chunks by chunk index
+		sort.Slice(accumulator.ChatStreamChunks, func(i, j int) bool {
+			return accumulator.ChatStreamChunks[i].ChunkIndex < accumulator.ChatStreamChunks[j].ChunkIndex
+		})
+		for _, chunk := range accumulator.ChatStreamChunks {
+			if chunk.RawResponse != nil {
+				if data.RawResponse == nil {
+					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
+				} else {
+					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				}
+			}
+		}
+	}
 	return data, nil
 }
 
@@ -252,6 +268,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.TokenUsage = result.ChatResponse.Usage
 		}
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
+		if result.ChatResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
+		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
