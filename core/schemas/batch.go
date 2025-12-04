@@ -262,3 +262,21 @@ type BifrostBatchResultsResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// BifrostBatchDeleteRequest represents a request to delete a batch job.
+type BifrostBatchDeleteRequest struct {
+	Provider ModelProvider `json:"provider"`
+	BatchID  string        `json:"batch_id"` // ID of the batch to delete
+
+	// Extra parameters for provider-specific features
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// BifrostBatchDeleteResponse represents the response from deleting a batch job.
+type BifrostBatchDeleteResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object,omitempty"`
+	Deleted bool   `json:"deleted"`
+
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+

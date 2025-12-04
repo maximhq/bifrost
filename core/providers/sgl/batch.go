@@ -32,3 +32,8 @@ func (provider *SGLProvider) BatchResults(_ context.Context, _ schemas.Key, _ *s
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by SGL provider.
+func (provider *SGLProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
