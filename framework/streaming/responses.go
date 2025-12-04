@@ -660,6 +660,23 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		data.FinishReason = lastChunk.FinishReason
 	}
 
+	// Accumulate raw response
+	if len(accumulator.ResponsesStreamChunks) > 0 {
+		// Sort chunks by chunk index
+		sort.Slice(accumulator.ResponsesStreamChunks, func(i, j int) bool {
+			return accumulator.ResponsesStreamChunks[i].ChunkIndex < accumulator.ResponsesStreamChunks[j].ChunkIndex
+		})
+		for _, chunk := range accumulator.ResponsesStreamChunks {
+			if chunk.RawResponse != nil {
+				if data.RawResponse == nil {
+					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
+				} else {
+					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				}
+			}
+		}
+	}
+
 	return data, nil
 }
 
@@ -683,54 +700,94 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	// For OpenAI-compatible providers, the last chunk already contains the whole accumulated response
 	// so just return it as is
+	// We maintain the accumulator only for raw response accumulation
 	if provider == schemas.OpenAI || provider == schemas.OpenRouter || (provider == schemas.Azure && !schemas.IsAnthropicModel(model)) {
 		isFinalChunk := bifrost.IsFinalChunk(ctx)
+		chunk := a.getResponsesStreamChunk()
+		chunk.Timestamp = time.Now()
+		chunk.ErrorDetails = bifrostErr
+		if bifrostErr != nil {
+			chunk.FinishReason = bifrost.Ptr("error")
+		} else if result != nil && result.ResponsesStreamResponse != nil {
+			if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
+				rawResponse, ok := result.ResponsesStreamResponse.ExtraFields.RawResponse.(string)
+				if ok {
+					chunk.RawResponse = bifrost.Ptr(rawResponse)
+				}
+			}
+		}
+		if addErr := a.addResponsesStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
+			return nil, fmt.Errorf("failed to add responses stream chunk for request %s: %w", requestID, addErr)
+		}
 		if isFinalChunk {
-			// For OpenAI, the final chunk contains the complete response
-			// Extract the complete response and return it
-			if result != nil && result.ResponsesStreamResponse != nil {
-				// Build the complete response from the final chunk
-				data := &AccumulatedData{
-					RequestID:      requestID,
-					Status:         "success",
-					Stream:         true,
-					StartTimestamp: startTimestamp,
-					EndTimestamp:   endTimestamp,
-					Latency:        result.GetExtraFields().Latency,
-					ErrorDetails:   bifrostErr,
+			shouldProcess := false
+			// Get the accumulator to check if processing has already been triggered
+			accumulator := a.getOrCreateStreamAccumulator(requestID)
+			accumulator.mu.Lock()
+			shouldProcess = !accumulator.IsComplete
+			// Mark as complete when we're about to process
+			if shouldProcess {
+				accumulator.IsComplete = true
+			}
+			accumulator.mu.Unlock()
+
+			if shouldProcess {
+				accumulatedData, processErr := a.processAccumulatedResponsesStreamingChunks(requestID, bifrostErr, isFinalChunk)
+				if processErr != nil {
+					a.logger.Error("failed to process accumulated responses chunks for request %s: %v", requestID, processErr)
+					return nil, processErr
 				}
 
-				if bifrostErr != nil {
-					data.Status = "error"
-				}
+				// For OpenAI, the final chunk contains the complete response
+				// Extract the complete response and return it
+				if result != nil && result.ResponsesStreamResponse != nil {
+					// Build the complete response from the final chunk
+					data := &AccumulatedData{
+						RequestID:      requestID,
+						Status:         "success",
+						Stream:         true,
+						StartTimestamp: startTimestamp,
+						EndTimestamp:   endTimestamp,
+						Latency:        result.GetExtraFields().Latency,
+						ErrorDetails:   bifrostErr,
+						RawResponse:    accumulatedData.RawResponse,
+					}
 
-				// Extract the complete response from the stream response
-				if result.ResponsesStreamResponse.Response != nil {
-					data.OutputMessages = result.ResponsesStreamResponse.Response.Output
-					if result.ResponsesStreamResponse.Response.Usage != nil {
-						// Convert ResponsesResponseUsage to schemas.LLMUsage
-						data.TokenUsage = &schemas.BifrostLLMUsage{
-							PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
-							CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-							TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+					if bifrostErr != nil {
+						data.Status = "error"
+					}
+
+					// Extract the complete response from the stream response
+					if result.ResponsesStreamResponse.Response != nil {
+						data.OutputMessages = result.ResponsesStreamResponse.Response.Output
+						if result.ResponsesStreamResponse.Response.Usage != nil {
+							// Convert ResponsesResponseUsage to schemas.LLMUsage
+							data.TokenUsage = &schemas.BifrostLLMUsage{
+								PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
+								CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
+								TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+							}
 						}
 					}
-				}
 
-				if a.pricingManager != nil {
-					cost := a.pricingManager.CalculateCostWithCacheDebug(result)
-					data.Cost = bifrost.Ptr(cost)
-				}
+					if a.pricingManager != nil {
+						cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+						data.Cost = bifrost.Ptr(cost)
+					}
 
-				return &ProcessedStreamResponse{
-					Type:       StreamResponseTypeFinal,
-					RequestID:  requestID,
-					StreamType: StreamTypeResponses,
-					Provider:   provider,
-					Model:      model,
-					Data:       data,
-				}, nil
+					return &ProcessedStreamResponse{
+						Type:       StreamResponseTypeFinal,
+						RequestID:  requestID,
+						StreamType: StreamTypeResponses,
+						Provider:   provider,
+						Model:      model,
+						Data:       data,
+					}, nil
+				} else {
+					return nil, nil
+				}
 			}
+			return nil, nil
 		}
 
 		// For non-final chunks from OpenAI, just pass through
@@ -753,6 +810,9 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil && result.ResponsesStreamResponse != nil {
+		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ResponsesStreamResponse.ExtraFields.RawResponse))
+		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
 		// Extract token usage from stream response if available

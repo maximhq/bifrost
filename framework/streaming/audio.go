@@ -91,6 +91,22 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
+	// Accumulate raw response
+	if len(accumulator.AudioStreamChunks) > 0 {
+		// Sort chunks by chunk index
+		sort.Slice(accumulator.AudioStreamChunks, func(i, j int) bool {
+			return accumulator.AudioStreamChunks[i].ChunkIndex < accumulator.AudioStreamChunks[j].ChunkIndex
+		})
+		for _, chunk := range accumulator.AudioStreamChunks {
+			if chunk.RawResponse != nil {
+				if data.RawResponse == nil {
+					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
+				} else {
+					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				}
+			}
+		}
+	}
 	return data, nil
 }
 
@@ -118,6 +134,9 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 			Audio: result.SpeechStreamResponse.Audio,
 		}
 		chunk.Delta = newDelta
+		if result.SpeechStreamResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.SpeechStreamResponse.ExtraFields.RawResponse))
+		}
 		if result.SpeechStreamResponse.Usage != nil {
 			chunk.TokenUsage = result.SpeechStreamResponse.Usage
 		}

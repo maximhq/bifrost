@@ -1,0 +1,1 @@
+feat: support raw response accumulation in stream accumulator

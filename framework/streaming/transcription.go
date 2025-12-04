@@ -103,6 +103,22 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
+	// Accumulate raw response
+	if len(accumulator.TranscriptionStreamChunks) > 0 {
+		// Sort chunks by chunk index
+		sort.Slice(accumulator.TranscriptionStreamChunks, func(i, j int) bool {
+			return accumulator.TranscriptionStreamChunks[i].ChunkIndex < accumulator.TranscriptionStreamChunks[j].ChunkIndex
+		})
+		for _, chunk := range accumulator.TranscriptionStreamChunks {
+			if chunk.RawResponse != nil {
+				if data.RawResponse == nil {
+					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
+				} else {
+					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				}
+			}
+		}
+	}
 	return data, nil
 }
 
@@ -123,18 +139,27 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil && result.TranscriptionStreamResponse != nil {
+		// Set delta for all chunks (not just final chunks with usage)
+		// We create a deep copy of the delta to avoid pointing to stack memory
+		var deltaCopy *string
+		if result.TranscriptionStreamResponse.Delta != nil {
+			deltaValue := *result.TranscriptionStreamResponse.Delta
+			deltaCopy = &deltaValue
+		}
+		newDelta := &schemas.BifrostTranscriptionStreamResponse{
+			Type:  result.TranscriptionStreamResponse.Type,
+			Delta: deltaCopy,
+		}
+		chunk.Delta = newDelta
+
+		// Set token usage if available (typically only in final chunk)
 		if result.TranscriptionStreamResponse.Usage != nil {
 			chunk.TokenUsage = result.TranscriptionStreamResponse.Usage
-
-			// For Transcription, entire delta is sent in the final chunk which also has usage information
-			// We create a deep copy of the delta to avoid pointing to stack memory
-			newDelta := &schemas.BifrostTranscriptionStreamResponse{
-				Type:  result.TranscriptionStreamResponse.Type,
-				Delta: result.TranscriptionStreamResponse.Delta,
-			}
-			chunk.Delta = newDelta
 		}
 		chunk.ChunkIndex = result.TranscriptionStreamResponse.ExtraFields.ChunkIndex
+		if result.TranscriptionStreamResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TranscriptionStreamResponse.ExtraFields.RawResponse))
+		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)

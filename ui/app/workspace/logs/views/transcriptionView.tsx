@@ -27,34 +27,9 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 						Transcription Input
 					</div>
 					<div className="space-y-4 p-6">
-						<div>
-							<div className="text-muted-foreground mb-2 text-xs font-medium">AUDIO FILE</div>
-							{/* Audio Controls */}
-							<AudioPlayer src={transcriptionInput.file} />
-						</div>
-
-						<div className="grid grid-cols-2 gap-4">
-							{transcriptionInput.language && (
-								<div>
-									<div className="text-muted-foreground mb-2 text-xs font-medium">LANGUAGE</div>
-									<div className="font-mono text-xs">{transcriptionInput.language}</div>
-								</div>
-							)}
-
-							{transcriptionInput.response_format && (
-								<div>
-									<div className="text-muted-foreground mb-2 text-xs font-medium">FORMAT</div>
-									<div className="font-mono text-xs">{transcriptionInput.response_format}</div>
-								</div>
-							)}
-						</div>
-
-						{transcriptionInput.prompt && (
-							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">PROMPT</div>
-								<div className="font-mono text-xs">{transcriptionInput.prompt}</div>
-							</div>
-						)}
+						<div className="text-muted-foreground mb-2 text-xs font-medium">AUDIO FILE</div>
+						{/* Audio Controls */}
+						<AudioPlayer src={transcriptionInput.file} />
 					</div>
 				</div>
 			)}
@@ -78,28 +53,30 @@ export default function TranscriptionView({ transcriptionInput, transcriptionOut
 								</div>
 
 								{/* Basic Information */}
-								<div className="grid grid-cols-3 gap-4">
-									{transcriptionOutput?.task && (
-										<div>
-											<div className="text-muted-foreground mb-2 text-xs font-medium">TASK</div>
-											<div className="font-mono text-xs">{transcriptionOutput.task}</div>
-										</div>
-									)}
+								{(transcriptionOutput?.task || transcriptionOutput?.language || transcriptionOutput?.duration) && (
+									<div className="grid grid-cols-3 gap-4">
+										{transcriptionOutput?.task && (
+											<div>
+												<div className="text-muted-foreground mb-2 text-xs font-medium">TASK</div>
+												<div className="font-mono text-xs">{transcriptionOutput.task}</div>
+											</div>
+										)}
 
-									{transcriptionOutput?.language && (
-										<div>
-											<div className="text-muted-foreground mb-2 text-xs font-medium">DETECTED LANGUAGE</div>
-											<div className="font-mono text-xs">{transcriptionOutput.language}</div>
-										</div>
-									)}
+										{transcriptionOutput?.language && (
+											<div>
+												<div className="text-muted-foreground mb-2 text-xs font-medium">DETECTED LANGUAGE</div>
+												<div className="font-mono text-xs">{transcriptionOutput.language}</div>
+											</div>
+										)}
 
-									{transcriptionOutput?.duration && (
-										<div>
-											<div className="text-muted-foreground mb-2 text-xs font-medium">DURATION</div>
-											<div className="font-mono text-xs">{transcriptionOutput.duration.toFixed(1)}s</div>
-										</div>
-									)}
-								</div>
+										{transcriptionOutput?.duration && (
+											<div>
+												<div className="text-muted-foreground mb-2 text-xs font-medium">DURATION</div>
+												<div className="font-mono text-xs">{transcriptionOutput.duration.toFixed(1)}s</div>
+											</div>
+										)}
+									</div>
+								)}
 
 								{/* Words with Timing */}
 								{transcriptionOutput?.words && transcriptionOutput.words.length > 0 && (
