@@ -597,7 +597,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Handle tool use streaming - accumulate partial JSON
-				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
+				if chunk.Delta.PartialJSON != nil {
 					// Create streaming response for tool input delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",

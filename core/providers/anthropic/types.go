@@ -132,15 +132,16 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText            AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage           AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeToolUse         AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse   AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult      AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchResult AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse      AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult   AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking        AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeText             AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage            AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeToolUse          AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse    AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult       AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchResult  AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse       AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult    AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking         AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -149,6 +150,7 @@ type AnthropicContentBlock struct {
 	Text       *string                   `json:"text,omitempty"`        // For text content
 	Thinking   *string                   `json:"thinking,omitempty"`    // For thinking content
 	Signature  *string                   `json:"signature,omitempty"`   // For signature content
+	Data       *string                   `json:"data,omitempty"`        // For data content (encrypted data for redacted thinking, signature does not come with this)
 	ToolUseID  *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID         *string                   `json:"id,omitempty"`          // For tool_use content
 	Name       *string                   `json:"name,omitempty"`        // For tool_use content
@@ -295,11 +297,11 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens,omitempty"`
-	CacheCreation            *AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
-	OutputTokens             int                          `json:"output_tokens"`
+	InputTokens              int                         `json:"input_tokens"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
+	OutputTokens             int                         `json:"output_tokens"`
 }
 
 type AnthropicUsageCacheCreation struct {
@@ -345,13 +347,13 @@ const (
 
 // AnthropicStreamDelta represents incremental updates to content blocks during streaming (legacy)
 type AnthropicStreamDelta struct {
-	Type         AnthropicStreamDeltaType `json:"type"`
+	Type         AnthropicStreamDeltaType `json:"type,omitempty"`
 	Text         *string                  `json:"text,omitempty"`
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
-	StopSequence *string                  `json:"stop_sequence,omitempty"`
+	StopSequence *string                  `json:"stop_sequence"`
 }
 
 // ==================== MODEL TYPES ====================

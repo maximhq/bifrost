@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -263,7 +264,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
-		jsonBody, err := sonic.Marshal(convertedBody)
+		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 		}
@@ -1006,4 +1007,15 @@ func HandleMultipleListModelsRequests(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
+}
+
+// GetRandomString generates a random alphanumeric string of the given length.
+func GetRandomString(length int) string {
+	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
+	letters := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
+	b := make([]rune, length)
+	for i := range b {
+		b[i] = letters[randomSource.Intn(len(letters))]
+	}
+	return string(b)
 }
