@@ -1,6 +1,6 @@
 package schemas
 
-// BifrostImageGenerationRequest represents an image generation request
+// BifrostImageGenerationRequest represents an image generation request in bifrost format
 type BifrostImageGenerationRequest struct {
 	Provider       ModelProvider              `json:"provider"`
 	Model          string                     `json:"model"`
@@ -25,7 +25,6 @@ type ImageGenerationParameters struct {
 	Quality        *string                `json:"quality,omitempty"`         // "standard", "hd"
 	Style          *string                `json:"style,omitempty"`           // "natural", "vivid"
 	ResponseFormat *string                `json:"response_format,omitempty"` // "url", "b64_json"
-	Stream         *bool                  `json:"stream,omitempty"`          // true, false
 	User           *string                `json:"user,omitempty"`
 	ExtraParams    map[string]interface{} `json:"extra_params,omitempty"`
 }

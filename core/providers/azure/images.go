@@ -206,6 +206,11 @@ func (provider *AzureProvider) ImageGenerationStream(
 		authHeader["api-key"] = key.Value
 	}
 
+	if !openai.StreamingEnabledImageModels[request.Model] {
+		return provider.simulateImageStreaming(ctx, postHookRunner, key, request)
+	}
+
+	// Azure is OpenAI-compatible
 	return openai.HandleOpenAIImageGenerationStreaming(
 		ctx,
 		provider.client,
@@ -221,4 +226,77 @@ func (provider *AzureProvider) ImageGenerationStream(
 		provider.logger,
 	)
 
+}
+
+func (provider *AzureProvider) simulateImageStreaming(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Make non-streaming request
+	resp, bifrostErr := provider.ImageGeneration(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	go func() {
+		defer close(responseChan)
+
+		chunkSize := 64 * 1024
+
+		for imgIdx, img := range resp.Data {
+			if img.B64JSON == "" {
+				continue
+			}
+
+			b64Data := img.B64JSON
+			chunkIndex := 0
+
+			// Send partial chunks
+			for offset := 0; offset < len(b64Data); offset += chunkSize {
+				end := offset + chunkSize
+				if end > len(b64Data) {
+					end = len(b64Data)
+				}
+
+				isLastChunk := end >= len(b64Data) && imgIdx == len(resp.Data)-1
+
+				chunkType := "image_generation.partial_image"
+				if isLastChunk {
+					chunkType = "image_generation.completed"
+				}
+
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					ID:            resp.ID,
+					Type:          chunkType,
+					Index:         imgIdx,
+					ChunkIndex:    chunkIndex,
+					PartialB64:    b64Data[offset:end],
+					RevisedPrompt: img.RevisedPrompt,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+					},
+				}
+
+				if isLastChunk {
+					chunk.Usage = resp.Usage
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				}
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan)
+
+				chunkIndex++
+			}
+		}
+	}()
+
+	return responseChan, nil
 }

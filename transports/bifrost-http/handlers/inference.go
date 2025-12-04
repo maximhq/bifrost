@@ -1150,7 +1150,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if req.Prompt == "" {
+	if req.ImageGenerationInput == nil || req.Prompt == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "prompt can not be empty")
 		return
 	}
@@ -1190,9 +1190,8 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	// Streaming not supported yet
-	if req.Stream != nil && *req.Stream {
-		// TODO: Handle streaming logic here
+	// Handle streaming image generation
+	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
 		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
 		return
 	}

@@ -17,6 +17,12 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+var StreamingEnabledImageModels = map[string]bool{
+	"gpt-image-1": true,
+	"dall-e-2":    false,
+	"dall-e-3":    false,
+}
+
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
 type OpenAIImageGenerationRequest struct {
 	Model          string  `json:"model"`
@@ -112,7 +118,6 @@ func mapImageParams(p *schemas.ImageGenerationParameters, req *OpenAIImageGenera
 	if p == nil {
 		return
 	}
-	req.Stream = p.Stream
 	req.N = p.N
 	req.Size = p.Size
 	req.Quality = p.Quality
@@ -227,6 +232,10 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	if key.Value != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
 	}
+	if !StreamingEnabledImageModels[request.Model] || request.Model == "" {
+		return provider.simulateImageStreaming(ctx, postHookRunner, key, request)
+	}
+
 	// Use shared streaming logic
 	return HandleOpenAIImageGenerationStreaming(
 		ctx,
@@ -416,8 +425,6 @@ func HandleOpenAIImageGenerationStreaming(
 				// Collect usage information and send at the end of the stream
 				// Usage is contained within the completion message
 			}
-
-			// TODO: Handle regular image chunks
 			// Handle image chunks
 			if response.Type == "image_generation.partial_image" || response.Type == "image_generation.completed" {
 
@@ -480,6 +487,76 @@ func HandleOpenAIImageGenerationStreaming(
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, logger)
+		}
+	}()
+
+	return responseChan, nil
+}
+
+// simulateImageStreaming makes a non-streaming request and chunks the response
+func (provider *OpenAIProvider) simulateImageStreaming(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Make non-streaming request
+	resp, bifrostErr := provider.ImageGeneration(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	go func() {
+		defer close(responseChan)
+
+		chunkSize := 64 * 1024
+
+		for imgIdx, img := range resp.Data {
+			if img.B64JSON == "" {
+				continue
+			}
+
+			b64Data := img.B64JSON
+			chunkIndex := 0
+
+			// Send partial chunks
+			for offset := 0; offset < len(b64Data); offset += chunkSize {
+				end := offset + chunkSize
+				if end > len(b64Data) {
+					end = len(b64Data)
+				}
+
+				isLastChunk := end >= len(b64Data) && imgIdx == len(resp.Data)-1
+
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					ID:            resp.ID,
+					Type:          "image_generation.partial_image",
+					Index:         imgIdx,
+					ChunkIndex:    chunkIndex,
+					PartialB64:    b64Data[offset:end],
+					RevisedPrompt: img.RevisedPrompt,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+					},
+				}
+
+				if isLastChunk {
+					chunk.Type = "image_generation.completed"
+					chunk.Usage = resp.Usage
+					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				}
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan)
+
+				chunkIndex++
+			}
 		}
 	}()
 
