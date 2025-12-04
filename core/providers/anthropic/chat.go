@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -98,20 +99,26 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
-			if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
+			if bifrostReq.Params.Reasoning.MaxTokens != nil {
+				if *bifrostReq.Params.Reasoning.MaxTokens < MinimumReasoningMaxTokens {
+					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
+				}
 				anthropicReq.Thinking = &AnthropicThinking{
-					Type: "disabled",
+					Type:         "enabled",
+					BudgetTokens: bifrostReq.Params.Reasoning.MaxTokens,
+				}
+			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+				if err != nil {
+					return nil, err
+				}
+				anthropicReq.Thinking = &AnthropicThinking{
+					Type:         "enabled",
+					BudgetTokens: schemas.Ptr(budgetTokens),
 				}
 			} else {
-				if bifrostReq.Params.Reasoning.MaxTokens == nil {
-					return nil, fmt.Errorf("reasoning.max_tokens is required for reasoning")
-				} else if *bifrostReq.Params.Reasoning.MaxTokens < MinimumReasoningMaxTokens {
-					return nil, fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", MinimumReasoningMaxTokens)
-				} else {
-					anthropicReq.Thinking = &AnthropicThinking{
-						Type:         "enabled",
-						BudgetTokens: bifrostReq.Params.Reasoning.MaxTokens,
-					}
+				anthropicReq.Thinking = &AnthropicThinking{
+					Type: "disabled",
 				}
 			}
 		}
@@ -601,7 +608,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 
 			case AnthropicStreamDeltaTypeInputJSON:
 				// Handle tool use streaming - accumulate partial JSON
-				if chunk.Delta.PartialJSON != nil && *chunk.Delta.PartialJSON != "" {
+				if chunk.Delta.PartialJSON != nil {
 					// Create streaming response for tool input delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -630,6 +637,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 			case AnthropicStreamDeltaTypeThinking:
 				// Handle thinking content streaming
 				if chunk.Delta.Thinking != nil && *chunk.Delta.Thinking != "" {
+					thinkingText := *chunk.Delta.Thinking
 					// Create streaming response for thinking delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -638,12 +646,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
-										Reasoning: chunk.Delta.Thinking,
+										Reasoning: schemas.Ptr(thinkingText),
 										ReasoningDetails: []schemas.ChatReasoningDetails{
 											{
 												Index: 0,
 												Type:  schemas.BifrostReasoningDetailsTypeText,
-												Text:  chunk.Delta.Thinking,
+												Text:  schemas.Ptr(thinkingText),
 											},
 										},
 									},

@@ -443,8 +443,6 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 					continue
 				}
 
-				chunkIndex++
-
 				// Extract response ID from message-start events
 				if event.Type == StreamEventMessageStart && event.ID != nil {
 					responseID = *event.ID
@@ -512,7 +510,7 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereResponsesRequest(request), nil },
+		func() (any, error) { return ToCohereResponsesRequest(request) },
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -569,7 +567,10 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 		ctx,
 		request,
 		func() (any, error) {
-			reqBody := ToCohereResponsesRequest(request)
+			reqBody, err := ToCohereResponsesRequest(request)
+			if err != nil {
+				return nil, err
+			}
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
 			}

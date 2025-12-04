@@ -28,7 +28,7 @@ func TestOpenRouter(t *testing.T) {
 		VisionModel:    "openai/gpt-4o",
 		TextModel:      "google/gemini-2.5-flash",
 		EmbeddingModel: "",
-		ReasoningModel: "openai/o1",
+		ReasoningModel: "openai/gpt-oss-120b",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,

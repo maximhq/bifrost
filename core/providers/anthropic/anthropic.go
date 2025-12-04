@@ -674,18 +674,13 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 		return nil, err
 	}
 
-	// Convert to Anthropic format using the centralized converter
-	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (any, error) { return ToAnthropicResponsesRequest(request) },
-		provider.GetProviderKey())
+	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), false)
 	if err != nil {
 		return nil, err
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -694,7 +689,7 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	response := AcquireAnthropicMessageResponse()
 	defer ReleaseAnthropicMessageResponse(response)
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -728,20 +723,9 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (any, error) {
-			reqBody, err := ToAnthropicResponsesRequest(request)
-			if err != nil {
-				return nil, err
-			}
-			reqBody.Stream = schemas.Ptr(true)
-			return reqBody, nil
-		},
-		provider.GetProviderKey())
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), true)
+	if err != nil {
+		return nil, err
 	}
 
 	// Prepare Anthropic headers

@@ -437,7 +437,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Model:    testConfig.ReasoningModel,
 				Input:    messages,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(400),
+					MaxOutputTokens: bifrost.Ptr(1800),
 					Reasoning: &schemas.ResponsesParametersReasoning{
 						Effort: bifrost.Ptr("high"),
 						// Summary: bifrost.Ptr("detailed"),

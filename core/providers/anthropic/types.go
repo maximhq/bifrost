@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -54,6 +55,9 @@ type AnthropicMessageRequest struct {
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
 	OutputFormat  interface{}          `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
 
+	// Extra params for advanced use cases
+	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
 }
@@ -70,6 +74,69 @@ type AnthropicThinking struct {
 // IsStreamingRequested implements the StreamingRequest interface
 func (mr *AnthropicMessageRequest) IsStreamingRequested() bool {
 	return mr.Stream != nil && *mr.Stream
+}
+
+// Known fields for AnthropicMessageRequest
+var anthropicMessageRequestKnownFields = map[string]bool{
+	"model":          true,
+	"max_tokens":     true,
+	"messages":       true,
+	"metadata":       true,
+	"system":         true,
+	"temperature":    true,
+	"top_p":          true,
+	"top_k":          true,
+	"stop_sequences": true,
+	"stream":         true,
+	"tools":          true,
+	"tool_choice":    true,
+	"mcp_servers":    true,
+	"thinking":       true,
+	"output_format":  true,
+	"extra_params":   true,
+	"fallbacks":      true,
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
+// This captures all unregistered fields into ExtraParams.
+func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
+	// Create an alias type to avoid infinite recursion
+	type Alias AnthropicMessageRequest
+
+	// First, unmarshal into the alias to populate all known fields
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(mr),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Parse JSON to extract unknown fields
+	var rawData map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
+		return err
+	}
+
+	// Initialize ExtraParams if not already initialized
+	if mr.ExtraParams == nil {
+		mr.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract unknown fields
+	for key, value := range rawData {
+		if !anthropicMessageRequestKnownFields[key] {
+			var v interface{}
+			if err := sonic.Unmarshal(value, &v); err != nil {
+				continue // Skip fields that can't be unmarshaled
+			}
+			mr.ExtraParams[key] = v
+		}
+	}
+
+	return nil
 }
 
 type AnthropicMessageRole string
@@ -100,13 +167,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return json.Marshal(*mc.ContentStr)
+		return sonic.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(mc.ContentBlocks)
+		return sonic.Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicContent.
@@ -114,14 +181,14 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
-	if err := json.Unmarshal(data, &arrayContent); err == nil {
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = arrayContent
 		return nil
 	}
@@ -132,15 +199,16 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText            AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage           AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeToolUse         AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse   AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult      AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchResult AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse      AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult   AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking        AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeText             AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage            AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeToolUse          AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse    AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult       AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchResult  AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse       AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult    AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking         AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -149,6 +217,7 @@ type AnthropicContentBlock struct {
 	Text       *string                   `json:"text,omitempty"`        // For text content
 	Thinking   *string                   `json:"thinking,omitempty"`    // For thinking content
 	Signature  *string                   `json:"signature,omitempty"`   // For signature content
+	Data       *string                   `json:"data,omitempty"`        // For data content (encrypted data for redacted thinking, signature does not come with this)
 	ToolUseID  *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID         *string                   `json:"id,omitempty"`          // For tool_use content
 	Name       *string                   `json:"name,omitempty"`        // For tool_use content
@@ -295,11 +364,11 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens,omitempty"`
-	CacheCreation            *AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
-	OutputTokens             int                          `json:"output_tokens"`
+	InputTokens              int                         `json:"input_tokens"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
+	OutputTokens             int                         `json:"output_tokens"`
 }
 
 type AnthropicUsageCacheCreation struct {
@@ -345,13 +414,13 @@ const (
 
 // AnthropicStreamDelta represents incremental updates to content blocks during streaming (legacy)
 type AnthropicStreamDelta struct {
-	Type         AnthropicStreamDeltaType `json:"type"`
+	Type         AnthropicStreamDeltaType `json:"type,omitempty"`
 	Text         *string                  `json:"text,omitempty"`
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
-	StopSequence *string                  `json:"stop_sequence,omitempty"`
+	StopSequence *string                  `json:"stop_sequence"`
 }
 
 // ==================== MODEL TYPES ====================

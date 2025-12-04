@@ -8,11 +8,13 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // convertParameters handles parameter conversion
 func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
+	// Parameters are optional - if not provided, just skip conversion
 	if bifrostReq.Params == nil {
 		return nil
 	}
@@ -34,19 +36,42 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 		if bedrockReq.AdditionalModelRequestFields == nil {
 			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
 		}
-		if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
-			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
-				"type": "disabled",
-			}
-		} else {
-			if bifrostReq.Params.Reasoning.MaxTokens == nil {
-				return fmt.Errorf("reasoning.max_tokens is required for reasoning")
-			} else if schemas.IsAnthropicModel(bedrockReq.ModelID) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
-				return fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", anthropic.MinimumReasoningMaxTokens)
+		if bifrostReq.Params.Reasoning.MaxTokens != nil {
+			if schemas.IsAnthropicModel(bifrostReq.Model) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 			}
 			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
 				"type":          "enabled",
 				"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+			}
+		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+			maxTokens := DefaultCompletionMaxTokens
+			if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+				maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+			} else {
+				if bedrockReq.InferenceConfig != nil {
+					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+				} else {
+					bedrockReq.InferenceConfig = &BedrockInferenceConfig{
+						MaxTokens: schemas.Ptr(DefaultCompletionMaxTokens),
+					}
+				}
+			}
+			minBudgetTokens := MinimumReasoningMaxTokens
+			if schemas.IsAnthropicModel(bifrostReq.Model) {
+				minBudgetTokens = anthropic.MinimumReasoningMaxTokens
+			}
+			budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, maxTokens)
+			if err != nil {
+				return err
+			}
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": budgetTokens,
+			}
+		} else {
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
+				"type": "disabled",
 			}
 		}
 	}

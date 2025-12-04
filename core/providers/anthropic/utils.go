@@ -1,8 +1,12 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -22,6 +26,54 @@ var (
 		"tool_calls": AnthropicStopReasonToolUse,
 	}
 )
+
+func getRequestBodyForResponses(ctx context.Context, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
+	var jsonBody []byte
+	var err error
+
+	// Check if raw request body should be used
+	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
+		jsonBody = request.GetRawRequestBody()
+		// Unmarshal and check if model and region are present
+		var requestBody map[string]interface{}
+		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
+		}
+		// Add max_tokens if not present
+		if _, exists := requestBody["max_tokens"]; !exists {
+			requestBody["max_tokens"] = AnthropicDefaultMaxTokens
+		}
+		// Add stream if not present
+		if isStreaming {
+			requestBody["stream"] = true
+		}
+		jsonBody, err = sonic.Marshal(requestBody)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+	} else {
+		// Convert request to Anthropic format
+		reqBody, err := ToAnthropicResponsesRequest(request)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
+		}
+		if reqBody == nil {
+			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
+		}
+
+		if isStreaming {
+			reqBody.Stream = schemas.Ptr(true)
+		}
+
+		// Convert struct to map
+		jsonBody, err = sonic.Marshal(reqBody)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
+		}
+	}
+
+	return jsonBody, nil
+}
 
 // ConvertAnthropicFinishReasonToBifrost converts provider finish reasons to Bifrost format
 func ConvertAnthropicFinishReasonToBifrost(providerReason AnthropicStopReason) string {

@@ -1,6 +1,9 @@
 package anthropic
 
 import (
+	"encoding/json"
+	"fmt"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -34,6 +37,24 @@ func ToAnthropicChatCompletionError(bifrostErr *schemas.BifrostError) *Anthropic
 		Type:  "error", // always "error" for Anthropic
 		Error: errorStruct,
 	}
+}
+
+// ToAnthropicResponsesStreamError converts a BifrostError to Anthropic responses streaming error in SSE format
+func ToAnthropicResponsesStreamError(bifrostErr *schemas.BifrostError) string {
+	if bifrostErr == nil {
+		return ""
+	}
+
+	anthropicErr := ToAnthropicChatCompletionError(bifrostErr)
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(anthropicErr)
+	if err != nil {
+		return ""
+	}
+
+	// Format as Anthropic SSE error event
+	return fmt.Sprintf("event: error\ndata: %s\n\n", jsonData)
 }
 
 func parseAnthropicError(resp *fasthttp.Response) *schemas.BifrostError {

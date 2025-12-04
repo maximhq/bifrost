@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -38,6 +40,11 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			return nil, errors.New("invalid request type")
 		},
 		TextResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
 			return anthropic.ToAnthropicTextCompletionResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
@@ -63,13 +70,13 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(),
+						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(*ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.Anthropic {
+				if isClaudeModel(resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -81,24 +88,42 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(resp)
-					// Should never happen, but just in case
-					if anthropicResponse == nil {
-						return "", nil, nil
-					}
-					if resp.ExtraFields.Provider == schemas.Anthropic {
-						// This is always true in integrations
-						isRawResponseEnabled, ok := (*ctx).Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
-						if ok && isRawResponseEnabled {
-							if resp.ExtraFields.RawResponse != nil {
-								return string(anthropicResponse.Type), resp.ExtraFields.RawResponse, nil
-							} else {
-								// Explicitly return nil to indicate that no raw response is available (because 1 chunk of anthropic gets converted to multiple bifrost responses chunks)
-								return "", nil, nil
+					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
+						if resp.ExtraFields.RawResponse != nil {
+							raw, ok := resp.ExtraFields.RawResponse.(string)
+							if !ok {
+								return "", nil, fmt.Errorf("expected RawResponse string, got %T", resp.ExtraFields.RawResponse)
+							}
+							var rawResponseJSON anthropic.AnthropicStreamEvent
+							if err := sonic.Unmarshal([]byte(raw), &rawResponseJSON); err == nil {
+								return string(rawResponseJSON.Type), raw, nil
 							}
 						}
+						return "", nil, nil
 					}
-					return string(anthropicResponse.Type), anthropicResponse, nil
+					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(*ctx, resp)
+					// Can happen for openai lifecycle events
+					if len(anthropicResponse) == 0 {
+						return "", nil, nil
+					} else {
+						if len(anthropicResponse) > 1 {
+							combinedContent := ""
+							for _, event := range anthropicResponse {
+								responseJSON, err := sonic.Marshal(event)
+								if err != nil {
+									// Log JSON marshaling error but continue processing (should not happen)
+									log.Printf("Failed to marshal streaming response: %v", err)
+									continue
+								}
+								combinedContent += fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, responseJSON)
+							}
+							return "", combinedContent, nil
+						} else if len(anthropicResponse) == 1 {
+							return string(anthropicResponse[0].Type), anthropicResponse[0], nil
+						} else {
+							return "", nil, nil
+						}
+					}
 				},
 				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
@@ -168,26 +193,55 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		}
 	}
 
-	if !strings.Contains(model, "claude") || (provider != schemas.Anthropic && provider != "") {
-		// Not a Claude model or not an Anthropic model, so we can continue
-		return nil
+	headers := extractHeadersFromRequest(ctx)
+	if len(headers) > 0 {
+		// Check for User-Agent header (case-insensitive)
+		var userAgent []string
+		for key, value := range headers {
+			if strings.EqualFold(key, "user-agent") {
+				userAgent = value
+				break
+			}
+		}
+		if len(userAgent) > 0 {
+			// Check if it's claude code
+			if strings.Contains(userAgent[0], "claude-cli") {
+				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUserAgent, "claude-cli")
+			}
+		}
 	}
 
 	// Check if anthropic oauth headers are present
-	if !isAnthropicAPIKeyAuth(ctx) {
-		headers := extractHeadersFromRequest(ctx)
-		url := extractExactPath(ctx)
-		if !strings.HasPrefix(url, "/") {
-			url = "/" + url
-		}
-
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUseRawRequestBody, true)
+		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {
+			url := extractExactPath(ctx)
+			if !strings.HasPrefix(url, "/") {
+				url = "/" + url
+			}
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+		}
 	}
-	*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("is_anthropic_passthrough"), true)
 	return nil
+}
+
+func shouldUsePassthrough(ctx *context.Context, provider schemas.ModelProvider, model string, deployment string) bool {
+	isClaudeCode := false
+	if userAgent, ok := (*ctx).Value(schemas.BifrostContextKeyUserAgent).(string); ok {
+		if strings.Contains(userAgent, "claude-cli") {
+			isClaudeCode = true
+		}
+	}
+	return isClaudeCode && isClaudeModel(model, deployment, string(provider))
+}
+
+func isClaudeModel(model, deployment, provider string) bool {
+	return (provider == string(schemas.Anthropic) ||
+		(provider == "" && schemas.IsAnthropicModel(model))) ||
+		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(deployment))) ||
+		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(deployment)))
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request

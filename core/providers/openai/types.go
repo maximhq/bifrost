@@ -1,10 +1,15 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+)
+
+const (
+	MinMaxCompletionTokens = 16
 )
 
 // REQUEST TYPES
@@ -103,6 +108,39 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(aux)
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for OpenAIChatRequest.
+// This is needed because ChatParameters has a custom UnmarshalJSON method,
+// which would otherwise "hijack" the unmarshalling and ignore the other fields
+// (Model, Messages, Stream, MaxTokens, Fallbacks).
+func (r *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
+	// Unmarshal the request-specific fields directly
+	type baseFields struct {
+		Model     string          `json:"model"`
+		Messages  []OpenAIMessage `json:"messages"`
+		Stream    *bool           `json:"stream,omitempty"`
+		MaxTokens *int            `json:"max_tokens,omitempty"`
+		Fallbacks []string        `json:"fallbacks,omitempty"`
+	}
+	var base baseFields
+	if err := sonic.Unmarshal(data, &base); err != nil {
+		return err
+	}
+	r.Model = base.Model
+	r.Messages = base.Messages
+	r.Stream = base.Stream
+	r.MaxTokens = base.MaxTokens
+	r.Fallbacks = base.Fallbacks
+
+	// Unmarshal ChatParameters (which has its own custom unmarshaller)
+	var params schemas.ChatParameters
+	if err := sonic.Unmarshal(data, &params); err != nil {
+		return err
+	}
+	r.ChatParameters = params
+
+	return nil
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIChatRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
@@ -151,6 +189,46 @@ type OpenAIResponsesRequest struct {
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequest.
+// It sets parameters.reasoning.max_tokens to nil before marshaling.
+func (r *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
+	type Alias OpenAIResponsesRequest
+
+	// Manually marshal Input using its custom MarshalJSON method
+	inputBytes, err := r.Input.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+
+	// Aux struct:
+	// - Alias embeds all original fields
+	// - Input shadows the embedded Input field and uses json.RawMessage to preserve custom marshaling
+	// - Reasoning shadows the embedded ResponsesParameters.Reasoning
+	//   so that we can modify max_tokens before marshaling
+	aux := struct {
+		*Alias
+		// Shadow the embedded "input" field to use custom marshaling
+		Input json.RawMessage `json:"input"`
+		// Shadow the embedded "reasoning" field to modify it
+		Reasoning *schemas.ResponsesParametersReasoning `json:"reasoning,omitempty"`
+	}{
+		Alias: (*Alias)(r),
+		Input: json.RawMessage(inputBytes),
+	}
+
+	// Copy reasoning but set MaxTokens to nil
+	if r.Reasoning != nil {
+		aux.Reasoning = &schemas.ResponsesParametersReasoning{
+			Effort:          r.Reasoning.Effort,
+			GenerateSummary: r.Reasoning.GenerateSummary,
+			Summary:         r.Reasoning.Summary,
+			MaxTokens:       nil, // Always set to nil
+		}
+	}
+
+	return sonic.Marshal(aux)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

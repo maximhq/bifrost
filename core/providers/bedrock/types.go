@@ -1,9 +1,16 @@
 package bedrock
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // DefaultBedrockRegion is the default region for Bedrock
 const DefaultBedrockRegion = "us-east-1"
+const MinimumReasoningMaxTokens = 1
+const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
 
 // ==================== REQUEST TYPES ====================
 
@@ -59,11 +66,77 @@ type BedrockConverseRequest struct {
 	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 	ServiceTier                       *BedrockServiceTier              `json:"serviceTier,omitempty"`                       // Service tier configuration (note: camelCase in both request and response)
 	Stream                            bool                             `json:"-"`                                           // Whether streaming is requested (internal, not in JSON)
+
+	// Extra params for advanced use cases
+	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *BedrockConverseRequest) IsStreamingRequested() bool {
 	return r.Stream
+}
+
+// Known fields for BedrockConverseRequest
+var bedrockConverseRequestKnownFields = map[string]bool{
+	"messages":                          true,
+	"system":                            true,
+	"inferenceConfig":                   true,
+	"toolConfig":                        true,
+	"guardrailConfig":                   true,
+	"additionalModelRequestFields":      true,
+	"additionalModelResponseFieldPaths": true,
+	"performanceConfig":                 true,
+	"promptVariables":                   true,
+	"requestMetadata":                   true,
+	"serviceTier":                       true,
+	"stream":                            true,
+	"extra_params":                      true,
+	"fallbacks":                         true,
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for BedrockConverseRequest.
+// This captures all unregistered fields into ExtraParams.
+func (r *BedrockConverseRequest) UnmarshalJSON(data []byte) error {
+	// Create an alias type to avoid infinite recursion
+	type Alias BedrockConverseRequest
+
+	// First, unmarshal into the alias to populate all known fields
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Parse JSON to extract unknown fields
+	var rawData map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
+		return err
+	}
+
+	// Initialize ExtraParams if not already initialized
+	if r.ExtraParams == nil {
+		r.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract unknown fields
+	for key, value := range rawData {
+		if !bedrockConverseRequestKnownFields[key] {
+			var v interface{}
+			if err := sonic.Unmarshal(value, &v); err != nil {
+				continue // Skip fields that can't be unmarshaled
+			}
+			r.ExtraParams[key] = v
+		}
+	}
+
+	return nil
 }
 
 type BedrockMessageRole string

@@ -10,15 +10,21 @@ import (
 func parseVertexError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
 	var openAIErr schemas.BifrostError
 	var vertexErr []VertexError
-	if err := sonic.Unmarshal(resp.Body(), &openAIErr); err != nil || openAIErr.Error == nil {
+
+	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	if err := sonic.Unmarshal(decodedBody, &openAIErr); err != nil || openAIErr.Error == nil {
 		// Try Vertex error format if OpenAI format fails or is incomplete
-		if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
+		if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
 			//try with single Vertex error format
 			var vertexErr VertexError
-			if err := sonic.Unmarshal(resp.Body(), &vertexErr); err != nil {
+			if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
 				// Try VertexValidationError format (validation errors from Mistral endpoint)
 				var validationErr VertexValidationError
-				if err := sonic.Unmarshal(resp.Body(), &validationErr); err != nil {
+				if err := sonic.Unmarshal(decodedBody, &validationErr); err != nil {
 					return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 				}
 				if len(validationErr.Detail) > 0 {

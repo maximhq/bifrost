@@ -255,13 +255,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Delta = copied
 				chunk.FinishReason = choice.FinishReason
 			}
-			if choice.TextCompletionResponseChoice != nil {
-				deltaCopy := choice.TextCompletionResponseChoice.Text
-				chunk.Delta = &schemas.ChatStreamResponseChoiceDelta{
-					Content: deltaCopy,
-				}
-				chunk.FinishReason = choice.FinishReason
-			}
 		}
 		// Extract token usage
 		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {

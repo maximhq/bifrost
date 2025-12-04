@@ -545,28 +545,23 @@ func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, r
 		return nil, err
 	}
 
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (any, error) {
-			if schemas.IsAnthropicModel(deployment) {
-				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					reqBody.Model = deployment
-				}
-				return reqBody, nil
-			} else {
+	var jsonData []byte
+	var bifrostErr *schemas.BifrostError
+	if schemas.IsAnthropicModel(deployment) {
+		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, deployment, provider.GetProviderKey(), false)
+	} else {
+		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (any, error) {
 				reqBody := openai.ToOpenAIResponsesRequest(request)
 				if reqBody != nil {
 					reqBody.Model = deployment
 				}
 				return reqBody, nil
-			}
-		},
-		provider.GetProviderKey())
+			},
+			provider.GetProviderKey())
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -652,23 +647,9 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
 		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint)
 
-		jsonData, err := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (any, error) {
-				reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					reqBody.Model = deployment
-					reqBody.Stream = schemas.Ptr(true)
-				}
-				return reqBody, nil
-			},
-			provider.GetProviderKey())
-		if err != nil {
-			return nil, err
+		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, provider.GetProviderKey(), true)
+		if bifrostErr != nil {
+			return nil, bifrostErr
 		}
 
 		// Use shared streaming logic from Anthropic
