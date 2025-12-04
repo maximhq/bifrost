@@ -10,17 +10,10 @@ export interface VoiceConfig {
 
 export interface SpeechInput {
 	input: string;
-	voice: string | VoiceConfig[];
-	instructions?: string;
-	response_format?: string; // Default is "mp3"
 }
 
 export interface TranscriptionInput {
 	file: string; // base64 encoded (send empty string when using input_audio)
-	language?: string;
-	prompt?: string;
-	response_format?: string; // Default is "json"
-	format?: string;
 }
 
 export interface AudioTokenDetails {

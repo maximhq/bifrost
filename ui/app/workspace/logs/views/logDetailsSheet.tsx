@@ -297,14 +297,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				)}
 
 				{(log.transcription_input || log.transcription_output) && (
-					<>
-						<div className="mt-4 w-full text-center text-sm font-medium">Transcription</div>
-						<TranscriptionView
-							transcriptionInput={log.transcription_input}
-							transcriptionOutput={log.transcription_output}
-							isStreaming={log.stream}
-						/>
-					</>
+					<TranscriptionView
+						transcriptionInput={log.transcription_input}
+						transcriptionOutput={log.transcription_output}
+						isStreaming={log.stream}
+					/>
 				)}
 
 				{/* Show conversation history for chat/text completions */}
