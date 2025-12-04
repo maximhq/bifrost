@@ -7,11 +7,14 @@ import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColor
 import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
 import { ColumnDef } from "@tanstack/react-table";
 import { ArrowUpDown, Trash2 } from "lucide-react";
-import moment from "moment"
+import moment from "moment";
 
 function getMessage(log?: LogEntry) {
 	if (log?.input_history && log.input_history.length > 0) {
 		let userMessageContent = log.input_history[log.input_history.length - 1].content;
+		if (userMessageContent == undefined) {
+			return "";
+		}
 		if (typeof userMessageContent === "string") {
 			return userMessageContent;
 		}
@@ -42,9 +45,7 @@ function getMessage(log?: LogEntry) {
 	return "";
 }
 
-export const createColumns = (
-	onDelete: (log: LogEntry) => void,
-): ColumnDef<LogEntry>[] => [
+export const createColumns = (onDelete: (log: LogEntry) => void): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "status",
 		header: "Status",
@@ -175,7 +176,9 @@ export const createColumns = (
 		cell: ({ row }) => {
 			const log = row.original;
 			return (
-				<Button variant="outline" size="icon" onClick={() => onDelete(log)}><Trash2 /></Button>
+				<Button variant="outline" size="icon" onClick={() => onDelete(log)}>
+					<Trash2 />
+				</Button>
 			);
 		},
 	},

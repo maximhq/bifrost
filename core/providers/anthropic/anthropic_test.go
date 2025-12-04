@@ -28,7 +28,8 @@ func TestAnthropic(t *testing.T) {
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 			{Provider: schemas.Anthropic, Model: "claude-sonnet-4-20250514"},
 		},
-		VisionModel: "claude-3-7-sonnet-20250219", // Same model supports vision
+		VisionModel:    "claude-3-7-sonnet-20250219", // Same model supports vision
+		ReasoningModel: "claude-opus-4-5",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

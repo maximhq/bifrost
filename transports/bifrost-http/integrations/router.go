@@ -301,7 +301,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Parse request body into the integration-specific request type
 		// Note: config validation is performed at startup in RegisterRoutes
 		req := config.GetRequestTypeInstance()
-		var rawBody []byte		
+		var rawBody []byte
 
 		// Execute the request through Bifrost
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys())
@@ -325,7 +325,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
 						return
 					}
-				}							
+				}
 			}
 		}
 
@@ -533,7 +533,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			}
 			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
 			return
-		}else {
+		} else {
 			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
 			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
 			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))

@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -453,20 +452,9 @@ func (provider *BedrockProvider) listModelsByKey(ctx context.Context, key schema
 	}
 
 	// Convert to Bifrost response
-	response := bedrockResponse.ToBifrostListModelsResponse(providerName)
+	response := bedrockResponse.ToBifrostListModelsResponse(providerName, key.Models, config.Deployments)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Bedrock model list response", nil, providerName)
-	}
-
-	// Add deployment aliases to the response
-	for i, model := range response.Data {
-		for keyDeploymentAlias, keyDeploymentName := range key.BedrockKeyConfig.Deployments {
-			if strings.TrimPrefix(model.ID, string(providerName)+"/") == keyDeploymentName {
-				response.Data[i].ID = string(providerName) + "/" + keyDeploymentAlias
-				response.Data[i].Deployment = schemas.Ptr(keyDeploymentName)
-				break
-			}
-		}
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -526,14 +514,14 @@ func (provider *BedrockProvider) TextCompletion(ctx context.Context, key schemas
 	// Handle model-specific response conversion
 	var bifrostResponse *schemas.BifrostTextCompletionResponse
 	switch {
-	case strings.Contains(request.Model, "anthropic.") || strings.Contains(request.Model, "claude"):
+	case schemas.IsAnthropicModel(deployment):
 		var response BedrockAnthropicTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing anthropic response", err, providerName)
 		}
 		bifrostResponse = response.ToBifrostTextCompletionResponse()
 
-	case strings.Contains(request.Model, "mistral."):
+	case schemas.IsMistralModel(deployment):
 		var response BedrockMistralTextResponse
 		if err := sonic.Unmarshal(body, &response); err != nil {
 			return nil, providerUtils.NewBifrostOperationError("error parsing mistral response", err, providerName)
@@ -770,7 +758,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 
 		// Process AWS Event Stream format
 		var messageID string
-		var usage *schemas.BifrostLLMUsage
+		usage := &schemas.BifrostLLMUsage{}
 		var finishReason *string
 		chunkIndex := 0
 
@@ -819,20 +807,32 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 				}
 
 				if streamEvent.Usage != nil {
-					usage = &schemas.BifrostLLMUsage{
-						PromptTokens:     streamEvent.Usage.InputTokens,
-						CompletionTokens: streamEvent.Usage.OutputTokens,
-						TotalTokens:      streamEvent.Usage.TotalTokens,
+					// Accumulate usage information instead of overwriting
+					// In some cases usage comes in multiple events, so we need to take the maximum values
+					if streamEvent.Usage.InputTokens > usage.PromptTokens {
+						usage.PromptTokens = streamEvent.Usage.InputTokens
+					}
+					if streamEvent.Usage.OutputTokens > usage.CompletionTokens {
+						usage.CompletionTokens = streamEvent.Usage.OutputTokens
+					}
+					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
+						usage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
 					if streamEvent.Usage.CacheReadInputTokens > 0 {
-						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-							CachedTokens: streamEvent.Usage.CacheReadInputTokens,
+						if usage.PromptTokensDetails == nil {
+							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+						}
+						if streamEvent.Usage.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
+							usage.PromptTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-							CachedTokens: streamEvent.Usage.CacheWriteInputTokens,
+						if usage.CompletionTokensDetails == nil {
+							usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+						}
+						if streamEvent.Usage.CacheWriteInputTokens > usage.CompletionTokensDetails.CachedTokens {
+							usage.CompletionTokensDetails.CachedTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 				}
@@ -934,6 +934,8 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 		return nil, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err, providerName)
 	}
 
+	bifrostResponse.Model = deployment
+
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
@@ -985,12 +987,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 		defer resp.Body.Close()
 
 		// Process AWS Event Stream format
-		var usage *schemas.ResponsesResponseUsage
+		usage := &schemas.ResponsesResponseUsage{}
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions
 		streamState := acquireBedrockResponsesStreamState()
-		streamState.Model = &request.Model
+		streamState.Model = &deployment
 		defer releaseBedrockResponsesStreamState(streamState)
 
 		// Process AWS Event Stream format using proper decoder
@@ -1062,20 +1064,32 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 				}
 
 				if streamEvent.Usage != nil {
-					usage = &schemas.ResponsesResponseUsage{
-						InputTokens:  streamEvent.Usage.InputTokens,
-						OutputTokens: streamEvent.Usage.OutputTokens,
-						TotalTokens:  streamEvent.Usage.TotalTokens,
+					// Accumulate usage information instead of overwriting
+					// In some cases usage comes in multiple events, so we need to take the maximum values
+					if streamEvent.Usage.InputTokens > usage.InputTokens {
+						usage.InputTokens = streamEvent.Usage.InputTokens
+					}
+					if streamEvent.Usage.OutputTokens > usage.OutputTokens {
+						usage.OutputTokens = streamEvent.Usage.OutputTokens
+					}
+					if streamEvent.Usage.TotalTokens > usage.TotalTokens {
+						usage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
 					if streamEvent.Usage.CacheReadInputTokens > 0 {
-						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-							CachedTokens: streamEvent.Usage.CacheReadInputTokens,
+						if usage.InputTokensDetails == nil {
+							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+						}
+						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
+							usage.InputTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-							CachedTokens: streamEvent.Usage.CacheWriteInputTokens,
+						if usage.OutputTokensDetails == nil {
+							usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+						}
+						if streamEvent.Usage.CacheWriteInputTokens > usage.OutputTokensDetails.CachedTokens {
+							usage.OutputTokensDetails.CachedTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 				}

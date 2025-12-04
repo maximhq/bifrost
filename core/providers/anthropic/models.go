@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -25,8 +25,22 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 	}
 
 	for _, model := range response.Data {
+		modelID := model.ID
+		if len(allowedModels) > 0 {
+			allowed := false
+			for _, allowedModel := range allowedModels {
+				if schemas.SameBaseModel(model.ID, allowedModel) {
+					modelID = allowedModel
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
-			ID:      string(providerKey) + "/" + model.ID,
+			ID:      string(providerKey) + "/" + modelID,
 			Name:    schemas.Ptr(model.DisplayName),
 			Created: schemas.Ptr(model.CreatedAt.Unix()),
 		})

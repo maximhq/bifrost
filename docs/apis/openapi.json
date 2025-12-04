@@ -1756,8 +1756,8 @@
     },
     "/openai/deployments/{deployment-id}/completions": {
       "post": {
-        "summary": "Azure OpenAI Compatible Text Completions",
-        "description": "Azure OpenAI-compatible text completions endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Text Completions",
+        "description": "OpenAI-compatible text completions endpoint for specific deployments.",
         "operationId": "azureTextCompletions",
         "tags": [
           "Integration - OpenAI"
@@ -1767,7 +1767,7 @@
             "name": "deployment-id",
             "in": "path",
             "required": true,
-            "description": "Azure deployment ID",
+            "description": "Deployment ID",
             "schema": {
               "type": "string"
             }
@@ -1785,7 +1785,7 @@
         },
         "responses": {
           "200": {
-            "description": "Azure OpenAI-compatible text completion response",
+            "description": "OpenAI-compatible text completion response",
             "content": {
               "application/json": {
                 "schema": {
@@ -1878,8 +1878,8 @@
     },
     "/openai/deployments/{deployment-id}/chat/completions": {
       "post": {
-        "summary": "Azure OpenAI Compatible Chat Completions",
-        "description": "Azure OpenAI-compatible chat completions endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Chat Completions",
+        "description": "OpenAI-compatible chat completions endpoint for specific deployments.",
         "operationId": "azureChatCompletions",
         "tags": [
           "Integration - OpenAI"
@@ -1907,7 +1907,7 @@
         },
         "responses": {
           "200": {
-            "description": "Azure OpenAI-compatible chat completion response",
+            "description": "OpenAI-compatible chat completion response",
             "content": {
               "application/json": {
                 "schema": {
@@ -2000,8 +2000,8 @@
     },
     "/openai/deployments/{deployment-id}/responses": {
       "post": {
-        "summary": "Azure OpenAI Compatible Responses",
-        "description": "Azure OpenAI-compatible responses endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Responses",
+        "description": "OpenAI-compatible responses endpoint for specific deployments.",
         "operationId": "azureResponses",
         "tags": [
           "Integration - OpenAI"
@@ -2029,7 +2029,7 @@
         },
         "responses": {
           "200": {
-            "description": "Azure OpenAI-compatible responses response",
+            "description": "OpenAI-compatible responses response",
             "content": {
               "application/json": {
                 "schema": {
@@ -2112,8 +2112,8 @@
     },
     "/openai/deployments/{deployment-id}/embeddings": {
       "post": {
-        "summary": "Azure OpenAI Compatible Embeddings",
-        "description": "Azure OpenAI-compatible embeddings endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Embeddings",
+        "description": "OpenAI-compatible embeddings endpoint for specific deployments.",
         "operationId": "azureEmbeddings",
         "tags": [
           "Integration - OpenAI"
@@ -2141,7 +2141,7 @@
         },
         "responses": {
           "200": {
-            "description": "Azure OpenAI-compatible embeddings response",
+            "description": "OpenAI-compatible embeddings response",
             "content": {
               "application/json": {
                 "schema": {
@@ -2221,8 +2221,8 @@
     },
     "/openai/deployments/{deployment-id}/audio/speech": {
       "post": {
-        "summary": "Azure OpenAI Compatible Speech Synthesis",
-        "description": "Azure OpenAI-compatible speech synthesis endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Speech Synthesis",
+        "description": "OpenAI-compatible speech synthesis endpoint for specific deployments.",
         "operationId": "azureSpeech",
         "tags": [
           "Integration - OpenAI"
@@ -2329,8 +2329,8 @@
     },
     "/openai/deployments/{deployment-id}/audio/transcriptions": {
       "post": {
-        "summary": "Azure OpenAI Compatible Audio Transcription",
-        "description": "Azure OpenAI-compatible audio transcription endpoint for specific deployments.",
+        "summary": "OpenAI Compatible Audio Transcription",
+        "description": "OpenAI-compatible audio transcription endpoint for specific deployments.",
         "operationId": "azureTranscription",
         "tags": [
           "Integration - OpenAI"

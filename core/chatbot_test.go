@@ -633,7 +633,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	synthesisRequest := &schemas.BifrostChatRequest{
 		Provider: s.config.Provider,
 		Model:    s.config.Model,
-		Input: conversationWithSynthesis,
+		Input:    conversationWithSynthesis,
 		Params: &schemas.ChatParameters{
 			Temperature:         s.config.Temperature,
 			MaxCompletionTokens: s.config.MaxTokens,
@@ -776,7 +776,7 @@ func printHelp() {
 	fmt.Println("• Anthropic (claude models)")
 	fmt.Println("• Bedrock (AWS hosted models)")
 	fmt.Println("• Cohere (command models)")
-	fmt.Println("• Azure (Azure OpenAI models)")
+	fmt.Println("• Azure (Azure models)")
 	fmt.Println("• Vertex (Google Cloud models)")
 	fmt.Println("• Mistral (mistral models)")
 	fmt.Println("• Ollama (local models)")
@@ -838,7 +838,7 @@ func runChatbot() {
 		fmt.Println("   - COHERE_API_KEY for Cohere models")
 		fmt.Println("   - MISTRAL_API_KEY for Mistral models")
 		fmt.Println("   - AWS credentials for Bedrock")
-		fmt.Println("   - AZURE_API_KEY and AZURE_ENDPOINT for Azure OpenAI")
+		fmt.Println("   - AZURE_API_KEY and AZURE_ENDPOINT for Azure")
 		fmt.Println("   - VERTEX_PROJECT_ID and credentials for Vertex AI")
 		os.Exit(1)
 	}

@@ -214,8 +214,12 @@ export const networkFormConfigSchema = z
 			.max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.coerce
 			.number("Retry backoff initial must be a number")
-			.min(100, "Retry backoff initial must be at least 100ms"),
-		retry_backoff_max: z.coerce.number("Retry backoff max must be a number").min(1000, "Retry backoff max must be at least 1000ms"),
+			.min(100, "Retry backoff initial must be at least 100ms")
+			.max(1000000, "Retry backoff initial must be at most 1000000ms"),
+		retry_backoff_max: z.coerce
+			.number("Retry backoff max must be a number")
+			.min(100, "Retry backoff max must be at least 100ms")
+			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",

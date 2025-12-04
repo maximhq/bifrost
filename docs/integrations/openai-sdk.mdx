@@ -96,7 +96,7 @@ vertex_response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello from Gemini!"}]
 )
 
-# Azure OpenAI models
+# Azure models
 azure_response = client.chat.completions.create(
     model="azure/gpt-4o",
     messages=[{"role": "user", "content": "Hello from Azure!"}]
@@ -138,7 +138,7 @@ const vertexResponse = await openai.chat.completions.create({
   messages: [{ role: "user", content: "Hello from Gemini!" }],
 });
 
-// Azure OpenAI models
+// Azure models
 const azureResponse = await openai.chat.completions.create({
   model: "azure/gpt-4o",
   messages: [{ role: "user", content: "Hello from Azure!" }],
@@ -316,7 +316,7 @@ const geminiResponseWithHeader = await openai.chat.completions.create({
 </Tab>
 </Tabs>
 
-For Azure OpenAI, you can use the AzureOpenAI client and point it to Bifrost integration endpoint. The `x-bf-azure-endpoint` header is required to specify your Azure OpenAI resource endpoint.
+For Azure, you can use the AzureOpenAI client and point it to Bifrost integration endpoint. The `x-bf-azure-endpoint` header is required to specify your Azure resource endpoint.
 
 <Tabs group="openai-sdk">
 <Tab title="Python">

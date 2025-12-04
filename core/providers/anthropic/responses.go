@@ -423,6 +423,8 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.
 		bifrostResp.Output = outputMessages
 	}
 
+	bifrostResp.Model = response.Model
+
 	return bifrostResp
 }
 
@@ -474,6 +476,8 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 		}
 	}
 
+	anthropicResp.Model = bifrostResp.Model
+
 	return anthropicResp
 }
 
@@ -501,7 +505,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					CreatedAt: state.CreatedAt,
 				}
 				if state.Model != nil {
-					// Note: Model field doesn't exist in BifrostResponsesResponse, but we can add other fields
+					response.Model = *state.Model
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeCreated,
@@ -1051,6 +1055,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if state.MessageID != nil {
 			response.ID = state.MessageID
 		}
+		if state.Model != nil {
+			response.Model = *state.Model
+		}
 
 		return []*schemas.BifrostResponsesStreamResponse{{
 			Type:           schemas.ResponsesStreamResponseTypeCompleted,
@@ -1107,9 +1114,13 @@ func ToAnthropicResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStr
 			if bifrostResp.Response.ID != nil {
 				streamMessage.ID = *bifrostResp.Response.ID
 			}
-			// Preserve model from ExtraFields if available
+			// Preserve model from Response if available, otherwise use ExtraFields
 			if bifrostResp.ExtraFields.ModelRequested != "" {
-				streamMessage.Model = bifrostResp.ExtraFields.ModelRequested
+				if bifrostResp.Response != nil && bifrostResp.Response.Model != "" {
+					streamMessage.Model = bifrostResp.Response.Model
+				} else {
+					streamMessage.Model = bifrostResp.ExtraFields.ModelRequested
+				}
 			}
 			// Preserve usage if available
 			if bifrostResp.Response.Usage != nil {

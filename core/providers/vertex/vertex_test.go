@@ -27,6 +27,7 @@ func TestVertex(t *testing.T) {
 		VisionModel:    "google/gemini-2.0-flash-001",
 		TextModel:      "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel: "text-multilingual-embedding-002",
+		// ReasoningModel: "google/gemini-2.5-pro",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -42,6 +43,7 @@ func TestVertex(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Reasoning:             false, // Not supported right now because we are not using native gemini converters
 			ListModels:            false,
 		},
 	}

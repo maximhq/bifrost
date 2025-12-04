@@ -815,9 +815,7 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
 	}
 	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-
 	s.Config.PricingManager.AddModelDataToPool(allModels)
-
 	return nil
 }
 
@@ -826,9 +824,7 @@ func (s *BifrostHTTPServer) DeleteModelsForProvider(ctx context.Context, provide
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-
 	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-
 	return nil
 }
 
@@ -1165,9 +1161,13 @@ func (s *BifrostHTTPServer) Start() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	// Start server in a goroutine
 	serverAddr := net.JoinHostPort(s.Host, s.Port)
+	ln, err := net.Listen("tcp", serverAddr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener on %s: %v", serverAddr, err)
+	}
 	go func() {
 		logger.Info("successfully started bifrost, serving UI on http://%s:%s", s.Host, s.Port)
-		if err := s.Server.ListenAndServe(serverAddr); err != nil {
+		if err := s.Server.Serve(ln); err != nil {
 			errChan <- err
 		}
 	}()

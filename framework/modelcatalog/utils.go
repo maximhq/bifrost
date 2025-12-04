@@ -18,28 +18,14 @@ func isBatchRequest(req *schemas.BifrostRequest) bool {
 	return false
 }
 
-// isCacheReadRequest checks if the request involves cache reading
-func isCacheReadRequest(req *schemas.BifrostRequest, headers map[string]string) bool {
-	// Check for cache-related headers or request parameters
-	if cacheHeader := headers["x-cache-read"]; cacheHeader == "true" {
-		return true
-	}
-
-	// Check for anthropic cache headers
-	if cacheControl := headers["anthropic-beta"]; cacheControl != "" {
-		return true
-	}
-
-	// TODO: Add message-level cache control detection when ChatMessage schema supports it
-	// For now, cache detection relies on headers only
-
-	return false
-}
-
 // normalizeProvider normalizes the provider name to a consistent format
 func normalizeProvider(p string) string {
 	if strings.Contains(p, "vertex_ai") || p == "google-vertex" {
 		return string(schemas.Vertex)
+	} else if strings.Contains(p, "bedrock") {
+		return string(schemas.Bedrock)
+	} else if strings.Contains(p, "cohere") {
+		return string(schemas.Cohere)
 	} else {
 		return p
 	}

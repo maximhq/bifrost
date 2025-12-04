@@ -90,7 +90,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	cost := 0.0
 	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
 		extraFields := result.GetExtraFields()
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, usage, extraFields.RequestType, isBatch, audioSeconds, audioTokenDetails)
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, extraFields.RequestType, isBatch, audioSeconds, audioTokenDetails)
 	}
 
 	return cost
@@ -107,7 +107,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 			if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 				return 0
 			} else if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				return mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
+				return mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -120,7 +120,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 			baseCost := mc.CalculateCost(result)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				semanticCacheCost = mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, &schemas.BifrostLLMUsage{
+				semanticCacheCost = mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
@@ -135,7 +135,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
 	// Allow audio-only flows by only returning early if we have no usage data at all
 	if usage == nil && audioSeconds == nil && audioTokenDetails == nil {
 		return 0.0
@@ -149,8 +149,17 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 	// Get pricing for the model
 	pricing, exists := mc.getPricing(model, provider, requestType)
 	if !exists {
-		mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
-		return 0.0
+		if deployment != "" {
+			mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, trying with deployment %s", model, provider, normalizeRequestType(requestType), deployment)
+			pricing, exists = mc.getPricing(deployment, provider, requestType)
+			if !exists {
+				mc.logger.Debug("pricing not found for deployment %s and provider %s of request type %s, skipping cost calculation", deployment, provider, normalizeRequestType(requestType))
+				return 0.0
+			}
+		} else {
+			mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
+			return 0.0
+		}
 	}
 
 	var inputCost, outputCost float64
@@ -251,8 +260,8 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, us
 	} else {
 		// Use regular pricing
 		inputCost = float64(promptTokens-cachedPromptTokens) * pricing.InputCostPerToken
-		if pricing.CacheCreationInputTokenCost != nil {
-			inputCost += float64(cachedPromptTokens) * *pricing.CacheCreationInputTokenCost
+		if pricing.CacheReadInputTokenCost != nil {
+			inputCost += float64(cachedPromptTokens) * *pricing.CacheReadInputTokenCost
 		}
 		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
 		if pricing.CacheCreationInputTokenCost != nil {
@@ -304,6 +313,26 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
 					mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 					pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+					if ok {
+						return &pricing, true
+					}
+				}
+			}
+		}
+
+		if provider == string(schemas.Bedrock) {
+			// If model is claude without "anthropic." prefix, try with "anthropic." prefix
+			if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
+				mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
+				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(requestType))]
+				if ok {
+					return &pricing, true
+				}
+
+				// Lookup in chat if responses not found
+				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+					mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
+					pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 					if ok {
 						return &pricing, true
 					}

@@ -1,1 +1,4 @@
-- feat: support added for x-goog-api-key header for Google Gemini style for virtual key lookup and direct api key bypass
+fix: vertex and bedrock usage aggregation improvements for streaming
+fix: choice index fixed to 0 for anthropic and bedrock streaming
+feat: model field added to responses api response
+feat: check allowed models and deployments of key for list models

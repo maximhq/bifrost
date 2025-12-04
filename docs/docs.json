@@ -158,6 +158,7 @@
                 "icon": "shield-check",
                 "pages": [
                   "enterprise/advanced-governance",
+                  "enterprise/rbac",
                   {
                     "group": "Identity Providers",
                     "icon": "id-card",
@@ -214,7 +215,8 @@
             "group": "Common setup instructions",
             "icon": "book",
             "pages": [
-              "deployment-guides/how-to/install-make"
+              "deployment-guides/how-to/install-make",
+              "deployment-guides/how-to/multinode"
             ]
           }
         ]
@@ -271,22 +273,28 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.3.37",
-          "changelogs/v1.3.36",
-          "changelogs/v1.3.35",
-          "changelogs/v1.3.34",
-          "changelogs/v1.3.33",
-          "changelogs/v1.3.32",
-          "changelogs/v1.3.31",
-          "changelogs/v1.3.30",
-          "changelogs/v1.3.29",
-          "changelogs/v1.3.28",
-          "changelogs/v1.3.27",
-          "changelogs/v1.3.26",
-          "changelogs/v1.3.25",
-          "changelogs/v1.3.24",
-          "changelogs/v1.3.23",
-          "changelogs/v1.3.22",
+          "changelogs/v1.3.38",
+          {
+            "group": "November 2025",
+            "pages": [
+              "changelogs/v1.3.37",
+              "changelogs/v1.3.36",
+              "changelogs/v1.3.35",
+              "changelogs/v1.3.34",
+              "changelogs/v1.3.33",
+              "changelogs/v1.3.32",
+              "changelogs/v1.3.31",
+              "changelogs/v1.3.30",
+              "changelogs/v1.3.29",
+              "changelogs/v1.3.28",
+              "changelogs/v1.3.27",
+              "changelogs/v1.3.26",
+              "changelogs/v1.3.25",
+              "changelogs/v1.3.24",
+              "changelogs/v1.3.23",
+              "changelogs/v1.3.22"
+            ]
+          },
           {
             "group": "October 2025",
             "pages": [

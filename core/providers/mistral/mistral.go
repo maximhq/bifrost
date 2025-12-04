@@ -106,7 +106,7 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 	}
 
 	// Create final response
-	response := mistralResponse.ToBifrostListModelsResponse()
+	response := mistralResponse.ToBifrostListModelsResponse(key.Models)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 

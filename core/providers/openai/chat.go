@@ -1,8 +1,6 @@
 package openai
 
 import (
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -50,7 +48,7 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		openaiReq.filterOpenAISpecificParameters()
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
-		if providerUtils.IsVertexMistralModel(bifrostReq.Model) {
+		if schemas.IsMistralModel(bifrostReq.Model) {
 			openaiReq.applyMistralCompatibility()
 		}
 		return openaiReq

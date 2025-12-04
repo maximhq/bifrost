@@ -1161,7 +1161,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				CreatedAt: state.CreatedAt,
 			}
 			if state.Model != nil {
-				// Note: Model field doesn't exist in BifrostResponsesResponse schema
+				response.Model = *state.Model
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeCreated,
@@ -1176,6 +1176,9 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 			response := &schemas.BifrostResponsesResponse{
 				ID:        state.MessageID,
 				CreatedAt: state.CreatedAt, // Use same timestamp
+			}
+			if state.Model != nil {
+				response.Model = *state.Model
 			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeInProgress,
@@ -1495,6 +1498,10 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		ID:        state.MessageID,
 		CreatedAt: state.CreatedAt,
 		Usage:     usage,
+	}
+
+	if state.Model != nil {
+		response.Model = *state.Model
 	}
 
 	responses = append(responses, &schemas.BifrostResponsesStreamResponse{

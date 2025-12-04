@@ -295,6 +295,7 @@ Add your plugin to Bifrost's `config.json`:
       "enabled": true,
       "name": "my-plugin",
       "path": "/path/to/my-plugin.so",
+      "version": 1,
       "config": {
         "api_key": "your-api-key",
         "custom_setting": "value"
@@ -310,6 +311,7 @@ Add your plugin to Bifrost's `config.json`:
 - `name` - Plugin identifier (used in logs)
 - `path` - Absolute or relative path to the `.so` file
 - `config` - Plugin-specific configuration passed to `Init()`
+- `version` - (Optional) Plugin version number (default: 1). Increment this value to force a reload of the plugin and database update when Bifrost restarts. Useful when you want to ensure config changes take effect without manually clearing plugin state.
 
 ## Step 6: Test Your Plugin
 
