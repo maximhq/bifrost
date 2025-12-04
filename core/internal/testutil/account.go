@@ -41,6 +41,8 @@ type TestScenarios struct {
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
 	ListModels            bool // List available models functionality
+	ImageGeneration       bool // Image generation functionality
+	ImageGenerationStream bool // Streaming image generation functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -61,6 +63,8 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback // for embedding tests
 	SkipReason               string             // Reason to skip certain tests
+	ImageGenerationModel     string             // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback // Fallbacks for image generation
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
