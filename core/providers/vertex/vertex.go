@@ -734,6 +734,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			request.Model,
@@ -1024,8 +1025,12 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			response.ExtraFields.ModelDeployment = deployment
 		}
 
+		// Set raw response if enabled
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			response.ExtraFields.RawResponse = rawResponse
+		}
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
 		}
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1217,6 +1222,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			request.Model,
