@@ -1584,6 +1584,7 @@ def get_api_key(integration: str) -> str:
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
         "google": "GEMINI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
         "litellm": "LITELLM_API_KEY",
         "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
     }
@@ -1866,3 +1867,409 @@ def get_content_string(content: Any) -> str:
         return " ".join(filter(None, parts))
     else:
         return ""
+
+
+# =============================================================================
+# Files API Test Utilities
+# =============================================================================
+
+def create_batch_jsonl_content(
+    model: str = "gpt-4o-mini",
+    num_requests: int = 2,
+    provider: str = None
+) -> str:
+    """
+    Create JSONL content for batch API testing.
+    
+    Args:
+        model: The model to use in batch requests
+        num_requests: Number of requests to include
+        provider: Provider name (e.g., 'openai', 'anthropic'). If provided,
+                  formats the model as 'provider/model'
+        
+    Returns:
+        JSONL formatted string with batch requests
+    """
+    requests = []
+    prompts = [
+        "What is 2 + 2?",
+        "What is the capital of France?",
+        "Name a primary color.",
+        "What planet is closest to the Sun?",
+    ]
+    
+    # Format model with provider prefix if specified
+    # formatted_model = f"{provider}/{model}" if provider else model
+    
+    for i in range(num_requests):
+        request = {
+            "custom_id": f"request-{i+1}",
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": prompts[i % len(prompts)]}
+                ],
+                "max_tokens": 50
+            }
+        }
+        requests.append(json.dumps(request))
+    
+    return "\n".join(requests)
+
+
+def assert_valid_file_response(response, expected_purpose: str = None) -> None:
+    """
+    Assert that a file upload/retrieve response is valid.
+    
+    Args:
+        response: The file response object
+        expected_purpose: Expected purpose field (optional)
+    """
+    assert response is not None, "File response should not be None"
+    assert hasattr(response, "id"), "File response should have 'id' attribute"
+    assert response.id is not None, "File ID should not be None"
+    assert len(response.id) > 0, "File ID should not be empty"
+    
+    assert hasattr(response, "object"), "File response should have 'object' attribute"
+    assert response.object == "file", f"Object should be 'file', got {response.object}"
+    
+    assert hasattr(response, "bytes"), "File response should have 'bytes' attribute"
+    assert response.bytes > 0, "File bytes should be greater than 0"
+    
+    assert hasattr(response, "filename"), "File response should have 'filename' attribute"
+    assert response.filename is not None, "Filename should not be None"
+    
+    assert hasattr(response, "purpose"), "File response should have 'purpose' attribute"
+    if expected_purpose:
+        assert response.purpose == expected_purpose, (
+            f"Purpose should be '{expected_purpose}', got {response.purpose}"
+        )
+
+
+def assert_valid_file_list_response(response, min_count: int = 0) -> None:
+    """
+    Assert that a file list response is valid.
+    
+    Args:
+        response: The file list response object
+        min_count: Minimum expected number of files
+    """
+    assert response is not None, "File list response should not be None"
+    assert hasattr(response, "data"), "File list response should have 'data' attribute"
+    assert isinstance(response.data, list), "Data should be a list"
+    assert len(response.data) >= min_count, (
+        f"Should have at least {min_count} files, got {len(response.data)}"
+    )
+
+
+def assert_valid_file_delete_response(response, expected_id: str = None) -> None:
+    """
+    Assert that a file delete response is valid.
+    
+    Args:
+        response: The file delete response object
+        expected_id: Expected file ID that was deleted
+    """
+    assert response is not None, "File delete response should not be None"
+    assert hasattr(response, "id"), "Delete response should have 'id' attribute"
+    assert hasattr(response, "deleted"), "Delete response should have 'deleted' attribute"
+    assert response.deleted is True, "Deleted should be True"
+    
+    if expected_id:
+        assert response.id == expected_id, (
+            f"Deleted file ID should be '{expected_id}', got {response.id}"
+        )
+
+
+# =============================================================================
+# Batch API Test Utilities
+# =============================================================================
+
+BATCH_VALID_STATUSES = [
+    "validating",
+    "failed",
+    "in_progress",
+    "finalizing",
+    "completed",
+    "expired",
+    "cancelling",
+    "cancelled",
+]
+
+
+def assert_valid_batch_response(response, expected_status: str = None) -> None:
+    """
+    Assert that a batch create/retrieve response is valid.
+    
+    Args:
+        response: The batch response object
+        expected_status: Expected status (optional)
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "id"), "Batch response should have 'id' attribute"
+    assert response.id is not None, "Batch ID should not be None"
+    assert len(response.id) > 0, "Batch ID should not be empty"
+    
+    assert hasattr(response, "object"), "Batch response should have 'object' attribute"
+    assert response.object == "batch", f"Object should be 'batch', got {response.object}"
+    
+    assert hasattr(response, "status"), "Batch response should have 'status' attribute"
+    assert response.status in BATCH_VALID_STATUSES, (
+        f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+    )
+    
+    if expected_status:
+        assert response.status == expected_status, (
+            f"Status should be '{expected_status}', got {response.status}"
+        )
+    
+    assert hasattr(response, "endpoint"), "Batch response should have 'endpoint' attribute"
+
+
+def assert_valid_batch_list_response(response, min_count: int = 0) -> None:
+    """
+    Assert that a batch list response is valid.
+    
+    Args:
+        response: The batch list response object
+        min_count: Minimum expected number of batches
+    """
+    assert response is not None, "Batch list response should not be None"
+    assert hasattr(response, "data"), "Batch list response should have 'data' attribute"
+    assert isinstance(response.data, list), "Data should be a list"
+    assert len(response.data) >= min_count, (
+        f"Should have at least {min_count} batches, got {len(response.data)}"
+    )
+
+
+# =============================================================================
+# Batch API - Provider-Specific Utilities
+# =============================================================================
+
+# Batch inline request prompts
+BATCH_INLINE_PROMPTS = [
+    "What is 2 + 2?",
+    "What is the capital of France?",
+    "Name a primary color.",
+    "What planet is closest to the Sun?",
+]
+
+
+def create_batch_inline_requests(
+    model: str,
+    num_requests: int = 2,
+    provider: str = None,
+    sdk: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Create inline requests array for batch API (Anthropic/Gemini/OpenAI inline format).
+    
+    Args:
+        model: The model to use in batch requests
+        num_requests: Number of requests to include
+        provider: Provider name (e.g., 'openai', 'anthropic', 'gemini', 'bedrock')
+        
+    Returns:
+        List of inline request items
+    """
+    requests = []
+    
+    # Format model with provider prefix if specified
+    formatted_model = f"{provider}/{model}" if provider else model
+    
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+        
+        # Build the request body/params based on provider
+        if sdk == "anthropic":
+            # Anthropic uses 'params' instead of 'body'
+            if provider == "openai":
+                request_item = {
+                    "custom_id": f"request-{i+1}",
+                    "params": {
+                        "url": "/v1/chat/completions",
+                        "model": model,  # Anthropic doesn't use provider prefix
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 100
+                    }
+                }
+            else:
+                request_item = {
+                    "custom_id": f"request-{i+1}",
+                    "params": {
+                        "model": model,  # Anthropic doesn't use provider prefix
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 100
+                    }
+                }
+        elif sdk == "gemini":
+            # Gemini batch uses inline content format
+            request_item = {
+                "custom_id": f"request-{i+1}",
+                "body": {
+                    "model": model,  # Gemini doesn't use provider prefix
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100
+                }
+            }
+        elif sdk == "openai":
+            # OpenAI/Azure style - use body with full model path
+            request_item = {
+                "custom_id": f"request-{i+1}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": formatted_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100
+                }
+            }
+        else:
+            raise ValueError(f"Invalid SDK: {sdk}")
+        requests.append(request_item)
+    
+    return requests
+
+
+def get_bedrock_s3_config() -> Dict[str, Optional[str]]:
+    """
+    Get Bedrock S3 configuration from environment variables.
+    
+    Returns:
+        Dictionary with S3 configuration:
+        - s3_bucket: S3 bucket name (from AWS_S3_BUCKET)
+        - role_arn: IAM role ARN (from AWS_BEDROCK_ROLE_ARN)
+        - output_s3_prefix: Output S3 prefix (from AWS_OUTPUT_S3_PREFIX or default)
+        - region: AWS region (from AWS_REGION or default us-west-2)
+    """
+    return {
+        "s3_bucket": os.environ.get("AWS_S3_BUCKET"),
+        "role_arn": os.environ.get("AWS_BEDROCK_ROLE_ARN"),
+        "output_s3_prefix": os.environ.get("AWS_OUTPUT_S3_PREFIX", "bifrost-batch-output/"),
+        "region": os.environ.get("AWS_REGION", "us-west-2"),
+    }
+
+
+def is_bedrock_s3_configured() -> bool:
+    """
+    Check if Bedrock S3 configuration is available.
+    
+    Returns:
+        True if AWS_S3_BUCKET is set, False otherwise
+    """
+    config = get_bedrock_s3_config()
+    return config["s3_bucket"] is not None and len(config["s3_bucket"]) > 0
+
+
+def get_bedrock_batch_extra_params() -> Dict[str, Any]:
+    """
+    Get extra params required for Bedrock batch API.
+    
+    Returns:
+        Dictionary with role_arn and output_s3_uri
+        
+    Raises:
+        ValueError if required S3 config is not available
+    """
+    config = get_bedrock_s3_config()
+    
+    if not config["s3_bucket"]:
+        raise ValueError("AWS_S3_BUCKET environment variable is required for Bedrock batch API")
+    
+    output_s3_uri = f"s3://{config['s3_bucket']}/{config['output_s3_prefix']}"
+    
+    extra_params = {
+        "output_s3_uri": output_s3_uri,
+    }
+    
+    # Add role_arn if available
+    if config["role_arn"]:
+        extra_params["role_arn"] = config["role_arn"]
+    
+    return extra_params
+
+
+def create_bedrock_batch_s3_uri(
+    bucket: str,
+    prefix: str = "bifrost-batch-input/",
+    filename: str = None
+) -> str:
+    """
+    Create an S3 URI for Bedrock batch input.
+    
+    Args:
+        bucket: S3 bucket name
+        prefix: S3 key prefix
+        filename: Optional filename (auto-generated if not provided)
+        
+    Returns:
+        S3 URI string (e.g., s3://bucket/prefix/filename.jsonl)
+    """
+    import time
+    
+    if filename is None:
+        filename = f"batch-input-{int(time.time())}.jsonl"
+    
+    return f"s3://{bucket}/{prefix}{filename}"
+
+
+def assert_valid_batch_inline_response(response, provider: str = None) -> None:
+    """
+    Assert that a batch response from inline requests is valid.
+    This handles provider-specific response formats.
+    
+    Args:
+        response: The batch response object
+        provider: Provider name for provider-specific validation
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "id"), "Batch response should have 'id' attribute"
+    assert response.id is not None, "Batch ID should not be None"
+    assert len(response.id) > 0, "Batch ID should not be empty"
+    
+    # Check status - different providers may return different valid statuses
+    if provider == "anthropic":
+        assert hasattr(response, "processing_status"), "Batch response should have 'processing_status' attribute"
+        assert response.processing_status is not None, "Processing status should not be None"
+        assert len(response.processing_status) > 0, "Processing status should not be empty"
+        assert response.processing_status in BATCH_VALID_STATUSES, (
+            f"Processing status should be one of {BATCH_VALID_STATUSES}, got {response.processing_status}"
+        )
+    elif provider == "gemini":
+        assert hasattr(response, "status"), "Batch response should have 'status' attribute"    
+    
+    if provider == "anthropic":
+        # Anthropic uses processing_status field and different status values
+        valid_statuses = ["in_progress", "canceling", "ended"]
+        # Check processing_status if available
+        if hasattr(response, "processing_status") and response.processing_status:
+            assert response.processing_status in valid_statuses or response.status in BATCH_VALID_STATUSES, (
+                f"Status should be valid, got status={response.status}, processing_status={getattr(response, 'processing_status', None)}"
+            )
+        else:
+            assert response.status in BATCH_VALID_STATUSES, (
+                f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+            )
+    elif provider == "gemini":
+        # Gemini synchronous batch returns completed immediately
+        assert response.status in BATCH_VALID_STATUSES + ["completed"], (
+            f"Status should be valid for Gemini, got {response.status}"
+        )
+    else:
+        # OpenAI/Azure/Bedrock
+        assert response.status in BATCH_VALID_STATUSES, (
+            f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+        )
+
+
+def skip_if_no_bedrock_s3():
+    """
+    Pytest skip decorator/marker for tests requiring Bedrock S3 configuration.
+    Use as: @skip_if_no_bedrock_s3() or call skip_if_no_bedrock_s3() at test start.
+    """
+    import pytest
+    
+    if not is_bedrock_s3_configured():
+        pytest.skip("Bedrock S3 tests require AWS_S3_BUCKET environment variable")

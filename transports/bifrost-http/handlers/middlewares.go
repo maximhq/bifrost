@@ -21,6 +21,7 @@ import (
 func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			logger.Debug("CorsMiddleware: %s", ctx.Request.URI().RequestURI())
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
 			// Check if origin is allowed (localhost always allowed + configured origins)
@@ -92,7 +93,7 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 			}
 			for _, plugin := range plugins {
 				// Call TransportInterceptor on all plugins
-				pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)				
+				pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
 				cancel()
 				if err != nil {
