@@ -150,6 +150,7 @@ type ProviderConfig struct {
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	ConfigHash               string                            `json:"-"`
@@ -198,6 +199,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash SendBackRawRequest
+	if p.SendBackRawRequest {
+		hash.Write([]byte("sendBackRawRequest"))
 	}
 
 	// Hash SendBackRawResponse
