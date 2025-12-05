@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/groq"
+	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
@@ -1885,6 +1886,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
+	case schemas.HuggingFace:
+		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}

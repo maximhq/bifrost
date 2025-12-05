@@ -32,23 +32,24 @@ type BifrostConfig struct {
 type ModelProvider string
 
 const (
-	OpenAI     ModelProvider = "openai"
-	Azure      ModelProvider = "azure"
-	Anthropic  ModelProvider = "anthropic"
-	Bedrock    ModelProvider = "bedrock"
-	Cohere     ModelProvider = "cohere"
-	Vertex     ModelProvider = "vertex"
-	Mistral    ModelProvider = "mistral"
-	Ollama     ModelProvider = "ollama"
-	Groq       ModelProvider = "groq"
-	SGL        ModelProvider = "sgl"
-	Parasail   ModelProvider = "parasail"
-	Perplexity ModelProvider = "perplexity"
-	Cerebras   ModelProvider = "cerebras"
-	Gemini     ModelProvider = "gemini"
-	OpenRouter ModelProvider = "openrouter"
-	Elevenlabs ModelProvider = "elevenlabs"
-	Nebius     ModelProvider = "nebius"
+	OpenAI      ModelProvider = "openai"
+	Azure       ModelProvider = "azure"
+	Anthropic   ModelProvider = "anthropic"
+	Bedrock     ModelProvider = "bedrock"
+	Cohere      ModelProvider = "cohere"
+	Vertex      ModelProvider = "vertex"
+	Mistral     ModelProvider = "mistral"
+	Ollama      ModelProvider = "ollama"
+	Groq        ModelProvider = "groq"
+	SGL         ModelProvider = "sgl"
+	Parasail    ModelProvider = "parasail"
+	Perplexity  ModelProvider = "perplexity"
+	Cerebras    ModelProvider = "cerebras"
+	Gemini      ModelProvider = "gemini"
+	OpenRouter  ModelProvider = "openrouter"
+	Elevenlabs  ModelProvider = "elevenlabs"
+	HuggingFace ModelProvider = "huggingface"
+	Nebius      ModelProvider = "nebius"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -58,6 +59,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Cohere,
 	Gemini,
 	OpenAI,
+	HuggingFace,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -78,6 +80,7 @@ var StandardProviders = []ModelProvider{
 	Vertex,
 	OpenRouter,
 	Elevenlabs,
+	HuggingFace,
 	Nebius,
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -69,83 +70,111 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					speechSynthesisModel = testConfig.ExternalTTSModel
 				}
 
-				// Step 1: Generate TTS audio
-				voice := GetProviderVoice(speechSynthesisProvider, tc.voiceType)
-				ttsRequest := &schemas.BifrostSpeechRequest{
-					Provider: speechSynthesisProvider,
-					Model:    speechSynthesisModel,
-					Input: &schemas.SpeechInput{
-						Input: tc.text,
-					},
-					Params: &schemas.SpeechParameters{
-						VoiceConfig: &schemas.SpeechVoiceInput{
-							Voice: &voice,
+				var transcriptionRequest *schemas.BifrostTranscriptionRequest
+				if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
+
+					// For Fal-AI models on HuggingFace, we have to use mp3 but fal-ai speech models only return wav
+					// So we read from a pre-generated mp3 file to avoid format issues
+					_, filename, _, _ := runtime.Caller(0)
+					dir := filepath.Dir(filename)
+					filePath := filepath.Join(dir, "scenarios", "media", fmt.Sprintf("%s.mp3", tc.name))
+					fileContent, err := os.ReadFile(filePath)
+					if err != nil {
+						t.Fatalf("failed to read audio fixture %s: %v", filePath, err)
+					}
+					transcriptionRequest = &schemas.BifrostTranscriptionRequest{
+						Provider: testConfig.Provider,
+						Model:    testConfig.TranscriptionModel,
+						Input: &schemas.TranscriptionInput{
+							File: fileContent,
 						},
-						ResponseFormat: tc.format,
-					},
-					Fallbacks: testConfig.TranscriptionFallbacks,
-				}
+						Params: &schemas.TranscriptionParameters{
+							Language:       bifrost.Ptr("en"),
+							Format:         bifrost.Ptr("mp3"),
+							ResponseFormat: tc.responseFormat,
+						},
+						Fallbacks: testConfig.TranscriptionFallbacks,
+					}
+				} else {
 
-				// Use retry framework for TTS generation
-				ttsRetryConfig := GetTestRetryConfigForScenario("SpeechSynthesis", testConfig)
-				ttsRetryContext := TestRetryContext{
-					ScenarioName: "Transcription_RoundTrip_TTS_" + tc.name,
-					ExpectedBehavior: map[string]interface{}{
-						"should_generate_audio": true,
-					},
-					TestMetadata: map[string]interface{}{
-						"provider": speechSynthesisProvider,
-						"model":    speechSynthesisModel,
-						"format":   tc.format,
-					},
-				}
-				ttsExpectations := SpeechExpectations(100) // Minimum expected bytes
-				ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, testConfig.Provider)
-				speechRetryConfig := SpeechRetryConfig{
-					MaxAttempts: ttsRetryConfig.MaxAttempts,
-					BaseDelay:   ttsRetryConfig.BaseDelay,
-					MaxDelay:    ttsRetryConfig.MaxDelay,
-					Conditions:  []SpeechRetryCondition{},
-					OnRetry:     ttsRetryConfig.OnRetry,
-					OnFinalFail: ttsRetryConfig.OnFinalFail,
-				}
+					// Step 1: Generate TTS audio
+					voice := GetProviderVoice(speechSynthesisProvider, tc.voiceType)
+					ttsRequest := &schemas.BifrostSpeechRequest{
+						Provider: speechSynthesisProvider,
+						Model:    speechSynthesisModel,
+						Input: &schemas.SpeechInput{
+							Input: tc.text,
+						},
+						Params: &schemas.SpeechParameters{
+							VoiceConfig: &schemas.SpeechVoiceInput{
+								Voice: &voice,
+							},
+							ResponseFormat: tc.format,
+						},
+						Fallbacks: testConfig.SpeechSynthesisFallbacks,
+					}
 
-				ttsResponse, err := WithSpeechTestRetry(t, speechRetryConfig, ttsRetryContext, ttsExpectations, "Transcription_RoundTrip_TTS_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-					return client.SpeechRequest(ctx, ttsRequest)
-				})
-				if err != nil {
-					t.Fatalf("❌ TTS generation failed for round-trip test after retries: %v", GetErrorMessage(err))
-				}
-				if ttsResponse == nil || len(ttsResponse.Audio) == 0 {
-					t.Fatal("❌ TTS returned invalid or empty audio for round-trip test after retries")
-				}
+					// Use retry framework for TTS generation
+					ttsRetryConfig := GetTestRetryConfigForScenario("SpeechSynthesis", testConfig)
+					ttsRetryContext := TestRetryContext{
+						ScenarioName: "Transcription_RoundTrip_TTS_" + tc.name,
+						ExpectedBehavior: map[string]interface{}{
+							"should_generate_audio": true,
+						},
+						TestMetadata: map[string]interface{}{
+							"provider": speechSynthesisProvider,
+							"model":    speechSynthesisModel,
+							"format":   tc.format,
+						},
+					}
+					ttsExpectations := SpeechExpectations(100) // Minimum expected bytes
+					ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, testConfig.Provider)
+					speechRetryConfig := SpeechRetryConfig{
+						MaxAttempts: ttsRetryConfig.MaxAttempts,
+						BaseDelay:   ttsRetryConfig.BaseDelay,
+						MaxDelay:    ttsRetryConfig.MaxDelay,
+						Conditions:  []SpeechRetryCondition{},
+						OnRetry:     ttsRetryConfig.OnRetry,
+						OnFinalFail: ttsRetryConfig.OnFinalFail,
+					}
 
-				// Save temp audio file
-				tempDir := os.TempDir()
-				audioFileName := filepath.Join(tempDir, "roundtrip_"+tc.name+"."+tc.format)
-				writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0644)
-				require.NoError(t, writeErr, "Failed to save temp audio file")
+					ttsResponse, err := WithSpeechTestRetry(t, speechRetryConfig, ttsRetryContext, ttsExpectations, "Transcription_RoundTrip_TTS_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+						return client.SpeechRequest(ctx, ttsRequest)
+					})
+					if err != nil {
+						t.Fatalf("❌ TTS generation failed for round-trip test after retries: %v", GetErrorMessage(err))
+					}
+					if ttsResponse == nil || len(ttsResponse.Audio) == 0 {
+						t.Fatal("❌ TTS returned invalid or empty audio for round-trip test after retries")
+					}
 
-				// Register cleanup
-				t.Cleanup(func() {
-					os.Remove(audioFileName)
-				})
+					// Save temp audio file
+					tempDir := os.TempDir()
+					audioFileName := filepath.Join(tempDir, "roundtrip_"+tc.name+"."+tc.format)
+					writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0644)
+					require.NoError(t, writeErr, "Failed to save temp audio file")
 
-				t.Logf("Generated TTS audio for round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Audio))
+					// Register cleanup
+					t.Cleanup(func() {
+						os.Remove(audioFileName)
+					})
 
-				// Step 2: Transcribe the generated audio
-				transcriptionRequest := &schemas.BifrostTranscriptionRequest{
-					Provider: testConfig.Provider,
-					Model:    testConfig.TranscriptionModel,
-					Input: &schemas.TranscriptionInput{
-						File: ttsResponse.Audio,
-					},
-					Params: &schemas.TranscriptionParameters{
-						Language:       bifrost.Ptr("en"),
-						Format:         bifrost.Ptr("mp3"),
-						ResponseFormat: tc.responseFormat,
-					},
-					Fallbacks: testConfig.TranscriptionFallbacks,
+					t.Logf("Generated TTS audio for round-trip: %s (%d bytes)", audioFileName, len(ttsResponse.Audio))
+
+					// Step 2: Transcribe the generated audio
+					transcriptionRequest = &schemas.BifrostTranscriptionRequest{
+						Provider: testConfig.Provider,
+						Model:    testConfig.TranscriptionModel,
+						Input: &schemas.TranscriptionInput{
+							File: ttsResponse.Audio,
+						},
+						Params: &schemas.TranscriptionParameters{
+							Language:       bifrost.Ptr("en"),
+							Format:         schemas.Ptr(tc.format),
+							ResponseFormat: tc.responseFormat,
+						},
+						Fallbacks: testConfig.TranscriptionFallbacks,
+					}
 				}
 
 				// Use retry framework for transcription
@@ -229,9 +258,24 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
-					// Use the utility function to generate audio
-					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, tc.text, "primary", "mp3")
+					var audioData []byte
+					var readErr error
+					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
 
+						// For Fal-AI models on HuggingFace, we have to use mp3 but fal-ai speech models only return wav
+						// So we read from a pre-generated mp3 file to avoid format issues
+						_, filename, _, _ := runtime.Caller(0)
+						dir := filepath.Dir(filename)
+						filePath := filepath.Join(dir, "scenarios", "media", fmt.Sprintf("%s.mp3", tc.name))
+						audioData, readErr = os.ReadFile(filePath)
+						if readErr != nil {
+							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
+						}
+					} else {
+
+						// Use the utility function to generate audio
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, tc.text, "primary", "mp3")
+					}
 					// Test transcription
 					request := &schemas.BifrostTranscriptionRequest{
 						Provider: testConfig.Provider,
@@ -322,8 +366,24 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
-					// Generate fresh audio for each test to avoid race conditions and ensure validity
-					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+					var audioData []byte
+					var readErr error
+					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
+
+						// For Fal-AI models on HuggingFace, we have to use mp3 but fal-ai speech models only return wav
+						// So we read from a pre-generated mp3 file to avoid format issues
+						_, filename, _, _ := runtime.Caller(0)
+						dir := filepath.Dir(filename)
+						filePath := filepath.Join(dir, "scenarios", "media", "RoundTrip_Basic_MP3.mp3")
+						audioData, readErr = os.ReadFile(filePath)
+						if readErr != nil {
+							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
+						}
+					} else {
+
+						// Use the utility function to generate audio
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+					}
 
 					formatCopy := format
 					request := &schemas.BifrostTranscriptionRequest{
@@ -400,8 +460,24 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				speechSynthesisModel = testConfig.ExternalTTSModel
 			}
 
-			// Generate audio for custom parameters test
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
+			var audioData []byte
+			var readErr error
+			if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
+
+				// For Fal-AI models on HuggingFace, we have to use mp3 but fal-ai speech models only return wav
+				// So we read from a pre-generated mp3 file to avoid format issues
+				_, filename, _, _ := runtime.Caller(0)
+				dir := filepath.Dir(filename)
+				filePath := filepath.Join(dir, "scenarios", "media", "RoundTrip_Medium_MP3.mp3")
+				audioData, readErr = os.ReadFile(filePath)
+				if readErr != nil {
+					t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
+				}
+			} else {
+
+				// Generate audio for custom parameters test
+				audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
+			}
 
 			// Test with custom parameters and temperature
 			request := &schemas.BifrostTranscriptionRequest{
@@ -482,8 +558,24 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						speechSynthesisModel = testConfig.ExternalTTSModel
 					}
 
-					// Generate fresh audio for each test to avoid race conditions and ensure validity
-					audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+					var audioData []byte
+					var readErr error
+					if testConfig.Provider == schemas.HuggingFace && strings.HasPrefix(testConfig.TranscriptionModel, "fal-ai/") {
+
+						// For Fal-AI models on HuggingFace, we have to use mp3 but fal-ai speech models only return wav
+						// So we read from a pre-generated mp3 file to avoid format issues
+						_, filename, _, _ := runtime.Caller(0)
+						dir := filepath.Dir(filename)
+						filePath := filepath.Join(dir, "scenarios", "media", "RoundTrip_Basic_MP3.mp3")
+						audioData, readErr = os.ReadFile(filePath)
+						if readErr != nil {
+							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
+						}
+					} else {
+
+						// Use the utility function to generate audio
+						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+					}
 
 					langCopy := lang
 					request := &schemas.BifrostTranscriptionRequest{

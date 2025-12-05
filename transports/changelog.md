@@ -1,0 +1,1 @@
+feat: added HuggingFace provider with UI

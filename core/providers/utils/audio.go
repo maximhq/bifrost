@@ -60,3 +60,60 @@ func ConvertPCMToWAV(pcmData []byte, config PCMConfig) ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
+
+var (
+	riff = []byte("RIFF")
+	wave = []byte("WAVE")
+	id3  = []byte("ID3")
+	form = []byte("FORM")
+	aiff = []byte("AIFF")
+	aifc = []byte("AIFC")
+	flac = []byte("fLaC")
+	oggs = []byte("OggS")
+	adif = []byte("ADIF")
+)
+
+// DetectAudioMimeType attempts to detect the MIME type from audio file headers.
+// Supports detection of: WAV, MP3, AIFF, AAC, OGG Vorbis, and FLAC formats.
+func DetectAudioMimeType(audioData []byte) string {
+	if len(audioData) < 4 {
+		return "audio/mp3"
+	}
+	// WAV (RIFF/WAVE)
+	if len(audioData) >= 12 &&
+		bytes.Equal(audioData[:4], riff) &&
+		bytes.Equal(audioData[8:12], wave) {
+		return "audio/wav"
+	}
+	// MP3: ID3v2 tag (keep this check for MP3)
+	if len(audioData) >= 3 && bytes.Equal(audioData[:3], id3) {
+		return "audio/mp3"
+	}
+	// AAC: ADIF or ADTS (0xFFF sync) - check before MP3 frame sync to avoid misclassification
+	if bytes.HasPrefix(audioData, adif) {
+		return "audio/aac"
+	}
+	if len(audioData) >= 2 && audioData[0] == 0xFF && (audioData[1]&0xF6) == 0xF0 {
+		return "audio/aac"
+	}
+	// AIFF / AIFC (map both to audio/aiff)
+	if len(audioData) >= 12 && bytes.Equal(audioData[:4], form) &&
+		(bytes.Equal(audioData[8:12], aiff) || bytes.Equal(audioData[8:12], aifc)) {
+		return "audio/aiff"
+	}
+	// FLAC
+	if bytes.HasPrefix(audioData, flac) {
+		return "audio/flac"
+	}
+	// OGG container
+	if bytes.HasPrefix(audioData, oggs) {
+		return "audio/ogg"
+	}
+	// MP3: MPEG frame sync (cover common variants) - check after AAC to avoid misclassification
+	if len(audioData) >= 2 && audioData[0] == 0xFF &&
+		(audioData[1] == 0xFB || audioData[1] == 0xF3 || audioData[1] == 0xF2 || audioData[1] == 0xFA) {
+		return "audio/mp3"
+	}
+	// Fallback within supported set
+	return "audio/mp3"
+}

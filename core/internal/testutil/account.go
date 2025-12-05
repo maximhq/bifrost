@@ -111,6 +111,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cerebras,
 		schemas.Gemini,
 		schemas.OpenRouter,
+		schemas.HuggingFace,
 		schemas.Nebius,
 		ProviderOpenAICustom,
 	}, nil
@@ -321,6 +322,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.HuggingFace:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("HUGGING_FACE_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
 			},
 		}, nil
 	case schemas.Nebius:
@@ -571,6 +580,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10, // OpenRouter can be variable (proxy service)
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.HuggingFace:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10, // HuggingFace can be variable
+				RetryBackoffInitial:            2 * time.Second,
+				RetryBackoffMax:                30 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,
@@ -989,6 +1011,40 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false,
 			TranscriptionStream:   false,
 			Embedding:             false,
+			ListModels:            true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:             schemas.HuggingFace,
+		ChatModel:            "groq/openai/gpt-oss-120b",
+		VisionModel:          "fireworks-ai/Qwen/Qwen2.5-VL-32B-Instruct",
+		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
+		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
+		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
+		Scenarios: TestScenarios{
+			TextCompletion:        false,
+			TextCompletionStream:  false,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			MultipleToolCalls:     false,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			Embedding:             true,
+			Transcription:         true,
+			TranscriptionStream:   false,
+			SpeechSynthesis:       true,
+			SpeechSynthesisStream: false,
+			Reasoning:             false,
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{

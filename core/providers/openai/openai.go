@@ -1044,10 +1044,12 @@ func HandleOpenAIChatCompletionStreaming(
 					messageID = response.ID
 				}
 
-				// Handle regular content chunks
+				// Handle regular content chunks, including reasoning
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
 					(choice.ChatStreamResponseChoice.Delta.Content != nil ||
+						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
+						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
 					chunkIndex++

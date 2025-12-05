@@ -4,80 +4,2069 @@ description: "Learn how to contribute a new provider to Bifrost."
 icon: "box"
 ---
 
-This guide will walk you through creating a provider for Bifrost, testing locally and adding automated tests.
+This guide will walk you through creating a provider for Bifrost, testing locally, adding it to frontend and CI/CD.
+
+<Note>
+**Quick Reference**: This guide uses simplified generic examples for clarity. For complete, production-ready implementations:
+- **OpenAI-compatible providers**: See `core/providers/cerebras/` or `core/providers/groq/`
+- **Custom API providers**: See `core/providers/huggingface/` or `core/providers/anthropic/`
+</Note>
 
 ## Setup
 
-We assume you have some idea about how Bifrost works and you have already [set up bifrost for local development](setting-up-repo).
+1.  **Fork and Clone**:
+    *   Fork the repository: https://github.com/maximhq/bifrost/
+    *   Clone your fork: `git clone https://github.com/<your_github_username>/bifrost/`
+2.  **Initialize**:
+    *   Run `make dev` at the root of the project to set up dependencies and tools.
 
-## Provider structure
+## Provider Structure
 
-Bifrost is a gateway, meaning it receives request in a standard format (OpenAI compatible), converts it to provider specific formats and sends the request. It then receives the provider response and converts it back to the standard (OpenAI compatible) response.
+Bifrost acts as a gateway:
+1.  Receives a request in a standard format (defined in `core/schemas/`).
+2.  Converts it to the provider-specific format.
+3.  Sends the request to the provider's API.
+4.  Receives the provider's response.
+5.  Converts it back to the standard Bifrost response format.
 
-To implement a new provider, you must roughly follow these steps:
-- Define provider specific types, like `ProviderSpeechRequest` or `ProviderChatCompletionRequest`, etc.
-- Implement conversion functions from Bifrost request / response to provider specific request / response and vice versa.
-- Implement the handler functions for the type of request you want to handle. For example, to handle chat completion requests, you need to implement `ChatCompletion` functions. You can check the [full list of handlers](https://github.com/maximhq/bifrost/blob/main/core/schemas/provider.go) here.
+To implement a new provider, first step is to add the provider name in `core/schemas/bifrost.go`
 
-We will go through each step in detail. But first, here is the directory structure:
+- Add it in const declaration of `ModelProvider` type in the format `[ProviderName] ModelProvider = "[providername]"` 
+- Then, add it in the StandardProviders array in the same file and if needed add in SupportedBaseProviders.
+
+Next, you will create a directory in `core/providers/` and populate it with specific files following our strict conventions.
+
+### Directory Structure
+
+The directory structure differs based on whether the provider is OpenAI API compatible:
+
+#### Non-OpenAI-compatible Providers
+
+If the provider has a **custom API format** (not OpenAI-compatible), create a new folder `core/providers/[provider_name]/`.
+
+**Complete Reference Structure** (see `core/providers/huggingface/`):
 
 ```text
-bifrost/
-└─ core/                 # Core functionality and shared components
-    ├── providers/       # Provider-specific implementations (OpenAI, Anthropic, etc.)
-    ├── schemas/         # Interfaces and structs used throughout Bifrost
-    └── bifrost.go       # Main Bifrost implementation
+core/providers/
+└─ [provider_name]/                 # e.g., huggingface/
+    ├── [provider_name].go          # Main provider implementation (REQUIRED)
+    ├── [provider_name]_test.go     # Provider automated tests (REQUIRED)
+    ├── types.go                    # ALL provider-specific types/structs (REQUIRED)
+    ├── utils.go                    # ALL utility functions and constants (REQUIRED)
+    ├── chat.go                     # Converters for Chat Completion (if supported)
+    ├── speech.go                   # Converters for Text-to-Speech (if supported)
+    ├── transcription.go            # Converters for Speech-to-Text (if supported)
+    ├── embedding.go                # Converters for Embeddings (if supported)
+    ├── models.go                   # Converters for List Models (if supported)
+    └── responses.go                # Converters for Response Models (if supported)
 ```
 
-Add provider specific types in types.go (see `core/providers/openai/types.go` for an example).
+**File Creation Order (CRITICAL)**:
+1. Create `types.go` FIRST - Define all provider-specific request/response structures
+2. Create `utils.go` SECOND - Define constants, base URLs, and helper functions
+3. Create feature files (`chat.go`, `embedding.go`, etc.) THIRD - Implement converters
+4. Create `[provider_name].go` FOURTH - Wire everything together
+5. Create `[provider_name]_test.go` LAST - Add comprehensive tests
 
-### OpenAI Compatible Providers
+#### OpenAI-compatible Providers
 
-If you are implementing a provider for an OpenAI API compatible API, you can use the `openai` package from `core/providers/openai`. (See [cerebras](https://github.com/maximhq/bifrost/blob/main/core/providers/cerebras.go) provider as an example.)
+If the provider is **OpenAI API compatible**, you only need a minimal structure:
 
-### File conventions
+**Minimal Reference Structure** (see `core/providers/cerebras/`):
 
-If the provider is OpenAI compatible, a single `provider/[provider_name].go` file is enough.
-
-If the provider is not OpenAI compatible, you need to create a new folder and add the following files. Not all of them are required. Add the ones that are relevant to your provider.
 ```text
-providers/
-└─ [provider_name]/                 # Provider that is not OpenAI compatible
-    ├── [provider_name].go          # Contains code for actually making the request to the provider (required)
-    ├── types.go                    # Contains provider specific types
-    ├── utils.go                    # Contains utility functions
-    ├── errors.go                   # Contains error handlers for responses
-    ├── chat.go                     # Contains convertors for chat completion and chat completion streaming requests
-    ├── responses.go                # Contains convertors for responses endpoints
-    ├── speech.go                   # Contains convertors for speech and speech streaming requests
-    ├── transcription.go            # Contains convertors for transcription and transcription streaming requests
-    ├── embedding.go                # Contains convertors for embeddings requests
-    └── models.go                   # Contains convertors for list models requests
+core/providers/
+└─ [provider_name]/                 # e.g., cerebras/
+    ├── [provider_name].go          # Main provider implementation (REQUIRED)
+    └── [provider_name]_test.go     # Provider automated tests (REQUIRED)
 ```
 
-### Extra fields
+These providers reuse the OpenAI converter logic from `core/providers/openai/`.
 
-When parsing request, all non standard fields are stored in `Params.ExtraParams` map. This is useful for providers that require additional fields that are not part of OpenAI API. (See [perplexity provider](https://github.com/maximhq/bifrost/tree/main/core/providers/perplexity) as an example).
+### File Conventions & Responsibilities
 
-## Local testing
+We enforce **strict separation of concerns** to keep providers maintainable and consistent. Each file has a specific purpose and must follow these rules.
 
-Once you're done writing the provider, you may want to test it locally before writing some automated tests. We will setup a new go project and import our provider.
+---
 
+#### 1. `types.go` (The Data Layer)
+
+**CRITICAL RULE**: All provider-specific structs (Request/Response DTOs) **MUST** go here. **NEVER** define types in other files.
+
+**Naming Convention**:
+- Prefix ALL types with the provider name in PascalCase: `[ProviderName][StructName]`
+- Examples: `HuggingFaceChatRequest`, `HuggingFaceModel`, `HuggingFaceToolCall`
+
+**JSON Tag Requirements**:
+- Use `json` tags that **exactly match** the provider's API field names
+- Use `omitempty` for optional fields
+- Use pointers for nullable fields to distinguish between "not set" and "zero value"
+
+**Organization**:
+- Group related types together with comments (e.g., `// # CHAT TYPES`, `// # MODELS TYPES`)
+- Define request types before response types
+- Keep nested types near their parent types
+
+**Generic Example Structure**:
+```go
+package providername
+
+import "encoding/json"
+
+// # MODELS TYPES
+
+// ProviderNameModel represents a model from the provider's catalog
+type ProviderNameModel struct {
+    ID          string   `json:"id"`
+    Name        string   `json:"name"`
+    Description *string  `json:"description,omitempty"`
+    CreatedAt   string   `json:"created_at"`
+}
+
+// # CHAT TYPES
+
+// ProviderNameChatRequest represents the request payload for chat completion
+type ProviderNameChatRequest struct {
+    Model       string                      `json:"model" validate:"required"`
+    Messages    []ProviderNameChatMessage   `json:"messages"`
+    MaxTokens   *int                        `json:"max_tokens,omitempty"`
+    Temperature *float64                    `json:"temperature,omitempty"`
+    TopP        *float64                    `json:"top_p,omitempty"`
+    Stream      *bool                       `json:"stream,omitempty"`
+    Tools       []ProviderNameTool          `json:"tools,omitempty"`
+    ToolChoice  json.RawMessage             `json:"tool_choice,omitempty"` // flexible: enum or object
+}
+
+// ProviderNameChatMessage represents a single message in a chat
+type ProviderNameChatMessage struct {
+    Role       *string         `json:"role,omitempty"`
+    Content    json.RawMessage `json:"content,omitempty"` // flexible: string or []content items
+    Name       *string         `json:"name,omitempty"`
+    ToolCalls  []ProviderNameToolCall `json:"tool_calls,omitempty"`
+}
+```
+
+**Key Points**:
+- Use `json.RawMessage` for fields that can be multiple types (string or object/array)
+- Use pointers (`*float64`, `*bool`) for optional fields
+- Add validation tags when appropriate (`validate:"required"`)
+- Include comments for complex or non-obvious types
+
+---
+
+#### 2. `utils.go` (The Helper Layer)
+
+**CRITICAL RULE**: All shared utility functions, constants, and configuration helpers **MUST** go here.
+
+**Constants Naming Convention**:
+- Use camelCase for unexported constants: `defaultInferenceBaseURL`
+- Use SCREAMING_SNAKE_CASE for exported constants: `INFERENCE_PROVIDERS`
+- Group related constants together
+
+**Function Naming Convention**:
+- Use camelCase for unexported helpers: `convertTypeToLowerCase`, `parseErrorResponse`
+- Use PascalCase for exported utilities: `ConfigureProxy`, `BuildHeaders`
+
+**Required Contents**:
+1. Base URLs and API endpoints
+2. Default values and limits
+3. Provider-specific constants (like model names, inference providers)
+4. HTTP request helpers (headers, authentication)
+5. Error handling utilities
+6. Data transformation helpers
+
+**Generic Example Structure**:
+```go
+package providername
+
+import (
+    "context"
+    "strings"
+    "time"
+
+    providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+    schemas "github.com/maximhq/bifrost/core/schemas"
+    "github.com/valyala/fasthttp"
+)
+
+const (
+    defaultBaseURL = "https://api.provider.com"
+)
+
+const (
+    defaultLimit = 100
+    maxLimit     = 500
+)
+
+// Helper to parse provider-specific model format
+func parseModelString(model string) (string, string) {
+    parts := strings.Split(model, "/")
+    if len(parts) == 2 {
+        return parts[0], parts[1]
+    }
+    return "", model
+}
+
+// Helper to convert type fields to lowercase in JSON schemas
+func convertTypeToLowerCase(schema map[string]interface{}) {
+    // Implementation for schema normalization...
+}
+```
+
+**Organization Tips**:
+- Group constants by category (URLs, limits, enums)
+- Document the source/reason for constants (API docs, limits)
+- Keep helper functions focused and single-purpose
+- Include error handling in utility functions
+
+---
+
+#### 3. `[provider_name].go` (The Controller Layer)
+
+**CRITICAL RULE**: This is the **orchestration layer**. It coordinates the request flow but **delegates** all conversion logic to feature files.
+
+**Naming Convention**:
+- Provider struct: `[ProviderName]Provider` (e.g., `HuggingFaceProvider`)
+- Constructor: `New[ProviderName]Provider(config *schemas.ProviderConfig, logger schemas.Logger)`
+- Methods: Match interface exactly: `ChatCompletion`, `ChatCompletionStream`, `ListModels`, etc.
+
+**Required Struct Fields** (in order):
+```go
+type [ProviderName]Provider struct {
+    logger               schemas.Logger              // ALWAYS first
+    client               *fasthttp.Client            // HTTP client
+    networkConfig        schemas.NetworkConfig       // Network settings
+    sendBackRawResponse  bool                        // Debug flag
+    customProviderConfig *schemas.CustomProviderConfig // Optional
+}
+```
+
+**Constructor Requirements**:
+1. Accept `*schemas.ProviderConfig` and `schemas.Logger`
+2. Call `config.CheckAndSetDefaults()`
+3. Initialize `fasthttp.Client` with timeouts and limits
+4. Configure proxy using `providerUtils.ConfigureProxy`
+5. Set default BaseURL if not provided
+6. Trim trailing slashes from BaseURL
+7. Pre-warm response pools if using sync.Pool
+8. Return provider instance (and error for OpenAI-compatible providers)
+
+**Generic Example Structure**:
+```go
+package providername
+
+import (
+    "context"
+    "strings"
+    "sync"
+    "time"
+
+    "github.com/bytedance/sonic"
+    providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+    schemas "github.com/maximhq/bifrost/core/schemas"
+    "github.com/valyala/fasthttp"
+)
+
+// ProviderNameProvider implements the Provider interface
+type ProviderNameProvider struct {
+    logger               schemas.Logger
+    client               *fasthttp.Client
+    networkConfig        schemas.NetworkConfig
+    sendBackRawResponse  bool
+    customProviderConfig *schemas.CustomProviderConfig
+}
+
+// Response pools for memory efficiency (optional but recommended)
+var chatResponsePool = sync.Pool{
+    New: func() any {
+        return &ProviderNameChatResponse{}
+    },
+}
+
+// NewProviderNameProvider creates a new provider instance
+func NewProviderNameProvider(config *schemas.ProviderConfig, logger schemas.Logger) *ProviderNameProvider {
+    config.CheckAndSetDefaults()
+
+    client := &fasthttp.Client{
+        ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+        WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+        MaxConnsPerHost:     5000,
+        MaxIdleConnDuration: 60 * time.Second,
+        MaxConnWaitTimeout:  10 * time.Second,
+    }
+
+    // Configure proxy if provided
+    client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
+
+    // Set default BaseURL if not provided
+    if config.NetworkConfig.BaseURL == "" {
+        config.NetworkConfig.BaseURL = defaultBaseURL
+    }
+    config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+
+    // Pre-warm response pools (optional optimization)
+    for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
+        chatResponsePool.Put(&ProviderNameChatResponse{})
+    }
+
+    return &ProviderNameProvider{
+        logger:               logger,
+        client:               client,
+        networkConfig:        config.NetworkConfig,
+        sendBackRawResponse:  config.SendBackRawResponse,
+        customProviderConfig: config.CustomProviderConfig,
+    }
+}
+
+// GetProviderKey returns the provider identifier
+func (provider *ProviderNameProvider) GetProviderKey() schemas.ModelProvider {
+    return schemas.ProviderName
+}
+```
+
+**Method Implementation Pattern** (STRICT ORDER):
+1. **Validation**: Check request validity (optional, usually done in converter)
+2. **Convert Request**: Call `To[Provider][Feature]Request()` from feature file
+3. **Build HTTP Request**: Construct URL, headers, body
+4. **Execute Request**: Use `provider.client.Do()` or streaming logic
+5. **Handle Errors**: Parse and convert provider errors to `schemas.BifrostError`
+6. **Convert Response**: Call `ToBifrost[Feature]Response()` from feature file
+7. **Return Result**: Return Bifrost response or error
+
+**Example Method** (generic pattern):
+```go
+func (p *ProviderNameProvider) ChatCompletion(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostChatRequest,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+    // 1. Convert Request
+    providerReq := ToProviderNameChatCompletionRequest(request)
+    
+    // 2. Build HTTP Request
+    body, err := sonic.Marshal(providerReq)
+    if err != nil {
+        return nil, &schemas.BifrostError{/* ... */}
+    }
+    
+    req := fasthttp.AcquireRequest()
+    defer fasthttp.ReleaseRequest(req)
+    
+    req.SetRequestURI(p.networkConfig.BaseURL + "/v1/chat/completions")
+    req.Header.SetMethod("POST")
+    req.Header.Set("Authorization", "Bearer "+key.Value)
+    req.Header.Set("Content-Type", "application/json")
+    req.SetBody(body)
+    
+    // 3. Execute Request
+    resp := fasthttp.AcquireResponse()
+    defer fasthttp.ReleaseResponse(resp)
+    
+    if err := p.client.Do(req, resp); err != nil {
+        return nil, &schemas.BifrostError{/* ... */}
+    }
+    
+    // 4. Handle Errors
+    if resp.StatusCode() != 200 {
+        return nil, parseErrorResponse(resp.Body())
+    }
+    
+    // 5. Convert Response
+    var providerResp ProviderNameChatResponse
+    if err := sonic.Unmarshal(resp.Body(), &providerResp); err != nil {
+        return nil, &schemas.BifrostError{/* ... */}
+    }
+    
+    return ToBifrostChatResponse(&providerResp)
+}
+```
+
+---
+
+#### 4. Feature Files (`chat.go`, `embedding.go`, `speech.go`, etc.) (The Converter Layer)
+
+**CRITICAL RULE**: These files contain **pure transformation functions** ONLY. No HTTP calls, no logging, no side effects.
+
+**File Naming Convention**:
+- `chat.go` - Chat completion converters
+- `embedding.go` - Embedding converters
+- `speech.go` - Text-to-speech converters
+- `transcription.go` - Speech-to-text converters
+- `models.go` - List models converters
+- `responses.go` - Response format converters
+
+**Function Naming Convention** (STRICT):
+- **To Provider Format**: `To[ProviderName][Feature]Request(bifrostReq *schemas.Bifrost[Feature]Request) *[ProviderName][Feature]Request`
+- **To Bifrost Format**: `ToBifrost[Feature]Response(providerResp *[ProviderName][Feature]Response) (*schemas.Bifrost[Feature]Response, *schemas.BifrostError)`
+
+**Examples**:
+- `ToHuggingFaceChatCompletionRequest`
+- `ToBifrostChatResponse`
+- `ToHuggingFaceEmbeddingRequest`
+- `ToBifrostEmbeddingResponse`
+
+**Required Converter Pairs** (if feature is supported):
+- Request converter: Bifrost → Provider
+- Response converter: Provider → Bifrost
+
+**Real Example from `core/providers/huggingface/chat.go`**:
+```go
+package huggingface
+
+import (
+    "encoding/json"
+    "fmt"
+
+    "github.com/bytedance/sonic"
+    schemas "github.com/maximhq/bifrost/core/schemas"
+)
+
+// ToHuggingFaceChatCompletionRequest converts a Bifrost chat request to HuggingFace format
+func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *HuggingFaceChatRequest {
+    if bifrostReq == nil || bifrostReq.Input == nil {
+        return nil
+    }
+
+    // Convert messages from Bifrost format to HuggingFace format
+    hfMessages := make([]HuggingFaceChatMessage, 0, len(bifrostReq.Input))
+    for _, msg := range bifrostReq.Input {
+        hfMsg := HuggingFaceChatMessage{}
+
+        // Set role
+        if msg.Role != "" {
+            role := string(msg.Role)
+            hfMsg.Role = &role
+        }
+
+        // Set name if present
+        if msg.Name != nil {
+            hfMsg.Name = msg.Name
+        }
+
+        // Convert content (can be string or structured blocks)
+        if msg.Content != nil {
+            if msg.Content.ContentStr != nil {
+                // Simple string content
+                contentJSON, _ := sonic.Marshal(*msg.Content.ContentStr)
+                hfMsg.Content = json.RawMessage(contentJSON)
+            } else if msg.Content.ContentBlocks != nil {
+                // Structured content blocks (text, images, etc.)
+                contentItems := make([]HuggingFaceContentItem, 0, len(msg.Content.ContentBlocks))
+                for _, block := range msg.Content.ContentBlocks {
+                    item := HuggingFaceContentItem{}
+                    blockType := string(block.Type)
+                    item.Type = &blockType
+
+                    switch block.Type {
+                    case schemas.ChatContentBlockTypeText:
+                        if block.Text != nil {
+                            item.Text = block.Text
+                        }
+                    case schemas.ChatContentBlockTypeImage:
+                        if block.ImageURLStruct != nil {
+                            item.ImageURL = &HuggingFaceImageRef{
+                                URL: block.ImageURLStruct.URL,
+                            }
+                        }
+                    }
+                    contentItems = append(contentItems, item)
+                }
+                contentJSON, _ := sonic.Marshal(contentItems)
+                hfMsg.Content = json.RawMessage(contentJSON)
+            }
+        }
+
+        // Handle tool calls for assistant messages
+        if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+            hfToolCalls := make([]HuggingFaceToolCall, 0, len(msg.ChatAssistantMessage.ToolCalls))
+            for _, tc := range msg.ChatAssistantMessage.ToolCalls {
+                hfToolCall := HuggingFaceToolCall{
+                    ID:   tc.ID,
+                    Type: tc.Type,
+                    Function: HuggingFaceFunction{
+                        Name:      *tc.Function.Name,
+                        Arguments: tc.Function.Arguments,
+                    },
+                }
+                hfToolCalls = append(hfToolCalls, hfToolCall)
+            }
+            hfMsg.ToolCalls = hfToolCalls
+        }
+
+        hfMessages = append(hfMessages, hfMsg)
+    }
+
+    // Build the request
+    hfReq := &HuggingFaceChatRequest{
+        Model:    bifrostReq.Model,
+        Messages: hfMessages,
+    }
+
+    // Map parameters
+    if bifrostReq.Params != nil {
+        params := bifrostReq.Params
+        
+        // Map standard parameters
+        if params.Temperature != nil {
+            hfReq.Temperature = params.Temperature
+        }
+        if params.MaxTokens != nil {
+            hfReq.MaxTokens = params.MaxTokens
+        }
+        // ... other standard parameters
+        
+        // Handle provider-specific ExtraParams
+        if params.ExtraParams != nil {
+            if customParam, ok := params.ExtraParams["custom_param"].(string); ok {
+                hfReq.CustomParam = &customParam
+            }
+        }
+    }
+
+    return hfReq
+}
+```
+
+**Generic Example - Embedding Converter**:
+```go
+package providername
+
+import (
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// ToProviderNameEmbeddingRequest converts a Bifrost embedding request to provider format
+func ToProviderNameEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *ProviderNameEmbeddingRequest {
+    if bifrostReq == nil {
+        return nil
+    }
+
+    providerReq := &ProviderNameEmbeddingRequest{
+        Model: bifrostReq.Model,
+    }
+
+    // Convert input
+    if bifrostReq.Input != nil {
+        if bifrostReq.Input.Text != nil {
+            providerReq.Input = *bifrostReq.Input.Text
+        } else if bifrostReq.Input.Texts != nil {
+            providerReq.Input = bifrostReq.Input.Texts
+        }
+    }
+
+    // Map provider-specific parameters from ExtraParams
+    if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
+        if normalize, ok := bifrostReq.Params.ExtraParams["normalize"].(bool); ok {
+            providerReq.Normalize = &normalize
+        }
+    }
+
+    return providerReq
+}
+```
+
+**Generic Example - List Models Converter**:
+```go
+package providername
+
+import (
+    "strings"
+    schemas "github.com/maximhq/bifrost/core/schemas"
+)
+
+// ToBifrostListModelsResponse converts provider models list to Bifrost format
+func ToBifrostListModelsResponse(
+    providerResp *ProviderNameListModelsResponse,
+    providerKey schemas.ModelProvider,
+) *schemas.BifrostListModelsResponse {
+    if providerResp == nil {
+        return nil
+    }
+
+    bifrostResponse := &schemas.BifrostListModelsResponse{
+        Data: make([]schemas.Model, 0, len(providerResp.Models)),
+    }
+    
+    for _, model := range providerResp.Models {
+        // Determine supported methods based on model capabilities
+        supported := determineSupportedMethods(model)
+        if len(supported) == 0 {
+            continue
+        }
+
+        newModel := schemas.Model{
+            ID:               model.ID,
+            Name:             &model.Name,
+            SupportedMethods: supported,
+        }
+
+        bifrostResponse.Data = append(bifrostResponse.Data, newModel)
+    }
+    
+    return bifrostResponse
+}
+
+// Helper to determine which Bifrost methods a model supports
+func determineSupportedMethods(model ProviderNameModel) []string {
+    methods := []string{}
+    
+    // Logic to derive supported methods from model metadata
+    // This varies by provider
+    
+    return methods
+}
+```
+
+**Converter Best Practices**:
+1. **Always check for nil** inputs at the start
+2. **Pre-allocate slices** with known capacity for performance
+3. **Handle optional fields** using pointers in types
+4. **Use ExtraParams** for provider-specific fields not in standard schema
+5. **Document complex conversions** with inline comments
+6. **Keep functions pure** - no side effects, no external state
+7. **Return errors** when conversion fails (for response converters)
+
+### OpenAI-compatible Providers
+
+If you are implementing a provider that is **strictly OpenAI API compatible**, the implementation is significantly simpler. You reuse all the conversion logic from `core/providers/openai/`.
+
+**When to Use This Approach**:
+- Provider's API is 100% OpenAI-compatible
+- Same request/response formats
+- Same endpoint paths (`/v1/chat/completions`, `/v1/completions`, etc.)
+- Only differences are: base URL, authentication, and possibly some extra headers
+
+**Complete Reference: `core/providers/cerebras/cerebras.go`**
+
+---
+
+#### Step 1: Create the Provider File
+
+Create `core/providers/[provider_name]/[provider_name].go`:
+
+```go
+// Package cerebras implements the Cerebras LLM provider.
+package cerebras
+
+import (
+    "context"
+    "strings"
+    "time"
+
+    "github.com/maximhq/bifrost/core/providers/openai"
+    providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+    schemas "github.com/maximhq/bifrost/core/schemas"
+    "github.com/valyala/fasthttp"
+)
+
+// CerebrasProvider implements the Provider interface for Cerebras's API.
+type CerebrasProvider struct {
+    logger              schemas.Logger        // Logger for provider operations
+    client              *fasthttp.Client      // HTTP client for API requests
+    networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+    sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+}
+
+// NewCerebrasProvider creates a new Cerebras provider instance.
+// It initializes the HTTP client with the provided configuration and sets up response pools.
+func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*CerebrasProvider, error) {
+    config.CheckAndSetDefaults()
+
+    client := &fasthttp.Client{
+        ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+        WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
+        MaxConnsPerHost:     5000,
+        MaxIdleConnDuration: 60 * time.Second,
+        MaxConnWaitTimeout:  10 * time.Second,
+    }
+
+    // Configure proxy if provided
+    client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
+
+    // Set default BaseURL if not provided
+    if config.NetworkConfig.BaseURL == "" {
+        config.NetworkConfig.BaseURL = "https://api.cerebras.ai"
+    }
+    config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+
+    return &CerebrasProvider{
+        logger:              logger,
+        client:              client,
+        networkConfig:       config.NetworkConfig,
+        sendBackRawResponse: config.SendBackRawResponse,
+    }, nil
+}
+
+// GetProviderKey returns the provider identifier for Cerebras.
+func (provider *CerebrasProvider) GetProviderKey() schemas.ModelProvider {
+    return schemas.Cerebras
+}
+```
+
+---
+
+#### Step 2: Implement Required Methods Using OpenAI Handlers
+
+For each supported feature, delegate to the corresponding OpenAI handler:
+
+**Chat Completion (Non-Streaming)**:
+```go
+// ChatCompletion performs a chat completion request to the Cerebras API.
+func (provider *CerebrasProvider) ChatCompletion(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostChatRequest,
+) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+    return openai.HandleOpenAIChatCompletionRequest(
+        ctx,
+        provider.client,
+        provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+        request,
+        key,
+        provider.networkConfig.ExtraHeaders,
+        providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+        provider.GetProviderKey(),
+        provider.logger,
+    )
+}
+```
+
+**Chat Completion (Streaming)**:
+```go
+// ChatCompletionStream performs a streaming chat completion request to the Cerebras API.
+// It supports real-time streaming of responses using Server-Sent Events (SSE).
+func (provider *CerebrasProvider) ChatCompletionStream(
+    ctx context.Context,
+    postHookRunner schemas.PostHookRunner,
+    key schemas.Key,
+    request *schemas.BifrostChatRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+    var authHeader map[string]string
+    if key.Value != "" {
+        authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+    }
+    
+    // Use shared OpenAI-compatible streaming logic
+    return openai.HandleOpenAIChatCompletionStreaming(
+        ctx,
+        provider.client,
+        provider.networkConfig.BaseURL+"/v1/chat/completions",
+        request,
+        authHeader,
+        provider.networkConfig.ExtraHeaders,
+        providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+        provider.GetProviderKey(),
+        postHookRunner,
+        nil, // customStreamParser - use nil for standard OpenAI format
+        provider.logger,
+    )
+}
+```
+
+**Text Completion (Non-Streaming)**:
+```go
+// TextCompletion performs a text completion request to Cerebras's API.
+func (provider *CerebrasProvider) TextCompletion(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostTextCompletionRequest,
+) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+    return openai.HandleOpenAITextCompletionRequest(
+        ctx,
+        provider.client,
+        provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+        request,
+        key,
+        provider.networkConfig.ExtraHeaders,
+        provider.GetProviderKey(),
+        providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+        provider.logger,
+    )
+}
+```
+
+**Text Completion (Streaming)**:
+```go
+// TextCompletionStream performs a streaming text completion request to Cerebras's API.
+func (provider *CerebrasProvider) TextCompletionStream(
+    ctx context.Context,
+    postHookRunner schemas.PostHookRunner,
+    key schemas.Key,
+    request *schemas.BifrostTextCompletionRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+    var authHeader map[string]string
+    if key.Value != "" {
+        authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+    }
+    
+    return openai.HandleOpenAITextCompletionStreaming(
+        ctx,
+        provider.client,
+        provider.networkConfig.BaseURL+"/v1/completions",
+        request,
+        authHeader,
+        provider.networkConfig.ExtraHeaders,
+        providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+        provider.GetProviderKey(),
+        postHookRunner,
+        nil, // customStreamParser
+        provider.logger,
+    )
+}
+```
+
+**List Models**:
+```go
+// ListModels performs a list models request to Cerebras's API.
+func (provider *CerebrasProvider) ListModels(
+    ctx context.Context,
+    keys []schemas.Key,
+    request *schemas.BifrostListModelsRequest,
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+    return openai.HandleOpenAIListModelsRequest(
+        ctx,
+        provider.client,
+        request,
+        provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+        keys,
+        provider.networkConfig.ExtraHeaders,
+        provider.GetProviderKey(),
+        providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+        provider.logger,
+    )
+}
+```
+
+---
+
+#### Step 3: Implement Unsupported Methods
+
+For features not supported by the provider, return appropriate errors:
+
+```go
+// Embedding is not supported by Cerebras
+func (provider *CerebrasProvider) Embedding(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostEmbeddingRequest,
+) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Embedding is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// Speech is not supported by Cerebras
+func (provider *CerebrasProvider) Speech(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostSpeechRequest,
+) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Speech synthesis is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// SpeechStream is not supported by Cerebras
+func (provider *CerebrasProvider) SpeechStream(
+    ctx context.Context,
+    postHookRunner schemas.PostHookRunner,
+    key schemas.Key,
+    request *schemas.BifrostSpeechRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Speech synthesis streaming is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// Transcription is not supported by Cerebras
+func (provider *CerebrasProvider) Transcription(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostTranscriptionRequest,
+) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Transcription is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// TranscriptionStream is not supported by Cerebras
+func (provider *CerebrasProvider) TranscriptionStream(
+    ctx context.Context,
+    postHookRunner schemas.PostHookRunner,
+    key schemas.Key,
+    request *schemas.BifrostTranscriptionRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Transcription streaming is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// Responses is not supported by Cerebras
+func (provider *CerebrasProvider) Responses(
+    ctx context.Context,
+    key schemas.Key,
+    request *schemas.BifrostResponsesRequest,
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Responses is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+
+// ResponsesStream is not supported by Cerebras
+func (provider *CerebrasProvider) ResponsesStream(
+    ctx context.Context,
+    postHookRunner schemas.PostHookRunner,
+    key schemas.Key,
+    request *schemas.BifrostResponsesRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+    return nil, &schemas.BifrostError{
+        StatusCode: http.StatusNotImplemented,
+        Message:    "Responses streaming is not supported by Cerebras",
+        Type:       "unsupported_feature",
+    }
+}
+```
+
+---
+
+#### Key Points for OpenAI-compatible Providers
+
+**Constructor Differences**:
+- Returns `(*[ProviderName]Provider, error)` instead of just `*[ProviderName]Provider`
+- Must set a default `BaseURL` specific to the provider
+- Must trim trailing slashes from `BaseURL`
+
+**URL Construction**:
+- Use `provider.networkConfig.BaseURL + "/v1/[endpoint]"` for direct paths
+- Use `providerUtils.GetPathFromContext(ctx, "/v1/[endpoint]")` when path might be overridden in context
+
+**Authentication Headers**:
+- Create `authHeader map[string]string` with `Authorization: Bearer {key}`
+- Pass to OpenAI handlers separately from `ExtraHeaders`
+
+**Custom Stream Parsers**:
+- Pass `nil` for `customStreamParser` if using standard OpenAI SSE format
+- Only implement custom parser if provider uses non-standard streaming format
+
+**Error Handling**:
+- OpenAI handlers return `*schemas.BifrostError` - propagate directly
+- For unsupported features, return custom error with `StatusNotImplemented`
+
+**Advantages of This Approach**:
+- **Automatic updates** - benefits from OpenAI handler improvements
+- **Consistent behavior** - same conversion logic as OpenAI
+- **Easy maintenance** - only provider-specific config in your file
+
+## Implementation Steps
+
+Follow this **exact order** when implementing a new provider.
+
+---
+
+### For Non-OpenAI-compatible Providers
+
+#### Phase 1: Research & Planning (Before Writing Code)
+
+1. **Study the Provider's API Documentation**:
+   - Identify all supported endpoints (chat, embeddings, speech, etc.)
+   - Note authentication method (API key, bearer token, custom headers)
+   - Document base URL and endpoint paths
+   - List all request/response fields
+   - Identify provider-specific parameters not in OpenAI schema
+
+2. **Create a Mapping Document** (recommended):
+   ```markdown
+   # Provider: [ProviderName]
+   
+   ## Authentication
+   - Method: Bearer token / API key in header
+   - Header name: Authorization / X-API-Key
+   
+   ## Base URL
+   - Production: https://api.provider.com
+   - Staging: https://staging.provider.com (if applicable)
+   
+   ## Endpoints
+   - Chat Completions: POST /v1/chat/completions
+   - Embeddings: POST /v1/embeddings
+   - Models: GET /v1/models
+   
+   ## Request Fields
+   ### Chat Completions
+   - model (required): string
+   - messages (required): array
+   - temperature (optional): float
+   - max_tokens (optional): int
+   - [provider_specific_field] (optional): type
+   
+   ## Response Fields
+   ### Chat Completions
+   - id: string
+   - choices: array
+   - usage: object
+   - [provider_specific_field]: type
+   ```
+
+---
+
+#### Phase 2: Create Directory Structure
+
+3. **Create Provider Directory**:
+   ```bash
+   mkdir -p core/providers/[provider_name]
+   cd core/providers/[provider_name]
+   ```
+
+---
+
+#### Phase 3: Define Types (types.go)
+
+4. **Create `types.go` - Define ALL Provider-Specific Types**:
+
+   **Order of Type Definitions**:
+   ```go
+   package [provider_name]
+
+   import "encoding/json"
+
+   // # MODELS TYPES
+   // Define model-related types first
+   type [ProviderName]Model struct { ... }
+   type [ProviderName]ListModelsResponse struct { ... }
+
+   // # CHAT TYPES
+   // Define chat-related types
+   type [ProviderName]ChatRequest struct { ... }
+   type [ProviderName]ChatResponse struct { ... }
+   type [ProviderName]ChatMessage struct { ... }
+   type [ProviderName]ChatChoice struct { ... }
+
+   // # EMBEDDING TYPES
+   // Define embedding-related types
+   type [ProviderName]EmbeddingRequest struct { ... }
+   type [ProviderName]EmbeddingResponse struct { ... }
+
+   // # SPEECH TYPES (if applicable)
+   // Define speech-related types
+
+   // # TRANSCRIPTION TYPES (if applicable)
+   // Define transcription-related types
+
+   // # ERROR TYPES
+   // Define error response types
+   type [ProviderName]ErrorResponse struct { ... }
+   ```
+
+   **Type Naming Checklist**:
+   - ✅ All types prefixed with provider name: `HuggingFaceChatRequest`
+   - ✅ JSON tags match provider API exactly: `json:"model_name"`
+   - ✅ Optional fields use `omitempty`: `json:"temperature,omitempty"`
+   - ✅ Nullable fields use pointers: `*float64`, `*string`
+   - ✅ Flexible fields use `json.RawMessage`: `Content json.RawMessage`
+   - ✅ Required fields have validation tags: `validate:"required"`
+
+---
+
+#### Phase 4: Define Utilities (utils.go)
+
+5. **Create `utils.go` - Define Constants and Helper Functions**:
+
+   **Order of Definitions**:
+   ```go
+   package [provider_name]
+
+   import (
+       "context"
+       "encoding/json"
+       "fmt"
+       
+       providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+       schemas "github.com/maximhq/bifrost/core/schemas"
+       "github.com/valyala/fasthttp"
+   )
+
+   // 1. BASE URLs (ALWAYS FIRST)
+   const (
+       defaultBaseURL = "https://api.provider.com"
+       alternateURL   = "https://alternate.provider.com"
+   )
+
+   // 2. DEFAULT VALUES AND LIMITS
+   const (
+       defaultTimeout      = 60
+       maxRequestSize      = 1024 * 1024 * 10 // 10MB
+       defaultModelLimit   = 100
+       maxConcurrentCalls  = 5000
+   )
+
+   // 3. PROVIDER-SPECIFIC ENUMS/CONSTANTS
+   const (
+       providerVersion = "v1"
+       apiVersion      = "2024-01"
+   )
+
+   // 4. CUSTOM TYPES FOR CONSTANTS (if needed)
+   type inferenceProvider string
+
+   const (
+       providerA inferenceProvider = "provider-a"
+       providerB inferenceProvider = "provider-b"
+   )
+
+   // 5. HELPER FUNCTIONS
+   // Function to build authentication headers
+   func buildAuthHeaders(apiKey string) map[string]string { ... }
+
+   // Function to parse error responses
+   func parseErrorResponse(body []byte) *schemas.BifrostError { ... }
+
+   // Function to validate model names
+   func validateModelName(model string) error { ... }
+
+   // Function to split composite model identifiers
+   func splitModelProvider(model string) (provider, modelName string) { ... }
+   ```
+
+   **Utility Function Checklist**:
+   - ✅ All base URLs defined as constants
+   - ✅ Helper functions use camelCase (unexported) or PascalCase (exported)
+   - ✅ Error handling utilities included
+   - ✅ HTTP header builders included
+   - ✅ Constants grouped logically with comments
+
+---
+
+#### Phase 5: Implement Converters (Feature Files)
+
+6. **Create Feature Files in Order of Complexity** (simplest first):
+
+   **a. Create `models.go` (if supported)**:
+   ```go
+   package [provider_name]
+
+   import (
+       "fmt"
+       schemas "github.com/maximhq/bifrost/core/schemas"
+   )
+
+   // ToBifrostListModelsResponse converts provider models to Bifrost format
+   func (response *[ProviderName]ListModelsResponse) ToBifrostListModelsResponse(
+       providerKey schemas.ModelProvider,
+   ) *schemas.BifrostListModelsResponse {
+       if response == nil {
+           return nil
+       }
+
+       bifrostResponse := &schemas.BifrostListModelsResponse{
+           Data: make([]schemas.Model, 0, len(response.Models)),
+       }
+
+       for _, model := range response.Models {
+           // Validation
+           if model.ID == "" {
+               continue
+           }
+
+           // Conversion logic
+           bifrostModel := schemas.Model{
+               ID:               fmt.Sprintf("%s/%s", providerKey, model.ID),
+               Name:             &model.Name,
+               SupportedMethods: deriveSupportedMethods(model),
+           }
+
+           bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
+       }
+
+       return bifrostResponse
+   }
+
+   // Helper function to determine supported methods
+   func deriveSupportedMethods(model [ProviderName]Model) []string {
+       // Implementation
+   }
+   ```
+
+   **b. Create `embedding.go` (if supported)**:
+   ```go
+   package [provider_name]
+
+   import schemas "github.com/maximhq/bifrost/core/schemas"
+
+   // To[ProviderName]EmbeddingRequest converts Bifrost request to provider format
+   func To[ProviderName]EmbeddingRequest(
+       bifrostReq *schemas.BifrostEmbeddingRequest,
+   ) *[ProviderName]EmbeddingRequest {
+       if bifrostReq == nil {
+           return nil
+       }
+
+       providerReq := &[ProviderName]EmbeddingRequest{
+           Model: bifrostReq.Model,
+       }
+
+       // Convert input
+       if bifrostReq.Input != nil {
+           if bifrostReq.Input.Text != nil {
+               providerReq.Input = *bifrostReq.Input.Text
+           } else if bifrostReq.Input.Texts != nil {
+               providerReq.Input = bifrostReq.Input.Texts
+           }
+       }
+
+       // Map parameters
+       if bifrostReq.Params != nil {
+           // Standard parameters
+           if bifrostReq.Params.Dimensions != nil {
+               providerReq.Dimensions = bifrostReq.Params.Dimensions
+           }
+
+           // Provider-specific parameters from ExtraParams
+           if bifrostReq.Params.ExtraParams != nil {
+               if val, ok := bifrostReq.Params.ExtraParams["provider_param"].(string); ok {
+                   providerReq.ProviderParam = &val
+               }
+           }
+       }
+
+       return providerReq
+   }
+
+   // ToBifrostEmbeddingResponse converts provider response to Bifrost format
+   func ToBifrostEmbeddingResponse(
+       providerResp *[ProviderName]EmbeddingResponse,
+   ) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+       if providerResp == nil {
+           return nil, &schemas.BifrostError{
+               Message: "Provider response is nil",
+               Type:    "invalid_response",
+           }
+       }
+
+       bifrostResp := &schemas.BifrostEmbeddingResponse{
+           Data: make([]schemas.EmbeddingData, 0, len(providerResp.Data)),
+       }
+
+       for i, embedding := range providerResp.Data {
+           bifrostResp.Data = append(bifrostResp.Data, schemas.EmbeddingData{
+               Index:     i,
+               Embedding: embedding.Values,
+           })
+       }
+
+       // Map usage if available
+       if providerResp.Usage != nil {
+           bifrostResp.Usage = &schemas.Usage{
+               PromptTokens: providerResp.Usage.InputTokens,
+               TotalTokens:  providerResp.Usage.TotalTokens,
+           }
+       }
+
+       return bifrostResp, nil
+   }
+   ```
+
+   **c. Create `chat.go` (most complex)**:
+   ```go
+   package [provider_name]
+
+   import (
+       "encoding/json"
+       "github.com/bytedance/sonic"
+       schemas "github.com/maximhq/bifrost/core/schemas"
+   )
+
+   // To[ProviderName]ChatCompletionRequest converts Bifrost chat request to provider format
+   func To[ProviderName]ChatCompletionRequest(
+       bifrostReq *schemas.BifrostChatRequest,
+   ) *[ProviderName]ChatRequest {
+       if bifrostReq == nil || bifrostReq.Input == nil {
+           return nil
+       }
+
+       // Convert messages
+       providerMessages := make([][ProviderName]ChatMessage, 0, len(bifrostReq.Input))
+       for _, msg := range bifrostReq.Input {
+           providerMsg := [ProviderName]ChatMessage{}
+
+           // Set role
+           if msg.Role != "" {
+               role := string(msg.Role)
+               providerMsg.Role = &role
+           }
+
+           // Set name if present
+           if msg.Name != nil {
+               providerMsg.Name = msg.Name
+           }
+
+           // Convert content (can be string or structured)
+           if msg.Content != nil {
+               if msg.Content.ContentStr != nil {
+                   // Simple string content
+                   contentJSON, _ := sonic.Marshal(*msg.Content.ContentStr)
+                   providerMsg.Content = json.RawMessage(contentJSON)
+               } else if msg.Content.ContentBlocks != nil {
+                   // Structured content (text, images, etc.)
+                   contentItems := make([][ProviderName]ContentItem, 0, len(msg.Content.ContentBlocks))
+                   for _, block := range msg.Content.ContentBlocks {
+                       item := [ProviderName]ContentItem{}
+                       blockType := string(block.Type)
+                       item.Type = &blockType
+
+                       switch block.Type {
+                       case schemas.ChatContentBlockTypeText:
+                           if block.Text != nil {
+                               item.Text = block.Text
+                           }
+                       case schemas.ChatContentBlockTypeImage:
+                           if block.ImageURLStruct != nil {
+                               item.ImageURL = &[ProviderName]ImageRef{
+                                   URL: block.ImageURLStruct.URL,
+                               }
+                           }
+                       }
+                       contentItems = append(contentItems, item)
+                   }
+                   contentJSON, _ := sonic.Marshal(contentItems)
+                   providerMsg.Content = json.RawMessage(contentJSON)
+               }
+           }
+
+           // Handle tool calls for assistant messages
+           if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+               providerToolCalls := make([][ProviderName]ToolCall, 0, len(msg.ChatAssistantMessage.ToolCalls))
+               for _, tc := range msg.ChatAssistantMessage.ToolCalls {
+                   providerToolCall := [ProviderName]ToolCall{
+                       ID:   tc.ID,
+                       Type: tc.Type,
+                       Function: [ProviderName]Function{
+                           Name:      *tc.Function.Name,
+                           Arguments: tc.Function.Arguments,
+                       },
+                   }
+                   providerToolCalls = append(providerToolCalls, providerToolCall)
+               }
+               providerMsg.ToolCalls = providerToolCalls
+           }
+
+           // Handle tool call responses
+           if msg.ChatToolMessage != nil && msg.ChatToolMessage.ToolCallID != nil {
+               providerMsg.ToolCallID = msg.ChatToolMessage.ToolCallID
+           }
+
+           providerMessages = append(providerMessages, providerMsg)
+       }
+
+       // Build the request
+       providerReq := &[ProviderName]ChatRequest{
+           Model:    bifrostReq.Model,
+           Messages: providerMessages,
+       }
+
+       // Map parameters
+       if bifrostReq.Params != nil {
+           params := bifrostReq.Params
+
+           // Standard parameters
+           if params.Temperature != nil {
+               providerReq.Temperature = params.Temperature
+           }
+           if params.MaxTokens != nil {
+               providerReq.MaxTokens = params.MaxTokens
+           }
+           if params.TopP != nil {
+               providerReq.TopP = params.TopP
+           }
+           if params.FrequencyPenalty != nil {
+               providerReq.FrequencyPenalty = params.FrequencyPenalty
+           }
+           if params.PresencePenalty != nil {
+               providerReq.PresencePenalty = params.PresencePenalty
+           }
+           if params.Stop != nil {
+               providerReq.Stop = params.Stop
+           }
+           if params.Seed != nil {
+               providerReq.Seed = params.Seed
+           }
+
+           // Tool/Function calling - omitted for brevity; see complete provider examples
+       }
+
+       return providerReq
+   }
+   ```
+
+**Key conversion patterns to implement**:
+   ```go
+   // Request Converter - Maps Bifrost standard to provider format
+   func To[ProviderName][Feature]Request(bifrostReq) *[ProviderName]Request {
+       // 1. Nil check
+       // 2. Convert messages/input
+       // 3. Map standard parameters (temp, max_tokens, etc.)
+       // 4. Map tools/functions if supported
+       // 5. Map ExtraParams to provider-specific fields
+       return providerReq
+   }
+
+   // Response Converter - Maps provider format back to Bifrost
+   func ToBifrost[Feature]Response(providerResp) (*schemas.BifrostResponse, *schemas.BifrostError) {
+       // 1. Nil check with error return
+       // 2. Convert choices/results
+       // 3. Convert messages/content
+       // 4. Convert tool calls if present
+       // 5. Convert usage/metadata
+       return bifrostResp, nil
+   }
+   ```
+
+   **Converter Checklist for Each Feature File**:
+   - ✅ Request converter: `To[ProviderName][Feature]Request`
+   - ✅ Response converter: `ToBifrost[Feature]Response`
+   - ✅ Nil checks at start of every function
+   - ✅ Pre-allocate slices with capacity
+   - ✅ Handle all optional fields with nil checks
+   - ✅ Map ExtraParams to provider-specific fields
+   - ✅ Return errors for response converters
+   - ✅ Document complex transformations
+
+   <Tip>See actual implementation examples in `core/providers/huggingface/`, `core/providers/anthropic/`, or other existing providers for complete patterns.</Tip>
+
+---
+
+#### Phase 6: Implement Provider (provider_name.go)
+
+7. **Create `[provider_name].go` - Wire Everything Together**:
+
+   See detailed structure in "File Conventions & Responsibilities" section above.
+
+   **Implementation Checklist**:
+   - ✅ Package comment at top
+   - ✅ All imports organized (stdlib, external, internal)
+   - ✅ Provider struct with correct field order
+   - ✅ Response pools (if using sync.Pool)
+   - ✅ Constructor with proper initialization
+   - ✅ `GetProviderKey()` method
+   - ✅ All interface methods implemented
+   - ✅ Each method follows the strict order: convert → execute → handle errors → convert back
+
+---
+
+#### Phase 7: Add Tests
+
+8. **Create `[provider_name]_test.go`**:
+
+   See "Adding Automated Tests" section below for complete details.
+
+---
+
+### For OpenAI-compatible Providers
+
+For OpenAI-compatible providers, follow the simpler structure shown in the "OpenAI-compatible Providers" section above.
+
+**Implementation Checklist**:
+- ✅ Create `[provider_name].go` only
+- ✅ Import `github.com/maximhq/bifrost/core/providers/openai`
+- ✅ Implement constructor returning `(*Provider, error)`
+- ✅ Set default BaseURL specific to provider
+- ✅ Delegate all methods to `openai.HandleOpenAI*` functions
+- ✅ Return errors for unsupported features
+- ✅ Create `[provider_name]_test.go`
+
+
+## Adding to UI
+
+Once your provider is implemented and tested, you need to integrate it into the Bifrost UI and CI/CD pipelines.
+
+---
+
+### Step 1: Update UI Constants
+
+#### a. Add Model Placeholder (`ui/lib/constants/config.ts`)
+
+Add a model placeholder example for your provider to help users understand the expected model format:
+
+```typescript
+export const ModelPlaceholders = {
+    openai: "e.g. gpt-4, gpt-3.5-turbo",
+    anthropic: "e.g. claude-3-opus, claude-3-sonnet",
+    // ... other providers
+    [providername]: "e.g. model-1, model-2",  // Add your provider here
+};
+```
+
+**Example**:
+```typescript
+huggingface: "e.g. google/gemma-2-2b-it, nebius/Qwen/Qwen3-Embedding-8B",
+```
+
+#### b. Set Key Requirement (`ui/lib/constants/config.ts`)
+
+Specify whether your provider requires an API key:
+
+```typescript
+export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
+    openai: true,
+    anthropic: true,
+    // ... other providers
+    [providername]: true,  // Set to true if API key is required, false otherwise
+};
+```
+
+**Example**:
+```typescript
+huggingface: true,  // HuggingFace requires API key
+ollama: false,      // Ollama doesn't require API key (local)
+```
+
+---
+
+### Step 2: Add Provider Icon (`ui/lib/constants/icons.tsx`)
+
+Create an SVG icon for your provider. You can use the provider's official brand icon or a placeholder.
+
+```typescript
+export const ProviderIcons = {
+    // ... existing providers
+    
+    [providername]: ({ size = "md", className = "" }: IconProps) => {
+        const resolvedSize = resolveSize(size);
+        
+        return (
+            <svg height="1em" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg">
+                <title>ProviderName</title>
+                {/* Add your SVG path here */}
+                <path d="..." fill="#HexColor"></path>
+            </svg>
+        );
+    },
+} as const;
+```
+
+**Tips**:
+- Get the official icon from the provider's brand assets or press kit
+- Ensure the SVG is properly formatted and viewBox is set to "0 0 24 24"
+- Use the provider's brand color for the fill attribute
+- Keep the icon simple and recognizable at small sizes
+
+---
+
+### Step 3: Register Provider Name (`ui/lib/constants/logs.ts`)
+
+#### a. Add to Known Providers List
+
+```typescript
+export const KnownProvidersNames = [
+    "anthropic",
+    "azure",
+    "bedrock",
+    // ... other providers
+    "[providername]",  // Add your provider name (lowercase)
+] as const;
+```
+
+#### b. Add Provider Label
+
+```typescript
+export const ProviderLabels: Record<ProviderName, string> = {
+    anthropic: "Anthropic",
+    azure: "Azure",
+    bedrock: "AWS Bedrock",
+    // ... other providers
+    [providername]: "ProviderName",  // Add display name (proper capitalization)
+} as const;
+```
+
+**Example**:
+```typescript
+huggingface: "HuggingFace",
+cerebras: "Cerebras",
+```
+
+---
+
+### Step 4: Update OpenAPI Specification (`docs/apis/openapi.json`)
+
+Add your provider to the API documentation's provider enum:
+
+```json
+{
+    "type": "string",
+    "enum": [
+        "openai",
+        "anthropic",
+        "azure",
+        "bedrock",
+        // ... other providers
+        "[providername]"
+    ],
+    "description": "AI model provider",
+    "example": "openai"
+}
+```
+
+**Location**: Search for the `"AI model provider"` description in `docs/apis/openapi.json` and add your provider to the enum array.
+
+---
+
+### Step 5: Update Configuration Schema (`transports/config.schema.json`)
+
+#### a. Add Provider to Providers Object
+
+```json
+{
+    "providers": {
+        "type": "object",
+        "properties": {
+            "openai": { "$ref": "#/$defs/provider" },
+            "anthropic": { "$ref": "#/$defs/provider" },
+            // ... other providers
+            "[providername]": { "$ref": "#/$defs/provider" }
+        }
+    }
+}
+```
+
+#### b. Add to Fallback Provider Enum
+
+```json
+{
+    "fallbacks": {
+        "items": {
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "enum": [
+                        "openai",
+                        "anthropic",
+                        // ... other providers
+                        "[providername]"
+                    ]
+                }
+            }
+        }
+    }
+}
+```
+
+**Location**: Search for `"fallbacks"` in `transports/config.schema.json` and add your provider to both locations.
+
+---
+
+### Step 6: Update UI README (`ui/README.md`)
+
+Add your provider to the list of supported providers:
+
+```markdown
+## Provider Configuration
+
+Manage all your AI providers from a unified interface:
+
+- **Supported Providers**: OpenAI, Azure, Anthropic, AWS Bedrock, Cohere, 
+  Google Vertex AI, Mistral, Ollama, Parasail, Elevenlabs, SGLang, Cerebras, 
+  Groq, Gemini, OpenRouter, ProviderName
+```
+
+**Example**:
+```markdown
+- **Supported Providers**: OpenAI, Azure, Anthropic, AWS Bedrock, Cohere, 
+  Google Vertex AI, Mistral, Ollama, Parasail, Elevenlabs, SGLang, Cerebras, 
+  Groq, Gemini, OpenRouter, HuggingFace
+```
+
+---
+
+### Step 7: Register Provider in Core (`core/bifrost.go`)
+
+#### a. Add Provider Import
+
+```go
+import (
+    // ... existing imports
+    "github.com/maximhq/bifrost/core/providers/[providername]"
+)
+```
+
+#### b. Add Case to createBaseProvider
+
+```go
+func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+    // ... existing cases
+    
+    case schemas.ProviderName:
+        return providername.NewProviderNameProvider(config, bifrost.logger), nil
+    
+    default:
+        return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
+}
+```
+
+**For OpenAI-compatible providers** (returns error):
+```go
+case schemas.ProviderName:
+    return providername.NewProviderNameProvider(config, bifrost.logger)
+```
+
+**For non-OpenAI-compatible providers** (no error):
+```go
+case schemas.ProviderName:
+    return providername.NewProviderNameProvider(config, bifrost.logger), nil
+```
+
+---
+
+### Step 8: Add CI/CD Environment Variables
+
+Add your provider's API key to all GitHub Actions workflow files that run tests.
+
+#### Files to Update:
+
+1. **`.github/workflows/pr-tests.yml`**
+2. **`.github/workflows/release-pipeline.yml`** (multiple jobs)
+
+#### Changes Required:
+
+Add the environment variable to the `env:` section:
+
+```yaml
+env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    # ... other API keys
+    PROVIDER_NAME_API_KEY: ${{ secrets.PROVIDER_NAME_API_KEY }}
+```
+
+**Example from pr-tests.yml**:
+```yaml
+env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+    HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+```
+
+**Locations in release-pipeline.yml**:
+- `core-release` job
+- `framework-release` job
+- `plugins-release` job
+- `bifrost-http-release` job
+
+**Note**: Repository maintainers need to add the actual secret value in GitHub repository settings under `Settings > Secrets and variables > Actions`.
+
+---
+
+### UI Integration Checklist
+
+Before submitting your PR, verify all UI changes:
+
+- ✅ Model placeholder added to `ui/lib/constants/config.ts`
+- ✅ Key requirement set in `ui/lib/constants/config.ts`
+- ✅ Provider icon added to `ui/lib/constants/icons.tsx`
+- ✅ Provider name added to `ui/lib/constants/logs.ts` (KnownProvidersNames)
+- ✅ Provider label added to `ui/lib/constants/logs.ts` (ProviderLabels)
+- ✅ Provider added to OpenAPI spec enum (`docs/apis/openapi.json`)
+- ✅ Provider added to config schema (`transports/config.schema.json`) - 2 locations
+- ✅ Provider listed in UI README (`ui/README.md`)
+- ✅ Provider import added to `core/bifrost.go`
+- ✅ Provider case added to `createBaseProvider` in `core/bifrost.go`
+- ✅ Environment variable added to `.github/workflows/pr-tests.yml`
+- ✅ Environment variable added to `.github/workflows/release-pipeline.yml` (4 jobs)
+
+---
+
+
+
+## Adding Automated Tests
+
+Testing is **MANDATORY** for all providers. Tests ensure your provider works correctly and continues to work as the codebase evolves.
+
+---
+
+### Test File Structure
+
+Create `core/providers/[provider_name]/[provider_name]_test.go`:
+
+**Example Test File Structure**:
+
+```go
+package providername_test
+
+import (
+    "os"
+    "testing"
+
+    "github.com/maximhq/bifrost/core/internal/testutil"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func TestProviderName(t *testing.T) {
+    t.Parallel()
+    
+    // Check for API key - skip if not available
+    if os.Getenv("PROVIDER_API_KEY") == "" {
+        t.Skip("Skipping tests because PROVIDER_API_KEY is not set")
+    }
+
+    // Initialize test client
+    client, ctx, cancel, err := testutil.SetupTest()
+    if err != nil {
+        t.Fatalf("Error initializing test setup: %v", err)
+    }
+    defer cancel()
+
+    // Configure test scenarios
+    testConfig := testutil.ComprehensiveTestConfig{
+        Provider:  schemas.ProviderName,
+        ChatModel: "model-name",
+        Fallbacks: []schemas.Fallback{
+            {Provider: schemas.ProviderName, Model: "fallback-model"},
+        },
+        Scenarios: testutil.TestScenarios{
+            SimpleChat:            true,
+            CompletionStream:      true,
+            ToolCalls:             true,
+            TextCompletion:        false,  // Not supported
+            Embedding:             false,  // Not supported
+            ListModels:            true,
+            // ... configure based on provider capabilities
+        },
+    }
+
+    // Run all tests
+    t.Run("ProviderNameTests", func(t *testing.T) {
+        testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+    })
+    
+    client.Shutdown()
+}
+```
+
+---
+
+### Test Configuration Requirements
+
+**Environment Variables**:
+- **REQUIRED**: `[PROVIDER_NAME]_API_KEY` - API key for the provider
+- **Optional**: `PROVIDER_BASE_URL` - Custom base URL for testing
+
+**Example**:
 ```bash
-go mod init bifrost-test
-go get github.com/maximhq/bifrost/core
-go mod tidy
+export CEREBRAS_API_KEY="your-api-key-here"
+export HUGGING_FACE_API_KEY="your-hf-token-here"
 ```
 
-Replace `github.com/maximhq/bifrost/core` with your local path to the core (relative path).
+**Package Declaration**:
+- Use `package [provider_name]_test` (note the `_test` suffix)
+- This ensures tests don't access unexported functions (tests external behavior)
 
-```text
-// add this line at the end of go.mod
-replace github.com/maximhq/bifrost/core => ../path-to-bifrost/core
+<Tip>See complete test examples in `core/providers/cerebras/cerebras_test.go`, `core/providers/huggingface/huggingface_test.go`, or other existing providers.</Tip>
+
+---
+
+### Test Scenarios Configuration
+
+The `testutil.TestScenarios` struct defines which tests to run. Set each field based on provider capabilities:
+
+#### Core Test Scenarios
+
+| Scenario | Enable if... |
+|----------|-------------|
+| `SimpleChat` | Provider supports basic chat completion |
+| `CompletionStream` | Provider supports streaming chat |
+| `TextCompletion` | Provider supports text completions (legacy) |
+| `TextCompletionStream` | Provider supports streaming text completions |
+| `ToolCalls` | Provider supports function/tool calling |
+| `ToolCallsStreaming` | Provider supports streaming with tool calls |
+| `Embedding` | Provider supports text embeddings |
+| `ListModels` | Provider has a list models endpoint |
+| `ImageURL` | Provider accepts image URLs in messages |
+| `ImageBase64` | Provider accepts base64-encoded images |
+
+<Tip>For a complete list of all available test scenarios and their descriptions, check the `testutil.TestScenarios` struct in `core/internal/testutil/`.</Tip>
+
+---
+
+### Model Configuration
+
+**ChatModel** (REQUIRED if any chat scenario is enabled):
+```go
+ChatModel: "llama-3.3-70b",    // Primary model for chat tests
 ```
 
-Now you can test your provide by importing it as a Go SDK. This guide explains [how to use Bifrost as a Go SDK](/quickstart/go-sdk/setting-up) in further detail.
+**TextModel** (REQUIRED if any text completion scenario is enabled):
+```go
+TextModel: "llama3.1-8b",      // Model for text completion tests
+```
 
-# Adding automated tests
+**EmbeddingModel** (REQUIRED if Embedding scenario is enabled):
+```go
+EmbeddingModel: "text-embedding-ada-002",  // Model for embedding tests
+```
 
-Create a new file in `tests/core-providers` directory and enable tests for all the provider function you have implemented (like `Speech`, `SpeechStream`, `Embeddings`, etc.).
+**Fallbacks** (OPTIONAL but recommended):
+```go
+Fallbacks: []schemas.Fallback{
+    {Provider: schemas.Cerebras, Model: "llama3.1-8b"},
+    {Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
+},
+```
+- Fallbacks are tested if primary model fails
+- Tests that fallback mechanism works correctly
+
+---
+
+### Running Tests
+
+**Run all tests for your provider**:
+```bash
+cd core/providers/[provider_name]
+go test -v
+```
+
+**Run with API key**:
+```bash
+PROVIDER_API_KEY="your-key" go test -v
+```
+
+**Run specific test**:
+```bash
+go test -v -run TestProviderName
+```
+
+**Run with timeout** (for slow providers):
+```bash
+go test -v -timeout 5m
+```
+
+**Skip integration tests** (if API key not set):
+```bash
+go test -v -short
+```
+
+---
+
+### Test Checklist
+
+Before submitting your provider, ensure:
+
+- ✅ Test file named `[provider_name]_test.go`
+- ✅ Package is `[provider_name]_test`
+- ✅ `t.Parallel()` called at start
+- ✅ API key check with `t.Skip()` if not available
+- ✅ All supported scenarios enabled in config
+- ✅ All unsupported scenarios disabled (set to `false`)
+- ✅ Appropriate models specified (ChatModel, TextModel, EmbeddingModel)
+- ✅ Fallback models configured (at least 1-2)
+- ✅ `client.Shutdown()` called at end
+- ✅ Tests pass locally with valid API key
+- ✅ Tests skip gracefully without API key
+
+---
+
+### Common Test Failures and Solutions
+
+**Test hangs indefinitely**:
+- **Solution**: Add timeout: `go test -v -timeout 2m`
+- **Cause**: Provider not responding or network issue
+
+**"API key not set" skip message**:
+- **Solution**: Export the required environment variable
+- **Not a failure**: Tests correctly skip when credentials unavailable
+
+**"Unsupported feature" errors**:
+- **Solution**: Set the scenario to `false` in `TestScenarios`
+- **Cause**: Test trying to run unsupported feature
+
+**"Model not found" errors**:
+- **Solution**: Update ChatModel/TextModel to valid model for provider
+- **Cause**: Model name incorrect or not available
+
+**Streaming tests fail but non-streaming pass**:
+- **Solution**: Check streaming implementation in provider
+- **Cause**: SSE parsing error or incorrect stream handling
+
+**Tool calling tests fail**:
+- **Solution**: Verify tool/function conversion in `chat.go`
+- **Cause**: Tool format doesn't match provider's expected structure
+
+---
+
+### CI/CD Integration
+
+After your tests pass locally, ensure they'll run in the CI/CD pipeline:
+
+#### GitHub Actions Setup
+
+**Required Secret**:
+Your provider's API key must be added to GitHub repository secrets by a maintainer:
+- Secret name: `PROVIDER_NAME_API_KEY` (uppercase, underscores)
+- Example: `HUGGING_FACE_API_KEY`, `CEREBRAS_API_KEY`
+
+**Workflow Files**:
+The API key environment variable should already be added if you followed Step 8 in "Adding to UI". Verify it's present in:
+- `.github/workflows/pr-tests.yml`
+- `.github/workflows/release-pipeline.yml` (4 jobs)
+
+**Test Execution**:
+Tests will automatically run on:
+- Pull requests (PR tests workflow)
+- Release builds (release pipeline workflow)
+- Manual workflow triggers
+
+**Skipping Tests**:
+If the API key secret is not set, your tests will be skipped (not fail) thanks to the `t.Skip()` check in your test file.
+
+---
+
+### Final Pre-Submission Checklist
+
+Before creating a pull request, verify everything is complete:
+
+**Provider Implementation**:
+- ✅ Provider code follows file structure conventions
+- ✅ All supported features implemented correctly
+- ✅ Error handling properly converts to `schemas.BifrostError`
+- ✅ OpenAI handlers used if provider is compatible
+- ✅ Code is well-commented and documented
+
+**Tests**:
+- ✅ Test file created: `[provider_name]_test.go`
+- ✅ All supported scenarios enabled
+- ✅ All unsupported scenarios disabled
+- ✅ Tests pass locally with valid API key
+- ✅ Tests skip gracefully without API key
+- ✅ Appropriate models configured
+
+**Schema & Core**:
+- ✅ Provider added to `core/schemas/bifrost.go` (ModelProvider type + arrays)
+- ✅ Provider registered in `core/bifrost.go` (import + case)
+
+**UI Integration**:
+- ✅ All 7 UI files updated (config.ts, icons.tsx, logs.ts, etc.)
+- ✅ Provider icon looks good and is recognizable
+- ✅ Model placeholders are helpful examples
+
+**CI/CD**:
+- ✅ Environment variables added to workflow files
+- ✅ API key secret name follows convention
+
+**Documentation**:
+- ✅ Provider-specific parameters documented (if any)
+- ✅ Example usage added (optional but helpful)
+- ✅ Any special setup instructions noted
+
+---
+
+

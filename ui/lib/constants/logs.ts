@@ -7,6 +7,7 @@ export const KnownProvidersNames = [
 	"cohere",
 	"gemini",
 	"groq",
+	"huggingface",
 	"mistral",
 	"ollama",
 	"openai",
@@ -57,6 +58,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cerebras: "Cerebras",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
+	huggingface: "HuggingFace",
 	nebius: "Nebius Token Factory",
 } as const;
 

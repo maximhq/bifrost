@@ -4429,6 +4429,7 @@
           "elevenlabs",
           "perplexity",
           "cerebras",
+          "huggingface",
           "nebius"
         ],
         "description": "AI model provider",

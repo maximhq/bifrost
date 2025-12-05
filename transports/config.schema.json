@@ -144,6 +144,9 @@
         },
         "cerebras": {
           "$ref": "#/$defs/provider"
+        },
+        "huggingface": {
+          "$ref": "#/$defs/provider"
         }
       },
       "additionalProperties": true
@@ -825,7 +828,8 @@
                         "cerebras",
                         "parasail",
                         "perplexity",
-                        "sgl"
+                        "sgl",
+                        "huggingface"
                       ]
                     },
                     "keys": {

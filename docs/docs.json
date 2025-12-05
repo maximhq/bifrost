@@ -124,7 +124,6 @@
             "group": "Open Source Features",
             "icon": "bolt",
             "pages": [
-              "features/unified-interface",
               "features/drop-in-replacement",
               "features/fallbacks",
               "features/keys-management",
@@ -156,7 +155,15 @@
               },
               "features/telemetry",
               "features/semantic-caching",
-              "features/custom-providers",
+              {
+                "group": "Providers",
+                "icon": "toolbox",
+                "pages": [
+                  "features/providers/supported-providers",
+                  "features/providers/custom-providers",
+                  "features/providers/huggingface"
+                ]
+              },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",

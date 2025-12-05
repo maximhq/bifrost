@@ -1,2 +1,3 @@
+- feat(providers): added HuggingFace provider using Inference Provider API, support for chat(with stream also), response(with stream also), TTS and speech synthesis
 - fix(mcp): ensure properties field is always set for tools - [@CryptoFewka](https://github.com/CryptoFewka)
 - fix(perplexity): correct search_domain_filter json tag - [@hnoguchigr](https://github.com/hnoguchigr)
