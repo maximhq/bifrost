@@ -105,6 +105,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 		providerConfig.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
 	}
 
+	providerConfig.SendBackRawRequest = config.SendBackRawRequest
 	providerConfig.SendBackRawResponse = config.SendBackRawResponse
 
 	if config.CustomProviderConfig != nil {

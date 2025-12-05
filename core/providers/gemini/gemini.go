@@ -24,6 +24,7 @@ type GeminiProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
@@ -56,6 +57,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 		client:               client,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 	}
 }
@@ -159,7 +161,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Parse Gemini's response
 	var geminiResponse GeminiListModelsResponse
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -168,6 +170,12 @@ func (provider *GeminiProvider) listModelsByKey(ctx context.Context, key schemas
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -259,7 +267,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 
 	response := &schemas.BifrostChatResponse{}
 
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -283,6 +291,12 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.Latency = latency.Milliseconds()
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -313,6 +327,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -366,6 +381,7 @@ func (provider *GeminiProvider) Embedding(ctx context.Context, key schemas.Key, 
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -404,6 +420,11 @@ func (provider *GeminiProvider) Speech(ctx context.Context, key schemas.Key, req
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.SpeechRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+	}
+
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -614,6 +635,10 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				},
 			}
 
+			// Set raw request if enabled
+			if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			}
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
 		}
@@ -652,6 +677,10 @@ func (provider *GeminiProvider) Transcription(ctx context.Context, key schemas.K
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.TranscriptionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
@@ -877,6 +906,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				},
 			}
 
+			// Set raw request if enabled
+			if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			}
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
 		}

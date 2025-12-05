@@ -89,6 +89,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginVersionColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSendBackRawRequestColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddConfigHashColumn(ctx, db); err != nil {
 		return err
 	}
@@ -1288,6 +1291,35 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_send_back_raw_request_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "send_back_raw_request") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add send back raw request columns migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddConfigHashColumn adds the config_hash column to the provider and key tables
 func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -1312,6 +1344,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 							NetworkConfig:            provider.NetworkConfig,
 							ConcurrencyAndBufferSize: provider.ConcurrencyAndBufferSize,
 							ProxyConfig:              provider.ProxyConfig,
+							SendBackRawRequest:       provider.SendBackRawRequest,
 							SendBackRawResponse:      provider.SendBackRawResponse,
 							CustomProviderConfig:     provider.CustomProviderConfig,
 						}
@@ -1405,7 +1438,7 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) er
 							return fmt.Errorf("failed to update hash for virtual key %s: %w", vk.ID, err)
 						}
 					}
-				}				
+				}
 			}
 			return nil
 		},

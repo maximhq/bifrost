@@ -122,6 +122,16 @@ func (p *LoggerPlugin) updateLogEntry(
 				updates["transcription_output"] = tempEntry.TranscriptionOutput
 			}
 		}
+
+		// Handle raw request marshaling and logging
+		if data.RawRequest != nil {
+			rawRequestBytes, err := sonic.Marshal(data.RawRequest)
+			if err != nil {
+				p.logger.Error("failed to marshal raw request: %v", err)
+			} else {
+				updates["raw_request"] = string(rawRequestBytes)
+			}
+		}
 	}
 
 	if data.TokenUsage != nil {
@@ -168,7 +178,6 @@ func (p *LoggerPlugin) updateLogEntry(
 			updates["raw_response"] = string(rawResponseBytes)
 		}
 	}
-
 	return p.store.Update(ctx, requestID, updates)
 }
 
@@ -291,6 +300,15 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 				p.logger.Error("failed to serialize responses output: %v", err)
 			} else {
 				updates["responses_output"] = tempEntry.ResponsesOutput
+			}
+		}
+		// Handle raw request from stream updates
+		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
+			rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
+			if err != nil {
+				p.logger.Error("failed to marshal raw request: %v", err)
+			} else {
+				updates["raw_request"] = string(rawRequestBytes)
 			}
 		}
 		// Handle raw response from stream updates

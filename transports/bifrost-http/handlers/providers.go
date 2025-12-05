@@ -58,6 +58,7 @@ type ProviderResponse struct {
 	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
+	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	Status                   ProviderStatus                   `json:"status"`                           // Status of the provider
@@ -175,6 +176,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 		ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`       // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	}{}
@@ -245,6 +247,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig:            payload.NetworkConfig,
 		ProxyConfig:              payload.ProxyConfig,
 		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
+		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 	}
@@ -273,6 +276,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			NetworkConfig:            config.NetworkConfig,
 			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 			ProxyConfig:              config.ProxyConfig,
+			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 		}, ProviderStatusActive)
@@ -313,6 +317,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
 		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 		ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
+		SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	}{}
@@ -423,6 +428,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	config.NetworkConfig = &nc
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
+	if payload.SendBackRawRequest != nil {
+		config.SendBackRawRequest = *payload.SendBackRawRequest
+	}
 	if payload.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *payload.SendBackRawResponse
 	}
@@ -451,6 +459,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			NetworkConfig:            config.NetworkConfig,
 			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 			ProxyConfig:              config.ProxyConfig,
+			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 		}, ProviderStatusActive)
@@ -844,6 +853,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		NetworkConfig:            *config.NetworkConfig,
 		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
+		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		Status:                   status,

@@ -58,6 +58,7 @@ type VertexProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -78,6 +79,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
@@ -144,6 +146,7 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Accumulate all models from paginated requests
 	var allModels []VertexModel
+	var rawRequests []interface{}
 	var rawResponses []interface{}
 	pageToken := ""
 
@@ -197,9 +200,12 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 
 		// Parse Vertex's response
 		var vertexResponse VertexListModelsResponse
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
+		}
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			rawRequests = append(rawRequests, rawRequest)
 		}
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			rawResponses = append(rawResponses, rawResponse)
@@ -220,6 +226,10 @@ func (provider *VertexProvider) listModelsByKey(ctx context.Context, key schemas
 		Models: allModels,
 	}
 	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.VertexKeyConfig.Deployments)
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequests
+	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponses
@@ -430,7 +440,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicResponse, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -450,6 +460,12 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 			response.ExtraFields.ModelDeployment = deployment
 		}
 
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		// Set raw response if enabled
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			response.ExtraFields.RawResponse = rawResponse
 		}
@@ -459,7 +475,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		response := &schemas.BifrostChatResponse{}
 
 		// Use enhanced response handler with pre-allocated response
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -472,6 +488,12 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
 
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		// Set raw response if enabled
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			response.ExtraFields.RawResponse = rawResponse
 		}
@@ -580,6 +602,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
 			postHookRunner,
@@ -655,6 +678,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			request,
 			authHeader,
 			provider.networkConfig.ExtraHeaders,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			providerName,
 			postHookRunner,
@@ -773,7 +797,7 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 		anthropicResponse := anthropic.AcquireAnthropicMessageResponse()
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 
-		rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicResponse, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -789,12 +813,18 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 		}
 
 		response.ExtraFields.ModelRequested = request.Model
-		if request.Model != deployment {
-			response.ExtraFields.ModelDeployment = deployment
+
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
 		}
 
+		// Set raw response if enabled
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			response.ExtraFields.RawResponse = rawResponse
+		}
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
 		}
 
 		return response, nil
@@ -916,6 +946,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,

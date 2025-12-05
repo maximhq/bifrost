@@ -102,19 +102,20 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                                          // string
-	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                                       // string
-	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"                              // string
-	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"                               // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                          // string (to store the selected key ID (set by bifrost))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"                        // string (to store the selected key name (set by bifrost))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"                        // int (to store the number of retries (set by bifrost))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                           // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"                     // bool (set by bifrost)
-	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"                       // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                            // map[string]string
-	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                           // string
-	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"                     // bool
+	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                      // string
+	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
+	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
+	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost)
+	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"   // bool (will pass an empty key to the provider)
+	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string]string
+	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"       // string
+	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
@@ -289,6 +290,7 @@ type BifrostResponseExtraFields struct {
 	ModelDeployment string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
 	Latency         int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex      int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest      interface{}        `json:"raw_request,omitempty"`
 	RawResponse     interface{}        `json:"raw_response,omitempty"`
 	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }

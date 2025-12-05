@@ -28,6 +28,7 @@ const (
 	ErrProviderDoRequest            = "failed to execute HTTP request to provider API"
 	ErrProviderResponseDecode       = "failed to decode response body from provider API"
 	ErrProviderResponseUnmarshal    = "failed to unmarshal response from provider API"
+	ErrProviderRawRequestUnmarshal  = "failed to unmarshal raw request from provider API"
 	ErrProviderRawResponseUnmarshal = "failed to unmarshal raw response from provider API"
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
 )
@@ -237,6 +238,7 @@ type ProviderConfig struct {
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
 	Logger               Logger                `json:"-"`
 	ProxyConfig          *ProxyConfig          `json:"proxy_config,omitempty"` // Proxy configuration
+	SendBackRawRequest   bool                  `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 }
