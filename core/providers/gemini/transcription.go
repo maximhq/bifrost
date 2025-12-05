@@ -3,6 +3,7 @@ package gemini
 import (
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -152,7 +153,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 	if len(bifrostReq.Input.File) > 0 {
 		parts = append(parts, &Part{
 			InlineData: &Blob{
-				MIMEType: detectAudioMimeType(bifrostReq.Input.File),
+				MIMEType: utils.DetectAudioMimeType(bifrostReq.Input.File),
 				Data:     bifrostReq.Input.File,
 			},
 		})

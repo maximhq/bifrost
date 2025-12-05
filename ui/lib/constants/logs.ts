@@ -7,6 +7,7 @@ export const KnownProvidersNames = [
 	"cohere",
 	"gemini",
 	"groq",
+	"huggingface",
 	"mistral",
 	"ollama",
 	"openai",
@@ -56,6 +57,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cerebras: "Cerebras",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
+	huggingface: "HuggingFace",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
