@@ -19,6 +19,7 @@ type SGLProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -55,6 +56,7 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
@@ -74,6 +76,7 @@ func (provider *SGLProvider) ListModels(ctx context.Context, keys []schemas.Key,
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		schemas.SGL,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -89,6 +92,7 @@ func (provider *SGLProvider) TextCompletion(ctx context.Context, key schemas.Key
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -105,6 +109,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -122,6 +127,7 @@ func (provider *SGLProvider) ChatCompletion(ctx context.Context, key schemas.Key
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -141,6 +147,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		request,
 		nil,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.SGL,
 		postHookRunner,
@@ -187,6 +194,7 @@ func (provider *SGLProvider) Embedding(ctx context.Context, key schemas.Key, req
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)

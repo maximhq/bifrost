@@ -357,6 +357,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 						NetworkConfig:            dbProvider.NetworkConfig,
 						ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 						ProxyConfig:              dbProvider.ProxyConfig,
+						SendBackRawRequest:       dbProvider.SendBackRawRequest,
 						SendBackRawResponse:      dbProvider.SendBackRawResponse,
 						CustomProviderConfig:     dbProvider.CustomProviderConfig,
 					}
@@ -1375,6 +1376,7 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 		NetworkConfig:            config.NetworkConfig,
 		ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
+		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 	}

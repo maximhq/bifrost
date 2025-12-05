@@ -103,8 +103,9 @@ type Log struct {
 	Status                string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
 	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary        string    `gorm:"type:text" json:"-"`                            // For content search
-	RawResponse           string    `gorm:"type:text" json:"raw_response"`                 // Populated when `send-back-raw-response` is on
+	ContentSummary        string    `gorm:"type:text" json:"-"`
+	RawRequest            string    `gorm:"type:text" json:"raw_request"`  // Populated when `send-back-raw-request` is on
+	RawResponse           string    `gorm:"type:text" json:"raw_response"` // Populated when `send-back-raw-response` is on
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`

@@ -369,6 +369,7 @@ export const modelProviderConfigSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -384,6 +385,7 @@ export const formModelProviderConfigSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
@@ -400,6 +402,7 @@ export const addProviderRequestSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -410,6 +413,7 @@ export const updateProviderRequestSchema = z.object({
 	network_config: networkConfigSchema,
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema,
 	proxy_config: proxyConfigSchema,
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -479,6 +483,7 @@ export const performanceFormSchema = z.object({
 			.min(1, "Buffer size must be greater than 0")
 			.max(100000, "Buffer size must be less than 100000"),
 	}),
+	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
 });
 

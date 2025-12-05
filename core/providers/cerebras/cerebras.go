@@ -17,6 +17,7 @@ type CerebrasProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -47,6 +48,7 @@ func NewCerebrasProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
@@ -66,6 +68,7 @@ func (provider *CerebrasProvider) ListModels(ctx context.Context, keys []schemas
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -83,6 +86,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx context.Context, key schema
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -104,6 +108,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx context.Context, post
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -121,6 +126,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx context.Context, key schema
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -144,6 +150,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx context.Context, post
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Cerebras,
 		postHookRunner,
