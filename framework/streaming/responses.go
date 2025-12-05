@@ -720,6 +720,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 			return nil, fmt.Errorf("failed to add responses stream chunk for request %s: %w", requestID, addErr)
 		}
 		if isFinalChunk {
+			var rawRequest interface{}
+			if result != nil && result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ResponsesStreamResponse.ExtraFields.RawRequest
+			}
 			shouldProcess := false
 			// Get the accumulator to check if processing has already been triggered
 			accumulator := a.getOrCreateStreamAccumulator(requestID)
@@ -782,6 +786,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 						Provider:   provider,
 						Model:      model,
 						Data:       data,
+						RawRequest: &rawRequest,
 					}, nil
 				} else {
 					return nil, nil
@@ -858,6 +863,11 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 				return nil, processErr
 			}
 
+			var rawRequest interface{}
+			if result != nil && result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ResponsesStreamResponse.ExtraFields.RawRequest
+			}
+
 			return &ProcessedStreamResponse{
 				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
@@ -865,6 +875,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 				Provider:   provider,
 				Model:      model,
 				Data:       data,
+				RawRequest: &rawRequest,
 			}, nil
 		}
 		return nil, nil

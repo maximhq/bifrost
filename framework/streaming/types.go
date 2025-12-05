@@ -120,6 +120,7 @@ type ProcessedStreamResponse struct {
 	Provider   schemas.ModelProvider
 	Model      string
 	Data       *AccumulatedData
+	RawRequest *interface{}
 }
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
@@ -154,6 +155,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
+		}
+		if p.RawRequest != nil {
+			resp.TextCompletionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
 	case StreamTypeChat:
 		chatResp := &schemas.BifrostChatResponse{
@@ -204,6 +208,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			resp.ChatResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
 
@@ -219,6 +226,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			responsesResp.ExtraFields.RawRequest = p.RawRequest
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -232,6 +242,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			resp.SpeechResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -243,6 +256,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
+		}
+		if p.RawRequest != nil {
+			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
 	}
 	return resp

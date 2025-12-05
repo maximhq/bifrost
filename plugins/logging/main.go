@@ -42,6 +42,7 @@ type UpdateLogData struct {
 	ErrorDetails        *schemas.BifrostError
 	SpeechOutput        *schemas.BifrostSpeechResponse        // For non-streaming speech responses
 	TranscriptionOutput *schemas.BifrostTranscriptionResponse // For non-streaming transcription responses
+	RawRequest          interface{}
 	RawResponse         interface{}
 }
 
@@ -496,6 +497,9 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				// Extract raw response
 				extraFields := result.GetExtraFields()
 				if p.disableContentLogging == nil || !*p.disableContentLogging {
+					if extraFields.RawRequest != nil {
+						updateData.RawRequest = extraFields.RawRequest
+					}
 					if extraFields.RawResponse != nil {
 						updateData.RawResponse = extraFields.RawResponse
 					}

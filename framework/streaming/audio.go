@@ -167,6 +167,10 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 				a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 				return nil, processErr
 			}
+			var rawRequest interface{}
+			if result != nil && result.SpeechStreamResponse != nil && result.SpeechStreamResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.SpeechStreamResponse.ExtraFields.RawRequest
+			}
 			return &ProcessedStreamResponse{
 				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
@@ -174,6 +178,7 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 				Model:      model,
 				Provider:   provider,
 				Data:       data,
+				RawRequest: &rawRequest,
 			}, nil
 		}
 		return nil, nil

@@ -341,27 +341,48 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 // If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
-func HandleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
+func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	var rawRequest interface{}
 	var rawResponse interface{}
 
 	var wg sync.WaitGroup
-	var structuredErr, rawErr error
+	var structuredErr, rawRequestErr, rawResponseErr error
 
-	wg.Add(2)
+	// Skip raw request capture if requestBody is nil (e.g., for GET requests)
+	shouldCaptureRawRequest := sendBackRawRequest && requestBody != nil
+
+	// Count goroutines to spawn
+	numGoroutines := 1 // Always unmarshal structured response
+	if shouldCaptureRawRequest {
+		numGoroutines++
+	}
+	if sendBackRawResponse {
+		numGoroutines++
+	}
+
+	wg.Add(numGoroutines)
 	go func() {
 		defer wg.Done()
 		structuredErr = sonic.Unmarshal(responseBody, response)
 	}()
-	go func() {
-		defer wg.Done()
-		if sendBackRawResponse {
-			rawErr = sonic.Unmarshal(responseBody, &rawResponse)
-		}
-	}()
+
+	if shouldCaptureRawRequest {
+		go func() {
+			defer wg.Done()
+			rawRequestErr = sonic.Unmarshal(requestBody, &rawRequest)
+		}()
+	}
+
+	if sendBackRawResponse {
+		go func() {
+			defer wg.Done()
+			rawResponseErr = sonic.Unmarshal(responseBody, &rawResponse)
+		}()
+	}
 	wg.Wait()
 
 	if structuredErr != nil {
-		return nil, &schemas.BifrostError{
+		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseUnmarshal,
@@ -370,21 +391,51 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 		}
 	}
 
-	if sendBackRawResponse {
-		if rawErr != nil {
-			return nil, &schemas.BifrostError{
+	if shouldCaptureRawRequest {
+		if rawRequestErr != nil {
+			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawErr,
+					Message: schemas.ErrProviderRawRequestUnmarshal,
+					Error:   rawRequestErr,
 				},
 			}
 		}
-
-		return rawResponse, nil
+		if sendBackRawResponse && rawResponseErr != nil {
+			return nil, nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderRawResponseUnmarshal,
+					Error:   rawResponseErr,
+				},
+			}
+		}
+		return rawRequest, rawResponse, nil
 	}
 
-	return nil, nil
+	if sendBackRawResponse {
+		if rawResponseErr != nil {
+			return nil, nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderRawResponseUnmarshal,
+					Error:   rawResponseErr,
+				},
+			}
+		}
+		return rawRequest, rawResponse, nil
+	}
+
+	return nil, nil, nil
+}
+
+func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
+	var rawRequest interface{}
+	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to parse raw request: %v", err))
+	} else {
+		extraFields.RawRequest = rawRequest
+	}
 }
 
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
@@ -477,6 +528,16 @@ func NewProviderAPIError(message string, err error, statusCode int, providerType
 			Provider: providerType,
 		},
 	}
+}
+
+// ShouldSendBackRawRequest checks if the raw request should be sent back.
+// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
+// promote false→true and will not override a true config to false, avoiding accidental suppression.
+func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
+	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
+		return sendBackRawRequest
+	}
+	return defaultSendBackRawRequest
 }
 
 // ShouldSendBackRawResponse checks if the raw response should be sent back, and returns it if it exists.

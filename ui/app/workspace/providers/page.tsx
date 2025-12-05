@@ -71,6 +71,7 @@ export default function Providers() {
 							network_config: DefaultNetworkConfig,
 							custom_provider_config: undefined,
 							proxy_config: undefined,
+							send_back_raw_request: undefined,
 							send_back_raw_response: undefined,
 							status: "error",
 						}),
@@ -221,7 +222,7 @@ export default function Providers() {
 										e.preventDefault();
 										e.stopPropagation();
 										setShowCustomProviderDialog(true);
-									}}									
+									}}
 								>
 									<PlusIcon className="h-4 w-4" />
 									<div className="text-xs">Add New Provider</div>
