@@ -48,6 +48,7 @@ const (
 	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
 	Elevenlabs ModelProvider = "elevenlabs"
+	Nebius     ModelProvider = "nebius"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -77,6 +78,7 @@ var StandardProviders = []ModelProvider{
 	Vertex,
 	OpenRouter,
 	Elevenlabs,
+	Nebius,
 }
 
 // RequestType represents the type of request being made to a provider.
