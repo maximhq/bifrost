@@ -293,6 +293,10 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 				updates["responses_output"] = tempEntry.ResponsesOutput
 			}
 		}
+		// Handle raw response from stream updates
+		if streamResponse.Data.RawResponse != nil {
+			updates["raw_response"] = *streamResponse.Data.RawResponse
+		}
 	}
 	// Only perform update if there's something to update
 	if len(updates) > 0 {
