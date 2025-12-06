@@ -2504,12 +2504,22 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 	if requestType == schemas.ListModelsRequest {
 		// Skip deployment check but still check if the key has a value
 		for _, k := range keys {
+			// Skip disabled keys
+			if k.Enabled != nil && !*k.Enabled {
+				continue
+			}
+
 			if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 				supportedKeys = append(supportedKeys, k)
 			}
 		}
 	} else {
 		for _, key := range keys {
+			// Skip disabled keys
+			if key.Enabled != nil && !*key.Enabled {
+				continue
+			}
+
 			modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType))) || len(key.Models) == 0
 
 			// Additional deployment checks for Azure, Bedrock and Vertex
