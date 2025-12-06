@@ -2,9 +2,11 @@ package otel
 
 import (
 	"context"
+	"fmt"
 
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
@@ -17,12 +19,22 @@ type OtelClientGRPC struct {
 }
 
 // NewOtelClientGRPC creates a new OpenTelemetry client for gRPC
-func NewOtelClientGRPC(endpoint string, headers map[string]string) (*OtelClientGRPC, error) {
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert string) (*OtelClientGRPC, error) {
+	var creds credentials.TransportCredentials
+	if tlsCACert != "" {
+		var err error
+		creds, err = credentials.NewClientTLSFromFile(tlsCACert, "")
+		if err != nil {
+			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
+		}
+	} else {
+		creds = insecure.NewCredentials()
+	}
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, err
 	}
-	return &OtelClientGRPC{client: collectorpb.NewTraceServiceClient(conn), conn: conn}, nil
+	return &OtelClientGRPC{client: collectorpb.NewTraceServiceClient(conn), conn: conn, headers: headers}, nil
 }
 
 // Emit sends a trace to the OpenTelemetry collector

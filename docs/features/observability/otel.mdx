@@ -35,6 +35,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `trace_type` | `string` | ✅ Yes | One of: `genai_extension`, `vercel`, `open_inference` |
 | `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
 | `headers` | `object` | ❌ No | Custom headers for authentication (supports `env.VAR_NAME`) |
+| `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 
 ### Environment Variable Substitution
 
@@ -121,6 +122,29 @@ For Gateway mode, configure via `config.json`:
         "collector_url": "http://localhost:4318",
         "trace_type": "genai_extension",
         "protocol": "http",
+        "headers": {
+          "Authorization": "env.OTEL_API_KEY"
+        }
+      }
+    }
+  ]
+}
+```
+
+If you need to connect to an OTEL collector that requires TLS, configure `tls_ca_cert`:
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "localhost:4317",
+        "trace_type": "genai_extension",
+        "protocol": "grpc",
+        "tls_ca_cert": "/path/to/your/ca.cert",
         "headers": {
           "Authorization": "env.OTEL_API_KEY"
         }

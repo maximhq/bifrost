@@ -57,6 +57,7 @@ type Config struct {
 	Headers      map[string]string `json:"headers"`
 	TraceType    TraceType         `json:"trace_type"`
 	Protocol     Protocol          `json:"protocol"`
+	TLSCACert    string            `json:"tls_ca_cert"`
 }
 
 // OtelPlugin is the plugin for OpenTelemetry
@@ -121,13 +122,13 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
-		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers)
+		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers, config.TLSCACert)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if config.Protocol == ProtocolHTTP {
-		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers)
+		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers, config.TLSCACert)
 		if err != nil {
 			return nil, err
 		}
