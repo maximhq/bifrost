@@ -1143,7 +1143,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Handle different types of streaming content
-	if delta.Content != nil && *delta.Content != "" {
+	hasContent := delta.Content != nil && *delta.Content != ""
+	hasThought := delta.Thought != nil && *delta.Thought != ""
+
+	if hasContent || hasThought {
 		// Text content delta
 		if !state.TextItemAdded {
 			// Add text item if not already added
@@ -1200,12 +1203,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 		// Emit text delta
 		itemID := state.ItemIDs["text"]
+
+		var contentDelta string
+		if hasContent {
+			contentDelta += *delta.Content
+		}
+		if hasThought {
+			contentDelta += *delta.Thought
+		}
+
 		response := &BifrostResponsesStreamResponse{
 			Type:           ResponsesStreamResponseTypeOutputTextDelta,
 			SequenceNumber: state.SequenceNumber,
 			OutputIndex:    Ptr(0),
 			ContentIndex:   Ptr(0),
-			Delta:          delta.Content,
+			Delta:          &contentDelta,
 			ExtraFields:    cr.ExtraFields,
 		}
 		if itemID != "" {
