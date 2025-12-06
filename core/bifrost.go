@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
@@ -1126,6 +1127,320 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 	return result, nil
 }
 
+// ExecuteImageGenerationTool executes an image generation tool call and returns the result as a tool message.
+// This follows the same pattern as ExecuteMCPTool but for native image generation.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - schemas.ChatMessage: Tool message with execution result
+//   - schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteImageGenerationTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+
+	if toolCall.Function.Arguments == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "tool call arguments are empty",
+			},
+		}
+	}
+	// Parse tool call arguments (JSON string)
+	//   - Use sonic.Unmarshal on toolCall.Function.Arguments
+	//   - Extract: prompt (required), size, quality, style, response_format, n, model (optional)
+	var args map[string]interface{}
+	if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("failed to parse tool call arguments: %v", err),
+			},
+		}
+	}
+
+	// Validate required fields
+	//   - Check prompt exists and is not empty
+	//   - Return error if missing
+	prompt, ok := args["prompt"].(string)
+	if !ok || prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt is required in tool call arguments",
+			},
+		}
+	}
+
+	// Extract provider/model
+	//   - Default: OpenAI, dall-e-3
+	//   - If model specified in args, parse with ParseModelString
+	provider := schemas.OpenAI
+	model := "dall-e-3"
+
+	if modelArg, ok := args["model"].(string); ok && modelArg != "" {
+		parsedProvider, parsedModel := schemas.ParseModelString(modelArg, "")
+		if parsedProvider != "" && parsedModel != "" {
+			provider = schemas.ModelProvider(parsedProvider)
+			model = parsedModel
+		}
+	}
+
+	// Build BifrostImageGenerationRequest
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Provider: provider,
+		Model:    model,
+		Input: &schemas.ImageGenerationInput{
+			Prompt: prompt,
+		},
+	}
+
+	// Map optional parameters from args
+	if size, ok := args["size"].(string); ok && size != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Size = &size
+	}
+
+	if quality, ok := args["quality"].(string); ok && quality != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Quality = &quality
+	}
+
+	if style, ok := args["style"].(string); ok && style != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Style = &style
+	}
+
+	if responseFormat, ok := args["response_format"].(string); ok && responseFormat != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.ResponseFormat = &responseFormat
+	}
+	// Handle 'n' parameter (number of images) - can be int or float64 from JSON
+	if nVal, ok := args["n"]; ok {
+		var nInt *int
+		switch v := nVal.(type) {
+		case float64:
+			n := int(v)
+			nInt = &n
+		case int:
+			nInt = &v
+		case int64:
+			n := int(v)
+			nInt = &n
+		}
+		if nInt != nil {
+			if bifrostReq.Params == nil {
+				bifrostReq.Params = &schemas.ImageGenerationParameters{}
+			}
+			bifrostReq.Params.N = nInt
+		}
+	}
+
+	// Execute image generation
+	// Handle errors
+	imageResp, bifrostErr := bifrost.ImageGenerationRequest(ctx, bifrostReq)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert response to tool message
+	resultJSON, err := sonic.Marshal(imageResp.Data)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("failed to marshal result: %v", err),
+			},
+		}
+	}
+
+	toolCallID := ""
+	if toolCall.ID != nil {
+		toolCallID = *toolCall.ID
+	}
+
+	// Return tool message
+	return &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleTool,
+		Content: &schemas.ChatMessageContent{
+			ContentStr: schemas.Ptr(string(resultJSON)),
+		},
+		ChatToolMessage: &schemas.ChatToolMessage{
+			ToolCallID: &toolCallID,
+		},
+	}, nil
+}
+
+// ExecuteResponsesImageGenerationTool executes an image generation tool call from Responses API
+// and returns the result as a ResponsesMessage with output.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The ResponsesMessage containing the image generation tool call
+//
+// Returns:
+//   - schemas.ResponsesMessage: Tool message with execution result
+//   - schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteResponsesImageGenerationTool(ctx context.Context, toolCall schemas.ResponsesMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	// Validate tool call
+	if toolCall.ResponsesToolMessage == nil || toolCall.ResponsesToolMessage.ResponsesImageGenerationCall == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation tool call is missing required fields",
+			},
+		}
+	}
+
+	// Extract prompt from Arguments (JSON string)
+	var args map[string]interface{}
+	if toolCall.ResponsesToolMessage.Arguments != nil && *toolCall.ResponsesToolMessage.Arguments != "" {
+		if err := sonic.Unmarshal([]byte(*toolCall.ResponsesToolMessage.Arguments), &args); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("failed to parse tool call arguments: %v", err),
+				},
+			}
+		}
+	}
+
+	// Extract prompt (required)
+	if len(args) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "tool call arguments are empty",
+			},
+		}
+	}
+	prompt, ok := args["prompt"].(string)
+	if !ok || prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt is required in tool call arguments",
+			},
+		}
+	}
+
+	// Extract provider/model (similar to ExecuteImageGenerationTool)
+	provider := schemas.OpenAI
+	model := "dall-e-3"
+
+	if modelArg, ok := args["model"].(string); ok && modelArg != "" {
+		parsedProvider, parsedModel := schemas.ParseModelString(modelArg, "")
+		if parsedProvider != "" && parsedModel != "" {
+			provider = schemas.ModelProvider(parsedProvider)
+			model = parsedModel
+		}
+	}
+
+	// Build request (same as ExecuteImageGenerationTool)
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Provider: provider,
+		Model:    model,
+		Input: &schemas.ImageGenerationInput{
+			Prompt: prompt,
+		},
+	}
+
+	// Map optional parameters from args
+	if size, ok := args["size"].(string); ok && size != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Size = &size
+	}
+
+	if quality, ok := args["quality"].(string); ok && quality != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Quality = &quality
+	}
+
+	if style, ok := args["style"].(string); ok && style != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.Style = &style
+	}
+
+	if responseFormat, ok := args["response_format"].(string); ok && responseFormat != "" {
+		if bifrostReq.Params == nil {
+			bifrostReq.Params = &schemas.ImageGenerationParameters{}
+		}
+		bifrostReq.Params.ResponseFormat = &responseFormat
+	}
+	// Handle 'n' parameter (number of images) - can be int or float64 from JSON
+	if nVal, ok := args["n"]; ok {
+		var nInt *int
+		switch v := nVal.(type) {
+		case float64:
+			n := int(v)
+			nInt = &n
+		case int:
+			nInt = &v
+		case int64:
+			n := int(v)
+			nInt = &n
+		}
+		if nInt != nil {
+			if bifrostReq.Params == nil {
+				bifrostReq.Params = &schemas.ImageGenerationParameters{}
+			}
+			bifrostReq.Params.N = nInt
+		}
+	}
+
+	// Execute
+	imageResp, bifrostErr := bifrost.ImageGenerationRequest(ctx, bifrostReq)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert response to JSON string
+	resultJSON, err := sonic.Marshal(imageResp.Data)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("failed to marshal result: %v", err),
+			},
+		}
+	}
+
+	// Get call ID
+	callID := ""
+	if toolCall.ResponsesToolMessage.CallID != nil {
+		callID = *toolCall.ResponsesToolMessage.CallID
+	}
+
+	// Create ResponsesMessage with output
+	outputType := schemas.ResponsesMessageTypeImageGenerationCall // or appropriate output type
+	return &schemas.ResponsesMessage{
+		Type: &outputType,
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &callID,
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesImageGenerationCallOutput: &schemas.ResponsesImageGenerationCallOutput{
+					Result: string(resultJSON),
+				},
+			},
+		},
+	}, nil
+}
+
 // IMPORTANT: Running the MCP client management operations (GetMCPClients, AddMCPClient, RemoveMCPClient, EditMCPClientTools)
 // may temporarily increase latency for incoming requests while the operations are being processed.
 // These operations involve network I/O and connection management that require mutex locks
@@ -1559,6 +1874,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.TranscriptionRequest = &tmp
+	}
+	if req.ImageGenerationRequest != nil {
+		tmp := *req.ImageGenerationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageGenerationRequest = &tmp
 	}
 
 	return &fallbackReq
@@ -2231,6 +2552,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.TranscriptionResponse = transcriptionResponse
+	case schemas.ImageGenerationRequest:
+		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageGenerationResponse = imageResponse
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -2255,6 +2582,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.SpeechStream(req.Context, postHookRunner, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, key, req.BifrostRequest.TranscriptionRequest)
+	case schemas.ImageGenerationStreamRequest:
+		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
 	default:
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -2425,6 +2754,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.EmbeddingRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
+	req.ImageGenerationRequest = nil
 }
 
 // getBifrostRequest gets a BifrostRequest from the pool
@@ -2620,4 +2950,71 @@ func (bifrost *Bifrost) Shutdown() {
 		}
 	}
 	bifrost.logger.Info("all request channels closed")
+}
+
+// Add public methods
+func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation request is nil",
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || response.ImageGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+		}
+	}
+
+	return response.ImageGenerationResponse, nil
+}
+
+// ImageGenerationStreamRequest sends a image generation stream request to the specified provider.
+func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation stream request is nil",
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation stream request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationStreamRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
