@@ -179,6 +179,7 @@ type AllowedRequests struct {
 	BatchRetrieve        bool `json:"batch_retrieve"`
 	BatchCancel          bool `json:"batch_cancel"`
 	BatchResults         bool `json:"batch_results"`
+	BatchDelete          bool `json:"batch_delete"`
 	FileUpload           bool `json:"file_upload"`
 	FileList             bool `json:"file_list"`
 	FileRetrieve         bool `json:"file_retrieve"`
@@ -227,6 +228,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.BatchCancel
 	case BatchResultsRequest:
 		return ar.BatchResults
+	case BatchDeleteRequest:
+		return ar.BatchDelete
 	case FileUploadRequest:
 		return ar.FileUpload
 	case FileListRequest:
@@ -344,6 +347,8 @@ type Provider interface {
 	BatchCancel(ctx context.Context, key Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
 	// BatchResults retrieves results from a completed batch job
 	BatchResults(ctx context.Context, key Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
+	// BatchDelete deletes a batch job
+	BatchDelete(ctx context.Context, key Key, request *BifrostBatchDeleteRequest) (*BifrostBatchDeleteResponse, *BifrostError)
 	// FileUpload uploads a file to the provider
 	FileUpload(ctx context.Context, key Key, request *BifrostFileUploadRequest) (*BifrostFileUploadResponse, *BifrostError)
 	// FileList lists files from the provider

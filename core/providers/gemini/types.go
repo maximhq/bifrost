@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/maximhq/bifrost/core/schemas"
 )
 
 type Role string
@@ -1577,14 +1575,90 @@ const (
 	GeminiBatchStateExpired     = "BATCH_STATE_EXPIRED"
 )
 
+// Google GenAI SDK job states (different from internal batch states)
+const (
+	GeminiJobStateUnspecified = "JOB_STATE_UNSPECIFIED"
+	GeminiJobStateQueued      = "JOB_STATE_QUEUED"
+	GeminiJobStatePending     = "JOB_STATE_PENDING"
+	GeminiJobStateRunning     = "JOB_STATE_RUNNING"
+	GeminiJobStateSucceeded   = "JOB_STATE_SUCCEEDED"
+	GeminiJobStateFailed      = "JOB_STATE_FAILED"
+	GeminiJobStateCancelling  = "JOB_STATE_CANCELLING"
+	GeminiJobStateCancelled   = "JOB_STATE_CANCELLED"
+	GeminiJobStatePaused      = "JOB_STATE_PAUSED"
+)
+
+// ==================== SDK BATCH TYPES ====================
+// These types are used for the Google GenAI SDK batch API format.
+
+// GeminiBatchCreateRequestSDK represents the SDK format for batch create requests.
+// The SDK sends: batches.create(model="...", src=[...] or src="files/...")
+type GeminiBatchCreateRequestSDK struct {
+	Model string `json:"model,omitempty"`
+	// Src can be either:
+	// - A string like "files/display_name" for file-based input
+	// - An array of inline request objects
+	Src interface{} `json:"src,omitempty"`
+}
+
+// GeminiBatchInlineRequest represents a single inline request in SDK batch format.
+// Format: {"contents": [...], "config": {...}}
+type GeminiBatchInlineRequest struct {
+	Contents []Content                `json:"contents,omitempty"`
+	Config   *GeminiBatchInlineConfig `json:"config,omitempty"`
+}
+
+// GeminiBatchInlineConfig represents the config object in an inline batch request.
+type GeminiBatchInlineConfig struct {
+	ResponseModalities []string `json:"response_modalities,omitempty"`
+}
+
+// GeminiBatchJobResponseSDK represents the SDK format for batch job responses.
+// This matches what the Google GenAI Python SDK expects.
+type GeminiBatchJobResponseSDK struct {
+	Name     string                `json:"name"`
+	State    string                `json:"state"`
+	Metadata *GeminiBatchMetadata  `json:"metadata,omitempty"`
+	Dest     *GeminiBatchDest      `json:"dest,omitempty"`
+	Error    *GeminiBatchErrorInfo `json:"error,omitempty"`
+}
+
+// GeminiBatchListResponseSDK represents the SDK format for batch list responses.
+type GeminiBatchListResponseSDK struct {
+	BatchJobs     []GeminiBatchJobResponseSDK `json:"batchJobs,omitempty"`
+	NextPageToken string                      `json:"nextPageToken,omitempty"`
+}
+
+// GeminiBatchListRequestSDK represents the SDK format for batch list requests.
+type GeminiBatchListRequestSDK struct {
+	PageSize  int    `json:"pageSize,omitempty"`
+	PageToken string `json:"pageToken,omitempty"`
+}
+
+// GeminiBatchRetrieveRequestSDK represents the SDK format for batch retrieve requests.
+type GeminiBatchRetrieveRequestSDK struct {
+	Name string `json:"name"`
+}
+
+// GeminiBatchCancelRequestSDK represents the SDK format for batch cancel requests.
+type GeminiBatchCancelRequestSDK struct {
+	Name string `json:"name"`
+}
+
+// GeminiBatchDeleteRequestSDK represents the SDK format for batch delete requests.
+type GeminiBatchDeleteRequestSDK struct {
+	Name string `json:"name"`
+}
+
 // ==================== FILE TYPES ====================
 
 // GeminiFileUploadRequest represents the request for uploading a file.
 type GeminiFileUploadRequest struct {
-	File     []byte                `json:"-"`        // Raw file content (not serialized)
-	Filename string                `json:"filename"` // Original filename
-	Purpose  string                `json:"purpose"`  // Purpose of the file (e.g., "batch")
-	Provider schemas.ModelProvider `json:"provider"`
+	File               []byte `json:"-"`        // Raw file content (not serialized)
+	Filename           string `json:"filename"` // Original filename
+	MimeType           string `json:"mimeType"` // MIME type of the file
+	Purpose            string `json:"purpose"`  // Purpose of the file (e.g., "batch")
+	ResumableSessionID string `json:"-"`        // Session ID for resumable uploads (internal use)
 }
 
 // GeminiFileListRequest represents the request for listing files.
