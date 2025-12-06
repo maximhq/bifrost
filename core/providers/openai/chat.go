@@ -11,7 +11,7 @@ func (request *OpenAIChatRequest) ToBifrostChatRequest() *schemas.BifrostChatReq
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
-		Input:     request.Messages,
+		Input:     ConvertOpenAIMessagesToBifrostMessages(request.Messages),
 		Params:    &request.ChatParameters,
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
@@ -25,7 +25,7 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
-		Messages: bifrostReq.Input,
+		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
 	}
 
 	if bifrostReq.Params != nil {
@@ -60,8 +60,8 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 // Filter OpenAI Specific Parameters
 func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
-	if request.ChatParameters.ReasoningEffort != nil && *request.ChatParameters.ReasoningEffort == "minimal" {
-		request.ChatParameters.ReasoningEffort = schemas.Ptr("low")
+	if request.ChatParameters.Reasoning != nil && request.ChatParameters.Reasoning.Effort != nil && *request.ChatParameters.Reasoning.Effort == "minimal" {
+		request.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
 	}
 	if request.ChatParameters.PromptCacheKey != nil {
 		request.ChatParameters.PromptCacheKey = nil

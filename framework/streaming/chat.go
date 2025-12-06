@@ -36,9 +36,71 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Refusal == nil {
-				completeMessage.ChatAssistantMessage.Refusal = chunk.Delta.Refusal
+				completeMessage.ChatAssistantMessage.Refusal = bifrost.Ptr(*chunk.Delta.Refusal)
 			} else {
 				*completeMessage.ChatAssistantMessage.Refusal += *chunk.Delta.Refusal
+			}
+		}
+		// Handle reasoning
+		if chunk.Delta.Reasoning != nil && *chunk.Delta.Reasoning != "" {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			if completeMessage.ChatAssistantMessage.Reasoning == nil {
+				completeMessage.ChatAssistantMessage.Reasoning = bifrost.Ptr(*chunk.Delta.Reasoning)
+			} else {
+				*completeMessage.ChatAssistantMessage.Reasoning += *chunk.Delta.Reasoning
+			}
+		}
+		// Handle reasoning details
+		if len(chunk.Delta.ReasoningDetails) > 0 {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			// Check if the reasoning detail already exists on that index, if so, update it else add it to the list
+			for _, reasoningDetail := range chunk.Delta.ReasoningDetails {
+				found := false
+				for i := range completeMessage.ChatAssistantMessage.ReasoningDetails {
+					existingReasoningDetail := &completeMessage.ChatAssistantMessage.ReasoningDetails[i]
+					if existingReasoningDetail.Index == reasoningDetail.Index {
+						// Update text - accumulate if both exist
+						if reasoningDetail.Text != nil {
+							if existingReasoningDetail.Text == nil {
+								existingReasoningDetail.Text = reasoningDetail.Text
+							} else {
+								*existingReasoningDetail.Text += *reasoningDetail.Text
+							}
+						}
+						// Update signature - overwrite (signatures are typically final)
+						if reasoningDetail.Signature != nil {
+							existingReasoningDetail.Signature = reasoningDetail.Signature
+						}
+						// Update other fields if present
+						if reasoningDetail.Summary != nil {
+							if existingReasoningDetail.Summary == nil {
+								existingReasoningDetail.Summary = reasoningDetail.Summary
+							} else {
+								*existingReasoningDetail.Summary += *reasoningDetail.Summary
+							}
+						}
+						if reasoningDetail.Data != nil {
+							if existingReasoningDetail.Data == nil {
+								existingReasoningDetail.Data = reasoningDetail.Data
+							} else {
+								*existingReasoningDetail.Data += *reasoningDetail.Data
+							}
+						}
+						if reasoningDetail.Type != "" {
+							existingReasoningDetail.Type = reasoningDetail.Type
+						}
+						found = true
+						break
+					}
+				}
+				// If not found, add it to the list
+				if !found {
+					completeMessage.ChatAssistantMessage.ReasoningDetails = append(completeMessage.ChatAssistantMessage.ReasoningDetails, reasoningDetail)
+				}
 			}
 		}
 		// Accumulate tool calls

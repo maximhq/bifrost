@@ -512,6 +512,12 @@ func HandleOpenAITextCompletionStreaming(
 				if calculatedTotal > usage.TotalTokens {
 					usage.TotalTokens = calculatedTotal
 				}
+				if response.Usage.CompletionTokensDetails != nil {
+					usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
+				}
+				if response.Usage.PromptTokensDetails != nil {
+					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
+				}
 				response.Usage = nil
 			}
 
@@ -971,6 +977,12 @@ func HandleOpenAIChatCompletionStreaming(
 					calculatedTotal := usage.PromptTokens + usage.CompletionTokens
 					if calculatedTotal > usage.TotalTokens {
 						usage.TotalTokens = calculatedTotal
+					}
+					if response.Usage.PromptTokensDetails != nil {
+						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
+					}
+					if response.Usage.CompletionTokensDetails != nil {
+						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
 					}
 					response.Usage = nil
 				}

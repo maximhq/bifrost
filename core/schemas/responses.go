@@ -230,9 +230,10 @@ type ResponsesPrompt struct {
 }
 
 type ResponsesParametersReasoning struct {
-	Effort          *string `json:"effort,omitempty"`           // "minimal" | "low" | "medium" | "high"
+	Effort          *string `json:"effort,omitempty"`           // "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
 	Summary         *string `json:"summary,omitempty"`          // "auto" | "concise" | "detailed"
+	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
 
 type ResponsesResponseConversationStruct struct {
@@ -319,6 +320,7 @@ type ResponsesMessage struct {
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	// Reasoning
+	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
 }
 

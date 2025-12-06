@@ -6,13 +6,14 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // convertParameters handles parameter conversion
-func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) {
+func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
 	if bifrostReq.Params == nil {
-		return
+		return fmt.Errorf("bifrost request parameters are nil")
 	}
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
@@ -22,6 +23,29 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 	if toolConfig := convertToolConfig(bifrostReq.Params); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
+
+	// Convert reasoning config
+	if bifrostReq.Params.Reasoning != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
+		}
+		if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort == "none" {
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
+				"type": "disabled",
+			}
+		} else {
+			if bifrostReq.Params.Reasoning.MaxTokens == nil {
+				return fmt.Errorf("reasoning.max_tokens is required for reasoning")
+			} else if *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				return fmt.Errorf("reasoning.max_tokens must be greater than or equal to %d", anthropic.MinimumReasoningMaxTokens)
+			}
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+			}
+		}
+	}
+
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		// Handle guardrail configuration
@@ -106,6 +130,7 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 			}
 		}
 	}
+	return nil
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
