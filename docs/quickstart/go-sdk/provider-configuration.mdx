@@ -271,13 +271,13 @@ type BifrostResponseExtraFields struct {
 
 ## Provider-Specific Authentication
 
-Enterprise cloud providers require additional configuration beyond API keys. Configure Azure OpenAI, AWS Bedrock, and Google Vertex with platform-specific authentication details.
+Enterprise cloud providers require additional configuration beyond API keys. Configure Azure, AWS Bedrock, and Google Vertex with platform-specific authentication details.
 
 <Tabs group="provider-auth">
 
-<Tab title="Azure OpenAI">
+<Tab title="Azure">
 
-Azure OpenAI requires endpoint URLs, deployment mappings, and API version configuration:
+Azure requires endpoint URLs, deployment mappings, and API version configuration:
 
 ```go
 func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {

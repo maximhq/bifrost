@@ -158,7 +158,7 @@ func listModelsByKey(
 		return nil, bifrostErr
 	}
 
-	response := openaiResponse.ToBifrostListModelsResponse(providerName)
+	response := openaiResponse.ToBifrostListModelsResponse(providerName, key.Models)
 
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.RequestType = schemas.ListModelsRequest

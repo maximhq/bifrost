@@ -329,9 +329,9 @@ func TestCalculateBackoff_JitterBounds(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				backoff := calculateBackoff(attempt, config)
 
-				// Jitter should be ±20% (0.8 to 1.2 multiplier)
+				// Jitter should be ±20% (0.8 to 1.2 multiplier), but capped at configured max
 				minExpected := time.Duration(float64(baseBackoff) * 0.8)
-				maxExpected := time.Duration(float64(baseBackoff) * 1.2)
+				maxExpected := min(time.Duration(float64(baseBackoff)*1.2), config.NetworkConfig.RetryBackoffMax)
 
 				if backoff < minExpected || backoff > maxExpected {
 					t.Errorf("Backoff %v outside expected range [%v, %v] for attempt %d",
@@ -350,11 +350,10 @@ func TestCalculateBackoff_MaxBackoffCap(t *testing.T) {
 	for attempt := 5; attempt < 10; attempt++ {
 		backoff := calculateBackoff(attempt, config)
 
-		// Even with jitter, should not exceed 1.2 * max (120% of max)
-		maxWithJitter := time.Duration(float64(config.NetworkConfig.RetryBackoffMax) * 1.2)
-		if backoff > maxWithJitter {
-			t.Errorf("Backoff %v exceeds max with jitter %v for attempt %d",
-				backoff, maxWithJitter, attempt)
+		// Jitter should never exceed the configured maximum
+		if backoff > config.NetworkConfig.RetryBackoffMax {
+			t.Errorf("Backoff %v exceeds configured max %v for attempt %d",
+				backoff, config.NetworkConfig.RetryBackoffMax, attempt)
 		}
 	}
 }
@@ -728,7 +727,6 @@ func TestUpdateProvider(t *testing.T) {
 			t.Fatalf("Failed to initialize Bifrost: %v", err)
 		}
 
-		
 		// Verify provider doesn't exist initially
 		if bifrost.getProviderByKey(schemas.Anthropic) != nil {
 			t.Fatal("Provider should not exist initially")

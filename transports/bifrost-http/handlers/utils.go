@@ -93,6 +93,10 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 			return true
 		}
 
+		if allowedOrigin == "*" {
+			return true
+		}
+
 		// Check for wildcard pattern
 		if strings.Contains(allowedOrigin, "*") {
 			if matchesWildcardPattern(origin, allowedOrigin) {

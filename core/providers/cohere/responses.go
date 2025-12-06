@@ -1122,6 +1122,9 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 		if state.MessageID != nil {
 			response.ID = state.MessageID
 		}
+		if state.Model != nil {
+			response.Model = *state.Model
+		}
 
 		if chunk.Delta != nil {
 			if chunk.Delta.Usage != nil {

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+	ArrowUpRight,
 	BookUser,
 	Boxes,
 	BoxIcon,
@@ -8,6 +9,7 @@ import {
 	ChevronsLeftRightEllipsis,
 	Cog,
 	Construction,
+	FlaskConical,
 	FolderGit,
 	KeyRound,
 	Landmark,
@@ -21,7 +23,7 @@ import {
 	Telescope,
 	User,
 	UserRoundCheck,
-	Users,
+	Users
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -39,7 +41,7 @@ import {
 	SidebarMenuSubButton,
 	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
@@ -137,7 +139,6 @@ interface SidebarItem {
 	isAllowed?: boolean;
 	hasAccess: boolean;
 	subItems?: SidebarItem[];
-	tooltipText?: string;
 	tag?: string;
 }
 
@@ -145,16 +146,17 @@ const SidebarItemView = ({
 	item,
 	isActive,
 	isAllowed,
+	isExternal,
 	isWebSocketConnected,
 	isExpanded,
 	onToggle,
 	pathname,
 	router,
-	tooltipText,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
 	isAllowed: boolean;
+	isExternal?: boolean;
 	isWebSocketConnected: boolean;
 	isExpanded?: boolean;
 	onToggle?: () => void;
@@ -174,6 +176,10 @@ const SidebarItemView = ({
 
 	const handleNavigation = (url: string) => {
 		if (!isAllowed) return;
+		if (isExternal) {
+			window.open(url, "_blank");
+			return;
+		}
 		router.push(url);
 	};
 
@@ -184,38 +190,33 @@ const SidebarItemView = ({
 	return (
 		<TooltipProvider>
 			<SidebarMenuItem key={item.title}>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<SidebarMenuButton
-							className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
-								isActive || isAnySubItemActive
-									? "bg-sidebar-accent text-primary border-primary/20"
-									: isAllowed && item.hasAccess
-										? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-										: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-							} `}
-							onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
-						>
-							<div className="flex w-full items-center justify-between">
-								<div className="flex w-full items-center gap-2">
-									<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-									<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
-									{item.tag && (
-										<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
-											{item.tag}
-										</Badge>
-									)}
-								</div>
-								{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
-								{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
-									<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
-								)}
-							</div>
-						</SidebarMenuButton>
-					</TooltipTrigger>
-					{!isAllowed && <TooltipContent side="right">{tooltipText}</TooltipContent>}
-				</Tooltip>
-
+				<SidebarMenuButton
+					className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
+						isActive || isAnySubItemActive
+							? "bg-sidebar-accent text-primary border-primary/20"
+							: isAllowed && item.hasAccess
+								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					} `}
+					onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
+				>
+					<div className="flex w-full items-center justify-between">
+						<div className="flex w-full items-center gap-2">
+							<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+							<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
+							{item.tag && (
+								<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+									{item.tag}
+								</Badge>
+							)}
+						</div>
+						{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
+						{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
+							<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+						)}
+						{isExternal && <ArrowUpRight className="h-4 w-4 text-muted-foreground" size={16} />}
+					</div>
+				</SidebarMenuButton>
 				{hasSubItems && isExpanded && (
 					<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 						{item.subItems?.map((subItem: SidebarItem) => {
@@ -435,6 +436,14 @@ export default function AppSidebar() {
 			],
 		},
 		{
+			title: "Evals",
+			url: "https://www.getmaxim.ai",
+			icon: FlaskConical,
+			isExternal: true,
+			description: "Evaluations",
+			hasAccess: true,
+		},
+		{
 			title: "Cluster Config",
 			url: "/workspace/cluster",
 			icon: Layers,
@@ -584,14 +593,8 @@ export default function AppSidebar() {
 			<SidebarHeader className="mt-1 ml-2 flex h-12 justify-between px-0">
 				<div className="flex h-full items-center gap-2 px-1.5">
 					<Link href="/" className="group flex items-center gap-2 pl-2">
-						<Image className="h-[23px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
+						<Image className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
 					</Link>
-					<span className="text-muted-foreground mt-[11px] text-xs">
-						by{" "}
-						<a href="https://getmaxim.ai" target="_blank" rel="noopener noreferrer" className="cursor-pointer hover:underline">
-							Maxim AI
-						</a>
-					</span>
 				</div>
 			</SidebarHeader>
 			<SidebarContent className="overflow-hidden pb-4">
@@ -607,6 +610,7 @@ export default function AppSidebar() {
 										item={item}
 										isActive={isActive}
 										isAllowed={isAllowed}
+										isExternal={item.isExternal ?? false}
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}

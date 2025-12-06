@@ -1,8 +1,12 @@
 package openai
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"slices"
 
-func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider) *schemas.BifrostListModelsResponse {
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -12,6 +16,9 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 	}
 
 	for _, model := range response.Data {
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:            string(providerKey) + "/" + model.ID,
 			Created:       model.Created,

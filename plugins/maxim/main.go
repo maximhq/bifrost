@@ -202,7 +202,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	var traceName string
 	var sessionID string
 	var generationName string
-	var tags map[string]string
 
 	// Get effective log repo ID (header > default > skip)
 	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
@@ -235,17 +234,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 		if existingGenerationName, ok := (*ctx).Value(GenerationNameKey).(string); ok && existingGenerationName != "" {
 			generationName = existingGenerationName
 		}
-
-		// retrieve all tags from context
-		// the transport layer now stores all maxim tags in a single map
-		if tagsValue := (*ctx).Value(TagsKey); tagsValue != nil {
-			if tagsMap, ok := tagsValue.(map[string]string); ok {
-				tags = make(map[string]string)
-				for key, value := range tagsMap {
-					tags[key] = value
-				}
-			}
-		}
 	}
 
 	provider, model, _ := req.GetRequestFields()
@@ -253,14 +241,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	// Determine request type and set appropriate tags
 	var messages []logging.CompletionRequest
 	var latestMessage string
-
-	// Initialize tags map if not already initialized from context
-	if tags == nil {
-		tags = make(map[string]string)
-	}
-
-	// Add model to tags
-	tags["model"] = model
 
 	modelParams := make(map[string]interface{})
 
@@ -379,7 +359,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	traceConfig := logging.TraceConfig{
 		Id:   traceID,
 		Name: maxim.StrPtr(name),
-		Tags: &tags,
 	}
 
 	if sessionID != "" {
@@ -400,7 +379,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 		Id:              generationID,
 		Model:           model,
 		Provider:        string(provider),
-		Tags:            &tags,
 		Messages:        messages,
 		ModelParameters: modelParams,
 	}
@@ -468,7 +446,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 	}
 
 	go func() {
-		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+		requestType, _, model := bifrost.GetResponseFields(result, bifrostErr)
 
 		var streamResponse *streaming.ProcessedStreamResponse
 		var err error
@@ -527,12 +505,28 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 					plugin.accumulator.CleanupStreamAccumulator(requestID)
 				}
 			}
+
 			logger.EndGeneration(generationID)
 		}
 		traceID, ok := (*ctx).Value(TraceIDKey).(string)
 		if ok {
 			logger.EndTrace(traceID)
 		}
+
+		// add tags to the generation and trace
+		tags, ok := (*ctx).Value(TagsKey).(map[string]string)
+		if ok {
+			for key, value := range tags {
+				if generationID != "" {
+					logger.AddTagToGeneration(generationID, key, value)
+				}
+				if traceID != "" {
+					logger.AddTagToTrace(traceID, key, value)
+				}
+			}
+		}
+		logger.AddTagToGeneration(generationID, "model", string(model))
+		logger.AddTagToTrace(traceID, "model", string(model))
 		// Flush only the effective logger that was used for this request
 		logger.Flush()
 	}()

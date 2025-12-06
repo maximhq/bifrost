@@ -344,6 +344,10 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		for i, modelEntry := range resp.Data {
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
 			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
+			if pricingEntry == nil && modelEntry.Deployment != nil {
+				// Retry with deployment
+				pricingEntry = h.config.PricingManager.GetPricingEntryForModel(*modelEntry.Deployment, provider)
+			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
 				pricing := &schemas.Pricing{
 					Prompt:     bifrost.Ptr(fmt.Sprintf("%f", pricingEntry.InputCostPerToken)),

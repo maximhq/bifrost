@@ -381,9 +381,9 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 	return bifrostResponse
 }
 
-// ToAnthropicChatCompletionRequest converts a Bifrost request to Anthropic format
+// ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
-func ToAnthropicChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *AnthropicMessageRequest {
+func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) *AnthropicMessageRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
@@ -725,7 +725,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 				Object: "chat.completion.chunk",
 				Choices: []schemas.BifrostResponseChoice{
 					{
-						Index: *chunk.Index,
+						Index: 0,
 						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
@@ -760,7 +760,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Content: chunk.Delta.Text,
@@ -781,7 +781,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
@@ -809,7 +809,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bif
 						Object: "chat.completion.chunk",
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index: *chunk.Index,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										Thought: chunk.Delta.Thinking,

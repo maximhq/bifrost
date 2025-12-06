@@ -55,6 +55,7 @@ type BifrostResponsesResponse struct {
 	MaxOutputTokens    *int                                `json:"max_output_tokens,omitempty"`
 	MaxToolCalls       *int                                `json:"max_tool_calls,omitempty"`
 	Metadata           *map[string]any                     `json:"metadata,omitempty"`
+	Model              string                              `json:"model"`
 	Output             []ResponsesMessage                  `json:"output,omitempty"`
 	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
 	PreviousResponseID *string                             `json:"previous_response_id,omitempty"`

@@ -70,7 +70,7 @@ google_response = completion(
     base_url=base_url
 )
 
-# Azure OpenAI models
+# Azure models
 azure_response = completion(
     model="azure/gpt-4o",
     messages=[{"role": "user", "content": "Hello Azure!"}],
@@ -143,7 +143,7 @@ anthropic_response = completion(
     }
 )
 
-# Using Azure OpenAI with direct Azure key
+# Using Azure with direct Azure key
 import os
 
 deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "my-azure-deployment")

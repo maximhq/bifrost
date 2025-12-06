@@ -24,6 +24,7 @@ NC=\033[0m # No Color
 # Include deployment recipes
 include recipes/fly.mk
 include recipes/ecs.mk
+include recipes/local-k8s.mk
 
 .PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise
 

@@ -103,7 +103,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx context.Context, key sch
 		return nil, bifrostErr
 	}
 
-	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName)
+	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 

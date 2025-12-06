@@ -240,7 +240,7 @@ func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas
 	}
 
 	// Convert Cohere v2 response to Bifrost response
-	response := cohereResponse.ToBifrostListModelsResponse(providerName)
+	response := cohereResponse.ToBifrostListModelsResponse(providerName, key.Models)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
@@ -532,6 +532,8 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	}
 
 	bifrostResponse := response.ToBifrostResponsesResponse()
+
+	bifrostResponse.Model = request.Model
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()

@@ -1,0 +1,26 @@
+---
+title: "v1.3.41"
+description: "v1.3.41 changelog - 2025-12-05"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.41
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.41
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.41
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.3.41">
+- fix: remove UPX binary compression from Docker build to resolve segmentation faults when combined with PIE (Position Independent Executable)
+
+</Update>
+<Update label="maxim" description="1.4.43">
+chore: Refactored the Maxim plugin to move tag handling from pre-hook to post-hook, improving the tag management process for generations.
+
+</Update>

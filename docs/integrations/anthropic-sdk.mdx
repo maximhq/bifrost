@@ -101,7 +101,7 @@ vertex_response = client.messages.create(
     messages=[{"role": "user", "content": "Hello from Gemini!"}]
 )
 
-# Azure OpenAI models
+# Azure models
 azure_response = client.messages.create(
     model="azure/gpt-4o",
     max_tokens=1000,
@@ -148,7 +148,7 @@ const vertexResponse = await anthropic.messages.create({
   messages: [{ role: "user", content: "Hello from Gemini!" }],
 });
 
-// Azure OpenAI models
+// Azure models
 const azureResponse = await anthropic.messages.create({
   model: "azure/gpt-4o",
   max_tokens: 1000,

@@ -1,0 +1,74 @@
+---
+title: "v1.3.38"
+description: "v1.3.38 changelog - 2025-12-01"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.38
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.38
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.38
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.3.38">
+- feat: support added for x-goog-api-key header for Google Gemini style for virtual key lookup and direct api key bypass
+- feat: added support for Anthropic models in Azure
+- chore: version update core to 1.2.32 and framework to 1.1.41
+- fix: provider retry config time conversion issue
+- fix: cache read input token cost calculation bug
+- enhancement: made model lookup for pricing more robust
+
+</Update>
+<Update label="Core" description="1.2.32">
+- feat: added support for Anthropic models in Azure
+- enhancement: using naive anthropic converters for Vertex Anthropic responses and responses stream
+- [breaking change] NetworkConfig retry backoff values (RetryBackoffInitial and RetryBackoffMax) now handle milliseconds in JSON while storing as time.Duration internally. Custom MarshalJSON/UnmarshalJSON methods ensure values are always interpreted as milliseconds when serializing/deserializing from JSON, fixing issues where values were incorrectly interpreted as nanoseconds.
+
+</Update>
+<Update label="Framework" description="1.1.41">
+- chore: version update core to 1.2.32
+- fix: cache read input token cost calculation bug
+- enhancement: made bedrock model lookup more robust
+- enhancement: added support for deployment lookup in pricing
+
+</Update>
+<Update label="governance" description="1.3.42">
+- feat: support added for x-goog-api-key header for Google Gemini style
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="jsonparser" description="1.3.42">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="logging" description="1.3.42">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+- fix: log entry number of retries not being updated
+
+</Update>
+<Update label="maxim" description="1.4.41">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="mocker" description="1.3.41">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="otel" description="1.0.41">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="semanticcache" description="1.3.41">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>
+<Update label="telemetry" description="1.3.41">
+- chore: version update core to 1.2.32 and framework to 1.1.41
+
+</Update>

@@ -1,8 +1,12 @@
 package mistral
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"slices"
 
-func (response *MistralListModelsResponse) ToBifrostListModelsResponse() *schemas.BifrostListModelsResponse {
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -12,6 +16,9 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse() *schema
 	}
 
 	for _, model := range response.Data {
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:            string(schemas.Mistral) + "/" + model.ID,
 			Name:          schemas.Ptr(model.Name),

@@ -1,0 +1,149 @@
+# Bifrost Local Kubernetes Values
+# PostgreSQL + Secrets + HTTPS configuration
+#
+# Usage:
+#   make deploy-local-k8s
+#   OR
+#   ./recipes/setup-local-k8s.sh
+
+# Image configuration
+image:
+  repository: docker.io/maximhq/bifrost
+  pullPolicy: IfNotPresent
+  tag: "v1.3.38"  # Override with --set image.tag=vX.X.X
+
+replicaCount: 1
+
+# Service
+service:
+  type: ClusterIP
+  port: 8080
+
+# Ingress with TLS
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: bifrost.local  # Override with --set ingress.hosts[0].host=your.host
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls-secret
+      hosts:
+        - bifrost.local  # Override with --set ingress.tls[0].hosts[0]=your.host
+
+# Storage - PostgreSQL mode
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# PostgreSQL (deployed as part of chart)
+postgresql:
+  enabled: true
+  external:
+    enabled: false
+  auth:
+    username: bifrost
+    database: bifrost
+    # password: set via --set postgresql.auth.password=xxx
+  primary:
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+# No vector store for basic setup
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  appDir: /app/data
+  port: 8080
+  host: 0.0.0.0
+  logLevel: info
+  logStyle: json
+  
+  # Encryption key from secret
+  encryptionKeySecret:
+    name: "bifrost-encryption-key"
+    key: "encryption-key"
+  
+  client:
+    dropExcessRequests: false
+    initialPoolSize: 100
+    allowedOrigins:
+      - "*"
+    enableLogging: true
+    enableGovernance: false
+    enforceGovernanceHeader: false
+    allowDirectKeys: true
+    maxRequestBodySizeMb: 100
+  
+  # Provider config using env vars from secrets
+  providers:
+    openai:
+      keys:
+        - value: "env.OPENAI_API_KEY"
+          weight: 1
+  
+  # Provider secrets
+  providerSecrets:
+    openai:
+      existingSecret: "bifrost-provider-keys"
+      key: "openai-api-key"
+      envVar: "OPENAI_API_KEY"
+  
+  plugins:
+    telemetry:
+      enabled: false
+    logging:
+      enabled: true
+    governance:
+      enabled: false
+
+# Resource limits for local environment
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+

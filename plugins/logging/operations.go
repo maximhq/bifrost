@@ -18,21 +18,19 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	requestID string,
 	parentRequestID string,
 	timestamp time.Time,
-	numberOfRetries int,
 	fallbackIndex int,
 	data *InitialLogData,
 ) error {
 	entry := &logstore.Log{
-		ID:              requestID,
-		Timestamp:       timestamp,
-		Object:          data.Object,
-		Provider:        data.Provider,
-		Model:           data.Model,
-		NumberOfRetries: numberOfRetries,
-		FallbackIndex:   fallbackIndex,
-		Status:          "processing",
-		Stream:          false,
-		CreatedAt:       timestamp,
+		ID:            requestID,
+		Timestamp:     timestamp,
+		Object:        data.Object,
+		Provider:      data.Provider,
+		Model:         data.Model,
+		FallbackIndex: fallbackIndex,
+		Status:        "processing",
+		Stream:        false,
+		CreatedAt:     timestamp,
 		// Set parsed fields for serialization
 		InputHistoryParsed:          data.InputHistory,
 		ResponsesInputHistoryParsed: data.ResponsesInputHistory,
@@ -56,6 +54,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
+	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	data *UpdateLogData,
 ) error {
@@ -71,6 +70,9 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if numberOfRetries != 0 {
+		updates["number_of_retries"] = numberOfRetries
 	}
 	// Handle JSON fields by setting them on a temporary entry and serializing
 	tempEntry := &logstore.Log{}
@@ -178,6 +180,7 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	selectedKeyName string,
 	virtualKeyID string,
 	virtualKeyName string,
+	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	streamResponse *streaming.ProcessedStreamResponse,
 	isFinalChunk bool,
@@ -191,6 +194,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if numberOfRetries != 0 {
+		updates["number_of_retries"] = numberOfRetries
 	}
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {
