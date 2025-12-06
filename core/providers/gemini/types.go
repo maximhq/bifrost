@@ -1338,30 +1338,22 @@ func (g *GenerateContentResponse) MarshalJSON() ([]byte, error) {
 	return json.Marshal(aux)
 }
 
-// GeminiChatRequestError represents a Gemini chat completion error response
-type GeminiChatRequestError struct {
-	Error GeminiChatRequestErrorStruct `json:"error"` // Error details following Google API format
-}
-
-// GeminiChatRequestErrorStruct represents the error structure of a Gemini chat completion error response
-type GeminiChatRequestErrorStruct struct {
-	Code    int    `json:"code"`    // HTTP status code
-	Message string `json:"message"` // Error message
-	Status  string `json:"status"`  // Error status string (e.g., "INVALID_REQUEST")
-}
-
 type GeminiGenerationError struct {
-	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Status  string `json:"status"`
-		Details []struct {
-			Type            string `json:"@type"`
-			FieldViolations []struct {
-				Description string `json:"description"`
-			} `json:"fieldViolations"`
-		} `json:"details"`
-	} `json:"error"`
+	Error *GeminiGenerationErrorStruct `json:"error,omitempty"`
+}
+
+type GeminiGenerationErrorStruct struct {
+	Code    int                            `json:"code"`
+	Message string                         `json:"message"`
+	Status  string                         `json:"status"`
+	Details []GeminiGenerationErrorDetails `json:"details"`
+}
+
+type GeminiGenerationErrorDetails struct {
+	Type            string `json:"@type"`
+	FieldViolations []struct {
+		Description string `json:"description"`
+	} `json:"fieldViolations"`
 }
 
 // ==================== MODEL TYPES ====================

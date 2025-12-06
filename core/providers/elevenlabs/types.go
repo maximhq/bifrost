@@ -155,7 +155,7 @@ type ElevenlabsSpeechToTextWebhookResponse struct {
 
 // ERROR TYPES
 type ElevenlabsError struct {
-	Detail ElevenlabsErrorDetail `json:"detail"`
+	Detail *ElevenlabsErrorDetail `json:"detail,omitempty"`
 }
 
 // ElevenlabsErrorDetail handles both single object (non-validation errors) and

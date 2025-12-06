@@ -151,20 +151,7 @@ func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-
-		var errorResp CohereError
-
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		bifrostErr.Type = &errorResp.Type
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		bifrostErr.Error.Message = errorResp.Message
-		if errorResp.Code != nil {
-			bifrostErr.Error.Code = errorResp.Code
-		}
-
-		return nil, latency, bifrostErr
+		return nil, latency, parseCohereError(resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -221,10 +208,7 @@ func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		var errorResp CohereError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		bifrostErr.Error.Message = errorResp.Message
-		return nil, bifrostErr
+		return nil, parseCohereError(resp)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -400,7 +384,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil)
+		return nil, parseCohereError(resp)
 	}
 
 	// Create response channel
@@ -615,7 +599,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil)
+		return nil, parseCohereError(resp)
 	}
 
 	// Create response channel

@@ -405,7 +405,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -812,7 +812,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1253,7 +1253,7 @@ func HandleOpenAIResponsesStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1646,7 +1646,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -1920,7 +1920,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseStreamOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+		return nil, ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
 	// Create response channel
@@ -2074,63 +2074,4 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	return nil
-}
-
-// ParseOpenAIError parses OpenAI error responses.
-func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
-	var errorResp schemas.BifrostError
-
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-
-	if errorResp.EventID != nil {
-		bifrostErr.EventID = errorResp.EventID
-	}
-
-	if errorResp.Error != nil {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		bifrostErr.Error.Type = errorResp.Error.Type
-		bifrostErr.Error.Code = errorResp.Error.Code
-		bifrostErr.Error.Message = errorResp.Error.Message
-		bifrostErr.Error.Param = errorResp.Error.Param
-		if errorResp.Error.EventID != nil {
-			bifrostErr.Error.EventID = errorResp.Error.EventID
-		}
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		}
-	}
-
-	return bifrostErr
-}
-
-// parseStreamOpenAIError parses OpenAI streaming error responses.
-func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
-	var errorResp schemas.BifrostError
-	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-	if errorResp.EventID != nil {
-		bifrostErr.EventID = errorResp.EventID
-	}
-	if errorResp.Error != nil {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		bifrostErr.Error.Type = errorResp.Error.Type
-		bifrostErr.Error.Code = errorResp.Error.Code
-		bifrostErr.Error.Message = errorResp.Error.Message
-		bifrostErr.Error.Param = errorResp.Error.Param
-		if errorResp.Error.EventID != nil {
-			bifrostErr.Error.EventID = errorResp.Error.EventID
-		}
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		}
-	}
-
-	return bifrostErr
 }
