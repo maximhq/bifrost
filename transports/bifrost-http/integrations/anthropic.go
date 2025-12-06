@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -69,7 +71,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.Anthropic {
+				if resp.ExtraFields.Provider == schemas.Anthropic ||
+					(resp.ExtraFields.Provider == schemas.Vertex &&
+						(schemas.IsAnthropicModel(resp.ExtraFields.ModelRequested) ||
+							schemas.IsAnthropicModel(resp.ExtraFields.ModelDeployment))) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -81,24 +86,41 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(resp)
-					// Should never happen, but just in case
-					if anthropicResponse == nil {
+					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(*ctx, resp)
+					// Can happen for openai lifecycle events
+					if len(anthropicResponse) == 0 {
 						return "", nil, nil
-					}
-					if resp.ExtraFields.Provider == schemas.Anthropic {
-						// This is always true in integrations
-						isRawResponseEnabled, ok := (*ctx).Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
-						if ok && isRawResponseEnabled {
-							if resp.ExtraFields.RawResponse != nil {
-								return string(anthropicResponse.Type), resp.ExtraFields.RawResponse, nil
-							} else {
-								// Explicitly return nil to indicate that no raw response is available (because 1 chunk of anthropic gets converted to multiple bifrost responses chunks)
-								return "", nil, nil
+					} else {
+						// if resp.ExtraFields.Provider == schemas.Anthropic ||
+						// 	(resp.ExtraFields.Provider == schemas.Vertex &&
+						// 		(schemas.IsAnthropicModel(resp.ExtraFields.ModelRequested) ||
+						// 			schemas.IsAnthropicModel(resp.ExtraFields.ModelDeployment))) {
+						// 	if resp.ExtraFields.RawResponse != nil {
+						// 		var rawResponseJSON anthropic.AnthropicStreamDelta
+						// 		err := sonic.Unmarshal([]byte(resp.ExtraFields.RawResponse.(string)), &rawResponseJSON)
+						// 		if err == nil {
+						// 			return string(rawResponseJSON.Type), resp.ExtraFields.RawResponse, nil
+						// 		}
+						// 	}
+						// }
+						if len(anthropicResponse) > 1 {
+							combinedContent := ""
+							for _, event := range anthropicResponse {
+								responseJSON, err := sonic.Marshal(event)
+								if err != nil {
+									// Log JSON marshaling error but continue processing (should not happen)
+									log.Printf("Failed to marshal streaming response: %v", err)
+									continue
+								}
+								combinedContent += fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, responseJSON)
 							}
+							return "", combinedContent, nil
+						} else if len(anthropicResponse) == 1 {
+							return string(anthropicResponse[0].Type), anthropicResponse[0], nil
+						} else {
+							return "", nil, nil
 						}
 					}
-					return string(anthropicResponse.Type), anthropicResponse, nil
 				},
 				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
@@ -168,25 +190,20 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		}
 	}
 
-	if !strings.Contains(model, "claude") || (provider != schemas.Anthropic && provider != "") {
-		// Not a Claude model or not an Anthropic model, so we can continue
-		return nil
-	}
-
 	// Check if anthropic oauth headers are present
-	if !isAnthropicAPIKeyAuth(ctx) {
-		headers := extractHeadersFromRequest(ctx)
-		url := extractExactPath(ctx)
-		if !strings.HasPrefix(url, "/") {
-			url = "/" + url
-		}
-
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+	if provider == schemas.Anthropic || provider == "" {
 		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUseRawRequestBody, true)
+		if !isAnthropicAPIKeyAuth(ctx) {
+			headers := extractHeadersFromRequest(ctx)
+			url := extractExactPath(ctx)
+			if !strings.HasPrefix(url, "/") {
+				url = "/" + url
+			}
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
+			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+		}
 	}
-	*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKey("is_anthropic_passthrough"), true)
 	return nil
 }
 

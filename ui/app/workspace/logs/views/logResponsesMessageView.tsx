@@ -199,6 +199,10 @@ const renderMessage = (message: ResponsesMessage, index: number) => {
 		return message.role ? `${message.role.charAt(0).toUpperCase() + message.role.slice(1)}` : "Message";
 	};
 
+	if (message.type == "reasoning" && (!message.summary || message.summary.length === 0) && !message.encrypted_content && !message.content) {
+		return null;
+	}
+
 	return (
 		<div key={`message-${index}`} className="mb-4 w-full rounded-sm border">
 			<div className="border-b px-6 py-2 text-sm font-medium">

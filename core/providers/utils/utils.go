@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -263,7 +264,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
-		jsonBody, err := sonic.Marshal(convertedBody)
+		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 		}
@@ -317,6 +318,20 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
 	body := append([]byte(nil), resp.Body()...)
+
+	// decode body
+	decodedBody, err := CheckAndDecodeBody(resp)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+		}
+	}
+
+	body = decodedBody
 
 	if err := sonic.Unmarshal(body, errorResp); err != nil {
 		rawResponse := body
@@ -980,4 +995,15 @@ func HandleMultipleListModelsRequests(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
+}
+
+// GetRandomString generates a random alphanumeric string of the given length.
+func GetRandomString(length int) string {
+	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
+	letters := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
+	b := make([]rune, length)
+	for i := range b {
+		b[i] = letters[randomSource.Intn(len(letters))]
+	}
+	return string(b)
 }
