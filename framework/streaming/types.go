@@ -120,6 +120,7 @@ type ProcessedStreamResponse struct {
 	Provider   schemas.ModelProvider
 	Model      string
 	Data       *AccumulatedData
+	RawRequest *interface{}
 }
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse

@@ -276,6 +276,10 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 				return nil, processErr
 			}
+			var rawRequest interface{}
+			if result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			}
 			return &ProcessedStreamResponse{
 				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
@@ -283,6 +287,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				Provider:   provider,
 				Model:      model,
 				Data:       data,
+				RawRequest: &rawRequest,
 			}, nil
 		}
 		return nil, nil

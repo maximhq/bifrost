@@ -25,6 +25,7 @@ type OpenAIProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
@@ -61,6 +62,7 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		logger:               logger,
 		client:               client,
 		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 	}
@@ -91,6 +93,7 @@ func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.K
 			schemas.Key{},
 			provider.networkConfig.ExtraHeaders,
 			providerName,
+			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		)
 	}
@@ -102,6 +105,7 @@ func (provider *OpenAIProvider) ListModels(ctx context.Context, keys []schemas.K
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		providerName,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -116,6 +120,7 @@ func listModelsByKey(
 	key schemas.Key,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Create request
@@ -153,7 +158,7 @@ func listModelsByKey(
 	openaiResponse := &OpenAIListModelsResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, openaiResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -163,6 +168,13 @@ func listModelsByKey(
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -179,14 +191,15 @@ func HandleOpenAIListModelsRequest(
 	keys []schemas.Key,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
-		return listModelsByKey(ctx, client, url, schemas.Key{}, extraHeaders, providerName, sendBackRawResponse)
+		return listModelsByKey(ctx, client, url, schemas.Key{}, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
 	}
 	listModelsByKeyWrapper := func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return listModelsByKey(ctx, client, url, key, extraHeaders, providerName, sendBackRawResponse)
+		return listModelsByKey(ctx, client, url, key, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
@@ -211,6 +224,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx context.Context, key schemas.
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -225,6 +239,7 @@ func HandleOpenAITextCompletionRequest(
 	key schemas.Key,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
@@ -274,7 +289,7 @@ func HandleOpenAITextCompletionRequest(
 
 	response := &schemas.BifrostTextCompletionResponse{}
 
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -283,6 +298,11 @@ func HandleOpenAITextCompletionRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.TextCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
 
 	// Set raw response if enabled
 	if sendBackRawResponse {
@@ -310,6 +330,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -327,6 +348,7 @@ func HandleOpenAITextCompletionStreaming(
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
@@ -571,6 +593,10 @@ func HandleOpenAITextCompletionStreaming(
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
+			// Set raw request if enabled
+			if sendBackRawRequest {
+				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
@@ -596,6 +622,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx context.Context, key schemas.
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -610,6 +637,7 @@ func HandleOpenAIChatCompletionRequest(
 	request *schemas.BifrostChatRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
@@ -662,20 +690,25 @@ func HandleOpenAIChatCompletionRequest(
 	response := &schemas.BifrostChatResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
-	}
-
-	// Set raw response if enabled
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
 
 	return response, nil
 }
@@ -700,6 +733,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -719,6 +753,7 @@ func HandleOpenAIChatCompletionStreaming(
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
@@ -939,6 +974,10 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+						// Set raw request if enabled
+						if sendBackRawRequest {
+							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
@@ -1041,6 +1080,10 @@ func HandleOpenAIChatCompletionStreaming(
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
+			// Set raw request if enabled
+			if sendBackRawRequest {
+				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
@@ -1064,6 +1107,7 @@ func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, 
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -1078,6 +1122,7 @@ func HandleOpenAIResponsesRequest(
 	request *schemas.BifrostResponsesRequest,
 	key schemas.Key,
 	extraHeaders map[string]string,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
@@ -1131,20 +1176,25 @@ func HandleOpenAIResponsesRequest(
 	response := &schemas.BifrostResponsesResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
-	}
-
-	// Set raw response if enabled
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
 
 	return response, nil
 }
@@ -1167,6 +1217,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -1185,6 +1236,7 @@ func HandleOpenAIResponsesStreaming(
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
 	extraHeaders map[string]string,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
@@ -1373,6 +1425,10 @@ func HandleOpenAIResponsesStreaming(
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// Set raw request if enabled
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
@@ -1412,6 +1468,7 @@ func (provider *OpenAIProvider) Embedding(ctx context.Context, key schemas.Key, 
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -1427,6 +1484,7 @@ func HandleOpenAIEmbeddingRequest(
 	key schemas.Key,
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
@@ -1479,7 +1537,7 @@ func HandleOpenAIEmbeddingRequest(
 	response := &schemas.BifrostEmbeddingResponse{}
 
 	// Use enhanced response handler with pre-allocated response
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1489,6 +1547,12 @@ func HandleOpenAIEmbeddingRequest(
 	response.ExtraFields.RequestType = schemas.EmbeddingRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
 	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}

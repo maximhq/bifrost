@@ -88,6 +88,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginVersionColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSendBackRawRequestColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1137,18 +1140,18 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			gormMigrator := tx.Migrator()
 
-		// Step 1: Create the new join table for provider config -> keys relationship
-		// Setup the join table so GORM knows about the custom structure
-		if err := tx.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}); err != nil {
-			return fmt.Errorf("failed to setup join table for provider config keys: %w", err)
-		}
-
-		// Create the join table if it doesn't exist
-		if !gormMigrator.HasTable(&tables.TableVirtualKeyProviderConfigKey{}) {
-			if err := gormMigrator.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}); err != nil {
-				return fmt.Errorf("failed to create join table for provider config keys: %w", err)
+			// Step 1: Create the new join table for provider config -> keys relationship
+			// Setup the join table so GORM knows about the custom structure
+			if err := tx.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}); err != nil {
+				return fmt.Errorf("failed to setup join table for provider config keys: %w", err)
 			}
-		}
+
+			// Create the join table if it doesn't exist
+			if !gormMigrator.HasTable(&tables.TableVirtualKeyProviderConfigKey{}) {
+				if err := gormMigrator.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}); err != nil {
+					return fmt.Errorf("failed to create join table for provider config keys: %w", err)
+				}
+			}
 
 			// Step 2: Migrate existing key associations from virtual key to provider config level
 			// Check if old join table exists
@@ -1274,6 +1277,35 @@ func migrationAddPluginVersionColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add plugin version column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddSendBackRawRequestColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_send_back_raw_request_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "send_back_raw_request") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableProvider{}, "send_back_raw_request"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add send back raw request columns migration: %s", err.Error())
 	}
 	return nil
 }
