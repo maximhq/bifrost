@@ -3,10 +3,12 @@ package mistral
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -237,9 +239,84 @@ func (provider *MistralProvider) SpeechStream(ctx context.Context, postHookRunne
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the Mistral provider.
+// Transcription performs an audio transcription request to the Mistral API.
+// It creates a multipart form with the audio file and sends it to Mistral's transcription endpoint.
+// Returns the transcribed text and metadata, or an error if the request fails.
 func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	// Convert Bifrost request to Mistral format
+	mistralReq := ToMistralTranscriptionRequest(request)
+	if mistralReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
+	}
+
+	// Create multipart form body
+	body, contentType, bifrostErr := createMistralTranscriptionMultipartBody(mistralReq, providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create HTTP request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(contentType)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	req.SetBody(body.Bytes())
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+	}
+
+	// Copy response body before releasing
+	responseBody := append([]byte(nil), resp.Body()...)
+
+	// Parse Mistral's transcription response
+	var mistralResponse MistralTranscriptionResponse
+	if err := sonic.Unmarshal(responseBody, &mistralResponse); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	}
+
+	// Convert to Bifrost format
+	response := mistralResponse.ToBifrostTranscriptionResponse()
+	if response == nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to convert transcription response", nil, providerName)
+	}
+
+	// Set extra fields
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.TranscriptionRequest
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+
+	// Set raw response if enabled
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err == nil {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+	}
+
+	return response, nil
 }
 
 // TranscriptionStream is not supported by the Mistral provider.

@@ -32,3 +32,49 @@ type MistralListModelsResponse struct {
 	Object string         `json:"object"`
 	Data   []MistralModel `json:"data"`
 }
+
+// ============================================================================
+// Transcription Types
+// ============================================================================
+
+// MistralTranscriptionRequest represents a Mistral audio transcription request.
+// Based on: https://docs.mistral.ai/capabilities/audio_transcription
+type MistralTranscriptionRequest struct {
+	Model          string   `json:"model"`                      // Required: e.g., "mistral-audio-transcribe"
+	File           []byte   `json:"file"`                       // Required: Binary audio data
+	Language       *string  `json:"language,omitempty"`         // Optional: ISO 639-1 language code
+	Prompt         *string  `json:"prompt,omitempty"`           // Optional: Context hint for transcription
+	ResponseFormat *string  `json:"response_format,omitempty"`  // Optional: "json", "text", "srt", "verbose_json", "vtt"
+	Temperature    *float64 `json:"temperature,omitempty"`      // Optional: Sampling temperature (0 to 1)
+	TimestampGranularities []string `json:"timestamp_granularities,omitempty"` // Optional: "word" or "segment"
+}
+
+// MistralTranscriptionResponse represents Mistral's transcription response.
+type MistralTranscriptionResponse struct {
+	Text     string                        `json:"text"`               // Transcribed text
+	Duration *float64                      `json:"duration,omitempty"` // Audio duration in seconds
+	Language *string                       `json:"language,omitempty"` // Detected language
+	Segments []MistralTranscriptionSegment `json:"segments,omitempty"` // Segments (verbose_json format)
+	Words    []MistralTranscriptionWord    `json:"words,omitempty"`    // Word-level timestamps
+}
+
+// MistralTranscriptionSegment represents a segment in verbose_json format.
+type MistralTranscriptionSegment struct {
+	ID               int     `json:"id"`
+	Seek             int     `json:"seek,omitempty"`
+	Start            float64 `json:"start"`
+	End              float64 `json:"end"`
+	Text             string  `json:"text"`
+	Tokens           []int   `json:"tokens,omitempty"`
+	Temperature      float64 `json:"temperature,omitempty"`
+	AvgLogProb       float64 `json:"avg_logprob,omitempty"`
+	CompressionRatio float64 `json:"compression_ratio,omitempty"`
+	NoSpeechProb     float64 `json:"no_speech_prob,omitempty"`
+}
+
+// MistralTranscriptionWord represents word-level timing information.
+type MistralTranscriptionWord struct {
+	Word  string  `json:"word"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
