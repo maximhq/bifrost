@@ -968,41 +968,98 @@ func TestToBifrostTranscriptionStreamResponse(t *testing.T) {
 func TestCreateMistralTranscriptionStreamMultipartBody(t *testing.T) {
 	t.Parallel()
 
-	request := &MistralTranscriptionRequest{
-		Model:    "voxtral-mini-latest",
-		File:     []byte{0x01, 0x02, 0x03},
-		Language: schemas.Ptr("en"),
+	tests := []struct {
+		name           string
+		request        *MistralTranscriptionRequest
+		expectedFields map[string]string
+		expectedArrayFields map[string][]string
+	}{
+		{
+			name: "basic streaming request",
+			request: &MistralTranscriptionRequest{
+				Model:    "voxtral-mini-latest",
+				File:     []byte{0x01, 0x02, 0x03},
+				Language: schemas.Ptr("en"),
+			},
+			expectedFields: map[string]string{
+				"stream":   "true",
+				"model":    "voxtral-mini-latest",
+				"language": "en",
+			},
+		},
+		{
+			name: "streaming with all optional fields",
+			request: &MistralTranscriptionRequest{
+				Model:                  "voxtral-mini-latest",
+				File:                   []byte{0x01, 0x02, 0x03},
+				Language:               schemas.Ptr("fr"),
+				Prompt:                 schemas.Ptr("Test prompt"),
+				ResponseFormat:         schemas.Ptr("verbose_json"),
+				Temperature:            schemas.Ptr(0.5),
+				TimestampGranularities: []string{"word", "segment"},
+			},
+			expectedFields: map[string]string{
+				"stream":          "true",
+				"model":           "voxtral-mini-latest",
+				"language":        "fr",
+				"prompt":          "Test prompt",
+				"response_format": "verbose_json",
+				"temperature":     "0.5",
+			},
+			expectedArrayFields: map[string][]string{
+				"timestamp_granularities[]": {"word", "segment"},
+			},
+		},
 	}
 
-	body, contentType, err := createMistralTranscriptionStreamMultipartBody(request, schemas.Mistral)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Nil(t, err)
-	require.NotNil(t, body)
-	assert.Contains(t, contentType, "multipart/form-data")
+			body, contentType, err := createMistralTranscriptionStreamMultipartBody(tt.request, schemas.Mistral)
 
-	// Parse the multipart form to verify stream field
-	reader := multipart.NewReader(body, extractBoundary(contentType))
-	formValues := make(map[string]string)
+			require.Nil(t, err)
+			require.NotNil(t, body)
+			assert.Contains(t, contentType, "multipart/form-data")
 
-	for {
-		part, parseErr := reader.NextPart()
-		if parseErr == io.EOF {
-			break
-		}
-		require.NoError(t, parseErr)
+			// Parse the multipart form to verify fields
+			reader := multipart.NewReader(body, extractBoundary(contentType))
+			formValues := make(map[string]string)
+			arrayFormValues := make(map[string][]string)
 
-		fieldName := part.FormName()
-		if fieldName != "file" {
-			value, readErr := io.ReadAll(part)
-			require.NoError(t, readErr)
-			formValues[fieldName] = string(value)
-		}
+			for {
+				part, parseErr := reader.NextPart()
+				if parseErr == io.EOF {
+					break
+				}
+				require.NoError(t, parseErr)
+
+				fieldName := part.FormName()
+				if fieldName != "file" {
+					value, readErr := io.ReadAll(part)
+					require.NoError(t, readErr)
+					// Handle array fields (like timestamp_granularities[])
+					if existing, ok := arrayFormValues[fieldName]; ok {
+						arrayFormValues[fieldName] = append(existing, string(value))
+					} else if _, isArray := tt.expectedArrayFields[fieldName]; isArray {
+						arrayFormValues[fieldName] = []string{string(value)}
+					} else {
+						formValues[fieldName] = string(value)
+					}
+				}
+			}
+
+			// Verify expected fields
+			for key, expected := range tt.expectedFields {
+				assert.Equal(t, expected, formValues[key], "Field %s mismatch", key)
+			}
+
+			// Verify expected array fields
+			for key, expected := range tt.expectedArrayFields {
+				assert.Equal(t, expected, arrayFormValues[key], "Array field %s mismatch", key)
+			}
+		})
 	}
-
-	// Verify stream field is set to "true"
-	assert.Equal(t, "true", formValues["stream"])
-	assert.Equal(t, "voxtral-mini-latest", formValues["model"])
-	assert.Equal(t, "en", formValues["language"])
 }
 
 // TestTranscriptionStreamEdgeCases tests edge cases in streaming transcription.

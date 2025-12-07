@@ -194,9 +194,22 @@ func parseMistralTranscriptionStreamFormData(writer *multipart.Writer, req *Mist
 		}
 	}
 
+	if req.ResponseFormat != nil {
+		if err := writer.WriteField("response_format", *req.ResponseFormat); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write response_format field", err, providerName)
+		}
+	}
+
 	if req.Temperature != nil {
 		if err := writer.WriteField("temperature", formatFloat64(*req.Temperature)); err != nil {
 			return providerUtils.NewBifrostOperationError("failed to write temperature field", err, providerName)
+		}
+	}
+
+	// Add timestamp_granularities if specified
+	for _, granularity := range req.TimestampGranularities {
+		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write timestamp_granularities field", err, providerName)
 		}
 	}
 
