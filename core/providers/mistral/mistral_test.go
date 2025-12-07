@@ -46,7 +46,7 @@ func TestMistral(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			Transcription:         true,
-			TranscriptionStream:   false, // Streaming not yet supported
+			TranscriptionStream:   true, // Streaming transcription supported
 			ListModels:            false,
 		},
 	}

@@ -148,8 +148,115 @@ func createMistralTranscriptionMultipartBody(req *MistralTranscriptionRequest, p
 	return &body, writer.FormDataContentType(), nil
 }
 
+// createMistralTranscriptionStreamMultipartBody creates the multipart form body for a streaming transcription request.
+func createMistralTranscriptionStreamMultipartBody(req *MistralTranscriptionRequest, providerName schemas.ModelProvider) (*bytes.Buffer, string, *schemas.BifrostError) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := parseMistralTranscriptionStreamFormData(writer, req, providerName); err != nil {
+		return nil, "", err
+	}
+
+	return &body, writer.FormDataContentType(), nil
+}
+
+// parseMistralTranscriptionStreamFormData writes the streaming transcription request to a multipart form.
+func parseMistralTranscriptionStreamFormData(writer *multipart.Writer, req *MistralTranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+	// Add file field - Mistral uses "file" as the form field name
+	fileWriter, err := writer.CreateFormFile("file", "audio.mp3")
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
+	}
+	if _, err := fileWriter.Write(req.File); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write file data", err, providerName)
+	}
+
+	// Add model field (required)
+	if err := writer.WriteField("model", req.Model); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write model field", err, providerName)
+	}
+
+	// Add stream field (required for streaming) - must be "true" as string
+	if err := writer.WriteField("stream", "true"); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to write stream field", err, providerName)
+	}
+
+	// Add optional fields
+	if req.Language != nil {
+		if err := writer.WriteField("language", *req.Language); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write language field", err, providerName)
+		}
+	}
+
+	if req.Prompt != nil {
+		if err := writer.WriteField("prompt", *req.Prompt); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write prompt field", err, providerName)
+		}
+	}
+
+	if req.Temperature != nil {
+		if err := writer.WriteField("temperature", formatFloat64(*req.Temperature)); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write temperature field", err, providerName)
+		}
+	}
+
+	// Close the multipart writer to finalize the form
+	if err := writer.Close(); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+	}
+
+	return nil
+}
+
 // formatFloat64 converts a float64 to string for form fields.
 func formatFloat64(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// ToBifrostTranscriptionStreamResponse converts a Mistral streaming event to Bifrost format.
+func (e *MistralTranscriptionStreamEvent) ToBifrostTranscriptionStreamResponse() *schemas.BifrostTranscriptionStreamResponse {
+	if e == nil {
+		return nil
+	}
+
+	response := &schemas.BifrostTranscriptionStreamResponse{}
+
+	switch MistralTranscriptionStreamEventType(e.Event) {
+	case MistralTranscriptionStreamEventTextDelta:
+		response.Type = schemas.TranscriptionStreamResponseTypeDelta
+		if e.Data != nil {
+			response.Delta = &e.Data.Text
+			response.Text = e.Data.Text
+		}
+
+	case MistralTranscriptionStreamEventLanguage:
+		response.Type = schemas.TranscriptionStreamResponseTypeDelta
+		if e.Data != nil {
+			response.Text = "" // Language event doesn't have text content
+		}
+
+	case MistralTranscriptionStreamEventSegment:
+		response.Type = schemas.TranscriptionStreamResponseTypeDelta
+		if e.Data != nil && e.Data.Segment != nil {
+			response.Text = e.Data.Segment.Text
+			response.Delta = &e.Data.Segment.Text
+		}
+
+	case MistralTranscriptionStreamEventDone:
+		response.Type = schemas.TranscriptionStreamResponseTypeDone
+		if e.Data != nil && e.Data.Usage != nil {
+			totalTokens := e.Data.Usage.TotalTokens
+			inputTokens := e.Data.Usage.PromptTokens
+			outputTokens := e.Data.Usage.CompletionTokens
+			response.Usage = &schemas.TranscriptionUsage{
+				Type:         "tokens",
+				TotalTokens:  &totalTokens,
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
+			}
+		}
+	}
+
+	return response
 }
 

@@ -2,7 +2,9 @@
 package mistral
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -319,7 +321,219 @@ func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.
 	return response, nil
 }
 
-// TranscriptionStream is not supported by the Mistral provider.
+// TranscriptionStream performs a streaming transcription request to Mistral's API.
+// It creates a multipart form with the audio file and streams transcription events.
+// Returns a channel of BifrostStream objects containing transcription deltas.
 func (provider *MistralProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	// Convert Bifrost request to Mistral format
+	mistralReq := ToMistralTranscriptionRequest(request)
+	if mistralReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
+	}
+
+	// Create multipart form body with stream=true
+	body, contentType, bifrostErr := createMistralTranscriptionStreamMultipartBody(mistralReq, providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Prepare headers for streaming
+	headers := map[string]string{
+		"Content-Type":  contentType,
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	if key.Value != "" {
+		headers["Authorization"] = "Bearer " + key.Value
+	}
+
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+
+	// Set headers
+	for headerKey, value := range headers {
+		req.Header.Set(headerKey, value)
+	}
+
+	req.SetBody(body.Bytes())
+
+	// Make the request
+	err := provider.client.Do(req, resp)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer close(responseChan)
+		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		scanner := bufio.NewScanner(resp.BodyStream())
+		// Increase buffer size to handle large chunks
+		buf := make([]byte, 0, 64*1024) // 64KB initial buffer
+		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
+		chunkIndex := -1
+
+		startTime := time.Now()
+		lastChunkTime := startTime
+
+		var currentEvent string
+		var currentData string
+
+		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+
+			// Skip empty lines (event delimiter)
+			if line == "" {
+				// Process accumulated event if we have both event and data
+				if currentEvent != "" && currentData != "" {
+					chunkIndex++
+					provider.processStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
+				}
+				// Reset for next event
+				currentEvent = ""
+				currentData = ""
+				continue
+			}
+
+			// Parse SSE format
+			if strings.HasPrefix(line, "event: ") {
+				currentEvent = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				currentData = strings.TrimPrefix(line, "data: ")
+			}
+		}
+
+		// Process any remaining event
+		if currentEvent != "" && currentData != "" {
+			chunkIndex++
+			provider.processStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
+		}
+
+		// Handle scanner errors
+		if err := scanner.Err(); err != nil {
+			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
+		}
+	}()
+
+	return responseChan, nil
+}
+
+// processStreamEvent processes a single SSE event and sends it to the response channel.
+func (provider *MistralProvider) processStreamEvent(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	eventType string,
+	jsonData string,
+	model string,
+	providerName schemas.ModelProvider,
+	chunkIndex int,
+	startTime time.Time,
+	lastChunkTime *time.Time,
+	responseChan chan *schemas.BifrostStream,
+) {
+	// Skip empty data
+	if strings.TrimSpace(jsonData) == "" {
+		return
+	}
+
+	// First, check if this is an error response
+	var bifrostErr schemas.BifrostError
+	if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				Provider:       providerName,
+				ModelRequested: model,
+				RequestType:    schemas.TranscriptionStreamRequest,
+			}
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+			return
+		}
+	}
+
+	// Parse the event data
+	var eventData MistralTranscriptionStreamData
+	if err := sonic.Unmarshal([]byte(jsonData), &eventData); err != nil {
+		provider.logger.Warn(fmt.Sprintf("Failed to parse stream event data: %v", err))
+		return
+	}
+
+	// Create the stream event
+	streamEvent := &MistralTranscriptionStreamEvent{
+		Event: eventType,
+		Data:  &eventData,
+	}
+
+	// Convert to Bifrost format
+	response := streamEvent.ToBifrostTranscriptionStreamResponse()
+	if response == nil {
+		return
+	}
+
+	// Set extra fields
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:    schemas.TranscriptionStreamRequest,
+		Provider:       providerName,
+		ModelRequested: model,
+		ChunkIndex:     chunkIndex,
+		Latency:        time.Since(*lastChunkTime).Milliseconds(),
+	}
+	*lastChunkTime = time.Now()
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = jsonData
+	}
+
+	// Check for done event
+	if MistralTranscriptionStreamEventType(eventType) == MistralTranscriptionStreamEventDone {
+		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
+
+	providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
 }

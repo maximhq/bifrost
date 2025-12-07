@@ -78,3 +78,59 @@ type MistralTranscriptionWord struct {
 	Start float64 `json:"start"`
 	End   float64 `json:"end"`
 }
+
+// ============================================================================
+// Transcription Streaming Types
+// ============================================================================
+
+// MistralTranscriptionStreamEventType represents the type of streaming event.
+type MistralTranscriptionStreamEventType string
+
+const (
+	// MistralTranscriptionStreamEventLanguage is the language detection event.
+	MistralTranscriptionStreamEventLanguage MistralTranscriptionStreamEventType = "transcription.language"
+	// MistralTranscriptionStreamEventSegment is the segment event.
+	MistralTranscriptionStreamEventSegment MistralTranscriptionStreamEventType = "transcription.segment"
+	// MistralTranscriptionStreamEventTextDelta is the text delta event.
+	MistralTranscriptionStreamEventTextDelta MistralTranscriptionStreamEventType = "transcription.text.delta"
+	// MistralTranscriptionStreamEventDone is the done event with usage info.
+	MistralTranscriptionStreamEventDone MistralTranscriptionStreamEventType = "transcription.done"
+)
+
+// MistralTranscriptionStreamEvent represents a streaming transcription event from Mistral.
+type MistralTranscriptionStreamEvent struct {
+	Event string                           `json:"event"`
+	Data  *MistralTranscriptionStreamData  `json:"data,omitempty"`
+}
+
+// MistralTranscriptionStreamData represents the data payload for streaming events.
+type MistralTranscriptionStreamData struct {
+	// For transcription.text.delta events
+	Text string `json:"text,omitempty"`
+
+	// For transcription.language events
+	Language string `json:"language,omitempty"`
+
+	// For transcription.segment events
+	Segment *MistralTranscriptionStreamSegment `json:"segment,omitempty"`
+
+	// For transcription.done events
+	Model string                        `json:"model,omitempty"`
+	Usage *MistralTranscriptionUsage    `json:"usage,omitempty"`
+}
+
+// MistralTranscriptionStreamSegment represents a segment in streaming response.
+type MistralTranscriptionStreamSegment struct {
+	ID    int     `json:"id"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+	Text  string  `json:"text"`
+}
+
+// MistralTranscriptionUsage represents usage information in streaming done event.
+type MistralTranscriptionUsage struct {
+	PromptAudioSeconds int `json:"prompt_audio_seconds,omitempty"`
+	PromptTokens       int `json:"prompt_tokens,omitempty"`
+	TotalTokens        int `json:"total_tokens,omitempty"`
+	CompletionTokens   int `json:"completion_tokens,omitempty"`
+}

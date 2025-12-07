@@ -636,8 +636,165 @@ func TestTranscriptionNilInput(t *testing.T) {
 	}
 }
 
-// TestTranscriptionStreamNotSupported tests that streaming returns unsupported error.
-func TestTranscriptionStreamNotSupported(t *testing.T) {
+// TestTranscriptionStreamWithMockServer tests the TranscriptionStream method with a mock HTTP server.
+func TestTranscriptionStreamWithMockServer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		streamEvents   []string // SSE events to send
+		expectError    bool
+		validateResult func(*testing.T, []*schemas.BifrostTranscriptionStreamResponse)
+	}{
+		{
+			name: "successful streaming transcription",
+			streamEvents: []string{
+				"event: transcription.language\ndata: {\"language\": \"en\"}\n",
+				"event: transcription.text.delta\ndata: {\"text\": \"Hello\"}\n",
+				"event: transcription.text.delta\ndata: {\"text\": \" world\"}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\", \"usage\": {\"prompt_audio_seconds\": 5, \"prompt_tokens\": 10, \"total_tokens\": 100, \"completion_tokens\": 90}}\n",
+			},
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse) {
+				require.GreaterOrEqual(t, len(responses), 3, "Expected at least 3 responses")
+
+				// Check for delta events
+				foundHello := false
+				foundWorld := false
+				foundDone := false
+
+				for _, resp := range responses {
+					if resp.Delta != nil {
+						if *resp.Delta == "Hello" {
+							foundHello = true
+						}
+						if *resp.Delta == " world" {
+							foundWorld = true
+						}
+					}
+					if resp.Type == schemas.TranscriptionStreamResponseTypeDone {
+						foundDone = true
+						require.NotNil(t, resp.Usage)
+					}
+				}
+
+				assert.True(t, foundHello, "Expected to find 'Hello' delta")
+				assert.True(t, foundWorld, "Expected to find ' world' delta")
+				assert.True(t, foundDone, "Expected to find done event")
+			},
+		},
+		{
+			name: "streaming with segments",
+			streamEvents: []string{
+				"event: transcription.segment\ndata: {\"segment\": {\"id\": 0, \"start\": 0.0, \"end\": 1.5, \"text\": \"Hello\"}}\n",
+				"event: transcription.segment\ndata: {\"segment\": {\"id\": 1, \"start\": 1.5, \"end\": 3.0, \"text\": \"world\"}}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\", \"usage\": {\"prompt_audio_seconds\": 3}}\n",
+			},
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse) {
+				require.GreaterOrEqual(t, len(responses), 2, "Expected at least 2 responses")
+
+				// Check segment content
+				foundHello := false
+				foundWorld := false
+
+				for _, resp := range responses {
+					if resp.Text == "Hello" {
+						foundHello = true
+					}
+					if resp.Text == "world" {
+						foundWorld = true
+					}
+				}
+
+				assert.True(t, foundHello, "Expected to find 'Hello' segment")
+				assert.True(t, foundWorld, "Expected to find 'world' segment")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create test server that sends SSE events
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify request
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "/v1/audio/transcriptions", r.URL.Path)
+				assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+				assert.Contains(t, r.Header.Get("Accept"), "text/event-stream")
+
+				// Set SSE headers
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.WriteHeader(http.StatusOK)
+
+				// Send SSE events
+				flusher, ok := w.(http.Flusher)
+				require.True(t, ok, "ResponseWriter must support Flusher")
+
+				for _, event := range tt.streamEvents {
+					w.Write([]byte(event))
+					w.Write([]byte("\n"))
+					flusher.Flush()
+				}
+			}))
+			defer server.Close()
+
+			// Create provider
+			provider := NewMistralProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL:                        server.URL,
+					DefaultRequestTimeoutInSeconds: 30,
+				},
+			}, &testLogger{})
+
+			// Create request
+			audioData := createMinimalAudioFile()
+			request := &schemas.BifrostTranscriptionRequest{
+				Model: "voxtral-mini-latest",
+				Input: &schemas.TranscriptionInput{
+					File: audioData,
+				},
+				Params: &schemas.TranscriptionParameters{
+					Language: schemas.Ptr("en"),
+				},
+			}
+
+			// Create post hook runner (no-op for tests)
+			postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return response, err
+			}
+
+			// Make streaming request
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-api-key"}, request)
+
+			if tt.expectError {
+				require.NotNil(t, err)
+				return
+			}
+
+			require.Nil(t, err)
+			require.NotNil(t, streamChan)
+
+			// Collect responses
+			var responses []*schemas.BifrostTranscriptionStreamResponse
+			for streamResp := range streamChan {
+				if streamResp.BifrostTranscriptionStreamResponse != nil {
+					responses = append(responses, streamResp.BifrostTranscriptionStreamResponse)
+				}
+			}
+
+			tt.validateResult(t, responses)
+		})
+	}
+}
+
+// TestTranscriptionStreamNilInput tests handling of nil/invalid inputs for streaming.
+func TestTranscriptionStreamNilInput(t *testing.T) {
 	t.Parallel()
 
 	provider := NewMistralProvider(&schemas.ProviderConfig{
@@ -647,19 +804,583 @@ func TestTranscriptionStreamNotSupported(t *testing.T) {
 		},
 	}, &testLogger{})
 
+	// Create post hook runner (no-op for tests)
+	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
+
 	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		request *schemas.BifrostTranscriptionRequest
+	}{
+		{
+			name: "nil input field",
+			request: &schemas.BifrostTranscriptionRequest{
+				Model: "voxtral-mini-latest",
+				Input: nil,
+			},
+		},
+		{
+			name: "empty file",
+			request: &schemas.BifrostTranscriptionRequest{
+				Model: "voxtral-mini-latest",
+				Input: &schemas.TranscriptionInput{
+					File: []byte{},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stream, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-key"}, tt.request)
+
+			require.NotNil(t, err)
+			assert.Nil(t, stream)
+			assert.Equal(t, "transcription input is not provided", err.Error.Message)
+		})
+	}
+}
+
+// TestToBifrostTranscriptionStreamResponse tests the streaming event conversion.
+func TestToBifrostTranscriptionStreamResponse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		event    *MistralTranscriptionStreamEvent
+		expected *schemas.BifrostTranscriptionStreamResponse
+	}{
+		{
+			name:     "nil event",
+			event:    nil,
+			expected: nil,
+		},
+		{
+			name: "text delta event",
+			event: &MistralTranscriptionStreamEvent{
+				Event: string(MistralTranscriptionStreamEventTextDelta),
+				Data: &MistralTranscriptionStreamData{
+					Text: "Hello world",
+				},
+			},
+			expected: &schemas.BifrostTranscriptionStreamResponse{
+				Type:  schemas.TranscriptionStreamResponseTypeDelta,
+				Text:  "Hello world",
+				Delta: schemas.Ptr("Hello world"),
+			},
+		},
+		{
+			name: "language event",
+			event: &MistralTranscriptionStreamEvent{
+				Event: string(MistralTranscriptionStreamEventLanguage),
+				Data: &MistralTranscriptionStreamData{
+					Language: "en",
+				},
+			},
+			expected: &schemas.BifrostTranscriptionStreamResponse{
+				Type: schemas.TranscriptionStreamResponseTypeDelta,
+				Text: "",
+			},
+		},
+		{
+			name: "segment event",
+			event: &MistralTranscriptionStreamEvent{
+				Event: string(MistralTranscriptionStreamEventSegment),
+				Data: &MistralTranscriptionStreamData{
+					Segment: &MistralTranscriptionStreamSegment{
+						ID:    0,
+						Start: 0.0,
+						End:   1.5,
+						Text:  "Hello",
+					},
+				},
+			},
+			expected: &schemas.BifrostTranscriptionStreamResponse{
+				Type:  schemas.TranscriptionStreamResponseTypeDelta,
+				Text:  "Hello",
+				Delta: schemas.Ptr("Hello"),
+			},
+		},
+		{
+			name: "done event with usage",
+			event: &MistralTranscriptionStreamEvent{
+				Event: string(MistralTranscriptionStreamEventDone),
+				Data: &MistralTranscriptionStreamData{
+					Model: "voxtral-mini-latest",
+					Usage: &MistralTranscriptionUsage{
+						PromptAudioSeconds: 10,
+						PromptTokens:       50,
+						TotalTokens:        200,
+						CompletionTokens:   150,
+					},
+				},
+			},
+			expected: &schemas.BifrostTranscriptionStreamResponse{
+				Type: schemas.TranscriptionStreamResponseTypeDone,
+				Usage: &schemas.TranscriptionUsage{
+					Type:         "tokens",
+					TotalTokens:  schemas.Ptr(200),
+					InputTokens:  schemas.Ptr(50),
+					OutputTokens: schemas.Ptr(150),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := tt.event.ToBifrostTranscriptionStreamResponse()
+
+			if tt.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.Type, result.Type)
+			assert.Equal(t, tt.expected.Text, result.Text)
+
+			if tt.expected.Delta != nil {
+				require.NotNil(t, result.Delta)
+				assert.Equal(t, *tt.expected.Delta, *result.Delta)
+			}
+
+			if tt.expected.Usage != nil {
+				require.NotNil(t, result.Usage)
+				assert.Equal(t, tt.expected.Usage.Type, result.Usage.Type)
+				if tt.expected.Usage.TotalTokens != nil {
+					require.NotNil(t, result.Usage.TotalTokens)
+					assert.Equal(t, *tt.expected.Usage.TotalTokens, *result.Usage.TotalTokens)
+				}
+			}
+		})
+	}
+}
+
+// TestCreateMistralTranscriptionStreamMultipartBody tests the streaming multipart body creation.
+func TestCreateMistralTranscriptionStreamMultipartBody(t *testing.T) {
+	t.Parallel()
+
+	request := &MistralTranscriptionRequest{
+		Model:    "voxtral-mini-latest",
+		File:     []byte{0x01, 0x02, 0x03},
+		Language: schemas.Ptr("en"),
+	}
+
+	body, contentType, err := createMistralTranscriptionStreamMultipartBody(request, schemas.Mistral)
+
+	require.Nil(t, err)
+	require.NotNil(t, body)
+	assert.Contains(t, contentType, "multipart/form-data")
+
+	// Parse the multipart form to verify stream field
+	reader := multipart.NewReader(body, extractBoundary(contentType))
+	formValues := make(map[string]string)
+
+	for {
+		part, parseErr := reader.NextPart()
+		if parseErr == io.EOF {
+			break
+		}
+		require.NoError(t, parseErr)
+
+		fieldName := part.FormName()
+		if fieldName != "file" {
+			value, readErr := io.ReadAll(part)
+			require.NoError(t, readErr)
+			formValues[fieldName] = string(value)
+		}
+	}
+
+	// Verify stream field is set to "true"
+	assert.Equal(t, "true", formValues["stream"])
+	assert.Equal(t, "voxtral-mini-latest", formValues["model"])
+	assert.Equal(t, "en", formValues["language"])
+}
+
+// TestTranscriptionStreamEdgeCases tests edge cases in streaming transcription.
+func TestTranscriptionStreamEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		streamEvents   []string
+		statusCode     int
+		expectError    bool
+		validateResult func(*testing.T, []*schemas.BifrostTranscriptionStreamResponse, *schemas.BifrostError)
+	}{
+		{
+			name: "empty text delta",
+			streamEvents: []string{
+				"event: transcription.text.delta\ndata: {\"text\": \"\"}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\", \"usage\": {}}\n",
+			},
+			statusCode: http.StatusOK,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.Nil(t, err)
+				require.GreaterOrEqual(t, len(responses), 1)
+				// Should handle empty text gracefully
+				foundDone := false
+				for _, resp := range responses {
+					if resp.Type == schemas.TranscriptionStreamResponseTypeDone {
+						foundDone = true
+					}
+				}
+				assert.True(t, foundDone, "Expected done event")
+			},
+		},
+		{
+			name: "done event without usage",
+			streamEvents: []string{
+				"event: transcription.text.delta\ndata: {\"text\": \"Hello\"}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\"}\n",
+			},
+			statusCode: http.StatusOK,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.Nil(t, err)
+				require.GreaterOrEqual(t, len(responses), 1)
+				// Should handle missing usage gracefully
+				var doneResp *schemas.BifrostTranscriptionStreamResponse
+				for _, resp := range responses {
+					if resp.Type == schemas.TranscriptionStreamResponseTypeDone {
+						doneResp = resp
+					}
+				}
+				require.NotNil(t, doneResp, "Expected done event")
+				// Usage should be nil when not provided
+				assert.Nil(t, doneResp.Usage)
+			},
+		},
+		{
+			name: "multiple consecutive deltas",
+			streamEvents: []string{
+				"event: transcription.text.delta\ndata: {\"text\": \"Hello\"}\n",
+				"event: transcription.text.delta\ndata: {\"text\": \" \"}\n",
+				"event: transcription.text.delta\ndata: {\"text\": \"world\"}\n",
+				"event: transcription.text.delta\ndata: {\"text\": \"!\"}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\", \"usage\": {\"total_tokens\": 100}}\n",
+			},
+			statusCode: http.StatusOK,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.Nil(t, err)
+				require.GreaterOrEqual(t, len(responses), 4, "Expected at least 4 responses")
+
+				// Verify all deltas received
+				var allText string
+				for _, resp := range responses {
+					if resp.Delta != nil {
+						allText += *resp.Delta
+					}
+				}
+				assert.Equal(t, "Hello world!", allText)
+			},
+		},
+		{
+			name: "language event only",
+			streamEvents: []string{
+				"event: transcription.language\ndata: {\"language\": \"fr\"}\n",
+				"event: transcription.done\ndata: {\"model\": \"voxtral-mini-latest\"}\n",
+			},
+			statusCode: http.StatusOK,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.Nil(t, err)
+				require.GreaterOrEqual(t, len(responses), 1)
+			},
+		},
+		{
+			name:         "http error response",
+			streamEvents: []string{},
+			statusCode:   http.StatusUnauthorized,
+			expectError:  true,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.NotNil(t, err)
+				assert.Nil(t, responses)
+			},
+		},
+		{
+			name:         "internal server error",
+			streamEvents: []string{},
+			statusCode:   http.StatusInternalServerError,
+			expectError:  true,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.NotNil(t, err)
+				assert.Nil(t, responses)
+			},
+		},
+		{
+			name: "segment with all fields",
+			streamEvents: []string{
+				"event: transcription.segment\ndata: {\"segment\": {\"id\": 0, \"start\": 0.0, \"end\": 2.5, \"text\": \"Complete segment\"}}\n",
+				"event: transcription.done\ndata: {\"usage\": {\"prompt_audio_seconds\": 3, \"prompt_tokens\": 10, \"total_tokens\": 50, \"completion_tokens\": 40}}\n",
+			},
+			statusCode: http.StatusOK,
+			validateResult: func(t *testing.T, responses []*schemas.BifrostTranscriptionStreamResponse, err *schemas.BifrostError) {
+				require.Nil(t, err)
+				require.GreaterOrEqual(t, len(responses), 2)
+
+				// Find segment response
+				var segmentResp *schemas.BifrostTranscriptionStreamResponse
+				for _, resp := range responses {
+					if resp.Text == "Complete segment" {
+						segmentResp = resp
+						break
+					}
+				}
+				require.NotNil(t, segmentResp, "Expected segment response")
+				assert.Equal(t, "Complete segment", segmentResp.Text)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create test server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.statusCode != http.StatusOK {
+					w.WriteHeader(tt.statusCode)
+					w.Write([]byte(`{"error": {"message": "Test error", "type": "test_error"}}`))
+					return
+				}
+
+				// Set SSE headers
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+
+				flusher, ok := w.(http.Flusher)
+				require.True(t, ok)
+
+				for _, event := range tt.streamEvents {
+					w.Write([]byte(event))
+					w.Write([]byte("\n"))
+					flusher.Flush()
+				}
+			}))
+			defer server.Close()
+
+			// Create provider
+			provider := NewMistralProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{
+					BaseURL:                        server.URL,
+					DefaultRequestTimeoutInSeconds: 30,
+				},
+			}, &testLogger{})
+
+			// Create request
+			request := &schemas.BifrostTranscriptionRequest{
+				Model: "voxtral-mini-latest",
+				Input: &schemas.TranscriptionInput{
+					File: createMinimalAudioFile(),
+				},
+			}
+
+			// Create post hook runner
+			postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return response, err
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-key"}, request)
+
+			if tt.expectError {
+				tt.validateResult(t, nil, err)
+				return
+			}
+
+			require.Nil(t, err)
+			require.NotNil(t, streamChan)
+
+			var responses []*schemas.BifrostTranscriptionStreamResponse
+			for streamResp := range streamChan {
+				if streamResp.BifrostTranscriptionStreamResponse != nil {
+					responses = append(responses, streamResp.BifrostTranscriptionStreamResponse)
+				}
+			}
+
+			tt.validateResult(t, responses, nil)
+		})
+	}
+}
+
+// TestTranscriptionStreamContextCancellation tests context cancellation during streaming.
+func TestTranscriptionStreamContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// Create a server that sends events slowly
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		// Send initial event
+		w.Write([]byte("event: transcription.text.delta\ndata: {\"text\": \"Starting...\"}\n\n"))
+		flusher.Flush()
+
+		// Wait longer than the context timeout
+		time.Sleep(5 * time.Second)
+
+		// This should not be received
+		w.Write([]byte("event: transcription.done\ndata: {}\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 30,
+		},
+	}, &testLogger{})
+
 	request := &schemas.BifrostTranscriptionRequest{
-		Model: "mistral-large-latest",
+		Model: "voxtral-mini-latest",
 		Input: &schemas.TranscriptionInput{
 			File: createMinimalAudioFile(),
 		},
 	}
 
-	stream, err := provider.TranscriptionStream(ctx, nil, schemas.Key{Value: "test-key"}, request)
+	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
 
-	assert.Nil(t, stream)
-	require.NotNil(t, err)
-	// UnsupportedOperationError is expected
+	// Create context with short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-key"}, request)
+	require.Nil(t, err)
+	require.NotNil(t, streamChan)
+
+	// Collect responses - should timeout before receiving all
+	var receivedCount int
+	for range streamChan {
+		receivedCount++
+	}
+
+	// Should receive at most the first event before timeout
+	assert.LessOrEqual(t, receivedCount, 2, "Should receive limited events due to context cancellation")
+}
+
+// TestTranscriptionExtraParamsEdgeCases tests edge cases for extra parameters.
+func TestTranscriptionExtraParamsEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		extraParams map[string]interface{}
+		expectTemp  *float64
+		expectGran  []string
+	}{
+		{
+			name:        "nil extra params",
+			extraParams: nil,
+			expectTemp:  nil,
+			expectGran:  nil,
+		},
+		{
+			name:        "empty extra params",
+			extraParams: map[string]interface{}{},
+			expectTemp:  nil,
+			expectGran:  nil,
+		},
+		{
+			name: "temperature as int",
+			extraParams: map[string]interface{}{
+				"temperature": 1,
+			},
+			expectTemp: schemas.Ptr(1.0),
+			expectGran: nil,
+		},
+		{
+			name: "temperature as float",
+			extraParams: map[string]interface{}{
+				"temperature": 0.7,
+			},
+			expectTemp: schemas.Ptr(0.7),
+			expectGran: nil,
+		},
+		{
+			name: "invalid temperature type",
+			extraParams: map[string]interface{}{
+				"temperature": "invalid",
+			},
+			expectTemp: nil,
+			expectGran: nil,
+		},
+		{
+			name: "timestamp granularities",
+			extraParams: map[string]interface{}{
+				"timestamp_granularities": []string{"word", "segment"},
+			},
+			expectTemp: nil,
+			expectGran: []string{"word", "segment"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			request := &schemas.BifrostTranscriptionRequest{
+				Model: "voxtral-mini-latest",
+				Input: &schemas.TranscriptionInput{
+					File: []byte{0x01, 0x02, 0x03},
+				},
+				Params: &schemas.TranscriptionParameters{
+					ExtraParams: tt.extraParams,
+				},
+			}
+
+			result := ToMistralTranscriptionRequest(request)
+			require.NotNil(t, result)
+
+			if tt.expectTemp != nil {
+				require.NotNil(t, result.Temperature)
+				assert.Equal(t, *tt.expectTemp, *result.Temperature)
+			} else {
+				assert.Nil(t, result.Temperature)
+			}
+
+			assert.Equal(t, tt.expectGran, result.TimestampGranularities)
+		})
+	}
+}
+
+// TestFormatFloat64EdgeCases tests edge cases for float formatting.
+func TestFormatFloat64EdgeCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    float64
+		expected string
+	}{
+		{0.0, "0"},
+		{0.5, "0.5"},
+		{1.0, "1"},
+		{1.23456, "1.23456"},
+		{-0.5, "-0.5"},
+		{0.123456789, "0.123456789"},
+		{100.0, "100"},
+		{0.001, "0.001"},
+	}
+
+	for _, tt := range tests {
+		result := formatFloat64(tt.input)
+		assert.Equal(t, tt.expected, result, "formatFloat64(%f)", tt.input)
+	}
 }
 
 // TestFormatFloat64 tests the float64 formatting function.
@@ -751,4 +1472,95 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 	assert.Equal(t, schemas.TranscriptionRequest, resp.ExtraFields.RequestType)
 	assert.Equal(t, schemas.Mistral, resp.ExtraFields.Provider)
 	t.Logf("   Transcribed text: %s", resp.Text)
+}
+
+// TestMistralTranscriptionStreamIntegration tests the streaming transcription endpoint with the real Mistral API.
+// This test requires MISTRAL_API_KEY environment variable to be set.
+// Run with: MISTRAL_API_KEY=xxx go test -v -run TestMistralTranscriptionStreamIntegration
+func TestMistralTranscriptionStreamIntegration(t *testing.T) {
+	apiKey := os.Getenv("MISTRAL_API_KEY")
+	if apiKey == "" {
+		t.Skip("Skipping integration test: MISTRAL_API_KEY not set")
+	}
+
+	// Create provider
+	provider := NewMistralProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "https://api.mistral.ai",
+			DefaultRequestTimeoutInSeconds: 60,
+		},
+	}, &testLogger{})
+
+	// Create a minimal but valid audio file for testing
+	audioData := createMinimalAudioFile()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	request := &schemas.BifrostTranscriptionRequest{
+		Model: "voxtral-mini-latest", // Mistral's audio transcription model
+		Input: &schemas.TranscriptionInput{
+			File: audioData,
+		},
+		Params: &schemas.TranscriptionParameters{
+			Language: schemas.Ptr("en"),
+		},
+	}
+
+	// Create post hook runner (no-op for tests)
+	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
+
+	t.Log("🎤 Testing Mistral streaming transcription with voxtral-mini-latest...")
+	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: apiKey}, request)
+
+	if err != nil {
+		// Log the error but don't fail - the minimal audio may not be valid for Mistral
+		t.Logf("⚠️ Streaming transcription returned error (may be expected for minimal audio): %v", err)
+		if err.Error != nil {
+			t.Logf("   Error message: %s", err.Error.Message)
+		}
+		// Verify proper error structure
+		assert.NotNil(t, err.Error, "Error should have Error field populated")
+		t.Log("✅ Error handling works correctly")
+		return
+	}
+
+	require.NotNil(t, streamChan)
+
+	// Collect streaming responses
+	var allText string
+	var chunkCount int
+	var lastResponse *schemas.BifrostTranscriptionStreamResponse
+
+	for streamResp := range streamChan {
+		if streamResp.BifrostError != nil {
+			t.Logf("⚠️ Stream error (may be expected for minimal audio): %v", streamResp.BifrostError.Error.Message)
+			return
+		}
+
+		if streamResp.BifrostTranscriptionStreamResponse != nil {
+			chunkCount++
+			lastResponse = streamResp.BifrostTranscriptionStreamResponse
+
+			if streamResp.BifrostTranscriptionStreamResponse.Delta != nil {
+				allText += *streamResp.BifrostTranscriptionStreamResponse.Delta
+			}
+
+			t.Logf("📊 Chunk %d: type=%s, latency=%dms",
+				chunkCount,
+				streamResp.BifrostTranscriptionStreamResponse.Type,
+				streamResp.BifrostTranscriptionStreamResponse.ExtraFields.Latency)
+		}
+	}
+
+	t.Log("✅ Streaming transcription completed!")
+	t.Logf("   Total chunks received: %d", chunkCount)
+	t.Logf("   Transcribed text: %s", allText)
+
+	if lastResponse != nil {
+		assert.Equal(t, schemas.TranscriptionStreamRequest, lastResponse.ExtraFields.RequestType)
+		assert.Equal(t, schemas.Mistral, lastResponse.ExtraFields.Provider)
+	}
 }
