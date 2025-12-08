@@ -1222,7 +1222,10 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
+<<<<<<< HEAD
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+=======
+>>>>>>> e38b5065 (feat: added support for gemini native converterswq)
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			request.Model,
