@@ -100,6 +100,7 @@ type ConfigStore interface {
 	DeleteCustomer(ctx context.Context, id string) error
 
 	// Rate limit CRUD
+	GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error)
 	GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error)
 	CreateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error
 	UpdateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error

@@ -30,7 +30,7 @@ type UsageUpdate struct {
 
 // UsageTracker manages VK-level usage tracking and budget management
 type UsageTracker struct {
-	store       *GovernanceStore
+	store       GovernanceStore
 	resolver    *BudgetResolver
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
@@ -43,8 +43,12 @@ type UsageTracker struct {
 	wg            sync.WaitGroup
 }
 
+const (
+	workerInterval = 10 * time.Second
+)
+
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
-func NewUsageTracker(ctx context.Context, store *GovernanceStore, resolver *BudgetResolver, configStore configstore.ConfigStore, logger schemas.Logger) *UsageTracker {
+func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *BudgetResolver, configStore configstore.ConfigStore, logger schemas.Logger) *UsageTracker {
 	tracker := &UsageTracker{
 		store:       store,
 		resolver:    resolver,
@@ -83,7 +87,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// Update rate limit usage (both provider-level and VK-level) if applicable
 	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 {
-		if err := t.store.UpdateRateLimitUsage(ctx, update.VirtualKey, string(update.Provider), update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		if err := t.store.UpdateRateLimitUsage(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
 		}
 	}
@@ -97,7 +101,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 // updateBudgetHierarchy updates budget usage atomically in the VK → Team → Customer hierarchy
 func (t *UsageTracker) updateBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, update *UsageUpdate) {
 	// Use atomic budget update to prevent race conditions and ensure consistency
-	if err := t.store.UpdateBudget(ctx, vk, update.Provider, update.Cost); err != nil {
+	if err := t.store.UpdateBudgetUsage(ctx, vk, update.Provider, update.Cost); err != nil {
 		t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
 	}
 }
@@ -105,7 +109,7 @@ func (t *UsageTracker) updateBudgetHierarchy(ctx context.Context, vk *configstor
 // startWorkers starts all background workers for business logic
 func (t *UsageTracker) startWorkers(ctx context.Context) {
 	// Counter reset manager (business logic)
-	t.resetTicker = time.NewTicker(1 * time.Minute)
+	t.resetTicker = time.NewTicker(workerInterval)
 	t.wg.Add(1)
 	go t.resetWorker(ctx)
 }
@@ -135,6 +139,14 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	// ==== PART 2: Reset Budgets ====
 	if err := t.store.ResetExpiredBudgets(ctx); err != nil {
 		t.logger.Error("failed to reset expired budgets: %v", err)
+	}
+
+	// ==== PART 3: Dump all rate limits and budgets to database ====
+	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+		t.logger.Error("failed to dump rate limits to database: %v", err)
+	}
+	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+		t.logger.Error("failed to dump budgets to database: %v", err)
 	}
 }
 

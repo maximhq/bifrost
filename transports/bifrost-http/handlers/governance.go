@@ -22,6 +22,7 @@ import (
 
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
+	GetGovernanceData() *governance.GovernanceData
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
@@ -171,6 +172,9 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.GET("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.getCustomer, middlewares...))
 	r.PUT("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.updateCustomer, middlewares...))
 	r.DELETE("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.deleteCustomer, middlewares...))
+
+	// Governance data operations
+	r.GET("/api/governance/data", lib.ChainMiddlewares(h.getGovernanceData, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -285,29 +289,29 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 				}
 
-			// Get keys for this provider config if specified
-			var keys []configstoreTables.TableKey
-			if len(pc.KeyIDs) > 0 {
-				var err error
-				keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-				if err != nil {
-					return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+				// Get keys for this provider config if specified
+				var keys []configstoreTables.TableKey
+				if len(pc.KeyIDs) > 0 {
+					var err error
+					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+					if err != nil {
+						return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+					}
+					if len(keys) != len(pc.KeyIDs) {
+						return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+					}
 				}
-				if len(keys) != len(pc.KeyIDs) {
-					return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+
+				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
+					VirtualKeyID:  vk.ID,
+					Provider:      pc.Provider,
+					Weight:        pc.Weight,
+					AllowedModels: pc.AllowedModels,
+					Keys:          keys,
 				}
-			}
 
-			providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-				VirtualKeyID:  vk.ID,
-				Provider:      pc.Provider,
-				Weight:        pc.Weight,
-				AllowedModels: pc.AllowedModels,
-				Keys:          keys,
-			}
-
-			// Create budget for provider config if provided
-			if pc.Budget != nil {
+				// Create budget for provider config if provided
+				if pc.Budget != nil {
 					budget := configstoreTables.TableBudget{
 						ID:            uuid.NewString(),
 						MaxLimit:      pc.Budget.MaxLimit,
@@ -588,29 +592,29 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							return fmt.Errorf("both max_limit and reset_duration are required when creating a new provider budget")
 						}
 					}
-			// Get keys for this provider config if specified
-			var keys []configstoreTables.TableKey
-			if len(pc.KeyIDs) > 0 {
-				var err error
-				keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-				if err != nil {
-					return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
-				}
-				if len(keys) != len(pc.KeyIDs) {
-					return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
-				}
-			}
+					// Get keys for this provider config if specified
+					var keys []configstoreTables.TableKey
+					if len(pc.KeyIDs) > 0 {
+						var err error
+						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+						if err != nil {
+							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+						}
+						if len(keys) != len(pc.KeyIDs) {
+							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+						}
+					}
 
-				// Create new provider config
-				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-					VirtualKeyID:  vk.ID,
-					Provider:      pc.Provider,
-					Weight:        pc.Weight,
-					AllowedModels: pc.AllowedModels,
-					Keys:          keys,
-				}
-				// Create budget for provider config if provided
-				if pc.Budget != nil {
+					// Create new provider config
+					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
+						VirtualKeyID:  vk.ID,
+						Provider:      pc.Provider,
+						Weight:        pc.Weight,
+						AllowedModels: pc.AllowedModels,
+						Keys:          keys,
+					}
+					// Create budget for provider config if provided
+					if pc.Budget != nil {
 						budget := configstoreTables.TableBudget{
 							ID:            uuid.NewString(),
 							MaxLimit:      *pc.Budget.MaxLimit,
@@ -648,32 +652,32 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := h.configStore.CreateVirtualKeyProviderConfig(ctx, providerConfig, tx); err != nil {
 						return err
 					}
-			} else {
-			// Update existing provider config
-			existing, ok := existingConfigsMap[*pc.ID]
-			if !ok {
-				return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
-			}
-			requestConfigsMap[*pc.ID] = true
-			existing.Provider = pc.Provider
-			existing.Weight = pc.Weight
-			existing.AllowedModels = pc.AllowedModels
-
-				// Get keys for this provider config if specified
-				var keys []configstoreTables.TableKey
-				if len(pc.KeyIDs) > 0 {
-					var err error
-					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-					if err != nil {
-						return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+				} else {
+					// Update existing provider config
+					existing, ok := existingConfigsMap[*pc.ID]
+					if !ok {
+						return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
 					}
-					if len(keys) != len(pc.KeyIDs) {
-						return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
-					}
-				}
-				existing.Keys = keys
+					requestConfigsMap[*pc.ID] = true
+					existing.Provider = pc.Provider
+					existing.Weight = pc.Weight
+					existing.AllowedModels = pc.AllowedModels
 
-				// Handle budget updates for provider config
+					// Get keys for this provider config if specified
+					var keys []configstoreTables.TableKey
+					if len(pc.KeyIDs) > 0 {
+						var err error
+						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+						if err != nil {
+							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+						}
+						if len(keys) != len(pc.KeyIDs) {
+							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+						}
+					}
+					existing.Keys = keys
+
+					// Handle budget updates for provider config
 					if pc.Budget != nil {
 						if existing.BudgetID != nil {
 							// Update existing budget
@@ -885,6 +889,7 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 404, "Virtual key not found")
 			return
 		}
+		logger.Error("failed to delete virtual key: %v", err)
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
@@ -1313,6 +1318,16 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Customer deleted successfully",
+	})
+}
+
+// Governance data operations
+
+// getGovernanceData handles GET /api/governance/data - Get all governance data
+func (h *GovernanceHandler) getGovernanceData(ctx *fasthttp.RequestCtx) {
+	data := h.governanceManager.GetGovernanceData()
+	SendJSON(ctx, map[string]interface{}{
+		"data": data,
 	})
 }
 
