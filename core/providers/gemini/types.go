@@ -907,7 +907,18 @@ type GenerationConfigThinkingConfig struct {
 	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 	// Optional. Indicates the thinking budget in tokens.
 	ThinkingBudget *int32 `json:"thinkingBudget,omitempty"`
+
+	// Optional. Indicates the thinking level.
+	ThinkingLevel ThinkingLevel `json:"thinkingLevel,omitempty"`
 }
+
+type ThinkingLevel string
+
+const (
+	ThinkingLevelUnspecified ThinkingLevel = "THINKING_LEVEL_UNSPECIFIED"
+	ThinkingLevelLow         ThinkingLevel = "LOW"
+	ThinkingLevelHigh        ThinkingLevel = "HIGH"
+)
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {

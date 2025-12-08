@@ -222,6 +222,29 @@ ANTHROPIC_THINKING_STREAMING_PROMPT = [
     }
 ]
 
+# Gemini Reasoning Test Prompts
+GEMINI_REASONING_PROMPT = [
+    {
+        "role": "user",
+        "content": (
+            "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. "
+            "If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, "
+            "what is the farmer's weekly profit? Please show your step-by-step reasoning."
+        ),
+    }
+]
+
+GEMINI_REASONING_STREAMING_PROMPT = [
+    {
+        "role": "user",
+        "content": (
+            "A library has 1200 books. In January, they lent out 40% of their books. In February, they got 150 books returned and lent out 200 new books. "
+            "In March, they received 80 new books as donations and lent out 25% of their current inventory. "
+            "How many books does the library have available at the end of March? Think through this step by step."
+        ),
+    }
+]
+
 IMAGE_URL_MESSAGES = [
     {
         "role": "user",

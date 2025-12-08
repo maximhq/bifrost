@@ -8,55 +8,67 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// convertGenerationConfigToChatParameters converts Gemini GenerationConfig to ChatParameters
-func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *schemas.ChatParameters {
-	params := &schemas.ChatParameters{
+func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
+	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
 
 	config := r.GenerationConfig
 
-	// Map generation config fields to parameters
 	if config.Temperature != nil {
 		params.Temperature = config.Temperature
 	}
 	if config.TopP != nil {
 		params.TopP = config.TopP
 	}
+	if config.Logprobs != nil {
+		params.TopLogProbs = schemas.Ptr(int(*config.Logprobs))
+	}
 	if config.TopK != nil {
 		params.ExtraParams["top_k"] = *config.TopK
 	}
 	if config.MaxOutputTokens > 0 {
-		params.MaxCompletionTokens = schemas.Ptr(int(config.MaxOutputTokens))
+		params.MaxOutputTokens = schemas.Ptr(int(config.MaxOutputTokens))
+	}
+	if config.ThinkingConfig != nil {
+		params.Reasoning = &schemas.ResponsesParametersReasoning{}
+		if config.ThinkingConfig.ThinkingBudget != nil {
+			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
+		}
+		if config.ThinkingConfig.ThinkingLevel != ThinkingLevelUnspecified {
+			switch config.ThinkingConfig.ThinkingLevel {
+			case ThinkingLevelLow:
+				params.Reasoning.Effort = schemas.Ptr("low")
+			case ThinkingLevelHigh:
+				params.Reasoning.Effort = schemas.Ptr("high")
+			}
+		}
 	}
 	if config.CandidateCount > 0 {
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.Stop = config.StopSequences
+		params.ExtraParams["stop_sequences"] = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
-		params.PresencePenalty = config.PresencePenalty
+		params.ExtraParams["presence_penalty"] = config.PresencePenalty
 	}
 	if config.FrequencyPenalty != nil {
-		params.FrequencyPenalty = config.FrequencyPenalty
+		params.ExtraParams["frequency_penalty"] = config.FrequencyPenalty
 	}
 	if config.Seed != nil {
-		params.Seed = schemas.Ptr(int(*config.Seed))
+		params.ExtraParams["seed"] = int(*config.Seed)
 	}
 	if config.ResponseMIMEType != "" {
-		params.ExtraParams["response_mime_type"] = config.ResponseMIMEType
-
-		// Convert Gemini's response format to OpenAI's response_format for compatibility
 		switch config.ResponseMIMEType {
 		case "application/json":
-			params.ResponseFormat = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
+			params.Text = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
 		case "text/plain":
-			// Gemini text/plain → OpenAI text format
-			var responseFormat interface{} = map[string]interface{}{
-				"type": "text",
+			params.Text = &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "text",
+				},
 			}
-			params.ResponseFormat = &responseFormat
 		}
 	}
 	if config.ResponseSchema != nil {
@@ -68,15 +80,11 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 	if config.ResponseLogprobs {
 		params.ExtraParams["response_logprobs"] = config.ResponseLogprobs
 	}
-	if config.Logprobs != nil {
-		params.ExtraParams["logprobs"] = *config.Logprobs
-	}
-
 	return params
 }
 
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
-func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
+func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{
 		Type: strings.ToLower(string(schema.Type)),
 	}
@@ -197,16 +205,30 @@ func isImageMimeType(mimeType string) bool {
 	return false
 }
 
-// ensureExtraParams ensures that bifrostReq.Params and bifrostReq.Params.ExtraParams are initialized
-func ensureExtraParams(bifrostReq *schemas.BifrostChatRequest) {
-	if bifrostReq.Params == nil {
-		bifrostReq.Params = &schemas.ChatParameters{
-			ExtraParams: make(map[string]interface{}),
-		}
+var (
+	// Maps Gemini finish reasons to Bifrost format
+	geminiFinishReasonToBifrost = map[FinishReason]string{
+		FinishReasonStop:                  "stop",
+		FinishReasonMaxTokens:             "length",
+		FinishReasonSafety:                "content_filter",
+		FinishReasonRecitation:            "content_filter",
+		FinishReasonLanguage:              "content_filter",
+		FinishReasonOther:                 "stop",
+		FinishReasonBlocklist:             "content_filter",
+		FinishReasonProhibitedContent:     "content_filter",
+		FinishReasonSPII:                  "content_filter",
+		FinishReasonMalformedFunctionCall: "tool_calls",
+		FinishReasonImageSafety:           "content_filter",
+		FinishReasonUnexpectedToolCall:    "tool_calls",
 	}
-	if bifrostReq.Params.ExtraParams == nil {
-		bifrostReq.Params.ExtraParams = make(map[string]interface{})
+)
+
+// ConvertGeminiFinishReasonToBifrost converts Gemini finish reasons to Bifrost format
+func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
+	if bifrostReason, ok := geminiFinishReasonToBifrost[providerReason]; ok {
+		return bifrostReason
 	}
+	return string(providerReason)
 }
 
 // extractUsageMetadata extracts usage metadata from the Gemini response
@@ -220,6 +242,72 @@ func (r *GenerateContentResponse) extractUsageMetadata() (int, int, int, int, in
 		reasoningTokens = int(r.UsageMetadata.ThoughtsTokenCount)
 	}
 	return inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens
+}
+
+// convertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
+func convertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     int(metadata.PromptTokenCount),
+		CompletionTokens: int(metadata.CandidatesTokenCount),
+		TotalTokens:      int(metadata.TotalTokenCount),
+	}
+
+	// Add cached tokens if present
+	if metadata.CachedContentTokenCount > 0 {
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedTokens: int(metadata.CachedContentTokenCount),
+		}
+	}
+
+	// Add reasoning tokens if present
+	if metadata.ThoughtsTokenCount > 0 {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			ReasoningTokens: int(metadata.ThoughtsTokenCount),
+		}
+	}
+
+	return usage
+}
+
+// convertGeminiUsageMetadataToResponsesUsage converts Gemini usage metadata to Bifrost responses usage
+func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.ResponsesResponseUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.ResponsesResponseUsage{
+		TotalTokens:         int(metadata.TotalTokenCount),
+		InputTokens:         int(metadata.PromptTokenCount),
+		OutputTokens:        int(metadata.CandidatesTokenCount),
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{},
+		InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
+	}
+
+	// Add cached tokens if present
+	if metadata.CachedContentTokenCount > 0 {
+		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+			CachedTokens: int(metadata.CachedContentTokenCount),
+		}
+	}
+
+	if metadata.CandidatesTokensDetails != nil {
+		for _, detail := range metadata.CandidatesTokensDetails {
+			switch detail.Modality {
+			case "AUDIO":
+				usage.OutputTokensDetails.AudioTokens = int(detail.TokenCount)
+			}
+		}
+	}
+
+	if metadata.ThoughtsTokenCount > 0 {
+		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+	}
+
+	return usage
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
@@ -257,6 +345,22 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	if params.FrequencyPenalty != nil {
 		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
+	}
+	if params.Reasoning != nil {
+		config.ThinkingConfig = &GenerationConfigThinkingConfig{
+			IncludeThoughts: true,
+		}
+		if params.Reasoning.MaxTokens != nil {
+			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
+		}
+		if params.Reasoning.Effort != nil {
+			switch *params.Reasoning.Effort {
+			case "minimal", "low":
+				config.ThinkingConfig.ThinkingLevel = ThinkingLevelLow
+			case "medium", "high":
+				config.ThinkingConfig.ThinkingLevel = ThinkingLevelHigh
+			}
+		}
 	}
 
 	// Handle response_format to response_schema conversion
@@ -766,7 +870,7 @@ func convertGeminiTypeToJSONSchemaType(geminiType string) string {
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
-func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *interface{} {
+func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
 	var schema interface{}
 	name := "response_schema"
 
@@ -800,22 +904,23 @@ func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interf
 		}
 	} else {
 		// No schema provided - use older json_object mode
-		var format interface{} = map[string]interface{}{
-			"type": "json_object",
+		return &schemas.ResponsesTextConfig{
+			Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_object",
+			},
 		}
-		return &format
 	}
 
-	// Has schema - use json_schema mode (Structured Outputs)
-	var format interface{} = map[string]interface{}{
-		"type": "json_schema",
-		"json_schema": map[string]interface{}{
-			"name":   name,
-			"strict": false,
-			"schema": schema,
+	return &schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type: "json_schema",
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+				Name:   schemas.Ptr(name),
+				Strict: schemas.Ptr(false),
+				Schema: schemas.Ptr(schema),
+			},
 		},
 	}
-	return &format
 }
 
 // extractSchemaFromResponseFormat extracts Gemini Schema from OpenAI's response_format structure
@@ -857,4 +962,27 @@ func extractSchemaFromResponseFormat(responseFormat *interface{}) *Schema {
 	}
 
 	return schema
+}
+
+// extractFunctionResponseOutput extracts the output text from a FunctionResponse.
+// It first tries to extract the "output" field if present, otherwise marshals the entire response.
+// Returns an empty string if the response is nil or extraction fails.
+func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
+	if funcResp == nil || funcResp.Response == nil {
+		return ""
+	}
+
+	// Try to extract "output" field first
+	if outputVal, ok := funcResp.Response["output"]; ok {
+		if outputStr, ok := outputVal.(string); ok {
+			return outputStr
+		}
+	}
+
+	// If no "output" key, marshal the entire response
+	if jsonResponse, err := sonic.Marshal(funcResp.Response); err == nil {
+		return string(jsonResponse)
+	}
+
+	return ""
 }

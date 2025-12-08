@@ -131,6 +131,10 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 type ResponsesTextConfigFormatJSONSchema struct {
+	Name                 *string         `json:"name,omitempty"`
+	Schema               *any            `json:"schema,omitempty"`
+	Description          *string         `json:"description,omitempty"`
+	Strict               *bool           `json:"strict,omitempty"`
 	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
 	Properties           *map[string]any `json:"properties,omitempty"`
 	Required             []string        `json:"required,omitempty"`
