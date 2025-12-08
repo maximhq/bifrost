@@ -25,7 +25,7 @@ func TestVertex(t *testing.T) {
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:       schemas.Vertex,
 		ChatModel:      "google/gemini-2.0-flash-001",
-		VisionModel:    "google/gemini-2.0-flash-001",
+		VisionModel:    "gemini-2.0-flash-001",
 		TextModel:      "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel: "text-multilingual-embedding-002",
 		ReasoningModel: "claude-4.5-haiku",
@@ -36,7 +36,7 @@ func TestVertex(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // multiple tool calls supported on gemini endpoint only if all tools are search tools
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,

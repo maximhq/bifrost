@@ -48,17 +48,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					}, nil
 				} else {
 					return &schemas.BifrostRequest{
-						ChatRequest: geminiReq.ToBifrostChatRequest(),
+						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(),
 					}, nil
 				}
 			}
 			return nil, errors.New("invalid request type")
 		},
-		EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {			
+		EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
-		ChatResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (interface{}, error) {
-			return gemini.ToGeminiChatResponse(resp), nil
+		ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			return gemini.ToGeminiResponsesResponse(resp), nil
 		},
 		SpeechResponseConverter: func(ctx *context.Context, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
 			return gemini.ToGeminiSpeechResponse(resp), nil
@@ -70,8 +70,13 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-				return "", gemini.ToGeminiChatResponse(resp), nil
+			ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				geminiResponse := gemini.ToGeminiResponsesStreamResponse(resp)
+				// Skip lifecycle events with no Gemini equivalent
+				if geminiResponse == nil {
+					return "", nil, nil
+				}
+				return "", geminiResponse, nil
 			},
 			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)

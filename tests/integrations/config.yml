@@ -60,13 +60,13 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.0-flash"
-    vision: "gemini-2.0-flash"
-    tools: "gemini-2.0-flash"
+    chat: "gemini-2.5-flash"
+    vision: "gemini-2.5-flash"
+    tools: "gemini-2.5-flash"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
-    streaming: "gemini-2.0-flash"
+    streaming: "gemini-2.5-flash"
     alternatives:
       - "gemini-1.5-pro"
       - "gemini-1.5-flash"
