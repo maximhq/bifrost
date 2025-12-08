@@ -57,6 +57,11 @@ class BifrostTestRunner:
                     "ANTHROPIC_API_KEY",
                 ],  # LangChain uses multiple providers
             },
+            "vercelai": {
+                "file": "tests/integrations/tests/test_vercelai.py",
+                "description": "Vercel AI SDK integration tests",
+                "env_vars": ["OPENAI_API_KEY"],  # Vercel AI SDK uses OpenAI-compatible format
+            },
             "google": {
                 "file": "tests/integrations/test_google.py",
                 "description": "Google GenAI integration tests",

@@ -21,6 +21,7 @@ INTEGRATION_TO_PROVIDER_MAP = {
     "litellm": "openai",  # LiteLLM defaults to OpenAI
     "langchain": "openai",  # LangChain defaults to OpenAI
     "pydanticai": "openai",  # Pydantic AI defaults to OpenAI
+    "vercelai": "openai",  # Vercel AI SDK defaults to OpenAI
     "bedrock": "bedrock",  # Bedrock defaults to Amazon provider
 }
 

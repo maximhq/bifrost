@@ -19,6 +19,7 @@ var availableIntegrations = []string{
 	"genai",
 	"litellm",
 	"langchain",
+	"vercelai",
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.

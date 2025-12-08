@@ -14,6 +14,7 @@ bifrost:
     litellm: "litellm"
     langchain: "langchain"
     pydanticai: "pydanticai"
+    vercelai: "vercelai"
     bedrock: "bedrock"
 
   # Full URLs constructed as: {base_url.rstrip('/')}/{endpoints[integration]}

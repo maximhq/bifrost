@@ -46,6 +46,8 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.google)
         elif "test_litellm" in item.nodeid:
             item.add_marker(pytest.mark.litellm)
+        elif "test_vercelai" in item.nodeid:
+            item.add_marker(pytest.mark.openai)  # Vercel AI SDK uses OpenAI-compatible format
 
 
 @pytest.fixture(scope="session")
@@ -97,6 +99,8 @@ def pytest_runtest_makereport(item, call):
             integration = "google"
         elif "test_litellm" in item.nodeid:
             integration = "litellm"
+        elif "test_vercelai" in item.nodeid:
+            integration = "vercelai"
 
         test_name = item.name
 

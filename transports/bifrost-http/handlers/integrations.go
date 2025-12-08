@@ -25,6 +25,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewLangChainRouter(client, handlerStore, logger),
 		integrations.NewPydanticAIRouter(client, handlerStore, logger),
 		integrations.NewBedrockRouter(client, handlerStore, logger),
+		integrations.NewVercelAIRouter(client, handlerStore, logger),
 	}
 
 	return &IntegrationHandler{
