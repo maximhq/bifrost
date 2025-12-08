@@ -259,14 +259,14 @@ false
 {{- end }}
 {{- $_ := set $vectorStore "config" $weaviateConfig }}
 {{- else if eq .Values.vectorStore.type "redis" }}
-{{- $redisConfig := dict "host" (include "bifrost.redis.host" .) "port" (include "bifrost.redis.port" . | int) }}
+{{- $redisConfig := dict "addr" (printf "%s:%s" (include "bifrost.redis.host" .) (include "bifrost.redis.port" .)) }}
 {{- $password := include "bifrost.redis.password" . }}
 {{- if $password }}
 {{- $_ := set $redisConfig "password" $password }}
 {{- end }}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- if .Values.vectorStore.redis.external.database }}
-{{- $_ := set $redisConfig "database" .Values.vectorStore.redis.external.database }}
+{{- $_ := set $redisConfig "db" .Values.vectorStore.redis.external.database }}
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $redisConfig }}

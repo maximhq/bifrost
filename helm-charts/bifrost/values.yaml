@@ -126,9 +126,9 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
-    enableGovernance: false
+    enableGovernance: true
     enforceGovernanceHeader: false
-    allowDirectKeys: true
+    allowDirectKeys: false
     maxRequestBodySizeMb: 100
     enableLitellmFallbacks: false
     prometheusLabels: []
