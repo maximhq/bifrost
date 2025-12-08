@@ -1,0 +1,21 @@
+{
+"name": "bifrost-vercelai-tests",
+"version": "1.0.0",
+"description": "Integration tests for Vercel AI SDK with Bifrost",
+"type": "module",
+"scripts": {
+"test": "node --test test_vercelai.js",
+"test:verbose": "node --test --test-reporter spec test_vercelai.js"
+},
+"dependencies": {
+"ai": "^4.0.0",
+"@ai-sdk/openai": "^1.0.0",
+"zod": "^3.23.0"
+},
+"devDependencies": {
+"@types/node": "^20.0.0"
+},
+"engines": {
+"node": ">=18.0.0"
+}
+}
