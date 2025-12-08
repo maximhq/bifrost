@@ -27,11 +27,11 @@ type TableBudget struct {
 func (TableBudget) TableName() string { return "governance_budgets" }
 
 // BeforeSave hook for Budget to validate reset duration format and max limit
-func (b *TableBudget) BeforeSave(tx *gorm.DB) error {	
+func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 	// Validate that ResetDuration is in correct format (e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y")
 	if d, err := ParseDuration(b.ResetDuration); err != nil {
 		return fmt.Errorf("invalid reset duration format: %s", b.ResetDuration)
-	}else if d <= 0 {
+	} else if d <= 0 {
 		return fmt.Errorf("reset duration must be > 0: %s", b.ResetDuration)
 	}
 	// Validate that MaxLimit is not negative (budgets should be positive)
