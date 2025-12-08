@@ -13,13 +13,6 @@ import (
 func (request *GeminiGenerationRequest) ToBifrostSpeechRequest() *schemas.BifrostSpeechRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
-	if provider == schemas.Vertex {
-		// Add google/ prefix for Bifrost if not already present
-		if !strings.HasPrefix(model, "google/") {
-			model = "google/" + model
-		}
-	}
-
 	bifrostReq := &schemas.BifrostSpeechRequest{
 		Provider: provider,
 		Model:    model,
@@ -107,7 +100,7 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	// Convert parameters to generation config
 	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityAudio}
 	// Convert speech input to Gemini format
-	if bifrostReq.Input.Input != "" {
+	if bifrostReq.Input != nil && bifrostReq.Input.Input != "" {
 		geminiReq.Contents = []Content{
 			{
 				Parts: []*Part{
@@ -156,7 +149,7 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)
 					}
 					bifrostResp.Audio = wavData
-				}else{
+				} else {
 					bifrostResp.Audio = audioData
 				}
 			}

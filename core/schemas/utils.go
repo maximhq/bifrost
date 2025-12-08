@@ -1049,6 +1049,10 @@ func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
 }
 
+func IsGeminiModel(model string) bool {
+	return strings.Contains(model, "gemini")
+}
+
 // Precompiled regexes for different kinds of version suffixes.
 var (
 	// Anthropic-style date: 20250514
