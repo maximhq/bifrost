@@ -329,7 +329,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

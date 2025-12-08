@@ -73,7 +73,7 @@ export const DefaultNetworkConfig = {
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
-	stream_max_token_size: 10485760, // 10MB in bytes
+	stream_max_token_size_in_mb: 10, // 10MB
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {

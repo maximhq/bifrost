@@ -36,7 +36,7 @@ const NetworkConfigSchema = z
 		max_retries: z.number().min(0, "Max retries cannot be negative"),
 		retry_backoff_initial: z.number(),
 		retry_backoff_max: z.number(),
-		stream_max_token_size: z.number().min(1048576, "Stream max token size must be at least 1MB").max(104857600, "Stream max token size must be at most 100MB").optional(),
+		stream_max_token_size_in_mb: z.number().min(1, "Stream max token size must be at least 1MB").max(100, "Stream max token size must be at most 100MB").optional(),
 	})
 	.refine((v) => v.retry_backoff_initial <= v.retry_backoff_max, {
 		message: "Initial backoff must be <= max backoff",

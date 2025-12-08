@@ -401,7 +401,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		postHookRunner,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -751,7 +751,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		postHookRunner,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

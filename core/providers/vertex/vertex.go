@@ -581,7 +581,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
-			provider.networkConfig.StreamMaxTokenSize,
+			provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 		)
 	} else {
 		var authHeader map[string]string
@@ -659,7 +659,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			postRequestConverter,
 			postResponseConverter,
 			provider.logger,
-			provider.networkConfig.StreamMaxTokenSize,
+			provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 		)
 	}
 }
@@ -919,7 +919,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
-			provider.networkConfig.StreamMaxTokenSize,
+			provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 		)
 	} else {
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)

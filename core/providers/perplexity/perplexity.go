@@ -190,7 +190,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx context.Context, po
 		nil,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

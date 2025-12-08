@@ -190,7 +190,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx context.Context, postHook
 		nil,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

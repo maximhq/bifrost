@@ -39,7 +39,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
-				stream_max_token_size: provider.network_config?.stream_max_token_size ?? DefaultNetworkConfig.stream_max_token_size,
+				stream_max_token_size_in_mb: provider.network_config?.stream_max_token_size_in_mb ?? DefaultNetworkConfig.stream_max_token_size_in_mb,
 			},
 		},
 	});
@@ -69,7 +69,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
-				stream_max_token_size: data.network_config?.stream_max_token_size ?? 10485760,
+				stream_max_token_size_in_mb: data.network_config?.stream_max_token_size_in_mb ?? 10,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -95,7 +95,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
-				stream_max_token_size: provider.network_config?.stream_max_token_size ?? DefaultNetworkConfig.stream_max_token_size,
+				stream_max_token_size_in_mb: provider.network_config?.stream_max_token_size_in_mb ?? DefaultNetworkConfig.stream_max_token_size_in_mb,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -183,13 +183,13 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 						</div>
 						<FormField
 							control={form.control}
-							name="network_config.stream_max_token_size"
+							name="network_config.stream_max_token_size_in_mb"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Stream Max Token Size (bytes)</FormLabel>
+									<FormLabel>Stream Max Token Size (MB)</FormLabel>
 									<FormControl>
 										<Input
-											placeholder="10485760 (10MB)"
+											placeholder="10"
 											{...field}
 											value={field.value ?? ""}
 											onChange={(e) => {
@@ -199,7 +199,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 										/>
 									</FormControl>
 									<p className="text-xs text-muted-foreground">
-										Maximum buffer size for streaming responses. Default: 10MB (10485760 bytes). Range: 1MB - 100MB.
+										Maximum buffer size for streaming responses in megabytes. Default: 10MB. Range: 1MB - 100MB.
 									</p>
 									<FormMessage />
 								</FormItem>

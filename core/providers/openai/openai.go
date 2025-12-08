@@ -315,7 +315,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -703,7 +703,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -1165,7 +1165,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		nil,
 		nil,
 		provider.logger,
-		provider.networkConfig.StreamMaxTokenSize,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

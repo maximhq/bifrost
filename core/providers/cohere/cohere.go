@@ -413,7 +413,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, provider.networkConfig.StreamMaxTokenSize)
+		scanner.Buffer(buf, provider.networkConfig.GetStreamMaxTokenSizeInBytes())
 		chunkIndex := 0
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -628,7 +628,7 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, provider.networkConfig.StreamMaxTokenSize)
+		scanner.Buffer(buf, provider.networkConfig.GetStreamMaxTokenSizeInBytes())
 
 		chunkIndex := 0
 
