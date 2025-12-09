@@ -85,6 +85,19 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 	}
 }
 
+// GetProviderResponseFormat returns the appropriate response format for speech synthesis based on the provider
+// For Gemini, only "wav" format is supported, so we always return "wav" regardless of the requested format
+func GetProviderResponseFormat(provider schemas.ModelProvider, requestedFormat string) string {
+	switch provider {
+	case schemas.Gemini:
+		// Gemini only supports wav format for speech synthesis
+		return "wav"
+	default:
+		// Other providers support the requested format
+		return requestedFormat
+	}
+}
+
 type SampleToolType string
 
 const (
@@ -539,6 +552,9 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 		format = "mp3"
 	}
 
+	// Get the appropriate response format for the provider
+	responseFormat := GetProviderResponseFormat(provider, format)
+
 	req := &schemas.BifrostSpeechRequest{
 		Provider: provider,
 		Model:    ttsModel,
@@ -547,7 +563,7 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 			VoiceConfig: &schemas.SpeechVoiceInput{
 				Voice: &voice,
 			},
-			ResponseFormat: format,
+			ResponseFormat: responseFormat,
 		},
 	}
 

@@ -479,7 +479,7 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.Gemini:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				DefaultRequestTimeoutInSeconds: 120,
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10, // Gemini can be variable
 				RetryBackoffInitial:            750 * time.Millisecond,
 				RetryBackoffMax:                12 * time.Second,

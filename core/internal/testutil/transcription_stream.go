@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -65,6 +64,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 
 				// Step 1: Generate TTS audio
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
+				responseFormat := GetProviderResponseFormat(testConfig.Provider, tc.format)
 				ttsRequest := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
@@ -75,7 +75,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
-						ResponseFormat: tc.format,
+						ResponseFormat: responseFormat,
 					},
 					Fallbacks: testConfig.TranscriptionFallbacks,
 				}
