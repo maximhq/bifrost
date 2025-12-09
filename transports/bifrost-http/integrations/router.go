@@ -375,6 +375,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
+		// set context value to indicate this request is being handled by a bifrost integration
+		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyIntegrationRequest, true)
+
 		if isStreaming {
 			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx, cancel)
 		} else {

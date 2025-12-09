@@ -499,6 +499,19 @@ func HandleGeminiChatCompletionStream(
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		if ctx, shouldFallback := providerUtils.ShouldAttemptIntegrationFallback(ctx); shouldFallback {
+			chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+			if err != nil {
+				return nil, err
+			}
+
+			response := chatResponse.ToBifrostResponsesResponse()
+			response.ExtraFields.RequestType = schemas.ResponsesRequest
+			response.ExtraFields.Provider = provider.GetProviderKey()
+			response.ExtraFields.ModelRequested = request.Model
+
+			return response, nil
+		}
 		return nil, err
 	}
 
@@ -550,6 +563,10 @@ func (provider *GeminiProvider) Responses(ctx context.Context, key schemas.Key, 
 func (provider *GeminiProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if responses stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		if ctx, shouldFallback := providerUtils.ShouldAttemptIntegrationFallback(ctx); shouldFallback {
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+			return provider.ChatCompletionStream(ctx, postHookRunner, key, request.ToChatRequest())
+		}
 		return nil, err
 	}
 

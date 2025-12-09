@@ -1097,6 +1097,19 @@ func HandleOpenAIChatCompletionStreaming(
 func (provider *OpenAIProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
+		if ctx, shouldFallback := providerUtils.ShouldAttemptIntegrationFallback(ctx); shouldFallback {
+			chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+			if err != nil {
+				return nil, err
+			}
+
+			response := chatResponse.ToBifrostResponsesResponse()
+			response.ExtraFields.RequestType = schemas.ResponsesRequest
+			response.ExtraFields.Provider = provider.GetProviderKey()
+			response.ExtraFields.ModelRequested = request.Model
+
+			return response, nil
+		}
 		return nil, err
 	}
 
@@ -1203,6 +1216,10 @@ func HandleOpenAIResponsesRequest(
 func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		if ctx, shouldFallback := providerUtils.ShouldAttemptIntegrationFallback(ctx); shouldFallback {
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+			return provider.ChatCompletionStream(ctx, postHookRunner, key, request.ToChatRequest())
+		}
 		return nil, err
 	}
 	var authHeader map[string]string
