@@ -1119,3 +1119,26 @@ func GetBudgetTokensFromReasoningEffort(
 
 	return budget, nil
 }
+<<<<<<< HEAD
+=======
+
+// ShouldAttemptIntegrationFallback checks if an integration fallback should be attempted.
+// It returns:
+// - modified context with fallback flag set (if fallback should proceed)
+// - boolean indicating whether to proceed with fallback
+func ShouldAttemptIntegrationFallback(ctx context.Context) (context.Context, bool) {
+	// Check if this is an integration request
+	if _, ok := ctx.Value(schemas.BifrostContextKeyIntegrationRequest).(bool); !ok {
+		return ctx, false
+	}
+
+	// Check if fallback has already been attempted
+	if attempted, _ := ctx.Value(schemas.BifrostContextKeyIntegrationFallbackAttempted).(bool); attempted {
+		return ctx, false
+	}
+
+	// Mark fallback as attempted and return modified context
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyIntegrationFallbackAttempted, true)
+	return ctx, true
+}
+>>>>>>> aed5a393 (fix: reroute requests incoming from integrations for full compatibility in custom providers)
