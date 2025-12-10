@@ -73,15 +73,36 @@ cd bifrost/helm-charts/bifrost
 
 ### Storage Configuration
 
-Bifrost supports two storage backends:
+Bifrost supports two storage backends (SQLite and PostgreSQL) that can be configured independently for config and logs stores.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `storage.mode` | Storage backend: `sqlite` or `postgres` | `sqlite` |
+| `storage.mode` | Default storage backend (fallback when per-store type not set) | `sqlite` |
 | `storage.persistence.enabled` | Enable persistent storage for SQLite | `true` |
 | `storage.persistence.size` | Storage size | `10Gi` |
 | `storage.configStore.enabled` | Enable configuration store | `true` |
+| `storage.configStore.type` | Config store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled` | Enable logs store | `true` |
+| `storage.logsStore.type` | Logs store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
+
+#### Mixed Backend Example
+
+You can use different backends for config and logs stores:
+
+```yaml
+storage:
+  mode: sqlite  # Default fallback
+  configStore:
+    enabled: true
+    type: sqlite   # Config in SQLite (fast, local)
+  logsStore:
+    enabled: true
+    type: postgres # Logs in PostgreSQL (scalable, queryable)
+
+postgresql:
+  enabled: true
+  # ... PostgreSQL configuration for logs store
+```
 
 ### PostgreSQL Configuration
 
@@ -221,6 +242,7 @@ The chart includes pre-configured examples in `values-examples/`:
 |---------------|-------------|
 | `sqlite-only.yaml` | Simple setup with SQLite (local development) |
 | `postgres-only.yaml` | PostgreSQL for config and logs |
+| `mixed-backend.yaml` | SQLite for config + PostgreSQL for logs (mixed backend) |
 | `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching |
 | `postgres-redis.yaml` | PostgreSQL + Redis for semantic caching |
 | `postgres-qdrant.yaml` | PostgreSQL + Qdrant for semantic caching |

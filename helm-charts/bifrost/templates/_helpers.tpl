@@ -224,17 +224,28 @@ false
 {{- $_ := set $config "providers" .Values.bifrost.providers }}
 {{- end }}
 {{- /* Config Store */ -}}
-{{- if eq .Values.storage.mode "postgres" }}
+{{- if .Values.storage.configStore.enabled }}
+{{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
+{{- if eq $configStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
-{{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
-{{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
 {{- $sqliteConfigStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "config_store" $sqliteConfigStore }}
+{{- end }}
+{{- end }}
+{{- /* Logs Store */ -}}
+{{- if .Values.storage.logsStore.enabled }}
+{{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
+{{- if eq $logsStoreType "postgres" }}
+{{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
+{{- $_ := set $config "logs_store" $logsStore }}
+{{- else }}
 {{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}

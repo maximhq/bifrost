@@ -221,11 +221,11 @@ bifrost:
 
 # Storage configuration
 storage:
-  # Storage mode: sqlite or postgres
-  # This determines what config_store and logs_store use
+  # Default storage mode: sqlite or postgres
+  # Used as fallback when per-store type is not specified
   mode: sqlite  # Options: sqlite, postgres
   
-  # Persistent volume for SQLite databases (when mode is sqlite)
+  # Persistent volume for SQLite databases (when using sqlite for any store)
   persistence:
     enabled: true
     # storageClass: "-"  # Use default storage class
@@ -236,16 +236,16 @@ storage:
   # Configuration store settings
   configStore:
     enabled: true
-    # type is derived from storage.mode, but can be overridden
-    # type: sqlite  # Options: sqlite, postgres
+    # Backend type for config store. Empty string uses storage.mode as default
+    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
   
   # Logs store settings
   logsStore:
     enabled: true
-    # type is derived from storage.mode, but can be overridden
-    # type: sqlite  # Options: sqlite, postgres
+    # Backend type for logs store. Empty string uses storage.mode as default
+    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
 
-# PostgreSQL configuration (when storage.mode is postgres)
+# PostgreSQL configuration (when any store uses postgres)
 postgresql:
   # Deploy PostgreSQL as part of this chart
   enabled: false
