@@ -61,6 +61,7 @@ test-reports
 **/.coverage/
 **/.pytest_cache/
 
+
 # Nix specific
 .direnv
 .nix-store
@@ -110,3 +111,6 @@ terraform.tfstate
 terraform.tfstate.backup
 *.tfvars
 !*.tfvars.example
+
+# Bifrost benchmarking
+bifrost-benchmarking
