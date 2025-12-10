@@ -6,6 +6,7 @@ type TableFrameworkConfig struct {
 	ID                  uint    `gorm:"primaryKey;autoIncrement" json:"id"`
 	PricingURL          *string `gorm:"type:text" json:"pricing_url"`
 	PricingSyncInterval *int64  `gorm:"" json:"pricing_sync_interval"`
+	PricingTimeout      *int64  `gorm:"" json:"pricing_timeout"`
 }
 
 // TableName sets the table name for each model

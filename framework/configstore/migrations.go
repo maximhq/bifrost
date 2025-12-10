@@ -44,6 +44,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddFrameworkConfigsTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddFrameworkConfigPricingTimeoutColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationCleanupMCPClientToolsConfig(ctx, db); err != nil {
 		return err
 	}
@@ -81,6 +84,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAdd200kTokenPricingColumns(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationMoveKeysToProviderConfig(ctx, db); err != nil {
@@ -476,6 +482,27 @@ func migrationAddFrameworkConfigsTable(ctx context.Context, db *gorm.DB) error {
 			migrator := tx.Migrator()
 			if !migrator.HasTable(&tables.TableFrameworkConfig{}) {
 				if err := migrator.CreateTable(&tables.TableFrameworkConfig{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddFrameworkConfigPricingTimeoutColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_framework_config_pricing_timeout_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableFrameworkConfig{}, "pricing_timeout") {
+				if err := migrator.AddColumn(&tables.TableFrameworkConfig{}, "pricing_timeout"); err != nil {
 					return err
 				}
 			}
@@ -1136,6 +1163,54 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) e
 	return m.Migrate()
 }
 
+// migrationAdd200kTokenPricingColumns adds pricing columns for 200k token tier models
+func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_200k_token_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"InputCostPerTokenAbove200kTokens",
+				"OutputCostPerTokenAbove200kTokens",
+				"CacheCreationInputTokenCostAbove200kTokens",
+				"CacheReadInputTokenCostAbove200kTokens",
+			}
+
+			for _, field := range columns {
+				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"InputCostPerTokenAbove200kTokens",
+				"OutputCostPerTokenAbove200kTokens",
+				"CacheCreationInputTokenCostAbove200kTokens",
+				"CacheReadInputTokenCostAbove200kTokens",
+			}
+
+			for _, field := range columns {
+				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
 // migrationMoveKeysToProviderConfig migrates keys from virtual key level to provider config level
 func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -1402,7 +1477,7 @@ func migrationAddVirtualKeyConfigHashColumn(ctx context.Context, db *gorm.DB) er
 							return fmt.Errorf("failed to update hash for virtual key %s: %w", vk.ID, err)
 						}
 					}
-				}				
+				}
 			}
 			return nil
 		},

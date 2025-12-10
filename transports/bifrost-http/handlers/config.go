@@ -26,6 +26,7 @@ type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
+	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
@@ -55,6 +56,7 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bifr
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
+	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
@@ -92,6 +94,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
 				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
 				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
+				PricingTimeout:      bifrost.Ptr(int64(modelcatalog.DefaultPricingTimeout.Seconds())),
 			}
 		}
 	} else {
@@ -100,11 +103,19 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
 				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
 				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
+				PricingTimeout:      bifrost.Ptr(int64(modelcatalog.DefaultPricingTimeout.Seconds())),
 			}
 		} else if h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.PricingURL != nil {
+			var pricingTimeout int64
+			if h.store.FrameworkConfig.Pricing.PricingTimeout != nil {
+				pricingTimeout = int64((*h.store.FrameworkConfig.Pricing.PricingTimeout).Seconds())
+			} else {
+				pricingTimeout = int64(modelcatalog.DefaultPricingTimeout.Seconds())
+			}
 			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
 				PricingURL:          h.store.FrameworkConfig.Pricing.PricingURL,
-				PricingSyncInterval: bifrost.Ptr(int64(*h.store.FrameworkConfig.Pricing.PricingSyncInterval)),
+				PricingSyncInterval: bifrost.Ptr(int64((*h.store.FrameworkConfig.Pricing.PricingSyncInterval).Seconds())),
+				PricingTimeout:      bifrost.Ptr(pricingTimeout),
 			}
 		}
 	}
@@ -266,6 +277,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			ID:                  0,
 			PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
 			PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
+			PricingTimeout:      bifrost.Ptr(int64(modelcatalog.DefaultPricingTimeout.Seconds())),
 		}
 	}
 	// Handling individual nil cases
@@ -274,6 +286,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if frameworkConfig.PricingSyncInterval == nil {
 		frameworkConfig.PricingSyncInterval = bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds()))
+	}
+	if frameworkConfig.PricingTimeout == nil {
+		frameworkConfig.PricingTimeout = bifrost.Ptr(int64(modelcatalog.DefaultPricingTimeout.Seconds()))
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
@@ -301,6 +316,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			shouldReloadFrameworkConfig = true
 		}
 	}
+	if payload.FrameworkConfig.PricingTimeout != nil {
+		timeout := *payload.FrameworkConfig.PricingTimeout
+		if frameworkConfig.PricingTimeout == nil || timeout != *frameworkConfig.PricingTimeout {
+			frameworkConfig.PricingTimeout = &timeout
+			shouldReloadFrameworkConfig = true
+		}
+	}
 	// Reload config if required
 	if shouldReloadFrameworkConfig {
 		var syncDuration time.Duration
@@ -309,10 +331,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			syncDuration = modelcatalog.DefaultPricingSyncInterval
 		}
+		var timeoutDuration time.Duration
+		if frameworkConfig.PricingTimeout != nil {
+			timeoutDuration = time.Duration(*frameworkConfig.PricingTimeout) * time.Second
+		} else {
+			timeoutDuration = modelcatalog.DefaultPricingTimeout
+		}
 		h.store.FrameworkConfig = &framework.FrameworkConfig{
 			Pricing: &modelcatalog.Config{
 				PricingURL:          frameworkConfig.PricingURL,
 				PricingSyncInterval: &syncDuration,
+				PricingTimeout:      &timeoutDuration,
 			},
 		}
 		// Saving framework config
@@ -381,6 +410,26 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "configuration updated successfully",
+	})
+}
+
+// forceSyncPricing triggers an immediate pricing sync and resets the pricing sync timer
+func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	if err := h.configManager.ForceReloadPricing(ctx); err != nil {
+		logger.Warn(fmt.Sprintf("failed to force pricing sync: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "pricing sync triggered",
 	})
 }
 

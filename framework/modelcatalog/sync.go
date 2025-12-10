@@ -134,8 +134,9 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 // loadPricingFromURL loads pricing data from the remote URL
 func (mc *ModelCatalog) loadPricingFromURL(ctx context.Context) (map[string]PricingEntry, error) {
 	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	client := &http.Client{}
+	if timeout := mc.getPricingTimeout(); timeout > 0 {
+		client.Timeout = timeout
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mc.getPricingURL(), nil)
 	if err != nil {

@@ -61,6 +61,7 @@ type ServerCallbacks interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
+	ForceReloadPricing(ctx context.Context) error
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
@@ -815,6 +816,14 @@ func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
 		return fmt.Errorf("framework config not found")
 	}
 	return s.Config.PricingManager.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
+}
+
+// ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
+func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	return s.Config.PricingManager.ForceReloadPricing(ctx)
 }
 
 // ReloadProxyConfig reloads the proxy configuration
