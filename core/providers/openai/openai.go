@@ -2134,3 +2134,71 @@ func parseStreamOpenAIError(resp *fasthttp.Response, requestType schemas.Request
 
 	return bifrostErr
 }
+
+// ImageGeneration performs an Image Generation request to OpenAI's API.
+// It formats the request, sends it to OpenAI, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
+func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas.Key,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err // Handle error
+	}
+	openaiReq := ToOpenAIImageGenerationRequest(req)
+	if openaiReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
+	}
+
+	resp, latency, err := provider.doRequest(ctx, key, openaiReq)
+	if err != nil {
+		return nil, err
+	}
+
+	bifrostResp := ToBifrostImageResponse(resp, openaiReq.Model, latency)
+
+	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResp.ExtraFields.ModelRequested = openaiReq.Model
+	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
+
+	return bifrostResp, nil
+}
+
+// ImageGenerationStream handles streaming for image generation.
+// It formats the request body, creates HTTP request, and uses shared streaming logic.
+// Returns a channel for streaming responses and any error that occurred.
+func (provider *OpenAIProvider) ImageGenerationStream(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	// Check if image generation stream is allowed for this provider
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
+		return nil, err
+	}
+
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	if !StreamingEnabledImageModels[request.Model] || request.Model == "" {
+		return provider.simulateImageStreaming(ctx, postHookRunner, key, request)
+	}
+
+	// Use shared streaming logic
+	return HandleOpenAIImageGenerationStreaming(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
+}

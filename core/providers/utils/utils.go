@@ -552,6 +552,7 @@ func ProcessAndSendResponse(
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
 	}
 	if processedError != nil {
 		streamResponse.BifrostError = processedError

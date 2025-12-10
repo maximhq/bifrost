@@ -50,7 +50,7 @@ func RunImageGenerationLoadTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 							Prompt: "A test image for load testing - " + time.Now().Format("20060102150405"),
 						},
 						Params: &schemas.ImageGenerationParameters{
-							Size:           bifrost.Ptr("512x512"), // Smaller size for faster generation
+							Size:           bifrost.Ptr("1024x1024"), // Smaller size for faster generation
 							ResponseFormat: bifrost.Ptr("b64_json"),
 							N:              bifrost.Ptr(1),
 						},
@@ -137,7 +137,7 @@ func RunImageGenerationStreamLoadTest(t *testing.T, client *bifrost.Bifrost, ctx
 							Prompt: "A streaming test image for load testing",
 						},
 						Params: &schemas.ImageGenerationParameters{
-							Size:           bifrost.Ptr("512x512"),
+							Size:           bifrost.Ptr("1024x1024"),
 							ResponseFormat: bifrost.Ptr("b64_json"),
 							N:              bifrost.Ptr(1),
 						},
@@ -233,7 +233,7 @@ func RunImageGenerationCacheLoadTest(t *testing.T, client *bifrost.Bifrost, ctx 
 				Prompt: cachePrompt,
 			},
 			Params: &schemas.ImageGenerationParameters{
-				Size:           bifrost.Ptr("512x512"),
+				Size:           bifrost.Ptr("1024x1024"),
 				ResponseFormat: bifrost.Ptr("b64_json"),
 			},
 		}

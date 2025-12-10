@@ -21,38 +21,78 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			t.Parallel()
 		}
 
-		// Test basic image generation
-		request := &schemas.BifrostImageGenerationRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ImageGenerationModel,
-			Input: &schemas.ImageGenerationInput{
-				Prompt: "A serene Japanese garden with cherry blossoms in spring",
+		retryConfig := GetTestRetryConfigForScenario("ImageGeneration", testConfig)
+		retryContext := TestRetryContext{
+			ScenarioName:     "ImageGeneration",
+			ExpectedBehavior: map[string]interface{}{},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ImageGenerationModel,
 			},
-			Params: &schemas.ImageGenerationParameters{
-				Size:           bifrost.Ptr("1024x1024"),
-				Quality:        bifrost.Ptr("standard"),
-				ResponseFormat: bifrost.Ptr("b64_json"),
-				N:              bifrost.Ptr(1),
-			},
-			Fallbacks: testConfig.ImageGenerationFallbacks,
 		}
 
-		response, bifrostErr := client.ImageGenerationRequest(ctx, request)
-		if bifrostErr != nil {
-			t.Fatalf("❌ Image generation failed: %v", GetErrorMessage(bifrostErr))
+		expectations := GetExpectationsForScenario("ImageGeneration", testConfig, map[string]interface{}{
+			"min_images":    1,
+			"expected_size": "1024x1024",
+		})
+
+		imageGenerationRetryConfig := ImageGenerationRetryConfig{
+			MaxAttempts: retryConfig.MaxAttempts,
+			BaseDelay:   retryConfig.BaseDelay,
+			MaxDelay:    retryConfig.MaxDelay,
+			Conditions:  []ImageGenerationRetryCondition{},
+			OnRetry:     retryConfig.OnRetry,
+			OnFinalFail: retryConfig.OnFinalFail,
+		}
+		// Test basic image generation
+		imageGenerationOperation := func() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+			request := &schemas.BifrostImageGenerationRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ImageGenerationModel,
+				Input: &schemas.ImageGenerationInput{
+					Prompt: "A serene Japanese garden with cherry blossoms in spring",
+				},
+				Params: &schemas.ImageGenerationParameters{
+					Size:           bifrost.Ptr("1024x1024"),
+					Quality:        bifrost.Ptr("standard"),
+					ResponseFormat: bifrost.Ptr("b64_json"),
+					N:              bifrost.Ptr(1),
+				},
+				Fallbacks: testConfig.ImageGenerationFallbacks,
+			}
+
+			response, err := client.ImageGenerationRequest(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			if response != nil {
+				return response, nil
+			}
+			return nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "No image generation response returned",
+				},
+			}
+		}
+
+		imageGenerationResponse, imageGenerationError := WithImageGenerationRetry(t, imageGenerationRetryConfig, retryContext, expectations, "ImageGeneration", imageGenerationOperation)
+
+		if imageGenerationError != nil {
+			t.Fatalf("❌ Image generation failed: %v", GetErrorMessage(imageGenerationError))
 		}
 
 		// Validate response
-		if response == nil {
+		if imageGenerationResponse == nil {
 			t.Fatal("❌ Image generation returned nil response")
 		}
 
-		if len(response.Data) == 0 {
+		if len(imageGenerationResponse.Data) == 0 {
 			t.Fatal("❌ Image generation returned no image data")
 		}
 
 		// Validate first image
-		imageData := response.Data[0]
+		imageData := imageGenerationResponse.Data[0]
 		if imageData.B64JSON == "" && imageData.URL == "" {
 			t.Fatal("❌ Image data missing both b64_json and URL")
 		}
@@ -65,22 +105,22 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Validate usage if present
-		if response.Usage != nil {
-			if response.Usage.TotalTokens == 0 {
+		if imageGenerationResponse.Usage != nil {
+			if imageGenerationResponse.Usage.TotalTokens == 0 {
 				t.Logf("⚠️  Usage total_tokens is 0 (may be provider-specific)")
 			}
 		}
 
 		// Validate extra fields
-		if response.ExtraFields.Provider == "" {
+		if imageGenerationResponse.ExtraFields.Provider == "" {
 			t.Error("❌ ExtraFields.Provider is empty")
 		}
 
-		if response.ExtraFields.ModelRequested == "" {
+		if imageGenerationResponse.ExtraFields.ModelRequested == "" {
 			t.Error("❌ ExtraFields.ModelRequested is empty")
 		}
 
 		t.Logf("✅ Image generation successful: ID=%s, Provider=%s, Model=%s, Images=%d",
-			response.ID, response.ExtraFields.Provider, response.ExtraFields.ModelRequested, len(response.Data))
+			imageGenerationResponse.ID, imageGenerationResponse.ExtraFields.Provider, imageGenerationResponse.ExtraFields.ModelRequested, len(imageGenerationResponse.Data))
 	})
 }

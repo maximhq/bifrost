@@ -538,6 +538,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		PromptCachingModel:   "gpt-4.1",
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
+		ImageGenerationModel: "dall-e-2",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			TextCompletionStream:  false, // Not supported

@@ -1002,7 +1002,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			// Convert response to JSON
 			chunkJSON, err := sonic.Marshal(chunk)
 			if err != nil {
-				logger.Warn(fmt.Sprintf("Failed to marshal streaming response: %v", err))
+				logger.Warn(fmt.Sprintf("Failed to marshal streaming response: %v, chunk: %v", err, chunk))
 				continue
 			}
 
@@ -1191,6 +1191,10 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
+		if req.ResponseFormat != nil && *req.ResponseFormat == "url" {
+			SendError(ctx, fasthttp.StatusBadRequest, "streaming images must be requested in base64")
+			return
+		}
 		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
 		return
 	}

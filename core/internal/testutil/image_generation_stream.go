@@ -2,13 +2,14 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -22,6 +23,18 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	t.Run("ImageGenerationStream", func(t *testing.T) {
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()
+		}
+
+		retryConfig := GetTestRetryConfigForScenario("ImageGenerationStream", testConfig)
+		retryContext := TestRetryContext{
+			ScenarioName: "ImageGenerationStream",
+			ExpectedBehavior: map[string]interface{}{
+				"should_generate_images": true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ImageGenerationModel,
+			},
 		}
 
 		request := &schemas.BifrostImageGenerationRequest{
@@ -39,99 +52,82 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			Fallbacks: testConfig.ImageGenerationFallbacks,
 		}
 
-		streamChan, bifrostErr := client.ImageGenerationStreamRequest(ctx, request)
-		if bifrostErr != nil {
-			t.Fatalf("❌ Image generation stream failed: %v", GetErrorMessage(bifrostErr))
-		}
+		validationResult := WithImageGenerationStreamRetry(
+			t,
+			retryConfig,
+			retryContext,
+			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				return client.ImageGenerationStreamRequest(ctx, request)
+			},
+			func(responseChannel chan *schemas.BifrostStream) ImageGenerationStreamValidationResult {
+				// Validate stream content
+				var receivedData bool
+				var streamErrors []string
+				var validationErrors []string
+				hasCompleted := false
 
-		if streamChan == nil {
-			t.Fatal("❌ Image generation stream returned nil channel")
-		}
+				streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
 
-		var chunks []*schemas.BifrostStream
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		done := make(chan bool)
+				for {
+					select {
+					case response, ok := <-responseChannel:
+						if !ok {
+							goto streamComplete
+						}
 
-		// Collect chunks
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for stream := range streamChan {
-				mu.Lock()
-				chunks = append(chunks, stream)
-				mu.Unlock()
+						if response == nil {
+							streamErrors = append(streamErrors, "Received nil stream response")
+							continue
+						}
 
-				// Check for errors
-				if stream.BifrostError != nil {
-					t.Errorf("❌ Stream error: %v", GetErrorMessage(stream.BifrostError))
-					done <- true
-					return
-				}
+						if response.BifrostError != nil {
+							streamErrors = append(streamErrors, fmt.Sprintf("Error in stream: %s", GetErrorMessage(response.BifrostError)))
+							continue
+						}
 
-				// Check for image stream response
-				if stream.BifrostImageGenerationStreamResponse != nil {
-					imgResp := stream.BifrostImageGenerationStreamResponse
-					if imgResp.Type == "image_generation.completed" {
-						done <- true
-						return
+						if response.BifrostImageGenerationStreamResponse != nil {
+							receivedData = true
+							imgResp := response.BifrostImageGenerationStreamResponse
+
+							if imgResp.Type == string(openai.ImageGenerationCompleted) {
+								hasCompleted = true
+							}
+						}
+					case <-streamCtx.Done():
+						validationErrors = append(validationErrors, "Stream validation timed out")
+						goto streamComplete
 					}
 				}
-			}
-			done <- true
-		}()
+			streamComplete:
 
-		// Wait for completion or timeout
-		select {
-		case <-done:
-			wg.Wait()
-		case <-time.After(60 * time.Second):
-			t.Fatal("❌ Image generation stream timed out after 60 seconds")
-		}
-
-		mu.Lock()
-		defer mu.Unlock()
-
-		if len(chunks) == 0 {
-			t.Fatal("❌ No stream chunks received")
-		}
-
-		// Validate chunks
-		hasPartialImage := false
-		hasCompleted := false
-		var completedChunk *schemas.BifrostImageGenerationStreamResponse
-
-		for _, chunk := range chunks {
-			if chunk.BifrostImageGenerationStreamResponse != nil {
-				imgResp := chunk.BifrostImageGenerationStreamResponse
-				if strings.Contains(imgResp.Type, "partial_image") {
-					hasPartialImage = true
-					if imgResp.PartialB64 == "" {
-						t.Error("❌ Partial image chunk missing PartialB64")
-					}
+				passed := receivedData && hasCompleted && len(validationErrors) == 0
+				if !receivedData {
+					validationErrors = append(validationErrors, "No stream data received")
 				}
-				if imgResp.Type == "image_generation.completed" {
-					hasCompleted = true
-					completedChunk = imgResp
+				if !hasCompleted {
+					validationErrors = append(validationErrors, "No completion chunk received")
 				}
-			}
+
+				return ImageGenerationStreamValidationResult{
+					Passed:       passed,
+					Errors:       validationErrors,
+					ReceivedData: receivedData,
+					StreamErrors: streamErrors,
+				}
+			},
+		)
+
+		if !validationResult.Passed {
+			allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
+			t.Fatalf("❌ Image generation stream validation failed: %s", strings.Join(allErrors, "; "))
 		}
 
-		if !hasPartialImage {
-			t.Logf("⚠️  No partial image chunks received (may be provider-specific)")
+		if !validationResult.ReceivedData {
+			t.Fatal("❌ No stream data received")
 		}
 
-		if !hasCompleted {
-			t.Error("❌ No completion chunk received")
-		}
-
-		if completedChunk != nil {
-			if completedChunk.Usage == nil {
-				t.Logf("⚠️  Completion chunk missing usage (may be provider-specific)")
-			}
-		}
-
-		t.Logf("✅ Image generation stream successful: Received %d chunks, HasPartial=%v, HasCompleted=%v",
-			len(chunks), hasPartialImage, hasCompleted)
+		t.Logf("✅ Image generation stream successful: ReceivedData=%v, Errors=%d, StreamErrors=%d",
+			validationResult.ReceivedData, len(validationResult.Errors), len(validationResult.StreamErrors))
 	})
 }

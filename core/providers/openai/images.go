@@ -17,85 +17,17 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+type ImageGenerationEventType string
+
+const (
+	ImageGenerationPartial   ImageGenerationEventType = "image_generation.partial_image"
+	ImageGenerationCompleted ImageGenerationEventType = "image_generation.completed"
+)
+
 var StreamingEnabledImageModels = map[string]bool{
 	"gpt-image-1": true,
 	"dall-e-2":    false,
 	"dall-e-3":    false,
-}
-
-// OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
-type OpenAIImageGenerationRequest struct {
-	Model          string  `json:"model"`
-	Prompt         string  `json:"prompt"`
-	N              *int    `json:"n,omitempty"`
-	Size           *string `json:"size,omitempty"`
-	Quality        *string `json:"quality,omitempty"`
-	Style          *string `json:"style,omitempty"`
-	Stream         *bool   `json:"stream,omitempty"`
-	ResponseFormat *string `json:"response_format,omitempty"`
-	User           *string `json:"user,omitempty"`
-}
-
-// OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.
-type OpenAIImageGenerationResponse struct {
-	Created int64 `json:"created"`
-	Data    []struct {
-		URL           string `json:"url,omitempty"`
-		B64JSON       string `json:"b64_json,omitempty"`
-		RevisedPrompt string `json:"revised_prompt,omitempty"`
-	} `json:"data"`
-	Background   *string                     `json:"background,omitempty"`
-	OutputFormat *string                     `json:"output_format,omitempty"`
-	Size         *string                     `json:"size,omitempty"`
-	Quality      *string                     `json:"quality,omitempty"`
-	Usage        *OpenAIImageGenerationUsage `json:"usage"`
-}
-
-type OpenAIImageGenerationUsage struct {
-	TotalTokens  int `json:"total_tokens,omitempty"`
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
-
-	InputTokensDetails *struct {
-		TextTokens  int `json:"text_tokens,omitempty"`
-		ImageTokens int `json:"image_tokens,omitempty"`
-	} `json:"input_tokens_details,omitempty"`
-}
-
-// OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
-type OpenAIImageStreamResponse struct {
-	Type              string                      `json:"type,omitempty"`
-	B64JSON           *string                     `json:"b64_json,omitempty"`
-	PartialImageIndex int                         `json:"partial_image_index,omitempty"`
-	Usage             *OpenAIImageGenerationUsage `json:"usage,omitempty"`
-}
-
-// ImageGeneration performs an Image Generation request to OpenAI's API.
-// It formats the request, sends it to OpenAI, and processes the response.
-// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
-func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas.Key,
-	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
-		return nil, err // Handle error
-	}
-	openaiReq := ToOpenAIImageGenerationRequest(req)
-	if openaiReq == nil {
-		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
-	}
-
-	resp, latency, err := provider.DoRequest(ctx, key, openaiReq)
-	if err != nil {
-		return nil, err
-	}
-
-	bifrostResp := ToBifrostImageResponse(resp, openaiReq.Model, latency)
-
-	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
-	bifrostResp.ExtraFields.ModelRequested = openaiReq.Model
-	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
-
-	return bifrostResp, nil
 }
 
 // ToOpenAIImageGenerationRequest converts a Bifrost Image Request to OpenAI format
@@ -164,7 +96,7 @@ func ToBifrostImageResponse(openaiResponse *OpenAIImageGenerationResponse, reque
 }
 
 // DoRequest sends a non-streaming image generation request to the openai images api
-func (provider *OpenAIProvider) DoRequest(ctx context.Context, key schemas.Key, openaiRequest *OpenAIImageGenerationRequest) (*OpenAIImageGenerationResponse, time.Duration, *schemas.BifrostError) {
+func (provider *OpenAIProvider) doRequest(ctx context.Context, key schemas.Key, openaiRequest *OpenAIImageGenerationRequest) (*OpenAIImageGenerationResponse, time.Duration, *schemas.BifrostError) {
 
 	providerName := provider.GetProviderKey()
 
@@ -212,46 +144,6 @@ func (provider *OpenAIProvider) DoRequest(ctx context.Context, key schemas.Key, 
 
 	return openaiResponse, latency, nil
 
-}
-
-// ImageGenerationStream handles streaming for image generation.
-// It formats the request body, creates HTTP request, and uses shared streaming logic.
-// Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) ImageGenerationStream(
-	ctx context.Context,
-	postHookRunner schemas.PostHookRunner,
-	key schemas.Key,
-	request *schemas.BifrostImageGenerationRequest,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	// Check if image generation stream is allowed for this provider
-	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
-		return nil, err
-	}
-
-	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
-	}
-	if !StreamingEnabledImageModels[request.Model] || request.Model == "" {
-		return provider.simulateImageStreaming(ctx, postHookRunner, key, request)
-	}
-
-	// Use shared streaming logic
-	return HandleOpenAIImageGenerationStreaming(
-		ctx,
-		provider.client,
-		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
-		request,
-		authHeader,
-		provider.networkConfig.ExtraHeaders,
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.GetProviderKey(),
-		postHookRunner,
-		nil,
-		nil,
-		nil,
-		provider.logger,
-	)
 }
 
 func HandleOpenAIImageGenerationStreaming(
@@ -379,7 +271,7 @@ func HandleOpenAIImageGenerationStreaming(
 
 			// Check for end of stream
 			if line == "" {
-				break
+				continue
 			}
 
 			var jsonData string
@@ -421,67 +313,68 @@ func HandleOpenAIImageGenerationStreaming(
 
 			// TODO: Track Usage Correctly
 			// Handle final chunks (when stream_options include_usage is true)
-			if response.Type == "image_generation.completed" && response.Usage != nil {
+			if response.Type == ImageGenerationCompleted && response.Usage != nil {
 				// Collect usage information and send at the end of the stream
 				// Usage is contained within the completion message
 			}
 			// Handle image chunks
-			if response.Type == "image_generation.partial_image" || response.Type == "image_generation.completed" {
+			bifrostChunk := &schemas.BifrostImageGenerationStreamResponse{
+				ID:         uuid.NewString(),
+				Index:      response.PartialImageIndex,
+				ChunkIndex: chunkIndex,
+				PartialB64: "",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ImageGenerationStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex,
+					Latency:        time.Since(lastChunkTime).Milliseconds(),
+				},
+			}
+			switch response.Type {
+			case ImageGenerationCompleted:
+				bifrostChunk.Type = string(ImageGenerationCompleted)
+			case ImageGenerationPartial:
+				bifrostChunk.Type = string(ImageGenerationPartial)
+			}
 
-				bifrostChunk := &schemas.BifrostImageGenerationStreamResponse{
-					ID:         uuid.NewString(),
-					Type:       response.Type,
-					Index:      response.PartialImageIndex,
-					ChunkIndex: chunkIndex,
-					PartialB64: "",
-					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ImageGenerationStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(lastChunkTime).Milliseconds(),
-					},
-				}
-
-				// Split data into 64KB chunks
-				if response.B64JSON != nil {
-					b64Data := *response.B64JSON
-					chunkSize := 64 * 1024
-					for offset := 0; offset < len(b64Data); offset += chunkSize {
-						end := offset + chunkSize
-						if end > len(b64Data) {
-							end = len(b64Data)
-						}
-
-						chunkIndex++
-						chunk := b64Data[offset:end]
-						bifrostChunk.PartialB64 = chunk
-						bifrostChunk.ChunkIndex = chunkIndex
-
-						lastChunkTime = time.Now()
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk), responseChan)
+			// Split data into 64KB chunks
+			if response.B64JSON != nil {
+				b64Data := *response.B64JSON
+				chunkSize := 128 * 1024
+				for offset := 0; offset < len(b64Data); offset += chunkSize {
+					end := offset + chunkSize
+					if end > len(b64Data) {
+						end = len(b64Data)
 					}
-				} else {
+
 					chunkIndex++
-				}
+					chunk := b64Data[offset:end]
+					bifrostChunk.PartialB64 = chunk
+					bifrostChunk.ChunkIndex = chunkIndex
 
-				// Handle completion chunk
-				if response.Type == "image_generation.completed" {
-					if response.Usage != nil {
-						bifrostChunk.Usage = &schemas.ImageUsage{
-							PromptTokens: response.Usage.InputTokens,
-							TotalTokens:  response.Usage.TotalTokens,
-						}
-					}
-					bifrostChunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk),
-						responseChan)
+					lastChunkTime = time.Now()
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk), responseChan)
 				}
+			} else {
+				chunkIndex++
+			}
+
+			// Handle completion chunk
+			if response.Type == ImageGenerationCompleted {
+				if response.Usage != nil {
+					bifrostChunk.Usage = &schemas.ImageUsage{
+						PromptTokens: response.Usage.InputTokens,
+						TotalTokens:  response.Usage.TotalTokens,
+					}
+				}
+				bifrostChunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk),
+					responseChan)
 			}
 		}
-		// }
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
@@ -512,7 +405,8 @@ func (provider *OpenAIProvider) simulateImageStreaming(
 	go func() {
 		defer close(responseChan)
 
-		chunkSize := 64 * 1024
+		// Keep chunkSize as const
+		chunkSize := 128 * 1024
 
 		for imgIdx, img := range resp.Data {
 			if img.B64JSON == "" {
@@ -533,7 +427,7 @@ func (provider *OpenAIProvider) simulateImageStreaming(
 
 				chunk := &schemas.BifrostImageGenerationStreamResponse{
 					ID:            resp.ID,
-					Type:          "image_generation.partial_image",
+					Type:          string(ImageGenerationPartial),
 					Index:         imgIdx,
 					ChunkIndex:    chunkIndex,
 					PartialB64:    b64Data[offset:end],
@@ -546,7 +440,7 @@ func (provider *OpenAIProvider) simulateImageStreaming(
 				}
 
 				if isLastChunk {
-					chunk.Type = "image_generation.completed"
+					chunk.Type = string(ImageGenerationCompleted)
 					chunk.Usage = resp.Usage
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				}
