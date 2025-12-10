@@ -245,7 +245,7 @@ func (provider *GeminiProvider) ChatCompletion(ctx context.Context, key schemas.
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		bifrostResponse.ExtraFields.RawRequest = jsonData
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -386,6 +386,11 @@ func HandleGeminiChatCompletionStream(
 		var modelName string
 
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -688,6 +693,11 @@ func HandleGeminiResponsesStream(
 		var lastUsageMetadata *GenerateContentResponseUsageMetadata
 
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -1001,6 +1011,11 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			line := scanner.Text()
 
 			// Skip empty lines
@@ -1259,6 +1274,11 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		var fullTranscriptionText string
 
 		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			line := scanner.Text()
 
 			// Skip empty lines

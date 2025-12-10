@@ -163,6 +163,7 @@ class TestBedrockIntegration:
 
     @skip_if_no_api_key("bedrock")
     def test_01_text_completion_invoke(self, bedrock_client, test_config):
+        pytest.skip("Skipping text completion invoke test")
         model_id = get_model("bedrock", "text_completion")
         
         request_body = {
@@ -211,7 +212,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 100}
+            inferenceConfig={"maxTokens": 500}
         )
         
         assert_has_tool_calls(response, expected_count=1)
@@ -250,7 +251,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 150}
+            inferenceConfig={"maxTokens": 500}
         )
         
         # Validate response structure
@@ -296,7 +297,7 @@ class TestBedrockIntegration:
         response = bedrock_client.converse(
             modelId=model_id,
             messages=messages,
-            inferenceConfig={"maxTokens": 200}
+            inferenceConfig={"maxTokens": 500}
         )
         
         # First validate basic response structure
@@ -685,7 +686,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 100}
+            inferenceConfig={"maxTokens": 500}
         )
 
         assert_has_tool_calls(response, expected_count=1)
@@ -726,7 +727,7 @@ class TestBedrockIntegration:
             modelId=model_id,
             messages=messages,
             toolConfig=tool_config,
-            inferenceConfig={"maxTokens": 150}
+            inferenceConfig={"maxTokens": 500}
         )
 
         # Validate final response

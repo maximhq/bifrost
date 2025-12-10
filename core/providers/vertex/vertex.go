@@ -401,16 +401,16 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/mistralai/models/%s:rawPredict", region, projectID, region, deployment)
 		}
 	} else if schemas.IsGeminiModel(deployment) {
+		// Gemini models support api key
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
 		if region == "global" {
 			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
 		} else {
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, deployment)
 		}
 	} else {
-		// Other models use OpenAPI endpoint for gemini models
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
-		}
 		if region == "global" {
 			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
 		} else {
@@ -501,7 +501,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 	} else if schemas.IsGeminiModel(deployment) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, jsonBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -963,6 +963,11 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 		}
 
+		authQuery := ""
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+
 		var url string
 		if region == "global" {
 			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
@@ -980,16 +985,22 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 		req.Header.SetContentType("application/json")
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-		// Getting oauth2 token
-		tokenSource, err := getAuthTokenSource(key)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		// If auth query is set, add it to the URL
+		// Otherwise, get the oauth2 token and set the Authorization header
+		if authQuery != "" {
+			url = fmt.Sprintf("%s?%s", url, authQuery)
+		} else {
+			// Getting oauth2 token
+			tokenSource, err := getAuthTokenSource(key)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+			}
+			token, err := tokenSource.Token()
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+			}
+			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		}
-		token, err := tokenSource.Token()
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
-		}
-		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 		req.SetRequestURI(url)
 		req.SetBody(jsonBody)
@@ -1010,7 +1021,7 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 
 		geminiResponse := &gemini.GenerateContentResponse{}
 
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), geminiResponse, jsonBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1222,10 +1233,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			jsonData,
 			headers,
 			provider.networkConfig.ExtraHeaders,
-<<<<<<< HEAD
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-=======
->>>>>>> e38b5065 (feat: added support for gemini native converterswq)
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			request.Model,

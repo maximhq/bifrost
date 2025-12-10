@@ -262,7 +262,6 @@ class TestAnthropicIntegration:
             made_relevant_calls
         ), f"Expected tool calls from {expected_tools}, got {tool_names}"
 
-    @skip_if_no_api_key("anthropic")
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
     def test_05_end2end_tool_calling(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
@@ -275,7 +274,7 @@ class TestAnthropicIntegration:
             model=format_provider_model(provider, model),
             messages=messages,
             tools=tools,
-            max_tokens=100,
+            max_tokens=500,
         )
 
         assert_has_tool_calls(response, expected_count=1)
@@ -329,7 +328,6 @@ class TestAnthropicIntegration:
             # If no content, that's ok - tool result was sufficient
             print("Model returned empty content - tool result was sufficient")
 
-    @skip_if_no_api_key("anthropic")
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("automatic_function_calling"))
     def test_06_automatic_function_calling(self, anthropic_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
@@ -445,7 +443,6 @@ class TestAnthropicIntegration:
             word in content for word in COMPARISON_KEYWORDS
         ), f"Response should contain comparison keywords. Got content: {content}"
 
-    @skip_if_no_api_key("anthropic")
     def test_10_complex_end2end(self, anthropic_client, test_config):
         """Test Case 10: Complex end-to-end with conversation, images, and tools"""
         messages = [
@@ -531,7 +528,6 @@ class TestAnthropicIntegration:
                 # If no content, that's ok too - tool result was sufficient
                 print("Model returned empty content - tool result was sufficient")
 
-    @skip_if_no_api_key("anthropic")
     def test_11_integration_specific_features(self, anthropic_client, test_config):
         """Test Case 11: Anthropic-specific features"""
 
@@ -575,7 +571,6 @@ class TestAnthropicIntegration:
         # Should prefer calculator for math question
         assert tool_calls[0]["name"] == "calculate"
 
-    @skip_if_no_api_key("anthropic")
     def test_12_error_handling_invalid_roles(self, anthropic_client, test_config):
         """Test Case 12: Error handling for invalid roles"""
         # bifrost handles invalid roles internally so this test should not raise an exception
@@ -599,7 +594,7 @@ class TestAnthropicIntegration:
         stream = anthropic_client.messages.create(
             model=format_provider_model(provider, model),
             messages=STREAMING_CHAT_MESSAGES,
-            max_tokens=200,
+            max_tokens=1000,
             stream=True,
         )
 
@@ -621,7 +616,7 @@ class TestAnthropicIntegration:
                 stream_with_tools = anthropic_client.messages.create(
                     model=format_provider_model(provider, tools_model),
                     messages=STREAMING_TOOL_CALL_MESSAGES,
-                    max_tokens=150,
+                    max_tokens=1000,
                     tools=convert_to_anthropic_tools([WEATHER_TOOL]),
                     stream=True,
                 )
@@ -634,7 +629,6 @@ class TestAnthropicIntegration:
                 assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
                 assert tool_calls_detected_tools, "Should receive at least one chunk with tools"
         
-    @skip_if_no_api_key("anthropic")
     def test_14_list_models(self, anthropic_client, test_config):
         """Test Case 14: List models with pagination parameters"""
         # Test basic list with limit
@@ -669,19 +663,24 @@ class TestAnthropicIntegration:
                 )
                 assert prev_response.data is not None
                 assert len(prev_response.data) <= 2
-
-    @skip_if_no_api_key("anthropic")
-    def test_15_extended_thinking(self, anthropic_client, test_config):
+    
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_15_extended_thinking(self, anthropic_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
         """Test Case 15: Extended thinking/reasoning (non-streaming)"""
         # Convert to Anthropic message format
         messages = convert_to_anthropic_messages(ANTHROPIC_THINKING_PROMPT)
 
         response = anthropic_client.messages.create(
-            model=get_model("anthropic", "chat"),  # Specific thinking-capable model
-            max_tokens=16000,
+            model=format_provider_model(provider, model),  # Specific thinking-capable model
+            max_tokens=4000, # Reduced to prevent token limit errors for smaller context window models
             thinking={
                 "type": "enabled",
-                "budget_tokens": 10000,
+                "budget_tokens": 2500, # Reduced to prevent token limit errors
+            },
+            extra_body={
+                "reasoning_summary": "detailed"
             },
             messages=messages,
         )
@@ -744,20 +743,22 @@ class TestAnthropicIntegration:
 
         print(f"✓ Thinking content ({len(thinking_content)} chars): {thinking_content[:150]}...")
         print(f"✓ Response content: {regular_content[:100]}...")
-
-    @skip_if_no_api_key("anthropic")
-    def test_16_extended_thinking_streaming(self, anthropic_client, test_config):
+    
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_16_extended_thinking_streaming(self, anthropic_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
         """Test Case 16: Extended thinking/reasoning (streaming)"""
         # Convert to Anthropic message format
         messages = convert_to_anthropic_messages(ANTHROPIC_THINKING_STREAMING_PROMPT)
 
         # Stream with thinking enabled - use thinking-capable model
         stream = anthropic_client.messages.create(
-            model="anthropic/claude-sonnet-4-5",
-            max_tokens=16000,
+            model=format_provider_model(provider, model),
+            max_tokens=4000, # Reduced to prevent token limit errors for smaller context window models
             thinking={
                 "type": "enabled",
-                "budget_tokens": 10000,
+                "budget_tokens": 2000, # Reduced to prevent token limit errors
             },
             messages=messages,
             stream=True,

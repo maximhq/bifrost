@@ -561,10 +561,10 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
             if text_content:
                 content = text_content[0].text
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
-        # Handle OpenAI format
+        # Handle OpenAI format (content can be string or list)
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
-            content = choice.message.content or ""
+            content = get_content_string(choice.message.content)
     elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
         # Handle Bedrock format
         output = response["output"]
@@ -616,7 +616,7 @@ def assert_valid_image_response(response: Any):
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
-            content = (choice.message.content or "").lower()
+            content = get_content_string(choice.message.content).lower()
     elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
         output = response["output"]
         if "message" in output and "content" in output["message"]:

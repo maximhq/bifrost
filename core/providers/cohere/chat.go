@@ -690,5 +690,11 @@ func (cm *CohereMessage) ToBifrostChatMessage() *schemas.ChatMessage {
 		Content:              messageContent,
 		ChatAssistantMessage: assistantMessage,
 	}
+
+	if cm.Role == "tool" {
+		bifrostMessage.ChatToolMessage = &schemas.ChatToolMessage{
+			ToolCallID: cm.ToolCallID,
+		}
+	}
 	return bifrostMessage
 }

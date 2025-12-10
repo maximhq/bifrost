@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 type Role string
@@ -910,6 +912,46 @@ type GenerationConfigThinkingConfig struct {
 
 	// Optional. Indicates the thinking level.
 	ThinkingLevel ThinkingLevel `json:"thinkingLevel,omitempty"`
+}
+
+// Gemini API supports Camel case but genai sdk sends thinking fields as snake_case
+// UnmarshalJSON implements custom JSON unmarshaling to support both camelCase and snake_case
+func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
+	// Define an auxiliary struct with both camelCase and snake_case tags
+	type Alias struct {
+		IncludeThoughts      *bool          `json:"includeThoughts"`
+		IncludeThoughtsSnake *bool          `json:"include_thoughts"`
+		ThinkingBudget       *int32         `json:"thinkingBudget"`
+		ThinkingBudgetSnake  *int32         `json:"thinking_budget"`
+		ThinkingLevel        *ThinkingLevel `json:"thinkingLevel"`
+		ThinkingLevelSnake   *ThinkingLevel `json:"thinking_level"`
+	}
+
+	var aux Alias
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Prefer camelCase, fall back to snake_case
+	if aux.IncludeThoughts != nil {
+		tc.IncludeThoughts = *aux.IncludeThoughts
+	} else if aux.IncludeThoughtsSnake != nil {
+		tc.IncludeThoughts = *aux.IncludeThoughtsSnake
+	}
+
+	if aux.ThinkingBudget != nil {
+		tc.ThinkingBudget = aux.ThinkingBudget
+	} else if aux.ThinkingBudgetSnake != nil {
+		tc.ThinkingBudget = aux.ThinkingBudgetSnake
+	}
+
+	if aux.ThinkingLevel != nil {
+		tc.ThinkingLevel = *aux.ThinkingLevel
+	} else if aux.ThinkingLevelSnake != nil {
+		tc.ThinkingLevel = *aux.ThinkingLevelSnake
+	}
+
+	return nil
 }
 
 type ThinkingLevel string

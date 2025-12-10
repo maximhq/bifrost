@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
@@ -111,8 +110,6 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 							for _, event := range anthropicResponse {
 								responseJSON, err := sonic.Marshal(event)
 								if err != nil {
-									// Log JSON marshaling error but continue processing (should not happen)
-									log.Printf("Failed to marshal streaming response: %v", err)
 									continue
 								}
 								combinedContent += fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, responseJSON)

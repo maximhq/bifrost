@@ -32,6 +32,9 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	}
 	if config.ThinkingConfig != nil {
 		params.Reasoning = &schemas.ResponsesParametersReasoning{}
+		if strings.Contains(r.Model, "openai") {
+			params.Reasoning.Summary = schemas.Ptr("auto")
+		}
 		if config.ThinkingConfig.ThinkingBudget != nil {
 			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
 		}
@@ -352,8 +355,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		}
 		if params.Reasoning.MaxTokens != nil {
 			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
-		}
-		if params.Reasoning.Effort != nil {
+		} else if params.Reasoning.Effort != nil {
 			switch *params.Reasoning.Effort {
 			case "minimal", "low":
 				config.ThinkingConfig.ThinkingLevel = ThinkingLevelLow
@@ -668,6 +670,11 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 			content := Content{
 				Parts: parts,
 				Role:  string(message.Role),
+			}
+			if message.Role == schemas.ChatMessageRoleUser {
+				content.Role = "user"
+			} else {
+				content.Role = "model"
 			}
 			contents = append(contents, content)
 		}

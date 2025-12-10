@@ -475,7 +475,7 @@ class TestGoogleIntegration:
         response1 = google_client.models.generate_content(
             model=get_model("google", "chat"),
             contents="Tell me a creative story in one sentence.",
-            config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=100),
+            config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=1000),
         )
 
         assert_valid_chat_response(response1)
@@ -502,7 +502,7 @@ class TestGoogleIntegration:
             contents="high",
             config=types.GenerateContentConfig(
                 system_instruction="I say high, you say low",
-                max_output_tokens=10,
+                max_output_tokens=500,
             ),
         )
 
@@ -887,7 +887,8 @@ Joe: Pretty good, thanks for asking."""
             assert_valid_speech_response(wav_audio, expected_audio_size_min=1000)
 
     @skip_if_no_api_key("google")
-    def test_26_extended_thinking(self, google_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_26_extended_thinking(self, google_client, test_config, provider, model):
         """Test Case 26: Extended thinking/reasoning (non-streaming)"""
         from google.genai import types
         
@@ -896,14 +897,14 @@ Joe: Pretty good, thanks for asking."""
         
         # Use a thinking-capable model (Gemini 2.0+ supports thinking)
         response = google_client.models.generate_content(
-            model=get_model("google", "chat"),
+            model=format_provider_model(provider, model),
             contents=messages,
             config=types.GenerateContentConfig(
                 thinking_config=types.ThinkingConfig(
                     include_thoughts=True,
-                    thinking_budget=5000,
+                    thinking_budget=2000,
                 ),
-                max_output_tokens=800,
+                max_output_tokens=2500,
             ),
         )
         
@@ -917,22 +918,22 @@ Joe: Pretty good, thanks for asking."""
         assert hasattr(candidate.content, "parts"), "Content should have parts"
         
         # Check for thoughts in usage metadata
-        has_thoughts = False
-        thoughts_token_count = 0
-        
-        if hasattr(response, "usage_metadata"):
-            usage = response.usage_metadata
-            if hasattr(usage, "thoughts_token_count"):
-                thoughts_token_count = usage.thoughts_token_count
-                has_thoughts = thoughts_token_count > 0
-                print(f"Found thoughts with {thoughts_token_count} tokens")
-        
-        # Should have thinking/thoughts tokens
-        assert has_thoughts, (
-            f"Response should contain thoughts/reasoning tokens. "
-            f"Usage metadata: {response.usage_metadata if hasattr(response, 'usage_metadata') else 'None'}"
-        )
-        assert thoughts_token_count > 0, "Thoughts token count should be greater than 0"
+        if provider == "gemini":
+            has_thoughts = False
+            thoughts_token_count = 0
+            
+            if hasattr(response, "usage_metadata"):
+                usage = response.usage_metadata
+                if hasattr(usage, "thoughts_token_count"):
+                    thoughts_token_count = usage.thoughts_token_count
+                    has_thoughts = thoughts_token_count > 0
+                    print(f"Found thoughts with {thoughts_token_count} tokens")
+            
+            # Should have thinking/thoughts tokens
+            assert has_thoughts, (
+                f"Response should contain thoughts/reasoning tokens. "
+                f"Usage metadata: {response.usage_metadata if hasattr(response, 'usage_metadata') else 'None'}"
+            )
         
         # Validate that we have a response (even if thoughts aren't directly visible in parts)
         # In Gemini, thoughts are counted but may not be directly exposed in the response
@@ -944,7 +945,6 @@ Joe: Pretty good, thanks for asking."""
         # Should have regular response text
         assert len(regular_text) > 0, "Should have regular response text"
         
-        print(f"✓ Thoughts used {thoughts_token_count} tokens")
         print(f"✓ Response content: {regular_text[:200]}...")
         
         # Validate the response makes sense for the problem
@@ -963,7 +963,8 @@ Joe: Pretty good, thanks for asking."""
         )
 
     @skip_if_no_api_key("google")
-    def test_27_extended_thinking_streaming(self, google_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_27_extended_thinking_streaming(self, google_client, test_config, provider, model):
         """Test Case 27: Extended thinking/reasoning (streaming)"""
         from google.genai import types
         
@@ -972,14 +973,14 @@ Joe: Pretty good, thanks for asking."""
         
         # Stream with thinking enabled
         stream = google_client.models.generate_content_stream(
-            model=get_model("google", "chat"),
+            model=format_provider_model(provider, model),
             contents=messages,
             config=types.GenerateContentConfig(
                 thinking_config=types.ThinkingConfig(
                     include_thoughts=True,
-                    thinking_budget=5000,
+                    thinking_budget=2000,
                 ),
-                max_output_tokens=800,
+                max_output_tokens=2500,
             ),
         )
         
@@ -1005,7 +1006,7 @@ Joe: Pretty good, thanks for asking."""
             
             # Safety check
             if chunk_count > 500:
-                break
+                raise AssertionError("Received >500 streaming chunks; possible non-terminating stream")
         
         # Combine collected content
         complete_text = "".join(text_parts)
@@ -1015,21 +1016,19 @@ Joe: Pretty good, thanks for asking."""
         assert final_usage is not None, "Should have usage metadata"
         
         # Check for thoughts in usage metadata
-        has_thoughts = False
-        thoughts_token_count = 0
-        
-        if hasattr(final_usage, "thoughts_token_count"):
-            thoughts_token_count = final_usage.thoughts_token_count
-            has_thoughts = thoughts_token_count > 0
-        
-        assert has_thoughts, (
-            f"Should detect thinking in streaming. "
-            f"Usage metadata: {final_usage}"
-        )
-        assert thoughts_token_count > 0, (
-            f"Should have substantial thinking tokens, got {thoughts_token_count}. "
-            f"Text parts: {len(text_parts)}"
-        )
+        if provider == "gemini":
+            has_thoughts = False
+            thoughts_token_count = 0
+            
+            if hasattr(final_usage, "thoughts_token_count"):
+                thoughts_token_count = final_usage.thoughts_token_count
+                has_thoughts = thoughts_token_count > 0
+                print(f"Found thoughts with {thoughts_token_count} tokens")
+            
+            assert has_thoughts, (
+                f"Response should contain thoughts/reasoning tokens. "
+                f"Usage metadata: {final_usage if hasattr(final_usage, 'thoughts_token_count') else 'None'}"
+            )
         
         # Should have regular response text too
         assert len(complete_text) > 0, "Should have regular response text"
@@ -1049,7 +1048,6 @@ Joe: Pretty good, thanks for asking."""
             f"Found {keyword_matches} keywords. Content: {complete_text[:200]}..."
         )
         
-        print(f"✓ Streamed with thinking ({thoughts_token_count} thought tokens)")
         print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:150]}...")
 
 

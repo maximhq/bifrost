@@ -1131,7 +1131,7 @@ class TestOpenAIIntegration:
         response = openai_client.responses.create(
             model=format_provider_model(provider, model),
             input=RESPONSES_SIMPLE_TEXT_INPUT,
-            max_output_tokens=150,
+            max_output_tokens=1000,
         )
 
         # Validate response structure
@@ -1166,7 +1166,7 @@ class TestOpenAIIntegration:
         response = openai_client.responses.create(
             model=format_provider_model(provider, model),
             input=RESPONSES_TEXT_WITH_SYSTEM,
-            max_output_tokens=200,
+            max_output_tokens=1000,
         )
 
         # Validate response structure
@@ -1198,7 +1198,7 @@ class TestOpenAIIntegration:
         response = openai_client.responses.create(
             model=format_provider_model(provider, model),
             input=RESPONSES_IMAGE_INPUT,
-            max_output_tokens=200,
+            max_output_tokens=1000,
         )
 
         # Validate response structure
@@ -1294,7 +1294,7 @@ class TestOpenAIIntegration:
         stream = openai_client.responses.create(
             model=format_provider_model(provider, model),
             input=RESPONSES_STREAMING_INPUT,
-            max_output_tokens=150,
+            max_output_tokens=1000,
             stream=True,
         )
 
@@ -1383,10 +1383,11 @@ class TestOpenAIIntegration:
         )
 
     @skip_if_no_api_key("openai")
-    def test_38_responses_reasoning(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_38_responses_reasoning(self, openai_client, test_config, provider, model):
         """Test Case 38: Responses API with reasoning (gpt-5 model)"""
         # Use gpt-5 reasoning model
-        model_to_use = "openai/gpt-5"
+        model_to_use = format_provider_model(provider, model)
 
         try:
             response = openai_client.responses.create(

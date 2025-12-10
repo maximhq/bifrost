@@ -187,8 +187,8 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 
 	candidate := response.Candidates[0]
 
-	// Determine if this is the last chunk based on finish reason or usage metadata
-	isLastChunk := candidate.FinishReason != "" && candidate.FinishReason != FinishReasonUnspecified
+	// Determine if this is the last chunk based on finish reason and usage metadata
+	isLastChunk := candidate.FinishReason != "" && response.UsageMetadata != nil
 
 	// Create the streaming response
 	streamResponse := &schemas.BifrostChatResponse{
@@ -254,15 +254,6 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 						Name:      &part.FunctionCall.Name,
 						Arguments: jsonArgs,
 					},
-				}
-
-				// Preserve thought signature if present (required for Gemini 3 Pro)
-				if len(part.ThoughtSignature) > 0 {
-					toolCall.ExtraContent = map[string]interface{}{
-						"google": map[string]interface{}{
-							"thought_signature": string(part.ThoughtSignature),
-						},
-					}
 				}
 
 				toolCalls = append(toolCalls, toolCall)

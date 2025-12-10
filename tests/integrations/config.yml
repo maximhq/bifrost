@@ -41,6 +41,7 @@ providers:
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
     streaming: "gpt-4o-mini"
+    thinking: "gpt-5.1"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -52,7 +53,7 @@ providers:
     vision: "claude-3-7-sonnet-20250219"
     tools: "claude-sonnet-4-5-20250929"
     streaming: "claude-sonnet-4-5-20250929"
-    thinking: "claude-sonnet-4-20250514"
+    thinking: "claude-opus-4-5"
     alternatives:
       - "claude-3-sonnet-20240229"
       - "claude-3-opus-20240229"
@@ -63,6 +64,7 @@ providers:
     chat: "gemini-2.5-flash"
     vision: "gemini-2.5-flash"
     tools: "gemini-2.5-flash"
+    thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
@@ -78,7 +80,7 @@ providers:
     vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    thinking: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "cohere.embed-v4:0"
     alternatives:
@@ -120,7 +122,7 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
@@ -170,7 +172,7 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
