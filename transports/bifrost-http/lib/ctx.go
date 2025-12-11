@@ -87,6 +87,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	})
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
+	// Initialize extra headers map for headers prefixed with x-bf-eh-
+	extraHeaders := make(map[string]string)
 
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
@@ -221,6 +223,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			}
 			return true
 		}
+		// Extra headers: any header starting with x-bf-eh- will be collected
+		// and added to the map stored under schemas.BifrostContextKeyExtraHeaders
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
+			// store the raw header value as string
+			extraHeaders[labelName] = string(value)
+			return true
+		}
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
 			if valueStr := string(value); valueStr == "true" {
@@ -234,6 +243,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
 		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(maxim.TagsKey), maximTags)
+	}
+
+	// Store collected extra headers in the context if any were found
+	if len(extraHeaders) > 0 {
+		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
 	if allowDirectKeys {
