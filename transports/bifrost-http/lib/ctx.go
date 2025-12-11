@@ -162,6 +162,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
+		if keyStr == "x-bf-api-key" {
+			if keyName := strings.TrimSpace(string(value)); keyName != "" {
+				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyAPIKeyName, keyName)
+			}
+			return true
+		}
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
 			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheKey, string(value))
