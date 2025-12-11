@@ -3,7 +3,6 @@ package governance
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -545,27 +544,28 @@ func (gs *LocalGovernanceStore) DumpBudgets(ctx context.Context, baselines map[s
 	budgets := gs.GetAllBudgets()
 	budgetsToDelete := make([]string, 0)
 	if err := gs.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Update each budget atomically
+		// Update each budget atomically using direct UPDATE to avoid deadlocks
+		// (SELECT + Save pattern causes deadlocks when multiple instances run concurrently)
 		for _, inMemoryBudget := range budgets {
-			// Check if budget exists in database
-			var budget configstoreTables.TableBudget
-			if err := tx.WithContext(ctx).First(&budget, "id = ?", inMemoryBudget.ID).Error; err != nil {
-				// If budget not found then it must be deleted, so we remove it from the in-memory store
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					budgetsToDelete = append(budgetsToDelete, inMemoryBudget.ID)
-					continue
-				}
-				return fmt.Errorf("failed to get budget %s: %w", inMemoryBudget.ID, err)
+			// Calculate the new usage value
+			newUsage := inMemoryBudget.CurrentUsage
+			if baseline, exists := baselines[inMemoryBudget.ID]; exists {
+				newUsage += baseline
 			}
 
-			// Update usage
-			if baseline, exists := baselines[inMemoryBudget.ID]; exists {
-				budget.CurrentUsage = inMemoryBudget.CurrentUsage + baseline
-			} else {
-				budget.CurrentUsage = inMemoryBudget.CurrentUsage
+			// Direct UPDATE avoids read-then-write lock escalation that causes deadlocks
+			result := tx.WithContext(ctx).
+				Model(&configstoreTables.TableBudget{}).
+				Where("id = ?", inMemoryBudget.ID).
+				Update("current_usage", newUsage)
+
+			if result.Error != nil {
+				return fmt.Errorf("failed to update budget %s: %w", inMemoryBudget.ID, result.Error)
 			}
-			if err := tx.WithContext(ctx).Save(&budget).Error; err != nil {
-				return fmt.Errorf("failed to save budget %s: %w", inMemoryBudget.ID, err)
+
+			// If no rows affected, budget was deleted from database
+			if result.RowsAffected == 0 {
+				budgetsToDelete = append(budgetsToDelete, inMemoryBudget.ID)
 			}
 		}
 		return nil
