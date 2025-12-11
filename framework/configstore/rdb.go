@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -1368,6 +1369,9 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var virtualKey tables.TableVirtualKey
 		if err := tx.WithContext(ctx).Preload("ProviderConfigs").First(&virtualKey, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
 			return err
 		}
 
@@ -1401,19 +1405,28 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string) error 
 		}
 		// Delete the budget associated with the virtual key
 		if virtualKey.BudgetID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", virtualKey.BudgetID).Error; err != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *virtualKey.BudgetID).Error; err != nil {
 				return err
 			}
 		}
 		// Delete the rate limit associated with the virtual key
 		if virtualKey.RateLimitID != nil {
-			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", virtualKey.RateLimitID).Error; err != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *virtualKey.RateLimitID).Error; err != nil {
 				return err
 			}
 		}
 		// Delete the virtual key
-		return tx.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error
+		if err := tx.WithContext(ctx).Delete(&tables.TableVirtualKey{}, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return nil
 	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
 		return err
 	}
 	return nil
@@ -1621,16 +1634,34 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var team tables.TableTeam
-		if err := tx.WithContext(ctx).First(&team, "id = ?", id).Error; err != nil {
+		if err := tx.WithContext(ctx).Preload("Budget").First(&team, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
 			return err
 		}
 		// Set team_id to null for all virtual keys associated with the team
 		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
 			return err
 		}
+		// Delete the team's budget if it exists
+		if team.BudgetID != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *team.BudgetID).Error; err != nil {
+				return err
+			}
+		}
 		// Delete the team
-		return tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error
+		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return nil
 	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
 		return err
 	}
 	return nil
@@ -1692,7 +1723,10 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var customer tables.TableCustomer
-		if err := tx.WithContext(ctx).First(&customer, "id = ?", id).Error; err != nil {
+		if err := tx.WithContext(ctx).Preload("Budget").First(&customer, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
 			return err
 		}
 		// Set customer_id to null for all virtual keys associated with the customer
@@ -1703,9 +1737,24 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 		if err := tx.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
 			return err
 		}
+		// Delete the customer's budget if it exists
+		if customer.BudgetID != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *customer.BudgetID).Error; err != nil {
+				return err
+			}
+		}
 		// Delete the customer
-		return tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error
+		if err := tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		return nil
 	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
 		return err
 	}
 	return nil
@@ -2069,6 +2118,33 @@ func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error 
 // ExecuteTransaction executes a transaction.
 func (s *RDBConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return s.db.WithContext(ctx).Transaction(fn)
+}
+
+// RetryOnNotFound retries a function up to 3 times with 1-second delays if it returns ErrNotFound
+func (s *RDBConfigStore) RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error) {
+	var lastErr error
+	for attempt := range maxRetries {
+		result, err := fn(ctx)
+		if err == nil {
+			return result, nil
+		}
+		if !errors.Is(err, ErrNotFound) && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+
+		lastErr = err
+
+		// Don't wait after the last attempt
+		if attempt < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay):
+				// Continue to next retry
+			}
+		}
+	}
+	return nil, lastErr
 }
 
 // doesTableExist checks if a table exists in the database.

@@ -193,7 +193,7 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
 func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider string, model string, requestID string) *EvaluationResult {
-	if err, decision := r.store.CheckRateLimit(ctx, vk, schemas.ModelProvider(provider), model, requestID, nil, nil); err != nil {
+	if decision, err := r.store.CheckRateLimit(ctx, vk, schemas.ModelProvider(provider), model, requestID, nil, nil); err != nil {
 		// Check provider-level first (matching check order), then VK-level
 		var rateLimitInfo *configstoreTables.TableRateLimit
 		for _, pc := range vk.ProviderConfigs {
@@ -220,11 +220,11 @@ func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *config
 func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
 	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
-		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))
+		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, err.Error()))
 
 		return &EvaluationResult{
 			Decision:   DecisionBudgetExceeded,
-			Reason:     fmt.Sprintf("Budget check failed: %s", err.Error()),
+			Reason:     fmt.Sprintf("Budget exceeded: %s", err.Error()),
 			VirtualKey: vk,
 		}
 	}

@@ -39,6 +39,9 @@ type GovernanceHandler struct {
 
 // NewGovernanceHandler creates a new governance handler instance
 func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+	if manager == nil {
+		return nil, fmt.Errorf("governance manager is required")
+	}
 	if configStore == nil {
 		return nil, fmt.Errorf("config store is required")
 	}
@@ -663,19 +666,20 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
 
-					// Get keys for this provider config if specified
-					var keys []configstoreTables.TableKey
-					if len(pc.KeyIDs) > 0 {
-						var err error
-						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+					// Update keys only if KeyIDs field was present in the request.
+					// - If pc.KeyIDs is nil (field omitted), leave existing.Keys unchanged.
+					// - If pc.KeyIDs is an empty slice (field present but empty), clear keys.
+					// - If pc.KeyIDs has values, update keys accordingly.
+					if pc.KeyIDs != nil {
+						keys, err := h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 						if err != nil {
 							return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
 						}
 						if len(keys) != len(pc.KeyIDs) {
 							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
 						}
+						existing.Keys = keys
 					}
-					existing.Keys = keys
 
 					// Handle budget updates for provider config
 					if pc.Budget != nil {

@@ -37,6 +37,15 @@ type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
+type BaseGovernancePlugin interface {
+	GetName() string
+	TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	Cleanup() error
+	GetGovernanceStore() GovernanceStore
+}
+
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
 	ctx        context.Context
@@ -148,6 +157,18 @@ func Init(
 	return plugin, nil
 }
 
+// InitFromStore initializes and returns a governance plugin instance with a custom store.
+//
+// This constructor allows providing a custom GovernanceStore implementation instead of
+// creating a new LocalGovernanceStore. Use this when you need to:
+//   - Inject a custom store implementation for testing
+//   - Use a pre-configured store instance
+//   - Integrate with non-standard storage backends
+//
+// Parameters are the same as Init, except governanceConfig is replaced by governanceStore.
+// The governanceStore must not be nil, or an error is returned.
+//
+// See Init documentation for details on other parameters and behavior.
 func InitFromStore(
 	ctx context.Context,
 	config *Config,
@@ -592,15 +613,20 @@ func (p *GovernancePlugin) Cleanup() error {
 func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
+	p.logger.Info("postHookWorker worker started")
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
 
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
+		p.logger.Info("calculating cost")
+		p.logger.Info("modelCatalog present: %t", p.modelCatalog != nil)
+		p.logger.Info("result present: %t", result != nil)
 		if p.modelCatalog != nil && result != nil {
 			cost = p.modelCatalog.CalculateCostWithCacheDebug(result)
 		}
+		p.logger.Info("cost: %f", cost)
 		tokensUsed := 0
 		if result != nil {
 			switch {
