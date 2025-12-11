@@ -34,21 +34,21 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				name:           "RoundTrip_Basic_MP3",
 				text:           TTSTestTextBasic,
 				voiceType:      "primary",
-				format:         "mp3",
+				format:         "wav",
 				responseFormat: bifrost.Ptr("json"),
 			},
 			{
 				name:           "RoundTrip_Medium_MP3",
 				text:           TTSTestTextMedium,
 				voiceType:      "secondary",
-				format:         "mp3",
+				format:         "wav",
 				responseFormat: bifrost.Ptr("json"),
 			},
 			{
 				name:           "RoundTrip_Technical_MP3",
 				text:           TTSTestTextTechnical,
 				voiceType:      "tertiary",
-				format:         "mp3",
+				format:         "wav",
 				responseFormat: bifrost.Ptr("json"),
 			},
 		}
@@ -61,6 +61,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 				// Step 1: Generate TTS audio
 				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
+				responseFormat := GetProviderResponseFormat(testConfig.Provider, tc.format)
+
 				ttsRequest := &schemas.BifrostSpeechRequest{
 					Provider: testConfig.Provider,
 					Model:    testConfig.SpeechSynthesisModel,
@@ -71,7 +73,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						VoiceConfig: &schemas.SpeechVoiceInput{
 							Voice: &voice,
 						},
-						ResponseFormat: tc.format,
+						ResponseFormat: responseFormat,
 					},
 					Fallbacks: testConfig.TranscriptionFallbacks,
 				}

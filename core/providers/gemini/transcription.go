@@ -13,6 +13,9 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
 		Provider: provider,
 		Model:    model,
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: make(map[string]interface{}),
+		},
 	}
 
 	// Extract audio data and prompt from contents
@@ -60,11 +63,6 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 		File: audioData,
 	}
 
-	// Set parameters
-	if bifrostReq.Params == nil {
-		bifrostReq.Params = &schemas.TranscriptionParameters{}
-	}
-
 	// Set prompt if provided
 	if promptText != "" {
 		bifrostReq.Params.Prompt = &promptText
@@ -72,25 +70,16 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 
 	// Handle safety settings from request
 	if len(request.SafetySettings) > 0 {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
-		}
 		bifrostReq.Params.ExtraParams["safety_settings"] = request.SafetySettings
 	}
 
 	// Handle cached content
 	if request.CachedContent != "" {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
-		}
 		bifrostReq.Params.ExtraParams["cached_content"] = request.CachedContent
 	}
 
 	// Handle labels
 	if len(request.Labels) > 0 {
-		if bifrostReq.Params.ExtraParams == nil {
-			bifrostReq.Params.ExtraParams = make(map[string]interface{})
-		}
 		bifrostReq.Params.ExtraParams["labels"] = request.Labels
 	}
 
