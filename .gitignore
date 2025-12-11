@@ -50,3 +50,6 @@ test-reports
 **/.pytest_cache/
 **/.coverage/
 **/.pytest_cache/
+
+# Bifrost benchmarking
+bifrost-benchmarking
