@@ -67,7 +67,15 @@ import (
 //	fastCtx := &fasthttp.RequestCtx{...}
 //	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true)
 //	defer cancel() // Ensure cleanup
-//	// bifrostCtx now contains any prometheus and maxim header values
+// ConvertToBifrostContext creates a cancellable context populated with values derived from the given FastHTTP request context.
+// It copies user values from the request, ensures a request ID (generating a UUID if missing), and maps specific HTTP headers into well-known context keys.
+// Prometheus headers (x-bf-prom-*) and Maxim headers (x-bf-maxim-*) are stored under corresponding Bifrost context keys; other x-bf-maxim-* headers are collected as Maxim tags.
+// MCP include filters (x-bf-mcp-include-clients / include-tools) are parsed into []string and stored under "mcp-*" keys.
+// Virtual key and API key headers (x-bf-vk, Authorization Bearer with governance prefix, x-api-key, x-goog-api-key, x-bf-api-key) are captured into virtual/API key context keys.
+// Semantic cache headers (x-bf-cache-key, x-bf-cache-ttl, x-bf-cache-threshold, x-bf-cache-type, x-bf-cache-no-store) and x-bf-send-back-raw-response are parsed and stored under their respective keys.
+// If allowDirectKeys is true, an API key (from Authorization, x-api-key, or x-goog-api-key when not a governance virtual key) is wrapped as a schemas.Key and stored as a direct key.
+// If the request contains a Bifrost x-litellm-fallback user value, a fallback flag is set in the context.
+// The function returns a pointer to the constructed context and a CancelFunc to cancel it.
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*context.Context, context.CancelFunc) {
 	// Create cancellable context for all requests
