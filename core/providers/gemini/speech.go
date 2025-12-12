@@ -172,7 +172,7 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 				{
 					InlineData: &Blob{
 						Data:     bifrostResp.Audio,
-						MIMEType: detectAudioMimeType(bifrostResp.Audio),
+						MIMEType: utils.DetectAudioMimeType(bifrostResp.Audio),
 					},
 				},
 			},

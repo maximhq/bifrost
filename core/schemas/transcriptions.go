@@ -34,6 +34,10 @@ type TranscriptionParameters struct {
 	Prompt         *string `json:"prompt,omitempty"`
 	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
 	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
+	MaxLength      *int    `json:"max_length,omitempty"`      // Maximum length of the transcription used by HuggingFace
+	MinLength      *int    `json:"min_length,omitempty"`      // Minimum length of the transcription used by HuggingFace
+	MaxNewTokens   *int    `json:"max_new_tokens,omitempty"`  // Maximum new tokens to generate used by HuggingFace
+	MinNewTokens   *int    `json:"min_new_tokens,omitempty"`  // Minimum new tokens to generate used by HuggingFace
 
 	// Elevenlabs-specific fields
 	AdditionalFormats []TranscriptionAdditionalFormat `json:"additional_formats,omitempty"`
