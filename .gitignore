@@ -54,3 +54,7 @@ test-reports
 
 # Cursor specific
 .cursor/
+
+# Nix specific
+.direnv
+.nix-store
