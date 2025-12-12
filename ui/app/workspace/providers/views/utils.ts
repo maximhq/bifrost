@@ -1,1 +1,1 @@
-export const keysRequired = (selectedProvider: string) => selectedProvider.toLowerCase() === "custom" || !["sgl"].includes(selectedProvider.toLowerCase());
+export const keysRequired = (selectedProvider: string) => selectedProvider.toLowerCase() === "custom" || !["ollama","sgl"].includes(selectedProvider.toLowerCase());

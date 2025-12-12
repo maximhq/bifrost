@@ -232,7 +232,7 @@ export const ProviderFormSchema = z
 		}
 
 		// Keys validation
-		const keysRequired = data.selectedProvider === "custom" || !["sgl"].includes(data.selectedProvider);
+		const keysRequired = data.selectedProvider === "custom" || !["ollama","sgl"].includes(data.selectedProvider);
 		if (keysRequired) {
 			if (data.keys.length < 1) {
 				ctx.addIssue({
