@@ -69,6 +69,7 @@ type ServerCallbacks interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
+	GetGovernanceData() *governance.GovernanceData
 	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
 	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
@@ -197,14 +198,14 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 }
 
 type GovernanceInMemoryStore struct {
-	config *lib.Config
+	Config *lib.Config
 }
 
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
 	// Use read lock for thread-safe access - no need to copy on hot path
-	s.config.Mu.RLock()
-	defer s.config.Mu.RUnlock()
-	return s.config.Providers
+	s.Config.Mu.RLock()
+	defer s.Config.Mu.RUnlock()
+	return s.Config.Providers
 }
 
 // LoadPlugin loads a plugin by name and returns it as type T.
@@ -265,7 +266,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{
-			config: bifrostConfig,
+			Config: bifrostConfig,
 		}
 		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager, inMemoryStore)
 		if err != nil {
@@ -320,7 +321,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 }
 
 // LoadPlugins loads the plugins for the server.
-func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []schemas.PluginStatus, error) {
+func LoadPlugins(ctx context.Context, config *lib.Config, pluginsToSkip []string) ([]schemas.Plugin, []schemas.PluginStatus, error) {
 	var err error
 	pluginStatus := []schemas.PluginStatus{}
 	plugins := []schemas.Plugin{}
@@ -334,12 +335,14 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 			Logs:   []string{fmt.Sprintf("error initializing telemetry plugin %v", err)},
 		})
 	} else {
-		plugins = append(plugins, promPlugin)
-		pluginStatus = append(pluginStatus, schemas.PluginStatus{
-			Name:   telemetry.PluginName,
-			Status: schemas.PluginStatusActive,
-			Logs:   []string{"telemetry plugin initialized successfully"},
-		})
+		if !slices.Contains(pluginsToSkip, telemetry.PluginName) {
+			plugins = append(plugins, promPlugin)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   telemetry.PluginName,
+				Status: schemas.PluginStatusActive,
+				Logs:   []string{"telemetry plugin initialized successfully"},
+			})
+		}
 	}
 	// Initializing logger plugin
 	var loggingPlugin *logging.LoggerPlugin
@@ -356,12 +359,14 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("error initializing logging plugin %v", err)},
 			})
 		} else {
-			plugins = append(plugins, loggingPlugin)
-			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   logging.PluginName,
-				Status: schemas.PluginStatusActive,
-				Logs:   []string{"logging plugin initialized successfully"},
-			})
+			if !slices.Contains(pluginsToSkip, logging.PluginName) {
+				plugins = append(plugins, loggingPlugin)
+				pluginStatus = append(pluginStatus, schemas.PluginStatus{
+					Name:   logging.PluginName,
+					Status: schemas.PluginStatusActive,
+					Logs:   []string{"logging plugin initialized successfully"},
+				})
+			}
 		}
 	} else {
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -385,12 +390,14 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("error initializing governance plugin %v", err)},
 			})
 		} else {
-			plugins = append(plugins, governancePlugin)
-			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   governance.PluginName,
-				Status: schemas.PluginStatusActive,
-				Logs:   []string{"governance plugin initialized successfully"},
-			})
+			if !slices.Contains(pluginsToSkip, governance.PluginName) {
+				plugins = append(plugins, governancePlugin)
+				pluginStatus = append(pluginStatus, schemas.PluginStatus{
+					Name:   governance.PluginName,
+					Status: schemas.PluginStatusActive,
+					Logs:   []string{"governance plugin initialized successfully"},
+				})
+			}
 		}
 	} else {
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -402,6 +409,10 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 	for _, plugin := range config.PluginConfigs {
 		// Skip built-in plugins that are already handled above
 		if plugin.Name == telemetry.PluginName || plugin.Name == logging.PluginName || plugin.Name == governance.PluginName {
+			continue
+		}
+		// Skip plugins that are in the skip list
+		if slices.Contains(pluginsToSkip, plugin.Name) {
 			continue
 		}
 		if !plugin.Enabled {
@@ -487,18 +498,6 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	}
 	// Add to in-memory store
 	governancePlugin.GetGovernanceStore().UpdateVirtualKeyInMemory(preloadedVk)
-	// If budget was created, add it to in-memory store
-	if preloadedVk.BudgetID != nil && preloadedVk.Budget != nil {
-		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedVk.Budget)
-	}
-	// Add provider-level budgets to in-memory store
-	if preloadedVk.ProviderConfigs != nil {
-		for _, pc := range preloadedVk.ProviderConfigs {
-			if pc.BudgetID != nil && pc.Budget != nil {
-				governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(pc.Budget)
-			}
-		}
-	}
 	return preloadedVk, nil
 }
 
@@ -520,26 +519,9 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 	if preloadedVk == nil {
 		// This could be broadcast message from other server, so we will just clean up in-memory store
 		governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
-		if budgetIDs, ok := ctx.Value(BifrostContextKeyBudgetIDs).([]string); ok {
-			for _, budgetID := range budgetIDs {
-				governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
-			}
-		}
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteVirtualKeyInMemory(id)
-	// If budget was created, delete it from in-memory store
-	if preloadedVk.BudgetID != nil && preloadedVk.Budget != nil {
-		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedVk.BudgetID)
-	}
-	// Delete provider-level budgets from in-memory store
-	if preloadedVk.ProviderConfigs != nil {
-		for _, pc := range preloadedVk.ProviderConfigs {
-			if pc.BudgetID != nil && pc.Budget != nil {
-				governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*pc.BudgetID)
-			}
-		}
-	}
 	return nil
 }
 
@@ -560,10 +542,6 @@ func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.
 	}
 	// Add to in-memory store
 	governancePlugin.GetGovernanceStore().UpdateTeamInMemory(preloadedTeam)
-	// If budget was created, add it to in-memory store
-	if preloadedTeam.BudgetID != nil && preloadedTeam.Budget != nil {
-		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedTeam.Budget)
-	}
 	return preloadedTeam, nil
 }
 
@@ -585,16 +563,9 @@ func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
 	if preloadedTeam == nil {
 		// At-least deleting from in-memory store to avoid conflicts
 		governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
-		if budgetID, ok := ctx.Value(BifrostContextKeyBudgetID).(string); ok {
-			governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
-		}
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteTeamInMemory(id)
-	// If budget was created, delete it from in-memory store
-	if preloadedTeam.BudgetID != nil && preloadedTeam.Budget != nil {
-		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedTeam.BudgetID)
-	}
 	return nil
 }
 
@@ -613,10 +584,6 @@ func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tab
 	}
 	// Add to in-memory store
 	governancePlugin.GetGovernanceStore().UpdateCustomerInMemory(preloadedCustomer)
-	// If budget was created, add it to in-memory store
-	if preloadedCustomer.BudgetID != nil && preloadedCustomer.Budget != nil {
-		governancePlugin.GetGovernanceStore().UpdateBudgetInMemory(preloadedCustomer.Budget)
-	}
 	return preloadedCustomer, nil
 }
 
@@ -638,17 +605,19 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 	if preloadedCustomer == nil {
 		// At-least deleting from in-memory store to avoid conflicts
 		governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
-		if budgetID, ok := ctx.Value(BifrostContextKeyBudgetID).(string); ok {
-			governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(budgetID)
-		}
 		return nil
 	}
 	governancePlugin.GetGovernanceStore().DeleteCustomerInMemory(id)
-	// If budget was created, delete it from in-memory store
-	if preloadedCustomer.BudgetID != nil && preloadedCustomer.Budget != nil {
-		governancePlugin.GetGovernanceStore().DeleteBudgetInMemory(*preloadedCustomer.BudgetID)
-	}
 	return nil
+}
+
+// GetGovernanceData returns the governance data
+func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
+	governancePlugin, err := FindPluginByName[*governance.GovernancePlugin](s.Plugins, governance.PluginName)
+	if err != nil {
+		return nil
+	}
+	return governancePlugin.GetGovernanceStore().GetGovernanceData()
 }
 
 // ReloadClientConfigFromConfigStore reloads the client config from config store
@@ -1103,7 +1072,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Load plugins
 	s.pluginStatusMutex.Lock()
 	defer s.pluginStatusMutex.Unlock()
-	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config)
+	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config, []string{})
 	if err != nil {
 		return fmt.Errorf("failed to load plugins %v", err)
 	}
