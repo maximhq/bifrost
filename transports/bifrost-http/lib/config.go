@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
+	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )
 
@@ -265,30 +266,60 @@ func (c *Config) initializeEncryption(configKey string) error {
 //   - Graceful handling of missing config files
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	// Initialize separate database connections for optimal performance at scale
-	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
 	logsDBPath := filepath.Join(configDirPath, "logs.db")
+
 	// Initialize config
 	config := &Config{
-		configPath: configFilePath,
+		configPath: filepath.Join(configDirPath, "config.json"),
 		EnvKeys:    make(map[string][]configstore.EnvKeyInfo),
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
 		Plugins:    atomic.Pointer[[]schemas.Plugin]{},
 	}
-	// Getting absolute path for config file
-	absConfigFilePath, err := filepath.Abs(configFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get absolute path for config file: %w", err)
+
+	// Check if config file exists
+	// Check order: config.json -> config.yaml -> config.yml
+	var data []byte
+	var err error
+	var absConfigFilePath string
+	var loadedFile string
+
+	possibleFiles := []string{"config.json", "config.yaml", "config.yml"}
+	for _, file := range possibleFiles {
+		fullPath := filepath.Join(configDirPath, file)
+		data, err = os.ReadFile(fullPath)
+		if err == nil {
+			loadedFile = file
+			absConfigFilePath, _ = filepath.Abs(fullPath)
+			config.configPath = fullPath
+			break
+		}
+		if !os.IsNotExist(err) {
+			// Real error reading file
+			return nil, fmt.Errorf("failed to read config file %s: %w", file, err)
+		}
 	}
 	// Check if config file exists
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
-		// If config file doesn't exist, we will directly use the config store (create one if it doesn't exist)
-		if os.IsNotExist(err) {
-			logger.Info("config file not found at path: %s, initializing with default values", absConfigFilePath)
-			return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath)
+	if loadedFile == "" {
+		// No config file found, use defaults
+		absConfigFilePath, _ = filepath.Abs(filepath.Join(configDirPath, "config.json")) // Default for logging
+		logger.Info("config file not found in %s, initializing with default values", configDirPath)
+		return loadConfigFromDefaults(ctx, config, configDBPath, logsDBPath)
+	}
+
+	// If it's a YAML file, convert to JSON first
+	// This handles YAML aliases/anchors by unmarshaling to interface{} first
+	if strings.HasSuffix(loadedFile, ".yaml") || strings.HasSuffix(loadedFile, ".yml") {
+		var yamlData interface{}
+		if err := yaml.Unmarshal(data, &yamlData); err != nil {
+			return nil, fmt.Errorf("failed to parse yaml config file: %w", err)
 		}
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		// Convert back to JSON
+		jsonData, err := json.Marshal(yamlData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert yaml config to json: %w", err)
+		}
+		data = jsonData
 	}
 	// If file exists, we will do a quick check if that file includes "$schema":"https://www.getbifrost.ai/schema", If not we will show a warning in a box - yellow color
 	var schema map[string]interface{}
