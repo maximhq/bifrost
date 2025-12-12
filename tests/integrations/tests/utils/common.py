@@ -2460,3 +2460,81 @@ def skip_if_no_bedrock_s3():
 
     if not is_bedrock_s3_configured():
         pytest.skip("Bedrock S3 tests require AWS_S3_BUCKET environment variable")
+
+
+def get_content_string_with_summary(response: Any) -> tuple[str, bool]:
+    """
+    Extract content from response, handling both OpenAI API responses and LangChain AIMessage objects.
+    
+    Returns:
+        tuple: (content_string, has_reasoning_content)
+    """
+    content = ""
+    has_reasoning_content = False
+    
+    # Check if this is a LangChain AIMessage object
+    if hasattr(response, 'content') and hasattr(response, 'response_metadata'):
+        # LangChain AIMessage
+        if isinstance(response.content, str):
+            content = response.content
+        elif isinstance(response.content, list):
+            for item in response.content:
+                if isinstance(item, dict):
+                    # Check for reasoning block with summary
+                    if item.get('type') == 'reasoning' and 'summary' in item:
+                        has_reasoning_content = True
+                        summary = item.get('summary')
+                        if isinstance(summary, list):
+                            for summary_block in summary:
+                                if isinstance(summary_block, dict) and 'text' in summary_block:
+                                    content += summary_block['text'] + " "
+                    # Check for reasoning block with content (Gemini format)
+                    elif item.get('type') == 'reasoning' and 'content' in item:
+                        has_reasoning_content = True
+                        reasoning_content = item.get('content')
+                        if isinstance(reasoning_content, list):
+                            for content_block in reasoning_content:
+                                if isinstance(content_block, dict) and 'text' in content_block:
+                                    content += content_block['text'] + " "
+                    # Check for text block
+                    elif item.get('type') == 'text' and 'text' in item:
+                        content += item['text'] + " "
+        return content.strip(), has_reasoning_content
+    
+    # OpenAI API response - check output messages
+    if hasattr(response, 'output'):
+        for message in response.output:
+            if hasattr(message, "type"):
+                # Check if we have a reasoning message type
+                if message.type == "reasoning":
+                    has_reasoning_content = True
+            
+            # Check regular content
+            if hasattr(message, "content") and message.content:
+                if isinstance(message.content, str):
+                    content += message.content
+                elif isinstance(message.content, list):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            content += block.text
+                        # Check for reasoning content blocks
+                        if hasattr(block, "type") and block.type == "reasoning_text":
+                            has_reasoning_content = True
+                    
+            # Check summary field within output messages (reasoning models)
+            if hasattr(message, "summary") and message.summary:
+                has_reasoning_content = True  # Presence of summary indicates reasoning
+                if isinstance(message.summary, list):
+                    for summary_item in message.summary:
+                        if hasattr(summary_item, "text") and summary_item.text:
+                            content += " " + summary_item.text
+                        elif isinstance(summary_item, dict) and "text" in summary_item:
+                            content += " " + summary_item["text"]
+                        # Check for summary_text type
+                        if hasattr(summary_item, "type") and summary_item.type == "summary_text":
+                            has_reasoning_content = True
+                        elif isinstance(summary_item, dict) and summary_item.get("type") == "summary_text":
+                            has_reasoning_content = True
+                elif isinstance(message.summary, str):
+                    content += " " + message.summary
+    return content, has_reasoning_content

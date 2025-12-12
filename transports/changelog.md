@@ -3,3 +3,6 @@
 - chore: increased provider-level timeout limit to 48 hours
 - chore: bumped up Go version to 1.25.5
 - docs: updates key management links for integration docs - [@Georgehe4](https://github.com/Georgehe4)
+- feat: prompt caching support for anthropic and bedrock(claude and nova models)
+- feat: reasoning support for bedrock nova 2 models
+- docs: updated langchain docs for reasoning and embedding

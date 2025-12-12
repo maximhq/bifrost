@@ -292,6 +292,261 @@ const azureResponse = await azureLlm.invoke("Hello from Azure!");
 
 ---
 
+## Reasoning/Thinking Models
+
+Control extended reasoning capabilities for models that support thinking/reasoning modes.
+
+### Azure OpenAI Models
+
+For Azure OpenAI reasoning models, use `ChatOpenAI` with the `reasoning` parameter and Azure-specific headers:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# Azure OpenAI with reasoning control
+llm = ChatOpenAI(
+    model="azure/gpt-5.1",  # Azure deployment name
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    reasoning={
+        "effort": "high",      # "minimal" | "low" | "medium" | "high"
+        "summary": "detailed"  # "auto" | "concise" | "detailed"
+    },
+    default_headers={
+        "authorization": "Bearer your-azure-api-key",
+        "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Solve this complex problem...")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+// Azure OpenAI with reasoning control
+const llm = new ChatOpenAI({
+  model: "azure/gpt-5.1",  // Azure deployment name
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "authorization": "Bearer your-azure-api-key",
+      "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+    }
+  },
+  openAIApiKey: "dummy-key",
+  reasoning: {
+    effort: "high",
+    summary: "detailed"
+  }
+});
+
+const response = await llm.invoke("Solve this complex problem...");
+```
+
+</Tab>
+</Tabs>
+
+### OpenAI Models
+
+For OpenAI reasoning models, use `ChatOpenAI` with the `reasoning` parameter:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# OpenAI with reasoning control
+llm = ChatOpenAI(
+    model="gpt-5",
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    max_tokens=2000,
+    reasoning={
+        "effort": "high",
+        "summary": "detailed"
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Solve this complex problem...")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+const llm = new ChatOpenAI({
+  model: "gpt-5",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain"
+  },
+  openAIApiKey: "dummy-key",
+  reasoning: {
+    effort: "high",
+    summary: "detailed"
+  }
+});
+
+const response = await llm.invoke("Solve this complex problem...");
+```
+
+</Tab>
+</Tabs>
+
+### Bedrock Models (Anthropic & Nova)
+
+Both Anthropic Claude and Amazon Nova models support reasoning/thinking capabilities via Bedrock. Use `ChatBedrockConverse` with model-specific configuration formats.
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+#### Anthropic Claude Models
+
+```python
+import boto3
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+# Configure Bedrock client to use Bifrost
+client_kwargs = {
+    "service_name": "bedrock-runtime",
+    "region_name": "us-west-2",
+    "endpoint_url": "http://localhost:8080/langchain",
+}
+bedrock_client = boto3.client(**client_kwargs)
+
+# Bedrock Claude with reasoning control
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-opus-4-5-20251101-v1:0",
+    client=bedrock_client,
+    max_tokens=2000,
+    additional_model_request_fields={  # Anthropic format
+        "reasoning_config": {
+            "type": "enabled",
+            "budget_tokens": 1500,  # Control thinking token budget
+        }
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+
+#### Amazon Nova Models
+
+```python
+import boto3
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+# Configure Bedrock client to use Bifrost
+client_kwargs = {
+    "service_name": "bedrock-runtime",
+    "region_name": "us-west-2",
+    "endpoint_url": "http://localhost:8080/langchain",
+}
+bedrock_client = boto3.client(**client_kwargs)
+
+# Bedrock Nova with reasoning control
+llm = ChatBedrockConverse(
+    model="global.amazon.nova-2-lite-v1:0",
+    client=bedrock_client,
+    max_tokens=2000,
+    additional_model_request_fields={  # Nova format
+        "reasoningConfig": {
+            "type": "enabled",
+            "maxReasoningEffort": "high",  # "low" | "medium" | "high"
+        }
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Model-Specific Configuration:**
+- **Anthropic Claude models** use `reasoning_config` (snake_case) with `budget_tokens` to control the token budget for reasoning
+- **Amazon Nova models** use `reasoningConfig` (camelCase) with `maxReasoningEffort` to control reasoning intensity ("low", "medium", "high")
+</Note>
+
+### Google/Vertex AI Models
+
+For Google Gemini 2.5 models (Pro, Flash) and Gemini 3, use `ChatGoogleGenerativeAI` with the `thinking_budget` parameter:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+# Gemini with thinking budget control
+llm = ChatGoogleGenerativeAI(
+    model="gemini/gemini-2.5-flash",
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    max_tokens=4000,
+    thinking_budget=1024,    # 0=disable, -1=dynamic, >0=constrained token budget
+    include_thoughts=True,   # Include reasoning in response
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+</Tab>
+</Tabs>
+
+<Warning>
+**Experimental Module:** `ChatGoogleGenerativeAI` is a recently released module that deprecates `ChatVertexAI`. It may have some issues or breaking changes. If you encounter problems, you can use `ChatAnthropic` with `model="gemini/..."` or `model="vertex/..."` as an alternative, which provides stable access to Gemini and Vertex AI models through Bifrost.
+</Warning>
+
+---
+
+## Embeddings
+
+LangChain's `OpenAIEmbeddings` class can be used to generate embeddings through Bifrost:
+
+```python
+from langchain_openai import OpenAIEmbeddings
+
+# Create embeddings instance
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key"
+)
+
+# Embed a single query
+query_embedding = embeddings.embed_query("What is machine learning?")
+
+# Embed multiple documents
+doc_embeddings = embeddings.embed_documents([
+    "Machine learning is a subset of AI",
+    "Deep learning uses neural networks",
+    "NLP helps computers understand text"
+])
+```
+
+<Warning>
+**Provider Compatibility Limitation:** LangChain's `OpenAIEmbeddings` class converts text to int array before sending to the API. While OpenAI's API supports both text strings and int arrays as input, other providers like Cohere, Bedrock, and Gemini only accept text strings.
+
+**This means `OpenAIEmbeddings` only works reliably with OpenAI embedding models.** Using it with other providers (e.g., `model="cohere/embed-v4.0"`) will fail because those providers cannot process int array inputs.
+</Warning>
+
+---
+
 ## Supported Features
 
 The Langchain integration supports all features that are available in both the Langchain SDK and Bifrost core functionality. Your existing Langchain chains and workflows work seamlessly with Bifrost's enterprise features. 😄

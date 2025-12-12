@@ -36,6 +36,7 @@ import logging
 from google.cloud.aiplatform_v1beta1.types import endpoint, endpoint_service
 import pytest
 import asyncio
+import boto3
 import os
 from typing import List, Dict, Any, Type, Optional
 from unittest.mock import patch
@@ -54,7 +55,15 @@ from langchain_anthropic import ChatAnthropic
 from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
 
 # Google Gemini specific imports
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, Modality
+
+try:
+    from langchain_aws import ChatBedrockConverse
+
+    BEDROCK_CONVERSE_AVAILABLE = True
+except ImportError:
+    BEDROCK_CONVERSE_AVAILABLE = False
+    ChatBedrockConverse = None
 
 # Mistral specific imports
 try:
@@ -115,6 +124,8 @@ from .utils.common import (
     assert_valid_embeddings_batch_response,
     calculate_cosine_similarity,
     get_api_key,
+    get_content_string,
+    get_content_string_with_summary,
     skip_if_no_api_key,
     WEATHER_KEYWORDS,
     LOCATION_KEYWORDS,
@@ -464,13 +475,14 @@ class TestLangChainIntegration:
         except Exception as e:
             pytest.skip(f"Conversation memory through LangChain not available: {e}")
 
-    def test_07_streaming_responses(self, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("streaming"))
+    def test_07_streaming_responses(self, test_config, provider, model):
         """Test Case 7: Streaming response functionality"""
         try:
             chat = ChatOpenAI(
-                model=get_model("langchain", "chat"),
+                model=format_provider_model(provider, model),
                 temperature=0.7,
-                max_tokens=100,
+                max_tokens=200,
                 streaming=True,
                 base_url=(
                     get_integration_url("langchain") if get_integration_url("langchain") else None
@@ -1078,7 +1090,270 @@ class TestLangChainIntegration:
             pytest.skip(f"Required LangChain components not available: {e}")
         except Exception as e:
             pytest.skip(f"Streaming tool calls not available for {provider}/{model}: {e}")
+
+    def _validate_thinking_response(self, response, provider: str, keywords: List[str], min_keyword_matches: int = 3):
+        """
+        Helper function to validate thinking/reasoning responses.
         
+        Args:
+            response: The LangChain response object
+            provider: Provider name for logging
+            keywords: List of keywords to check for in the response
+            min_keyword_matches: Minimum number of keywords that must match
+        """
+        # Validate response content exists
+        assert response.content is not None, "Response should have content"
+        
+        # Extract content with summary handling
+        content, has_reasoning_content = get_content_string_with_summary(response)
+        content_lower = content.lower()
+        
+        # Validate keyword matches
+        keyword_matches = sum(1 for keyword in keywords if keyword in content_lower)
+        assert keyword_matches >= min_keyword_matches, (
+            f"Response should contain reasoning about the problem. "
+            f"Found {keyword_matches} keywords out of {len(keywords)}. "
+            f"Content: {get_content_string(response.content)[:200]}..."
+        )
+        
+        # Check for step-by-step reasoning indicators
+        step_indicators = ["step", "first", "then", "next", "calculate", "therefore", "because", "since"]
+        has_steps = any(indicator in content_lower for indicator in step_indicators)
+        assert has_steps, (
+            f"Response should show step-by-step reasoning. Content: {get_content_string(response.content)[:200]}..."
+        )
+        
+        logging.info(f"✓ {provider} thinking test passed")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_21_thinking_openai(self, test_config, provider, model):
+        """Test Case 21: Thinking/reasoning with OpenAI models via LangChain (non-streaming)"""
+        
+        try:
+            # Use ChatOpenAI with reasoning parameters
+            llm = ChatOpenAI(
+                model=format_provider_model(provider, model),
+                base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
+                api_key="dummy-key",
+                max_tokens=1500,
+                reasoning={
+                    "effort": "high",
+                    "summary": "detailed",
+                }
+            )
+            
+            # Use reasoning-heavy prompt from common utils
+            from .utils.common import RESPONSES_REASONING_INPUT
+            
+            # Convert to LangChain message format
+            messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
+            
+            response = llm.invoke(messages)
+            
+            # Validate response
+            reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
+            self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=3)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "reasoning" in error_str or "not supported" in error_str:
+                logging.info(f"Info: Model {format_provider_model(provider, model)} may not fully support reasoning parameters")
+                pytest.skip(f"Reasoning not supported for {provider}/{model}: {e}")
+            else:
+                raise
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_22_thinking_anthropic(self, test_config, provider, model):
+        """Test Case 22: Thinking/reasoning with Anthropic models via LangChain (non-streaming)"""
+        try:
+            # Use ChatAnthropic with thinking parameters
+            llm = ChatAnthropic(
+                model=format_provider_model(provider, model),
+                base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
+                api_key="dummy-key",
+                max_tokens=4000,
+                thinking={"type": "enabled", "budget_tokens": 2500},
+            )
+            
+            # Use thinking prompt from common utils
+            from .utils.common import ANTHROPIC_THINKING_PROMPT
+            
+            # Convert to LangChain message format
+            messages = []
+            for msg in ANTHROPIC_THINKING_PROMPT:
+                if msg["role"] == "user":
+                    messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant":
+                    messages.append(AIMessage(content=msg["content"]))
+            
+            response = llm.invoke(messages)
+            
+            # Additional validation for Anthropic response type
+            assert isinstance(response, AIMessage), "Response should be AIMessage"
+            assert len(response.content) > 0, "Response content should not be empty"
+            
+            # Validate response
+            reasoning_keywords = ["batch", "oven", "cookie", "minute", "calculate", "total", "time", "step"]
+            self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=2)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "thinking" in error_str or "not supported" in error_str:
+                pytest.skip(f"Thinking not supported for {provider}/{model}: {e}")
+            else:
+                raise
+
+    def test_23_thinking_azure(self, test_config):
+        """Test Case 23: Thinking/reasoning with Azure models via LangChain (non-streaming)"""
+        
+        try:
+            default_headers = {}
+            # Azure routing requires specific headers for Bifrost
+            azure_api_key = os.environ.get("AZURE_API_KEY", "dummy-azure-key")
+            azure_endpoint = os.environ.get("AZURE_ENDPOINT", "https://dummy.openai.azure.com")
+            default_headers = {
+                "authorization": f"Bearer {azure_api_key}",
+                "x-bf-azure-endpoint": azure_endpoint,
+            }
+            
+            # Use ChatOpenAI with reasoning parameters
+            llm = ChatOpenAI(
+                model="azure/claude-opus-4-5",
+                base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
+                api_key="dummy-key",
+                max_tokens=1500,
+                reasoning={
+                    "effort": "high",
+                    "summary": "detailed",
+                },
+                default_headers=default_headers if default_headers else None,
+            )
+            
+            # Use reasoning-heavy prompt from common utils
+            from .utils.common import RESPONSES_REASONING_INPUT
+            
+            # Convert to LangChain message format
+            messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
+            
+            response = llm.invoke(messages)
+            
+            # Validate response
+            reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
+            self._validate_thinking_response(response, "Azure", reasoning_keywords, min_keyword_matches=3)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "reasoning" in error_str or "not supported" in error_str:
+                logging.info("Info: Azure model may not fully support reasoning parameters")
+                pytest.skip(f"Reasoning not supported for Azure: {e}")
+            else:
+                raise
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_24_thinking_gemini(self, test_config, provider, model):
+        """Test Case 24: Thinking/reasoning with Gemini models via LangChain (non-streaming)"""
+        
+        try:
+            # Use ChatGoogleGenerativeAI with thinking_budget parameter
+            llm = ChatGoogleGenerativeAI(
+                model=format_provider_model(provider, model),
+                base_url=get_integration_url("langchain") if get_integration_url("langchain") else None,
+                api_key="dummy-key",
+                max_tokens=4000,
+                temperature=1.0,
+                thinking_budget=1024,
+                include_thoughts=True,
+            )
+            
+            # Use reasoning-heavy prompt from common utils
+            from .utils.common import RESPONSES_REASONING_INPUT
+            
+            # Convert to LangChain message format
+            messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
+            
+            response = llm.invoke(messages)
+            
+            # Check if usage metadata is available (Gemini-specific)
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                if "output_token_details" in response.usage_metadata:
+                    reasoning_tokens = response.usage_metadata["output_token_details"].get("reasoning", 0)
+                    if reasoning_tokens > 0:
+                        logging.info(f"✓ Model used {reasoning_tokens} reasoning tokens")
+            
+            # Validate response
+            reasoning_keywords = ["train", "meet", "time", "hour", "pm", "distance", "speed", "mile"]
+            self._validate_thinking_response(response, f"{provider} Gemini", reasoning_keywords, min_keyword_matches=3)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "thinking" in error_str or "not supported" in error_str or "thinking_budget" in error_str:
+                logging.info(f"Info: Model {format_provider_model(provider, model)} may not fully support thinking_budget parameters")
+                pytest.skip(f"Thinking not supported for {provider}/{model}: {e}")
+            else:
+                raise
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_25_thinking_bedrock(self, test_config, provider, model):
+        """Test Case 25: Thinking/reasoning with Bedrock models via LangChain (non-streaming)"""
+        try:
+
+            base_url = get_integration_url("bedrock")
+
+            config = get_config()
+            integration_settings = config.get_integration_settings("bedrock")
+            region = integration_settings.get("region", "us-west-2")
+
+            client_kwargs = {
+                "service_name": "bedrock-runtime",
+                "region_name": region,
+                "endpoint_url": base_url,
+            }
+
+            bedrock_client = boto3.client(**client_kwargs)
+            # Use ChatBedrockConverse with thinking parameters
+            llm = ChatBedrockConverse(
+                model=format_provider_model(provider, model),
+                client=bedrock_client,
+                max_tokens=2000,
+                additional_model_request_fields={ # for anthropic models
+                    "reasoning_config": {
+                        "type": "enabled",
+                        "budget_tokens": 1500,
+                    }
+                },
+            )
+            # for nova models
+            # additional_model_request_fields={
+            #     "reasoningConfig": {
+            #         "type": "enabled",
+            #         "maxReasoningEffort": "high",
+            #     }
+            # },
+            
+            # Use reasoning-heavy prompt from common utils
+            from .utils.common import RESPONSES_REASONING_INPUT
+            
+            # Convert to LangChain message format
+            messages = [HumanMessage(content=RESPONSES_REASONING_INPUT[0]["content"])]
+            
+            response = llm.invoke(messages)
+            
+            # Additional validation for Anthropic response type
+            assert isinstance(response, AIMessage), "Response should be AIMessage"
+            assert len(response.content) > 0, "Response content should not be empty"
+            
+            # Validate response
+            reasoning_keywords = ["batch", "oven", "cookie", "minute", "calculate", "total", "time", "step"]
+            self._validate_thinking_response(response, provider, reasoning_keywords, min_keyword_matches=2)
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            if "thinking" in error_str or "not supported" in error_str:
+                pytest.skip(f"Thinking not supported for {provider}/{model}: {e}")
+            else:
+                raise
+
+
 # Skip standard tests if langchain-tests is not available
 @pytest.mark.skipif(not LANGCHAIN_TESTS_AVAILABLE, reason="langchain-tests package not available")
 class TestLangChainStandardChatModel(TestLangChainChatOpenAI):

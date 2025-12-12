@@ -1946,6 +1946,10 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		// only set thinking level if max tokens is not set
 		if params.Reasoning.Effort != nil && params.Reasoning.MaxTokens == nil {
 			switch *params.Reasoning.Effort {
+			case "none":
+				// turn off thinking
+				config.ThinkingConfig.IncludeThoughts = false
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 			case "minimal", "low":
 				config.ThinkingConfig.ThinkingLevel = ThinkingLevelLow
 			case "medium", "high":
@@ -1953,7 +1957,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			}
 		}
 		if params.Reasoning.MaxTokens != nil {
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
+			switch *params.Reasoning.MaxTokens {
+			case 0: // turn off thinking
+				config.ThinkingConfig.IncludeThoughts = false
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			case -1: // dynamic thinking budget
+				config.ThinkingConfig.ThinkingBudget = nil
+			default: // constrained thinking budget
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
+			}
 		}
 	}
 	if params.Text != nil {

@@ -35,15 +35,22 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		if strings.Contains(r.Model, "openai") {
 			params.Reasoning.Summary = schemas.Ptr("auto")
 		}
-		if config.ThinkingConfig.ThinkingBudget != nil {
-			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
-		}
 		if config.ThinkingConfig.ThinkingLevel != ThinkingLevelUnspecified {
 			switch config.ThinkingConfig.ThinkingLevel {
 			case ThinkingLevelLow:
 				params.Reasoning.Effort = schemas.Ptr("low")
 			case ThinkingLevelHigh:
 				params.Reasoning.Effort = schemas.Ptr("high")
+			}
+		}
+		if config.ThinkingConfig.ThinkingBudget != nil {
+			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
+			switch *config.ThinkingConfig.ThinkingBudget {
+			case 0:
+				params.Reasoning.Effort = schemas.Ptr("none")
+			case -1:
+				// dynamic thinking budget
+				params.Reasoning.MaxTokens = nil
 			}
 		}
 	}

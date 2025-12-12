@@ -37,12 +37,55 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
 		}
 		if bifrostReq.Params.Reasoning.MaxTokens != nil {
-			if schemas.IsAnthropicModel(bifrostReq.Model) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
-				return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
-			}
-			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
-				"type":          "enabled",
-				"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+			if schemas.IsAnthropicModel(bifrostReq.Model) {
+				if *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+					return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+				}
+				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+					"type":          "enabled",
+					"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+				}
+			} else if schemas.IsNovaModel(bifrostReq.Model) {
+				minBudgetTokens := MinimumReasoningMaxTokens
+				defaultMaxTokens := DefaultCompletionMaxTokens
+				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+					defaultMaxTokens = *bedrockReq.InferenceConfig.MaxTokens
+				} else if bedrockReq.InferenceConfig != nil {
+					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+				} else {
+					bedrockReq.InferenceConfig = &BedrockInferenceConfig{
+						MaxTokens: schemas.Ptr(DefaultCompletionMaxTokens),
+					}
+				}
+
+				maxReasoningEffort := providerUtils.GetReasoningEffortFromBudgetTokens(*bifrostReq.Params.Reasoning.MaxTokens, minBudgetTokens, defaultMaxTokens)
+				typeStr := "enabled"
+				switch maxReasoningEffort {
+				case "high":
+					if bedrockReq.InferenceConfig != nil {
+						bedrockReq.InferenceConfig.MaxTokens = nil
+						bedrockReq.InferenceConfig.Temperature = nil
+						bedrockReq.InferenceConfig.TopP = nil
+					}
+				case "minimal":
+					maxReasoningEffort = "low"
+				case "none":
+					typeStr = "disabled"
+				}
+
+				config := map[string]any{
+					"type": typeStr,
+				}
+				if typeStr != "disabled" {
+					config["maxReasoningEffort"] = maxReasoningEffort
+				}
+
+				bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+			} else {
+				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+					"type":          "enabled",
+					"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+				}
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 			maxTokens := DefaultCompletionMaxTokens
@@ -57,17 +100,39 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 					}
 				}
 			}
-			minBudgetTokens := MinimumReasoningMaxTokens
-			if schemas.IsAnthropicModel(bifrostReq.Model) {
-				minBudgetTokens = anthropic.MinimumReasoningMaxTokens
-			}
-			budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, maxTokens)
-			if err != nil {
-				return err
-			}
-			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
-				"type":          "enabled",
-				"budget_tokens": budgetTokens,
+			if schemas.IsNovaModel(bifrostReq.Model) {
+				effort := *bifrostReq.Params.Reasoning.Effort
+				typeStr := "enabled"
+				switch effort {
+				case "high":
+					if bedrockReq.InferenceConfig != nil {
+						bedrockReq.InferenceConfig.MaxTokens = nil
+						bedrockReq.InferenceConfig.Temperature = nil
+						bedrockReq.InferenceConfig.TopP = nil
+					}
+				case "minimal":
+					effort = "low"
+				case "none":
+					typeStr = "disabled"
+				}
+
+				config := map[string]any{
+					"type": typeStr,
+				}
+				if typeStr != "disabled" {
+					config["maxReasoningEffort"] = effort
+				}
+
+				bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+			} else if schemas.IsAnthropicModel(bifrostReq.Model) {
+				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
+				if err != nil {
+					return err
+				}
+				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+					"type":          "enabled",
+					"budget_tokens": budgetTokens,
+				}
 			}
 		} else {
 			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{

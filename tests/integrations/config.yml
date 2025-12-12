@@ -107,10 +107,10 @@ providers:
       - "gemini-2.0-flash-001"
     
   bedrock:
-    chat: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    tools: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    streaming: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "cohere.embed-v4:0"
