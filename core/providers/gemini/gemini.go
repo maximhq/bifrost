@@ -1112,7 +1112,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				}
 
 				// Process response through post-hooks and send to channel
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan)
 			}
 		}
 
@@ -1138,7 +1138,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 			}
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan)
 		}
 	}()
 
@@ -1382,7 +1382,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				}
 
 				// Process response through post-hooks and send to channel
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan)
 			}
 		}
 
@@ -1414,11 +1414,21 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 			}
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan)
 		}
 	}()
 
 	return responseChan, nil
+}
+
+// ImageGeneration is not supported by the Gemini provider.
+func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Gemini provider.
+func (provider *GeminiProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response

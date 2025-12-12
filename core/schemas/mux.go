@@ -65,6 +65,13 @@ func (ct *ChatTool) ToResponsesTool() *ResponsesTool {
 		}
 	}
 
+	if ct.Type == ChatToolTypeImageGeneration && ct.ImageGeneration != nil {
+		rt.ResponsesToolImageGeneration = &ResponsesToolImageGeneration{
+			// Map fields from ChatToolImageGeneration if needed
+			// For now, empty struct is fine since ChatToolImageGeneration is empty
+		}
+	}
+
 	return rt
 }
 

@@ -13,6 +13,7 @@ const (
 	StreamTypeText          StreamType = "text.completion"
 	StreamTypeChat          StreamType = "chat.completion"
 	StreamTypeAudio         StreamType = "audio.speech"
+	StreamTypeImage         StreamType = "image.generation"
 	StreamTypeTranscription StreamType = "audio.transcription"
 	StreamTypeResponses     StreamType = "responses"
 )
@@ -42,6 +43,7 @@ type AccumulatedData struct {
 	Cost                *float64
 	AudioOutput         *schemas.BifrostSpeechResponse
 	TranscriptionOutput *schemas.BifrostTranscriptionResponse
+  ImageGenerationOutput *schemas.BifrostImageGenerationResponse
 	FinishReason        *string
 	RawResponse         *string
 }
@@ -98,6 +100,19 @@ type ResponsesStreamChunk struct {
 	RawResponse        *string
 }
 
+// ImageStreamChunk represents a single image streaming chunk
+type ImageStreamChunk struct {
+	Timestamp          time.Time                                     // When chunk was received
+	Delta              *schemas.BifrostImageGenerationStreamResponse // The actual stream response
+	FinishReason       *string                                       // If this is the final chunk
+	ChunkIndex         int                                           // Index of the chunk in the stream
+	ImageIndex         int                                           // Index of the image in the stream
+	ErrorDetails       *schemas.BifrostError                         // Error if any
+	Cost               *float64                                      // Cost in dollars from pricing plugin
+	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	TokenUsage         *schemas.BifrostLLMUsage                      // Token usage if available
+}
+
 // StreamAccumulator manages accumulation of streaming chunks
 type StreamAccumulator struct {
 	RequestID                 string
@@ -106,6 +121,7 @@ type StreamAccumulator struct {
 	ResponsesStreamChunks     []*ResponsesStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk
 	AudioStreamChunks         []*AudioStreamChunk
+	ImageStreamChunks         []*ImageStreamChunk
 	IsComplete                bool
 	FinalTimestamp            time.Time
 	mu                        sync.Mutex
@@ -257,9 +273,21 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
-		if p.RawRequest != nil {
+    if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
+    }
+	case StreamTypeImage:
+		imageResp := p.Data.ImageGenerationOutput
+		if imageResp == nil {
+			imageResp = &schemas.BifrostImageGenerationResponse{}
 		}
-	}
+		resp.ImageGenerationResponse = imageResp
+		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.ImageGenerationStreamRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
+	
 	return resp
 }

@@ -575,7 +575,7 @@ func HandleOpenAITextCompletionStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan)
 			}
 
 			// For providers that don't send [DONE] marker break on finish_reason
@@ -599,7 +599,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -980,14 +980,14 @@ func HandleOpenAIChatCompletionStreaming(
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 						return
 					}
 
 					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
 					lastChunkTime = time.Now()
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 				}
 			} else {
 				if postResponseConverter != nil {
@@ -1061,7 +1061,7 @@ func HandleOpenAIChatCompletionStreaming(
 						response.ExtraFields.RawResponse = jsonData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan)
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
@@ -1086,7 +1086,7 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -1431,14 +1431,14 @@ func HandleOpenAIResponsesStreaming(
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan)
 				return
 			}
 
 			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
 			lastChunkTime = time.Now()
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan)
 		}
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
@@ -1814,11 +1814,11 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				return
 			}
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 		}
 
 		// Handle scanner errors
@@ -2086,11 +2086,11 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
 				return
 			}
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
 		}
 
 		// Handle scanner errors
@@ -2150,4 +2150,71 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	return nil
+}
+// ImageGeneration performs an Image Generation request to OpenAI's API.
+// It formats the request, sends it to OpenAI, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
+func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas.Key,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err // Handle error
+	}
+	openaiReq := ToOpenAIImageGenerationRequest(req)
+	if openaiReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
+	}
+
+	resp, latency, err := provider.doRequest(ctx, key, openaiReq)
+	if err != nil {
+		return nil, err
+	}
+
+	bifrostResp := ToBifrostImageResponse(resp, openaiReq.Model, latency)
+
+	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResp.ExtraFields.ModelRequested = openaiReq.Model
+	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
+
+	return bifrostResp, nil
+}
+
+// ImageGenerationStream handles streaming for image generation.
+// It formats the request body, creates HTTP request, and uses shared streaming logic.
+// Returns a channel for streaming responses and any error that occurred.
+func (provider *OpenAIProvider) ImageGenerationStream(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	// Check if image generation stream is allowed for this provider
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
+		return nil, err
+	}
+
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	if !StreamingEnabledImageModels[request.Model] || request.Model == "" {
+		return provider.simulateImageStreaming(ctx, postHookRunner, key, request)
+	}
+
+	// Use shared streaming logic
+	return HandleOpenAIImageGenerationStreaming(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }

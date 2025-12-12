@@ -1406,23 +1406,34 @@ func (provider *VertexProvider) TranscriptionStream(ctx context.Context, postHoo
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+// ImageGeneration is not supported by the Vertex provider.
+func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Vertex provider.
+func (provider *VertexProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
-	for _, content := range requestBody.Contents {
-		for _, part := range content.Parts {
-			// Remove id from function_call
-			if part.FunctionCall != nil {
-				part.FunctionCall.ID = ""
-			}
+  for _, content := range requestBody.Contents {
+    for _, part := range content.Parts {
+      // Remove id from function_call
+      if part.FunctionCall != nil {
+        part.FunctionCall.ID = ""
+      }
 
-			// Remove id from function_response
-			if part.FunctionResponse != nil {
-				part.FunctionResponse.ID = ""
-			}
-		}
-	}
+      // Remove id from function_response
+      if part.FunctionResponse != nil {
+        part.FunctionResponse.ID = ""
+      }
+    }
+  }
 }
+
 
 func (provider *VertexProvider) getModelDeployment(key schemas.Key, model string) string {
 	if key.VertexKeyConfig == nil {
