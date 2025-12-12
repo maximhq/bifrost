@@ -114,7 +114,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<SheetHeader className="p-0">
-							<div className="flex items-center justify-between">
+							<div className="flex items-center justify-between w-full">
 								<div className="space-y-2">
 									<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 										{mcpClient.config.name}
@@ -122,7 +122,12 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									</SheetTitle>
 									<SheetDescription>MCP client configuration and available tools</SheetDescription>
 								</div>
-								<Button type="submit" disabled={isUpdating || !form.formState.isDirty || !hasUpdateMCPClientAccess} isLoading={isUpdating}>
+								<Button
+									className="ml-auto"
+									type="submit"
+									disabled={isUpdating || !form.formState.isDirty || !hasUpdateMCPClientAccess}
+									isLoading={isUpdating}
+								>
 									Save Changes
 								</Button>
 							</div>

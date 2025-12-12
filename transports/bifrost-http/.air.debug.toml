@@ -27,7 +27,7 @@ exclude_regex = ["_test.go"]
 exclude_unchanged = false
 follow_symlink = false
 # Run binary via delve debugger in headless mode on port 2345
-full_bin = "dlv exec ./tmp/main --listen=127.0.0.1:2345 --headless=true --api-version=2 --accept-multiclient --continue --log --"
+full_bin = "dlv exec ./tmp/main --listen=127.0.0.1:2345 --headless=true --api-version=2 --accept-multiclient --log --"
 watch_dirs = ["."]
 include_dir = []
 include_ext = ["go", "tpl", "tmpl", "html"]

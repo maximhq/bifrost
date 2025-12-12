@@ -18,6 +18,7 @@ type MistralProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -53,6 +54,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
@@ -100,15 +102,20 @@ func (provider *MistralProvider) listModelsByKey(ctx context.Context, key schema
 
 	// Parse Mistral's response
 	var mistralResponse MistralListModelsResponse
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &mistralResponse, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &mistralResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Create final response
-	response := mistralResponse.ToBifrostListModelsResponse()
+	response := mistralResponse.ToBifrostListModelsResponse(key.Models)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -151,6 +158,7 @@ func (provider *MistralProvider) ChatCompletion(ctx context.Context, key schemas
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -174,6 +182,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx context.Context, postH
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Mistral,
 		postHookRunner,
@@ -222,6 +231,7 @@ func (provider *MistralProvider) Embedding(ctx context.Context, key schemas.Key,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		schemas.Mistral,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)

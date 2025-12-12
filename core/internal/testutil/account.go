@@ -140,13 +140,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
 					ARN:          bifrost.Ptr(os.Getenv("AWS_ARN")),
 					Deployments: map[string]string{
-						"claude-sonnet-4":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+						"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
+						"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+						"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 					},
 				},
 			},
 			{
-				Models: []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "cohere.embed-v4:0"},
+				Models: []string{"cohere.embed-v4:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -173,30 +175,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint: os.Getenv("AZURE_ENDPOINT"),
 					Deployments: map[string]string{
-						"gpt-4o":        "gpt-4o",
-						"gpt-4o-backup": "gpt-4o-3",
-					},
-				},
-			},
-			{
-				Value:  os.Getenv("AZURE_EMB_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: os.Getenv("AZURE_EMB_ENDPOINT"),
-					Deployments: map[string]string{
+						"gpt-4o":                 "gpt-4o",
+						"gpt-4o-backup":          "gpt-4o-3",
+						"claude-opus-4-5":        "claude-opus-4-5",
+						"o1":                     "o1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
-					},
-				},
-			},
-			{
-				Value:  os.Getenv("AZURE_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: os.Getenv("AZURE_ENDPOINT"),
-					Deployments: map[string]string{
-						"o1": "o1",
 					},
 				},
 			},
@@ -652,7 +635,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
 		Provider:  schemas.Azure,
 		ChatModel: "gpt-4o",
-		TextModel: "", // Azure OpenAI doesn't support text completion in newer models
+		TextModel: "", // Azure doesn't support text completion in newer models
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

@@ -6,10 +6,16 @@
 replicaCount: 1
 
 image:
+  # Container image repository
+  # Default: Docker Hub public image
+  # For enterprise customers with private registry, use full URL:
+  #   repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
+  #   repository: your-registry.example.com/your-org/bifrost
+  #   repository: 123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost
   repository: docker.io/maximhq/bifrost
   pullPolicy: IfNotPresent
-  # REQUIRED: Specify the image tag (e.g., v1.3.5, v1.3.36, latest)
-  # Docker images are tagged with v prefix (e.g., v1.3.5)
+  # REQUIRED: Specify the image tag (e.g., v1.5.0, latest)
+  # Docker images are tagged with v prefix (e.g., v1.5.0)
   # See available tags at: https://hub.docker.com/r/maximhq/bifrost/tags
   tag: ""
 
@@ -126,12 +132,22 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
-    enableGovernance: false
+    disableContentLogging: false
+    logRetentionDays: 365
+    enableGovernance: true
     enforceGovernanceHeader: false
-    allowDirectKeys: true
+    allowDirectKeys: false
     maxRequestBodySizeMb: 100
     enableLitellmFallbacks: false
     prometheusLabels: []
+  
+  # Framework configuration
+  framework:
+    pricing:
+      # Custom pricing URL for model cost data
+      pricingUrl: ""
+      # Sync interval in seconds (default: 86400 = 24 hours, minimum: 3600)
+      pricingSyncInterval: 86400
   
   # Provider configurations (add your provider keys here)
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
@@ -218,14 +234,143 @@ bifrost:
         collector_url: ""
         trace_type: "otel"
         protocol: "grpc"
+    
+    datadog:
+      enabled: false
+      config:
+        service_name: "bifrost"
+        agent_addr: "localhost:8126"
+        env: ""
+        version: ""
+        custom_tags: {}
+        enable_traces: true
+  
+  # Governance configuration for budgets, rate limits, customers, teams, and virtual keys
+  governance:
+    budgets: []
+      # - id: "budget-1"
+      #   max_limit: 100
+      #   reset_duration: "1M"
+    rateLimits: []
+      # - id: "rate-limit-1"
+      #   token_max_limit: 100000
+      #   token_reset_duration: "1d"
+      #   request_max_limit: 1000
+      #   request_reset_duration: "1h"
+    customers: []
+      # - id: "customer-1"
+      #   name: "Customer Name"
+      #   budget_id: "budget-1"
+    teams: []
+      # - id: "team-1"
+      #   name: "Team Name"
+      #   customer_id: "customer-1"
+      #   budget_id: "budget-1"
+    virtualKeys: []
+      # - id: "vk-1"
+      #   name: "Virtual Key 1"
+      #   value: "vk-..."
+      #   is_active: true
+      #   team_id: "team-1"
+      #   budget_id: "budget-1"
+      #   rate_limit_id: "rate-limit-1"
+    authConfig:
+      adminUsername: ""
+      adminPassword: ""
+      isEnabled: false
+      disableAuthOnInference: false
+      # Use existing Kubernetes secret for admin credentials
+      existingSecret: ""
+      usernameKey: "username"
+      passwordKey: "password"
+  
+  # Cluster mode configuration for distributed deployments
+  cluster:
+    enabled: false
+    peers: []
+      # - "bifrost-0.bifrost-headless:7946"
+      # - "bifrost-1.bifrost-headless:7946"
+    gossip:
+      port: 7946
+      config:
+        timeoutSeconds: 10
+        successThreshold: 3
+        failureThreshold: 3
+    discovery:
+      enabled: false
+      # Discovery type: kubernetes, dns, udp, consul, etcd, mdns
+      type: ""
+      allowedAddressSpace: []
+      # Kubernetes discovery
+      k8sNamespace: ""
+      k8sLabelSelector: ""
+      # DNS discovery
+      dnsNames: []
+      # UDP broadcast discovery
+      udpBroadcastPort: 0
+      # Consul discovery
+      consulAddress: ""
+      # Etcd discovery
+      etcdEndpoints: []
+      # mDNS discovery
+      mdnsService: ""
+  
+  # SAML/SCIM configuration for enterprise SSO
+  saml:
+    enabled: false
+    # Provider: okta, entra
+    provider: ""
+    config: {}
+      # Okta configuration:
+      # issuerUrl: "https://your-domain.okta.com/oauth2/default"
+      # clientId: ""
+      # clientSecret: ""
+      # audience: ""
+      # userIdField: "sub"
+      # teamIdsField: "groups"
+      # rolesField: "roles"
+      #
+      # Entra (Azure AD) configuration:
+      # tenantId: ""
+      # clientId: ""
+      # clientSecret: ""
+      # audience: ""
+      # appIdUri: ""
+      # userIdField: "oid"
+      # teamIdsField: "groups"
+      # rolesField: "roles"
+  
+  # Load balancer configuration for intelligent request routing
+  loadBalancer:
+    enabled: false
+    trackerConfig: {}
+    bootstrap: {}
+  
+  # Guardrails configuration for content moderation and policy enforcement
+  guardrails:
+    rules: []
+      # - id: 1
+      #   name: "Block PII"
+      #   description: "Block requests containing PII"
+      #   enabled: true
+      #   cel_expression: "!contains(request.body, 'SSN')"
+      #   apply_to: "input"
+      #   sampling_rate: 100
+      #   timeout: 1000
+    providers: []
+      # - id: 1
+      #   provider_name: "bedrock"
+      #   policy_name: "content-filter"
+      #   enabled: true
+      #   config: {}
 
 # Storage configuration
 storage:
-  # Storage mode: sqlite or postgres
-  # This determines what config_store and logs_store use
+  # Default storage mode: sqlite or postgres
+  # Used as fallback when per-store type is not specified
   mode: sqlite  # Options: sqlite, postgres
   
-  # Persistent volume for SQLite databases (when mode is sqlite)
+  # Persistent volume for SQLite databases (when using sqlite for any store)
   persistence:
     enabled: true
     # storageClass: "-"  # Use default storage class
@@ -236,16 +381,16 @@ storage:
   # Configuration store settings
   configStore:
     enabled: true
-    # type is derived from storage.mode, but can be overridden
-    # type: sqlite  # Options: sqlite, postgres
+    # Backend type for config store. Empty string uses storage.mode as default
+    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
   
   # Logs store settings
   logsStore:
     enabled: true
-    # type is derived from storage.mode, but can be overridden
-    # type: sqlite  # Options: sqlite, postgres
+    # Backend type for logs store. Empty string uses storage.mode as default
+    type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
 
-# PostgreSQL configuration (when storage.mode is postgres)
+# PostgreSQL configuration (when any store uses postgres)
 postgresql:
   # Deploy PostgreSQL as part of this chart
   enabled: false

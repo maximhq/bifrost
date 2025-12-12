@@ -3,9 +3,12 @@ package otel
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,11 +24,23 @@ type OtelClientHTTP struct {
 }
 
 // NewOtelClientHTTP creates a new OpenTelemetry client for HTTP
-func NewOtelClientHTTP(endpoint string, headers map[string]string) (*OtelClientHTTP, error) {
+func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert string) (*OtelClientHTTP, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 10
 	transport.IdleConnTimeout = 120 * time.Second
+
+	if tlsCACert != "" {
+		caCert, err := os.ReadFile(tlsCACert)
+		if err != nil {
+			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("fail to add provided CA cert: %w", err)
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: caCertPool}
+	}
 
 	return &OtelClientHTTP{client: &http.Client{
 		Timeout:   30 * time.Second,

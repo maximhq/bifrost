@@ -10,6 +10,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
@@ -210,8 +211,10 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			NetworkConfig:            providerConfig.NetworkConfig,
 			ConcurrencyAndBufferSize: providerConfig.ConcurrencyAndBufferSize,
 			ProxyConfig:              providerConfig.ProxyConfig,
+			SendBackRawRequest:       providerConfig.SendBackRawRequest,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
+			ConfigHash:               providerConfig.ConfigHash,
 		}
 
 		// Upsert provider (create or update if exists)
@@ -228,6 +231,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		// Create keys for this provider
 		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
 		for _, key := range providerConfig.Keys {
+			// Generate key hash
+			keyHash, err := GenerateKeyHash(key)
+			if err != nil {
+				return fmt.Errorf("failed to generate key hash: %w", err)
+			}
 			dbKey := tables.TableKey{
 				Provider:         dbProvider.Name,
 				ProviderID:       dbProvider.ID,
@@ -239,6 +247,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				AzureKeyConfig:   key.AzureKeyConfig,
 				VertexKeyConfig:  key.VertexKeyConfig,
 				BedrockKeyConfig: key.BedrockKeyConfig,
+				ConfigHash:       keyHash,
 			}
 
 			// Handle Azure config
@@ -323,8 +332,10 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.NetworkConfig = configCopy.NetworkConfig
 	dbProvider.ConcurrencyAndBufferSize = configCopy.ConcurrencyAndBufferSize
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
+	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
+	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
 	if err := txDB.WithContext(ctx).Save(&dbProvider).Error; err != nil {
@@ -345,6 +356,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 
 	// Process each key in the new config
 	for _, key := range configCopy.Keys {
+		// Generate key hash
+		keyHash, err := GenerateKeyHash(key)
+		if err != nil {
+			return fmt.Errorf("failed to generate key hash: %w", err)
+		}
 		dbKey := tables.TableKey{
 			Provider:         dbProvider.Name,
 			ProviderID:       dbProvider.ID,
@@ -356,6 +372,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			AzureKeyConfig:   key.AzureKeyConfig,
 			VertexKeyConfig:  key.VertexKeyConfig,
 			BedrockKeyConfig: key.BedrockKeyConfig,
+			ConfigHash:       keyHash,
 		}
 
 		// Handle Azure config
@@ -433,8 +450,10 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		NetworkConfig:            configCopy.NetworkConfig,
 		ConcurrencyAndBufferSize: configCopy.ConcurrencyAndBufferSize,
 		ProxyConfig:              configCopy.ProxyConfig,
+		SendBackRawRequest:       configCopy.SendBackRawRequest,
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
+		ConfigHash:               configCopy.ConfigHash,
 	}
 
 	// Create the provider
@@ -444,6 +463,11 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
+		// Generate key hash
+		keyHash, err := GenerateKeyHash(key)
+		if err != nil {
+			return fmt.Errorf("failed to generate key hash: %w", err)
+		}
 		dbKey := tables.TableKey{
 			Provider:         dbProvider.Name,
 			ProviderID:       dbProvider.ID,
@@ -455,6 +479,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			AzureKeyConfig:   key.AzureKeyConfig,
 			VertexKeyConfig:  key.VertexKeyConfig,
 			BedrockKeyConfig: key.BedrockKeyConfig,
+			ConfigHash:       keyHash,
 		}
 
 		// Handle Azure config
@@ -621,8 +646,10 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			NetworkConfig:            dbProvider.NetworkConfig,
 			ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
 			ProxyConfig:              dbProvider.ProxyConfig,
+			SendBackRawRequest:       dbProvider.SendBackRawRequest,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
+			ConfigHash:               dbProvider.ConfigHash,
 		}
 		processedProviders[provider] = providerConfig
 	}
@@ -1218,7 +1245,7 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 	// Update virtual key
 	// Use Select() to explicitly update all fields, including nil pointer fields
 	// This ensures TeamID gets set to NULL when switching from team to customer association
-	if err := txDB.WithContext(ctx).Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "updated_at").Updates(virtualKey).Error; err != nil {
+	if err := txDB.WithContext(ctx).Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "config_hash", "updated_at").Updates(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -1261,10 +1288,14 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 	}
 	redactedKeys := make([]schemas.Key, len(keys))
 	for i, key := range keys {
+		models := key.Models
+		if models == nil {
+			models = []string{} // Ensure models is never nil in JSON response
+		}
 		redactedKeys[i] = schemas.Key{
 			ID:     key.KeyID,
 			Name:   key.Name,
-			Models: key.Models,
+			Models: models,
 			Weight: key.Weight,
 		}
 	}
@@ -1644,7 +1675,6 @@ func (s *RDBConfigStore) UpdateBudgets(ctx context.Context, budgets []*tables.Ta
 	} else {
 		txDB = s.db
 	}
-	s.logger.Debug("updating budgets: %+v", budgets)
 	for _, b := range budgets {
 		if err := txDB.WithContext(ctx).Save(b).Error; err != nil {
 			return s.parseGormError(err)
@@ -1800,6 +1830,62 @@ func (s *RDBConfigStore) UpdateAuthConfig(ctx context.Context, config *AuthConfi
 		}
 		return nil
 	})
+}
+
+// GetProxyConfig retrieves the proxy configuration from the database.
+func (s *RDBConfigStore) GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error) {
+	var configEntry tables.TableGovernanceConfig
+	if err := s.db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigProxyKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry.Value == "" {
+		return nil, nil
+	}
+	var proxyConfig tables.GlobalProxyConfig
+	if err := json.Unmarshal([]byte(configEntry.Value), &proxyConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal proxy config: %w", err)
+	}
+	// Decrypt the password if it's not empty
+	if proxyConfig.Password != "" {
+		decryptedPassword, err := encrypt.Decrypt(proxyConfig.Password)
+		if err != nil {
+			// If decryption fails due to uninitialized key, the password might be stored in plaintext
+			// (from before encryption was enabled), so we return it as-is
+			if !errors.Is(err, encrypt.ErrEncryptionKeyNotInitialized) {
+				return nil, fmt.Errorf("failed to decrypt proxy password: %w", err)
+			}
+		} else {
+			proxyConfig.Password = decryptedPassword
+		}
+	}
+	return &proxyConfig, nil
+}
+
+// UpdateProxyConfig updates the proxy configuration in the database.
+func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
+	// Create a copy to avoid modifying the original config
+	configCopy := *config
+
+	// Encrypt the password if it's not empty
+	if configCopy.Password != "" {
+		encryptedPassword, err := encrypt.Encrypt(configCopy.Password)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt proxy password: %w", err)
+		}
+		configCopy.Password = encryptedPassword
+	}
+
+	configJSON, err := json.Marshal(&configCopy)
+	if err != nil {
+		return fmt.Errorf("failed to marshal proxy config: %w", err)
+	}
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigProxyKey,
+		Value: string(configJSON),
+	}).Error
 }
 
 // GetSession retrieves a session from the database.

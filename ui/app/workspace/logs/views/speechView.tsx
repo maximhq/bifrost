@@ -39,12 +39,6 @@ class AudioErrorBoundary extends Component<{ children: React.ReactNode }, { hasE
 }
 
 export default function SpeechView({ speechInput, speechOutput, isStreaming }: SpeechViewProps) {
-	const memoizedVoiceString = useMemo(() => {
-		if (!speechInput?.voice) return "";
-		if (typeof speechInput.voice === "string") return speechInput.voice;
-		return JSON.stringify(speechInput.voice);
-	}, [speechInput?.voice]);
-
 	return (
 		<div className="space-y-4">
 			{/* Speech Input */}
@@ -55,31 +49,7 @@ export default function SpeechView({ speechInput, speechOutput, isStreaming }: S
 						Speech Input
 					</div>
 					<div className="space-y-4 p-6">
-						<div>
-							<div className="text-muted-foreground mb-2 text-xs font-medium">TEXT TO SYNTHESIZE</div>
-							<div className="font-mono text-xs">{speechInput.input}</div>
-						</div>
-
-						{speechInput.instructions && (
-							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">INSTRUCTIONS</div>
-								<div className="font-mono text-xs">{speechInput.instructions}</div>
-							</div>
-						)}
-
-						<div className="grid grid-cols-2 gap-4">
-							<div>
-								<div className="text-muted-foreground mb-2 text-xs font-medium">VOICE</div>
-								<div className="font-mono text-xs">{memoizedVoiceString}</div>
-							</div>
-
-							{speechInput.response_format && (
-								<div>
-									<div className="text-muted-foreground mb-2 text-xs font-medium">FORMAT</div>
-									<div className="font-mono text-xs">{speechInput.response_format}</div>
-								</div>
-							)}
-						</div>
+						<div className="font-mono text-xs">{speechInput.input}</div>
 					</div>
 				</div>
 			)}

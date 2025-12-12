@@ -58,6 +58,7 @@ type ProviderResponse struct {
 	NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
 	ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config"`                     // Proxy configuration
+	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	Status                   ProviderStatus                   `json:"status"`                           // Status of the provider
@@ -175,6 +176,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 		ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 		ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
+		SendBackRawRequest       *bool                             `json:"send_back_raw_request,omitempty"`       // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                             `json:"send_back_raw_response,omitempty"`      // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	}{}
@@ -225,6 +227,14 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Validate retry backoff values if NetworkConfig is provided
+	if payload.NetworkConfig != nil {
+		if err := validateRetryBackoff(payload.NetworkConfig); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
+			return
+		}
+	}
+
 	// Check if provider already exists
 	if _, err := h.store.GetProviderConfigRedacted(payload.Provider); err == nil {
 		SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("Provider %s already exists", payload.Provider))
@@ -237,6 +247,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig:            payload.NetworkConfig,
 		ProxyConfig:              payload.ProxyConfig,
 		ConcurrencyAndBufferSize: payload.ConcurrencyAndBufferSize,
+		SendBackRawRequest:       payload.SendBackRawRequest != nil && *payload.SendBackRawRequest,
 		SendBackRawResponse:      payload.SendBackRawResponse != nil && *payload.SendBackRawResponse,
 		CustomProviderConfig:     payload.CustomProviderConfig,
 	}
@@ -265,6 +276,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			NetworkConfig:            config.NetworkConfig,
 			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 			ProxyConfig:              config.ProxyConfig,
+			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 		}, ProviderStatusActive)
@@ -275,9 +287,11 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	if payload.CustomProviderConfig == nil ||
 		!payload.CustomProviderConfig.IsKeyLess ||
 		(payload.CustomProviderConfig.AllowedRequests != nil && payload.CustomProviderConfig.AllowedRequests.ListModels) {
-		if err := h.modelsManager.RefetchModelsForProvider(ctx, payload.Provider); err != nil {
-			logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", payload.Provider, err))
-		}
+		go func() {
+			if err := h.modelsManager.RefetchModelsForProvider(context.Background(), payload.Provider); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", payload.Provider, err))
+			}
+		}()
 	}
 
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
@@ -303,6 +317,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
 		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings
 		ProxyConfig              *schemas.ProxyConfig             `json:"proxy_config,omitempty"`           // Proxy configuration
+		SendBackRawRequest       *bool                            `json:"send_back_raw_request,omitempty"`  // Include raw request in BifrostResponse
 		SendBackRawResponse      *bool                            `json:"send_back_raw_response,omitempty"` // Include raw response in BifrostResponse
 		CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
 	}{}
@@ -401,10 +416,21 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	nc := payload.NetworkConfig
+
+	// Validate retry backoff values
+	if err := validateRetryBackoff(&nc); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
+		return
+	}
+
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
-	config.NetworkConfig = &payload.NetworkConfig
+	config.NetworkConfig = &nc
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
+	if payload.SendBackRawRequest != nil {
+		config.SendBackRawRequest = *payload.SendBackRawRequest
+	}
 	if payload.SendBackRawResponse != nil {
 		config.SendBackRawResponse = *payload.SendBackRawResponse
 	}
@@ -433,6 +459,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			NetworkConfig:            config.NetworkConfig,
 			ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
 			ProxyConfig:              config.ProxyConfig,
+			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
 		}, ProviderStatusActive)
@@ -444,9 +471,11 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		(payload.CustomProviderConfig == nil ||
 			!payload.CustomProviderConfig.IsKeyLess ||
 			(payload.CustomProviderConfig.AllowedRequests != nil && payload.CustomProviderConfig.AllowedRequests.ListModels)) {
-		if err := h.modelsManager.RefetchModelsForProvider(ctx, provider); err != nil {
-			logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
-		}
+		go func() {
+			if err := h.modelsManager.RefetchModelsForProvider(context.Background(), provider); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to refetch models for provider %s: %v", provider, err))
+			}
+		}()
 	} else {
 		if err := h.modelsManager.DeleteModelsForProvider(ctx, provider); err != nil {
 			logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
@@ -505,9 +534,9 @@ func (h *ProviderHandler) listKeys(ctx *fasthttp.RequestCtx) {
 
 // ModelResponse represents a single model in the response
 type ModelResponse struct {
-	Name              string   `json:"name"`
-	Provider          string   `json:"provider"`
-	AccessibleByKeys  []string `json:"accessible_by_keys,omitempty"`
+	Name             string   `json:"name"`
+	Provider         string   `json:"provider"`
+	AccessibleByKeys []string `json:"accessible_by_keys,omitempty"`
 }
 
 // ListModelsResponse represents the response for listing models
@@ -543,7 +572,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
 		models := h.modelsManager.GetModelsForProvider(provider)
-		
+
 		// Filter by keys if specified
 		if keysParam != "" {
 			keyIDs := strings.Split(keysParam, ",")
@@ -567,7 +596,7 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		// Collect models from all providers
 		for _, provider := range providers {
 			models := h.modelsManager.GetModelsForProvider(provider)
-			
+
 			// Filter by keys if specified
 			if keysParam != "" {
 				keyIDs := strings.Split(keysParam, ",")
@@ -590,11 +619,11 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 		queryLower := strings.ToLower(queryParam)
 		// Remove common separators for more flexible matching
 		queryNormalized := strings.ReplaceAll(strings.ReplaceAll(queryLower, "-", ""), "_", "")
-		
+
 		for _, model := range allModels {
 			modelLower := strings.ToLower(model.Name)
 			modelNormalized := strings.ReplaceAll(strings.ReplaceAll(modelLower, "-", ""), "_", "")
-			
+
 			// Match if:
 			// 1. Direct substring match
 			// 2. Normalized substring match (ignoring - and _)
@@ -824,6 +853,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		NetworkConfig:            *config.NetworkConfig,
 		ConcurrencyAndBufferSize: *config.ConcurrencyAndBufferSize,
 		ProxyConfig:              config.ProxyConfig,
+		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
 		Status:                   status,
@@ -846,4 +876,31 @@ func getProviderFromCtx(ctx *fasthttp.RequestCtx) (schemas.ModelProvider, error)
 	}
 
 	return schemas.ModelProvider(decoded), nil
+}
+
+func validateRetryBackoff(networkConfig *schemas.NetworkConfig) error {
+	if networkConfig != nil {
+		if networkConfig.RetryBackoffInitial > 0 {
+			if networkConfig.RetryBackoffInitial < lib.MinRetryBackoff {
+				return fmt.Errorf("retry backoff initial must be at least %v", lib.MinRetryBackoff)
+			}
+			if networkConfig.RetryBackoffInitial > lib.MaxRetryBackoff {
+				return fmt.Errorf("retry backoff initial must be at most %v", lib.MaxRetryBackoff)
+			}
+		}
+		if networkConfig.RetryBackoffMax > 0 {
+			if networkConfig.RetryBackoffMax < lib.MinRetryBackoff {
+				return fmt.Errorf("retry backoff max must be at least %v", lib.MinRetryBackoff)
+			}
+			if networkConfig.RetryBackoffMax > lib.MaxRetryBackoff {
+				return fmt.Errorf("retry backoff max must be at most %v", lib.MaxRetryBackoff)
+			}
+		}
+		if networkConfig.RetryBackoffInitial > 0 && networkConfig.RetryBackoffMax > 0 {
+			if networkConfig.RetryBackoffInitial > networkConfig.RetryBackoffMax {
+				return fmt.Errorf("retry backoff initial must be less than or equal to retry backoff max")
+			}
+		}
+	}
+	return nil
 }

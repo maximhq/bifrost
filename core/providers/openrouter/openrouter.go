@@ -19,6 +19,7 @@ type OpenRouterProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
@@ -49,6 +50,7 @@ func NewOpenRouterProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}
 }
@@ -95,7 +97,8 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx context.Context, key sch
 	responseBody := append([]byte(nil), resp.Body()...)
 
 	var openrouterResponse schemas.BifrostListModelsResponse
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	// Pass nil requestBody for GET requests - HandleProviderResponse will skip raw request capture
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &openrouterResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -105,6 +108,11 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx context.Context, key sch
 	}
 
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		openrouterResponse.ExtraFields.RawRequest = rawRequest
+	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -136,6 +144,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx context.Context, key sche
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
@@ -156,6 +165,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx context.Context, po
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
@@ -173,6 +183,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx context.Context, key sche
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -196,6 +207,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx context.Context, po
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.OpenRouter,
 		postHookRunner,
@@ -215,6 +227,7 @@ func (provider *OpenRouterProvider) Responses(ctx context.Context, key schemas.K
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		provider.logger,
@@ -234,6 +247,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx context.Context, postHoo
 		request,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,

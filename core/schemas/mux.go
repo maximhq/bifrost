@@ -777,9 +777,10 @@ func (bcr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if bcr.Params.ReasoningEffort != nil {
+		if bcr.Params.Reasoning != nil && (bcr.Params.Reasoning.Effort != nil || bcr.Params.Reasoning.MaxTokens != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
-				Effort: bcr.Params.ReasoningEffort,
+				Effort:    bcr.Params.Reasoning.Effort,
+				MaxTokens: bcr.Params.Reasoning.MaxTokens,
 			}
 		}
 
@@ -855,9 +856,12 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			bcr.Params.ToolChoice = chatToolChoice
 		}
 
-		// Handle ReasoningEffort from Reasoning
-		if brr.Params.Reasoning != nil && brr.Params.Reasoning.Effort != nil {
-			bcr.Params.ReasoningEffort = brr.Params.Reasoning.Effort
+		// Handle Reasoning from Reasoning
+		if brr.Params.Reasoning != nil {
+			bcr.Params.Reasoning = &ChatReasoning{
+				Effort:    brr.Params.Reasoning.Effort,
+				MaxTokens: brr.Params.Reasoning.MaxTokens,
+			}
 		}
 
 		// Handle Verbosity from Text config
@@ -885,6 +889,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	// Create new BifrostResponsesResponse from Chat fields
 	responsesResp := &BifrostResponsesResponse{
 		CreatedAt:     cr.Created,
+		Model:         cr.Model,
 		Citations:     cr.Citations,
 		SearchResults: cr.SearchResults,
 		Videos:        cr.Videos,
@@ -898,7 +903,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 			responsesMessages := choice.ChatNonStreamResponseChoice.Message.ToResponsesMessages()
 			outputMessages = append(outputMessages, responsesMessages...)
 		}
-		// Note: Stream choices would need different handling if needed
 	}
 
 	if len(outputMessages) > 0 {
@@ -928,6 +932,7 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	chatResp := &BifrostChatResponse{
 		Created:       responsesResp.CreatedAt,
 		Object:        "chat.completion",
+		Model:         responsesResp.Model,
 		Citations:     responsesResp.Citations,
 		SearchResults: responsesResp.SearchResults,
 		Videos:        responsesResp.Videos,
@@ -1359,13 +1364,13 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		}
 	}
 
-	if delta.Thought != nil && *delta.Thought != "" {
+	if delta.Reasoning != nil && *delta.Reasoning != "" {
 		// Reasoning/thought content delta (for models that support reasoning)
 		response := &BifrostResponsesStreamResponse{
 			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 			SequenceNumber: state.SequenceNumber,
 			OutputIndex:    Ptr(0),
-			Delta:          delta.Thought,
+			Delta:          delta.Reasoning,
 			ExtraFields:    cr.ExtraFields,
 		}
 		responses = append(responses, response)
@@ -1488,6 +1493,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			ID:        state.MessageID,
 			CreatedAt: state.CreatedAt,
 			Usage:     usage,
+		}
+
+		if state.Model != nil {
+			response.Model = *state.Model
 		}
 
 		responses = append(responses, &BifrostResponsesStreamResponse{

@@ -30,21 +30,47 @@ print_banner
 
 OUTPUT_FILE="my-values.yaml"
 
-# Storage mode
-echo "1. Select storage mode:"
+# Storage configuration - per-store backend selection
+echo "1. Select backend for Config Store:"
 echo "   1) SQLite (simple, single node)"
 echo "   2) PostgreSQL (production, scalable)"
-read -p "Choice [1-2]: " storage_choice
+read -p "Choice [1-2]: " config_store_choice
 
-case $storage_choice in
-    1) STORAGE_MODE="sqlite" ;;
-    2) STORAGE_MODE="postgres" ;;
+case $config_store_choice in
+    1) CONFIG_STORE_TYPE="sqlite" ;;
+    2) CONFIG_STORE_TYPE="postgres" ;;
     *) print_error "Invalid choice"; exit 1 ;;
 esac
 
+echo ""
+echo "2. Select backend for Logs Store:"
+echo "   1) SQLite (simple, single node)"
+echo "   2) PostgreSQL (production, scalable)"
+read -p "Choice [1-2]: " logs_store_choice
+
+case $logs_store_choice in
+    1) LOGS_STORE_TYPE="sqlite" ;;
+    2) LOGS_STORE_TYPE="postgres" ;;
+    *) print_error "Invalid choice"; exit 1 ;;
+esac
+
+# Determine if PostgreSQL is needed (for either store)
+if [[ "$CONFIG_STORE_TYPE" == "postgres" ]] || [[ "$LOGS_STORE_TYPE" == "postgres" ]]; then
+    NEEDS_POSTGRES="true"
+else
+    NEEDS_POSTGRES="false"
+fi
+
+# Determine if SQLite persistence is needed (for either store)
+if [[ "$CONFIG_STORE_TYPE" == "sqlite" ]] || [[ "$LOGS_STORE_TYPE" == "sqlite" ]]; then
+    NEEDS_SQLITE_PERSISTENCE="true"
+else
+    NEEDS_SQLITE_PERSISTENCE="false"
+fi
+
 # Vector store
 echo ""
-echo "2. Do you need vector store for semantic caching?"
+echo "3. Do you need vector store for semantic caching?"
 read -p "Enable vector store? (y/n): " vector_choice
 
 if [[ "$vector_choice" =~ ^[Yy]$ ]]; then
@@ -66,7 +92,7 @@ fi
 
 # Deployment type
 echo ""
-echo "3. Deployment type:"
+echo "4. Deployment type:"
 echo "   1) Development (1 replica, minimal resources)"
 echo "   2) Production (3+ replicas, auto-scaling)"
 read -p "Choice [1-2]: " deploy_choice
@@ -93,7 +119,7 @@ esac
 
 # Ingress
 echo ""
-read -p "4. Do you want to enable Ingress? (y/n): " ingress_choice
+read -p "5. Do you want to enable Ingress? (y/n): " ingress_choice
 if [[ "$ingress_choice" =~ ^[Yy]$ ]]; then
     INGRESS_ENABLED="true"
     read -p "   Enter your domain (e.g., bifrost.yourdomain.com): " DOMAIN
@@ -104,7 +130,7 @@ fi
 
 # Encryption key
 echo ""
-read -p "5. Enter encryption key (leave empty to skip): " ENCRYPTION_KEY
+read -p "6. Enter encryption key (leave empty to skip): " ENCRYPTION_KEY
 
 # Check if output file already exists
 if [[ -f "$OUTPUT_FILE" ]]; then
@@ -141,12 +167,12 @@ resources:
     cpu: ${CPU_REQUEST}
     memory: ${MEM_REQUEST}
 
-# Storage configuration
+# Storage configuration (per-store backend selection)
 storage:
-  mode: ${STORAGE_MODE}
+  mode: sqlite  # Default fallback
 EOF
 
-if [[ "$STORAGE_MODE" == "sqlite" ]]; then
+if [[ "$NEEDS_SQLITE_PERSISTENCE" == "true" ]]; then
     cat >> "$OUTPUT_FILE" <<EOF
   persistence:
     enabled: true
@@ -157,15 +183,22 @@ fi
 cat >> "$OUTPUT_FILE" <<EOF
   configStore:
     enabled: true
+    type: ${CONFIG_STORE_TYPE}
   logsStore:
     enabled: true
+    type: ${LOGS_STORE_TYPE}
 
 EOF
 
 # PostgreSQL configuration
-if [[ "$STORAGE_MODE" == "postgres" ]]; then
+if [[ "$NEEDS_POSTGRES" == "true" ]]; then
     cat >> "$OUTPUT_FILE" <<EOF
-# PostgreSQL configuration
+# PostgreSQL configuration (used by: $(
+    stores=""
+    [[ "$CONFIG_STORE_TYPE" == "postgres" ]] && stores="config store"
+    [[ "$LOGS_STORE_TYPE" == "postgres" ]] && { [[ -n "$stores" ]] && stores="$stores, logs store" || stores="logs store"; }
+    echo "$stores"
+))
 postgresql:
   enabled: true
   auth:
@@ -187,7 +220,7 @@ postgresql:
 EOF
 else
     cat >> "$OUTPUT_FILE" <<EOF
-# PostgreSQL disabled (using SQLite)
+# PostgreSQL disabled (using SQLite for all stores)
 postgresql:
   enabled: false
 
@@ -340,9 +373,13 @@ fi
 
 print_success "Values file generated: $OUTPUT_FILE"
 echo ""
+print_info "Storage configuration:"
+print_info "  - Config Store: ${CONFIG_STORE_TYPE}"
+print_info "  - Logs Store: ${LOGS_STORE_TYPE}"
+echo ""
 print_warning "Please review and edit the generated file:"
 print_warning "  - Add your provider API keys"
-if [[ "$STORAGE_MODE" == "postgres" ]]; then
+if [[ "$NEEDS_POSTGRES" == "true" ]]; then
     print_warning "  - Change PostgreSQL password"
 fi
 if [[ "$VECTOR_TYPE" == "redis" ]] && [[ "$VECTOR_ENABLED" == "true" ]]; then

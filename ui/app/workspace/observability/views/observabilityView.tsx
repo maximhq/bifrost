@@ -37,7 +37,6 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 				/>
 			</svg>
 		),
-		tag: "Beta",
 	},
 	{
 		id: "maxim",
@@ -47,8 +46,7 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 	{
 		id: "datadog",
 		name: "Datadog",
-		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} />,
-		disabled: true,
+		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} className="-ml-0.5" />,
 	},
 	{
 		id: "newrelic",
@@ -125,7 +123,7 @@ export default function ObservabilityView() {
 									aria-disabled={tab.disabled ? true : undefined}
 									aria-current={selectedPlugin?.name === tab.id ? "page" : undefined}
 									className={cn(
-										"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm max-h-[32px]",
+										"mb-1 flex max-h-[32px] w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
 										tab.disabled ? "opacity-50" : "",
 										selectedPlugin?.name === tab.id
 											? "bg-secondary opacity-100 hover:opacity-100"

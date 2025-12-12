@@ -427,19 +427,19 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 					container: () => cn("min-h-8 border-none", props.className),
 					control: ({ isFocused }) =>
 						cn(
-							"border-border! multiselect-control flex flex-wrap items-start justify-between rounded-md border bg-white dark:!bg-accent",
+							"border-border! multiselect-control dark:!bg-accent flex flex-wrap items-start justify-between rounded-md border bg-white",
 							props.triggerClassName,
 						),
 					placeholder: () => "text-sm text-content-disabled truncate p-0 text-ellipsis",
 					group: () => cn(props.groupClassName),
-					input: () => "text-sm m-0 border-none p-0",
-					menu: () => cn("p-0 bg-white dark:!bg-accent", props.menuClassName),
+					input: () => "text-sm m-0 border-none p-0 !text-secondary-foreground",
+					menu: () => cn("dark:!bg-accent p-0", props.menuClassName),
 					menuList: () => cn("p-2", props.menuListClassName),
 					valueContainer: () => cn("flex h-full w-full", props.valueContainerClassName),
 					option: ({ isFocused }) =>
 						cn("multiselect-option flex w-full justify-between rounded-sm p-2 text-sm", isFocused && "bg-background-highlight-primary/60"),
 					singleValue: () => "text-sm text-content-primary",
-					multiValue: () =>"bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm",
+					multiValue: () => "bg-accent dark:!bg-card flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-sm",
 					multiValueLabel: () => "text-content-tertiary",
 					multiValueRemove: () => "text-content-tertiary h-inherit flex items-center opacity-60 hover:cursor-pointer hover:opacity-100",
 					loadingMessage: () => "text-sm",

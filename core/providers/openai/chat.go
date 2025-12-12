@@ -1,8 +1,6 @@
 package openai
 
 import (
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -13,7 +11,7 @@ func (request *OpenAIChatRequest) ToBifrostChatRequest() *schemas.BifrostChatReq
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
-		Input:     request.Messages,
+		Input:     ConvertOpenAIMessagesToBifrostMessages(request.Messages),
 		Params:    &request.ChatParameters,
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
@@ -27,11 +25,16 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
-		Messages: bifrostReq.Input,
+		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
 	}
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
+		if openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
+			openaiReq.ChatParameters.MaxCompletionTokens = schemas.Ptr(MinMaxCompletionTokens)
+		}
+		// Drop user field if it exceeds OpenAI's 64 character limit
+		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 	}
 
 	switch bifrostReq.Provider {
@@ -50,7 +53,7 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		openaiReq.filterOpenAISpecificParameters()
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
-		if providerUtils.IsVertexMistralModel(bifrostReq.Model) {
+		if schemas.IsMistralModel(bifrostReq.Model) {
 			openaiReq.applyMistralCompatibility()
 		}
 		return openaiReq
@@ -62,8 +65,8 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 // Filter OpenAI Specific Parameters
 func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
-	if request.ChatParameters.ReasoningEffort != nil && *request.ChatParameters.ReasoningEffort == "minimal" {
-		request.ChatParameters.ReasoningEffort = schemas.Ptr("low")
+	if request.ChatParameters.Reasoning != nil && request.ChatParameters.Reasoning.Effort != nil && *request.ChatParameters.Reasoning.Effort == "minimal" {
+		request.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
 	}
 	if request.ChatParameters.PromptCacheKey != nil {
 		request.ChatParameters.PromptCacheKey = nil

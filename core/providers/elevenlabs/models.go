@@ -1,8 +1,12 @@
 package elevenlabs
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"slices"
 
-func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider) *schemas.BifrostListModelsResponse {
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -12,6 +16,9 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 	}
 
 	for _, model := range *response {
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ModelID) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:   string(providerKey) + "/" + model.ModelID,
 			Name: schemas.Ptr(model.Name),

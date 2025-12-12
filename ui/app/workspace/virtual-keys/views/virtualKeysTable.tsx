@@ -1,28 +1,29 @@
-"use client";
+"use client"
 
 import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-	AlertDialogTrigger,
-} from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store";
-import { Customer, Team, VirtualKey } from "@/lib/types/governance";
-import { cn } from "@/lib/utils";
-import { formatCurrency } from "@/lib/utils/governance";
-import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
-import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
-import VirtualKeySheet from "./virtualKeySheet";
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogTrigger,
+} from "@/components/ui/alertDialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
+import { Customer, Team, VirtualKey } from "@/lib/types/governance"
+import { cn } from "@/lib/utils"
+import { formatCurrency } from "@/lib/utils/governance"
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
+import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react"
+import { useState } from "react"
+import { toast } from "sonner"
+import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
+import VirtualKeySheet from "./virtualKeySheet"
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -32,13 +33,17 @@ interface VirtualKeysTableProps {
 }
 
 export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefresh }: VirtualKeysTableProps) {
-	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
-	const [editingVirtualKey, setEditingVirtualKey] = useState<VirtualKey | null>(null);
-	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
-	const [selectedVirtualKey, setSelectedVirtualKey] = useState<VirtualKey | null>(null);
-	const [showDetailSheet, setShowDetailSheet] = useState(false);
+  const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
+  const [editingVirtualKey, setEditingVirtualKey] = useState<VirtualKey | null>(null)
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
+  const [selectedVirtualKey, setSelectedVirtualKey] = useState<VirtualKey | null>(null)
+  const [showDetailSheet, setShowDetailSheet] = useState(false)
 
-	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
+  const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
+  const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
+  const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
+
+  const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -116,7 +121,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 					<div>
 						<p className="text-muted-foreground text-sm">Manage virtual keys, their permissions, budgets, and rate limits.</p>
 					</div>
-					<Button onClick={handleAddVirtualKey}>
+					<Button onClick={handleAddVirtualKey} disabled={!hasCreateAccess}>
 						<Plus className="h-4 w-4" />
 						Add Virtual Key
 					</Button>
@@ -184,12 +189,12 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 											</TableCell>
 											<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center justify-end gap-2">
-													<Button variant="ghost" size="sm" onClick={(e) => handleEditVirtualKey(vk, e)}>
+													<Button variant="ghost" size="sm" onClick={(e) => handleEditVirtualKey(vk, e)} disabled={!hasUpdateAccess}>
 														<Edit className="h-4 w-4" />
 													</Button>
 													<AlertDialog>
 														<AlertDialogTrigger asChild>
-															<Button variant="ghost" size="sm" onClick={(e) => e.stopPropagation()}>
+															<Button variant="ghost" size="sm" onClick={(e) => e.stopPropagation()} disabled={!hasDeleteAccess}>
 																<Trash2 className="h-4 w-4" />
 															</Button>
 														</AlertDialogTrigger>

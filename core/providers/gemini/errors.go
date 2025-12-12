@@ -1,9 +1,16 @@
 package gemini
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"strconv"
+	"strings"
 
-// ToGeminiError derives a GeminiChatRequestError from a BifrostError
-func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiChatRequestError {
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// ToGeminiError derives a GeminiGenerationError from a BifrostError
+func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiGenerationError {
 	if bifrostErr == nil {
 		return nil
 	}
@@ -19,11 +26,54 @@ func ToGeminiError(bifrostErr *schemas.BifrostError) *GeminiChatRequestError {
 	if bifrostErr.StatusCode != nil {
 		code = *bifrostErr.StatusCode
 	}
-	return &GeminiChatRequestError{
-		Error: GeminiChatRequestErrorStruct{
+	return &GeminiGenerationError{
+		Error: &GeminiGenerationErrorStruct{
 			Code:    code,
 			Message: message,
 			Status:  status,
 		},
 	}
+}
+
+// parseGeminiError parses Gemini error responses
+func parseGeminiError(resp *fasthttp.Response) *schemas.BifrostError {
+	// Try to parse as []GeminiGenerationError
+	var errorResps []GeminiGenerationError
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResps)
+	if len(errorResps) > 0 {
+		var message string
+		var firstError *GeminiGenerationErrorStruct
+		for _, errorResp := range errorResps {
+			if errorResp.Error != nil {
+				if firstError == nil {
+					firstError = errorResp.Error
+				}
+				message = message + errorResp.Error.Message + "\n"
+			}
+		}
+		// Trim trailing newline
+		message = strings.TrimSuffix(message, "\n")
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		// Set Code from first error if available
+		if firstError != nil {
+			bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(firstError.Code))
+		}
+		// Set Message to trimmed concatenated message
+		bifrostErr.Error.Message = message
+		return bifrostErr
+	}
+
+	// Try to parse as GeminiGenerationError
+	var errorResp GeminiGenerationError
+	bifrostErr = providerUtils.HandleProviderAPIError(resp, &errorResp)
+	if errorResp.Error != nil {
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(errorResp.Error.Code))
+		bifrostErr.Error.Message = errorResp.Error.Message
+	}
+	return bifrostErr
 }

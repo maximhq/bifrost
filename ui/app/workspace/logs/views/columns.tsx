@@ -1,17 +1,20 @@
-"use client";
+"use client"
 
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
-import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
-import { ColumnDef } from "@tanstack/react-table";
-import { ArrowUpDown, Trash2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons"
+import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs"
+import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs"
+import { ColumnDef } from "@tanstack/react-table"
+import { ArrowUpDown, Trash2 } from "lucide-react"
 import moment from "moment"
 
 function getMessage(log?: LogEntry) {
 	if (log?.input_history && log.input_history.length > 0) {
 		let userMessageContent = log.input_history[log.input_history.length - 1].content;
+		if (userMessageContent == undefined) {
+			return "";
+		}
 		if (typeof userMessageContent === "string") {
 			return userMessageContent;
 		}
@@ -37,14 +40,12 @@ function getMessage(log?: LogEntry) {
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
-		return log.transcription_input.prompt || "Audio file";
+		return "Audio file";
 	}
 	return "";
 }
 
-export const createColumns = (
-	onDelete: (log: LogEntry) => void,
-): ColumnDef<LogEntry>[] => [
+export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "status",
 		header: "Status",
@@ -67,7 +68,7 @@ export const createColumns = (
 		),
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
-			return <div className="font-mono text-sm">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+			return <div className="font-mono text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
 		},
 	},
 	{
@@ -87,7 +88,7 @@ export const createColumns = (
 		cell: ({ row }) => {
 			const input = getMessage(row.original);
 			return (
-				<div className="max-w-[400px] truncate font-mono text-xs font-normal" title={input || "-"}>
+				<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
 					{input}
 				</div>
 			);
@@ -173,10 +174,12 @@ export const createColumns = (
 	{
 		id: "actions",
 		cell: ({ row }) => {
-			const log = row.original;
+			const log = row.original
 			return (
-				<Button variant="outline" size="icon" onClick={() => onDelete(log)}><Trash2 /></Button>
-			);
+				<Button variant="outline" size="icon" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
+					<Trash2 />
+				</Button>
+			)
 		},
 	},
-];
+]

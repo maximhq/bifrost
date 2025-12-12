@@ -10,17 +10,10 @@ export interface VoiceConfig {
 
 export interface SpeechInput {
 	input: string;
-	voice: string | VoiceConfig[];
-	instructions?: string;
-	response_format?: string; // Default is "mp3"
 }
 
 export interface TranscriptionInput {
 	file: string; // base64 encoded (send empty string when using input_audio)
-	language?: string;
-	prompt?: string;
-	response_format?: string; // Default is "json"
-	format?: string;
 }
 
 export interface AudioTokenDetails {
@@ -119,7 +112,17 @@ export interface ChatMessage {
 	refusal?: string;
 	annotations?: Annotation[];
 	tool_calls?: ToolCall[]; // For backward compatibility, tool calls are now in the content
-	thought?: string;
+	reasoning?: string;
+	reasoning_details?: ReasoningDetails[];
+}
+
+export interface ReasoningDetails {
+	index: number;
+	type: "reasoning.summary" | "reasoning.encrypted" | "reasoning.text";
+	summary?: string;
+	text?: string;
+	signature?: string;
+	data?: string;
 }
 
 export interface BifrostEmbedding {
@@ -276,6 +279,7 @@ export interface LogEntry {
 	error_details?: BifrostError;
 	stream: boolean; // true if this was a streaming response
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
+	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
 }
 
@@ -405,13 +409,13 @@ export interface ResponsesToolMessage {
 }
 
 // Reasoning content
-export interface ResponsesReasoningContent {
+export interface ResponsesReasoningSummary {
 	type: "summary_text";
 	text: string;
 }
 
 export interface ResponsesReasoning {
-	summary: ResponsesReasoningContent[];
+	summary: ResponsesReasoningSummary[];
 	encrypted_content?: string;
 }
 
@@ -427,7 +431,7 @@ export interface ResponsesMessage {
 	name?: string;
 	arguments?: string;
 	// Reasoning fields (merged when type is "reasoning")
-	summary?: ResponsesReasoningContent[];
+	summary?: ResponsesReasoningSummary[];
 	encrypted_content?: string;
 	// Additional tool-specific fields
 	[key: string]: any;

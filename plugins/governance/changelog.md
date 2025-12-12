@@ -1,1 +1,1 @@
-- feat: support added for x-goog-api-key header for Google Gemini style
+- chore: updating core to 1.2.37 and framework to 1.1.47

@@ -29,6 +29,10 @@ type TableTeam struct {
 	Claims       *string                `gorm:"type:text" json:"-"`
 	ParsedClaims map[string]interface{} `gorm:"-" json:"claims"`
 
+	// Config hash is used to detect the changes synced from config.json file
+	// Every time we sync the config.json file, we will update the config hash
+	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }

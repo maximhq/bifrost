@@ -6,6 +6,10 @@ icon: "helicopter-symbol"
 
 Deploy Bifrost on Kubernetes using the official Helm chart. This is the recommended way to deploy Bifrost on Kubernetes with production-ready defaults and flexible configuration.
 
+<Note>
+**Latest Chart Version:** 1.5.0 | [View on Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
+</Note>
+
 ## Prerequisites
 
 - Kubernetes cluster (v1.19+)
@@ -26,7 +30,7 @@ helm repo update
 ### Install Bifrost
 
 ```bash
-helm install bifrost bifrost/bifrost --set image.tag=v1.3.37
+helm install bifrost bifrost/bifrost --set image.tag=1.3.45
 ```
 
 <Note>
@@ -56,7 +60,7 @@ Simple setup for local testing and development.
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v1.3.37 \
+  --set image.tag=1.3.45 \
   --set bifrost.providers.openai.keys[0].value="sk-your-key" \
   --set bifrost.providers.openai.keys[0].weight=1
 ```
@@ -83,7 +87,7 @@ High-availability setup with PostgreSQL and auto-scaling.
 ```yaml
 # production.yaml
 image:
-  tag: "v1.3.37"  # Required: specify the Bifrost version
+  tag: "1.3.45"  # Required: specify the Bifrost version
 
 replicaCount: 3
 
@@ -181,7 +185,7 @@ Optimized for high-volume AI inference with caching.
 ```yaml
 # ai-workload.yaml
 image:
-  tag: "v1.3.37"  # Required: specify the Bifrost version
+  tag: "1.3.45"  # Required: specify the Bifrost version
 
 storage:
   mode: postgres
@@ -253,7 +257,7 @@ Support multiple LLM providers with load balancing.
 ```yaml
 # multi-provider.yaml
 image:
-  tag: "v1.3.37"  # Required: specify the Bifrost version
+  tag: "1.3.45"  # Required: specify the Bifrost version
 
 bifrost:
   encryptionKey: "your-encryption-key"
@@ -309,7 +313,7 @@ Use existing PostgreSQL instance.
 ```yaml
 # external-db.yaml
 image:
-  tag: "v1.3.37"  # Required: specify the Bifrost version
+  tag: "1.3.45"  # Required: specify the Bifrost version
 
 storage:
   mode: postgres
@@ -377,7 +381,7 @@ kubectl create secret generic qdrant-credentials \
 ```yaml
 # secrets-config.yaml
 image:
-  tag: "v1.3.37"
+  tag: "1.3.45"
 
 storage:
   mode: postgres
@@ -455,7 +459,7 @@ helm install bifrost bifrost/bifrost -f secrets-config.yaml
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.tag` | **Required.** Bifrost image version (e.g., v1.3.37) | `""` |
+| `image.tag` | **Required.** Bifrost image version (e.g., 1.3.45) | `""` |
 | `replicaCount` | Number of replicas | `1` |
 | `storage.mode` | Storage backend (sqlite/postgres) | `sqlite` |
 | `storage.persistence.size` | PVC size for SQLite | `10Gi` |
@@ -509,7 +513,7 @@ Or via command line:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v1.3.37 \
+  --set image.tag=1.3.45 \
   --set bifrost.providers.openai.keys[0].value="sk-..." \
   --set bifrost.providers.openai.keys[0].weight=1
 ```
@@ -727,7 +731,7 @@ Create `my-values.yaml`:
 
 ```yaml
 image:
-  tag: "v1.3.37"  # Required: specify the Bifrost version
+  tag: "1.3.45"  # Required: specify the Bifrost version
 
 replicaCount: 3
 
@@ -807,9 +811,314 @@ tolerations:
     effect: "NoSchedule"
 ```
 
+## Enterprise Deployment
+
+For enterprise customers, Bifrost provides dedicated container images hosted in private registries with additional features, support, and SLAs.
+
+<Note>
+[Book a demo](https://calendly.com/maximai/bifrost-demo) to know more about our enterprise features.
+</Note>
+
+### Private Container Registry
+
+Enterprise customers receive access to Bifrost images in a private container registry. To use your enterprise registry, override the `image.repository` with your provided registry URL:
+
+<Tabs>
+<Tab title="Google Artifact Registry">
+
+```yaml
+# enterprise-gcp.yaml
+image:
+  repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
+  tag: "latest"
+
+imagePullSecrets:
+  - name: gcr-secret
+```
+
+**Create the pull secret:**
+
+```bash
+kubectl create secret docker-registry gcr-secret \
+  --docker-server=us-west1-docker.pkg.dev \
+  --docker-username=_json_key \
+  --docker-password="$(cat service-account-key.json)" \
+  --docker-email=your-email@example.com
+```
+
+</Tab>
+<Tab title="AWS ECR">
+
+```yaml
+# enterprise-aws.yaml
+image:
+  repository: 123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost
+  tag: "latest"
+
+imagePullSecrets:
+  - name: ecr-secret
+```
+
+**Create the pull secret:**
+
+```bash
+kubectl create secret docker-registry ecr-secret \
+  --docker-server=123456789.dkr.ecr.us-east-1.amazonaws.com \
+  --docker-username=AWS \
+  --docker-password=$(aws ecr get-login-password --region us-east-1)
+```
+
+<Note>
+ECR tokens expire after 12 hours. Consider using [ECR Credential Helper](https://github.com/awslabs/amazon-ecr-credential-helper) or an operator like [ECR Registry Creds](https://github.com/upmc-enterprises/registry-creds) for automatic token refresh.
+</Note>
+
+</Tab>
+<Tab title="Azure ACR">
+
+```yaml
+# enterprise-azure.yaml
+image:
+  repository: yourregistry.azurecr.io/bifrost
+  tag: "latest"
+
+imagePullSecrets:
+  - name: acr-secret
+```
+
+**Create the pull secret:**
+
+```bash
+kubectl create secret docker-registry acr-secret \
+  --docker-server=yourregistry.azurecr.io \
+  --docker-username=<service-principal-id> \
+  --docker-password=<service-principal-password>
+```
+
+</Tab>
+<Tab title="Self-Hosted Registry">
+
+```yaml
+# enterprise-self-hosted.yaml
+image:
+  repository: registry.yourcompany.com/ai/bifrost
+  tag: "latest"
+
+imagePullSecrets:
+  - name: private-registry-secret
+```
+
+**Create the pull secret:**
+
+```bash
+kubectl create secret docker-registry private-registry-secret \
+  --docker-server=registry.yourcompany.com \
+  --docker-username=<username> \
+  --docker-password=<password>
+```
+
+</Tab>
+</Tabs>
+
+### Full Enterprise Configuration
+
+Complete example for enterprise deployments with all recommended settings:
+
+```yaml
+# enterprise-full.yaml
+image:
+  # Your enterprise registry URL (provided by Maxim)
+  repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
+  tag: "latest"
+
+imagePullSecrets:
+  - name: enterprise-registry-secret
+
+replicaCount: 3
+
+# Production-grade resources
+resources:
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+  limits:
+    cpu: 4000m
+    memory: 8Gi
+
+# Auto-scaling for high availability
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# PostgreSQL storage
+storage:
+  mode: postgres
+
+postgresql:
+  enabled: true
+  auth:
+    password: "secure-password"  # Use existingSecret in production
+  primary:
+    persistence:
+      size: 100Gi
+    resources:
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+
+# Vector store for semantic caching
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true
+    persistence:
+      size: 100Gi
+
+# Ingress with TLS
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: bifrost.yourcompany.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.yourcompany.com
+
+# Bifrost configuration
+bifrost:
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "key"
+  
+  client:
+    initialPoolSize: 1000
+    dropExcessRequests: true
+    enableLogging: true
+    disableContentLogging: false  # Set to true for compliance
+    logRetentionDays: 365
+    enableGovernance: true
+    enforceGovernanceHeader: true
+    allowDirectKeys: false
+    maxRequestBodySizeMb: 100
+    allowedOrigins:
+      - "https://yourcompany.com"
+      - "https://*.yourcompany.com"
+  
+  # Use secrets for provider keys
+  providers:
+    openai:
+      keys:
+        - value: "env.OPENAI_API_KEY"
+          weight: 1
+    anthropic:
+      keys:
+        - value: "env.ANTHROPIC_API_KEY"
+          weight: 1
+  
+  providerSecrets:
+    openai:
+      existingSecret: "provider-api-keys"
+      key: "openai-api-key"
+      envVar: "OPENAI_API_KEY"
+    anthropic:
+      existingSecret: "provider-api-keys"
+      key: "anthropic-api-key"
+      envVar: "ANTHROPIC_API_KEY"
+  
+  # Governance with authentication
+  governance:
+    authConfig:
+      isEnabled: true
+      disableAuthOnInference: false
+      existingSecret: "bifrost-admin-credentials"
+      usernameKey: "username"
+      passwordKey: "password"
+  
+  # Enable all plugins
+  plugins:
+    telemetry:
+      enabled: true
+    logging:
+      enabled: true
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: true
+    semanticCache:
+      enabled: true
+      config:
+        provider: "openai"
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.85
+        ttl: "1h"
+
+# Pod distribution
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: bifrost
+        topologyKey: kubernetes.io/hostname
+```
+
+### Enterprise Prerequisites
+
+Before deploying, create the required secrets:
+
+```bash
+# 1. Registry pull secret (see registry-specific instructions above)
+
+# 2. Encryption key
+kubectl create secret generic bifrost-encryption \
+  --from-literal=key='your-32-byte-encryption-key'
+
+# 3. Provider API keys
+kubectl create secret generic provider-api-keys \
+  --from-literal=openai-api-key='sk-...' \
+  --from-literal=anthropic-api-key='sk-ant-...'
+
+# 4. Admin credentials (for governance)
+kubectl create secret generic bifrost-admin-credentials \
+  --from-literal=username='admin' \
+  --from-literal=password='secure-admin-password'
+```
+
+### Install Enterprise Build
+
+```bash
+helm install bifrost bifrost/bifrost -f enterprise-full.yaml
+```
+
+### Enterprise Support
+
+Enterprise customers have access to:
+- Dedicated Slack channel for support
+- Priority bug fixes and feature requests
+- Custom feature development
+- SLA guarantees
+- Compliance documentation (SOC2, HIPAA, etc.)
+
+Contact [support@getmaxim.ai](mailto:support@getmaxim.ai) for enterprise support.
+
 ## Resources
 
 - [Helm Chart Repository](https://github.com/maximhq/bifrost/tree/main/helm-charts)
+- [Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
 - [Complete Installation Guide](https://github.com/maximhq/bifrost/blob/main/helm-charts/INSTALL.md)
 - [Example Configurations](https://github.com/maximhq/bifrost/tree/main/helm-charts/bifrost/values-examples)
 - [Kubernetes Secrets Example](https://github.com/maximhq/bifrost/blob/main/helm-charts/bifrost/values-examples/secrets-from-k8s.yaml)

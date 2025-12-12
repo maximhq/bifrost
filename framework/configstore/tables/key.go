@@ -22,6 +22,9 @@ type TableKey struct {
 	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 
+	// Config hash is used to detect changes synced from config.json file
+	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
 	// Azure config fields (embedded instead of separate table for simplicity)
 	AzureEndpoint        *string `gorm:"type:text" json:"azure_endpoint,omitempty"`
 	AzureAPIVersion      *string `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
@@ -166,6 +169,8 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(k.ModelsJSON), &k.Models); err != nil {
 			return err
 		}
+	} else {
+		k.Models = []string{}
 	}
 
 	// Reconstruct Azure config if fields are present

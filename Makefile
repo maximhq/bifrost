@@ -24,8 +24,9 @@ NC=\033[0m # No Color
 # Include deployment recipes
 include recipes/fly.mk
 include recipes/ecs.mk
+include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy
 
 all: help
 
@@ -729,3 +730,32 @@ work-init: ## Create local go.work to use local modules for development (legacy)
 work-clean: ## Remove local go.work
 	@rm -f go.work go.work.sum || true
 	@echo "$(GREEN)Removed local go.work files$(NC)"
+
+# Module parameter for mod-tidy (all/core/plugins/framework/transport)
+MODULE ?= all
+
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|core|plugins|framework|transport])
+	@echo "$(GREEN)Running go mod tidy...$(NC)"
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "core" ]; then \
+		echo "$(CYAN)Tidying core...$(NC)"; \
+		cd core && go mod tidy && echo "$(GREEN)  ✓ core$(NC)"; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "framework" ]; then \
+		echo "$(CYAN)Tidying framework...$(NC)"; \
+		cd framework && go mod tidy && echo "$(GREEN)  ✓ framework$(NC)"; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "transport" ]; then \
+		echo "$(CYAN)Tidying transports...$(NC)"; \
+		cd transports && go mod tidy && echo "$(GREEN)  ✓ transports$(NC)"; \
+	fi
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "plugins" ]; then \
+		echo "$(CYAN)Tidying plugins...$(NC)"; \
+		for plugin_dir in ./plugins/*/; do \
+			if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
+				plugin_name=$$(basename $$plugin_dir); \
+				cd $$plugin_dir && go mod tidy && cd ../.. && echo "$(GREEN)  ✓ plugins/$$plugin_name$(NC)"; \
+			fi; \
+		done; \
+	fi
+	@echo ""
+	@echo "$(GREEN)✓ go mod tidy complete$(NC)"

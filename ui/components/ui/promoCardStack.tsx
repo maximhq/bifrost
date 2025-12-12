@@ -86,7 +86,7 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCar
 							zIndex: visibleCards.length - index,
 							transformOrigin: "center center",
 							pointerEvents: isTopCard && !isAnimating ? "auto" : "none",
-							height: "180px",
+							height: "190px",
 						}}
 					>
 						<Card

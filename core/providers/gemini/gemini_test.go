@@ -2,6 +2,7 @@ package gemini_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestGemini(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("GEMINI_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) == "" {
 		t.Skip("Skipping Gemini tests because GEMINI_API_KEY is not set")
 	}
 
@@ -31,7 +32,7 @@ func TestGemini(t *testing.T) {
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel: "gemini-2.5-pro",
+		ReasoningModel: "gemini-3-pro-preview",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -51,7 +52,7 @@ func TestGemini(t *testing.T) {
 			TranscriptionStream:   false,
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
-			Reasoning:             false, //TODO: Supported but lost since we map Gemini's responses via chat completions, fix is a native Gemini handler or reasoning support in chat completions
+			Reasoning:             true,
 			ListModels:            true,
 		},
 	}

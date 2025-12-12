@@ -26,7 +26,7 @@ const renderContentBlock = (block: ContentBlock, index: number) => {
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
 					) : (
-						<div className="px-6 py-2 font-mono text-xs whitespace-pre-wrap">{block.text}</div>
+						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{block.text}</div>
 					)}
 				</>
 			)}
@@ -70,23 +70,25 @@ export default function LogChatMessageView({ message }: LogChatMessageViewProps)
 				{message.tool_call_id && <span className="text-muted-foreground ml-2 text-xs">Tool Call ID: {message.tool_call_id}</span>}
 			</div>
 
-			{/* Handle thought content */}
-			{message.thought && (
+			{/* Handle reasoning content */}
+			{message.reasoning && (
 				<div className="border-b last:border-b-0">
-					<div className="bg-muted/50 text-muted-foreground px-6 py-2 text-xs font-medium">Thought Process</div>
-					{isJson(message.thought) ? (
+					<div className="bg-muted/50 text-muted-foreground px-6 py-2 text-xs font-medium">Reasoning</div>
+					{isJson(message.reasoning) ? (
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
 							maxHeight={200}
 							wrap={true}
-							code={JSON.stringify(cleanJson(message.thought), null, 2)}
+							code={JSON.stringify(cleanJson(message.reasoning), null, 2)}
 							lang="json"
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
 					) : (
-						<div className="text-muted-foreground px-6 py-2 font-mono text-xs whitespace-pre-wrap italic">{message.thought}</div>
+						<div className="text-muted-foreground px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap italic">
+							{message.reasoning}
+						</div>
 					)}
 				</div>
 			)}

@@ -33,7 +33,12 @@ SDK_URL="https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11
 # Download and extract macOS SDK if not already installed
 if [ ! -d "$SDK_DIR" ]; then
   echo "📦 Downloading macOS SDK..."
-  curl -L "$SDK_URL" -o /tmp/MacOSX11.3.sdk.tar.xz
+  # Use -f to fail on HTTP errors, -L to follow redirects
+  if ! curl -fL "$SDK_URL" -o /tmp/MacOSX11.3.sdk.tar.xz; then
+    echo "❌ Failed to download macOS SDK from primary URL, trying alternative..."
+    SDK_URL_ALT="https://github.com/joseluisq/macosx-sdks/releases/download/11.3/MacOSX11.3.sdk.tar.xz"
+    curl -fL "$SDK_URL_ALT" -o /tmp/MacOSX11.3.sdk.tar.xz
+  fi
   sudo mkdir -p /opt
   sudo tar -xf /tmp/MacOSX11.3.sdk.tar.xz -C /opt
   rm -f /tmp/MacOSX11.3.sdk.tar.xz

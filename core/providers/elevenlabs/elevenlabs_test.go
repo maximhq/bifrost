@@ -2,6 +2,7 @@ package elevenlabs_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestElevenlabs(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("ELEVENLABS_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")) == "" {
 		t.Skip("Skipping Elevenlabs tests because ELEVENLABS_API_KEY is not set")
 	}
 

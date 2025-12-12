@@ -10,6 +10,8 @@ import (
 )
 
 // TableProvider represents a provider configuration in the database
+// NOTE: Any changes to the provider configuration should be reflected in the GenerateConfigHash function
+// That helps us detect changes between config file and database config
 type TableProvider struct {
 	ID                       uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name                     string    `gorm:"type:varchar(50);uniqueIndex;not null" json:"name"` // ModelProvider as string
@@ -17,6 +19,7 @@ type TableProvider struct {
 	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt                time.Time `gorm:"index;not null" json:"updated_at"`
@@ -34,6 +37,10 @@ type TableProvider struct {
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
+
+	// Config hash is used to detect the changes synced from config.json file
+	// Every time we sync the config.json file, we will update the config hash
+	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
 }
 
 // TableName represents a provider configuration in the database
@@ -48,7 +55,6 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.NetworkConfigJSON = string(data)
 	}
-
 	if p.ConcurrencyAndBufferSize != nil {
 		data, err := json.Marshal(p.ConcurrencyAndBufferSize)
 		if err != nil {
@@ -56,7 +62,6 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.ConcurrencyBufferJSON = string(data)
 	}
-
 	if p.ProxyConfig != nil {
 		data, err := json.Marshal(p.ProxyConfig)
 		if err != nil {
@@ -64,11 +69,9 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.ProxyConfigJSON = string(data)
 	}
-
 	if p.CustomProviderConfig != nil && p.CustomProviderConfig.BaseProviderType == "" {
 		return fmt.Errorf("base_provider_type is required when custom_provider_config is set")
 	}
-
 	if p.CustomProviderConfig != nil {
 		data, err := json.Marshal(p.CustomProviderConfig)
 		if err != nil {
@@ -76,7 +79,6 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.CustomProviderConfigJSON = string(data)
 	}
-
 	return nil
 }
 

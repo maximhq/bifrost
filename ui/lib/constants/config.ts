@@ -1,6 +1,32 @@
 import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/types/config";
 import { ProviderName } from "./logs";
 
+/**
+ * Parse a date string in YYYY-MM-DD format with strict validation.
+ * Returns null if the string is empty, malformed, or represents an invalid date.
+ */
+function parseTrialExpiry (dateStr: string | undefined): Date | null {
+	if (!dateStr || !dateStr.trim()) return null
+
+	// Strict format check: YYYY-MM-DD
+	const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+	if (!dateRegex.test(dateStr)) return null
+
+	const [year, month, day] = dateStr.split('-').map(Number)
+	const date = new Date(year, month - 1, day)
+
+	// Validate the date components match (catches invalid dates like 2024-02-30)
+	if (
+		date.getFullYear() !== year ||
+		date.getMonth() !== month - 1 ||
+		date.getDate() !== day
+	) {
+		return null
+	}
+
+	return date
+}
+
 // Model placeholders based on provider type
 export const ModelPlaceholders = {
 	default: "e.g. gpt-4, gpt-3.5-turbo. Leave blank for all models.",
@@ -94,3 +120,4 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 };
 
 export const IS_ENTERPRISE = process.env.NEXT_PUBLIC_IS_ENTERPRISE === "true";
+export const TRIAL_EXPIRY = parseTrialExpiry(process.env.NEXT_PUBLIC_ENTERPRISE_TRIAL_EXPIRY);

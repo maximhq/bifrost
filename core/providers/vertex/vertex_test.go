@@ -2,6 +2,7 @@ package vertex_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestVertex(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("VERTEX_API_KEY") == "" && (os.Getenv("VERTEX_PROJECT_ID") == "" || os.Getenv("VERTEX_CREDENTIALS") == "") {
+	if strings.TrimSpace(os.Getenv("VERTEX_API_KEY")) == "" && (strings.TrimSpace(os.Getenv("VERTEX_PROJECT_ID")) == "" || strings.TrimSpace(os.Getenv("VERTEX_CREDENTIALS")) == "") {
 		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}
 
@@ -24,9 +25,10 @@ func TestVertex(t *testing.T) {
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:       schemas.Vertex,
 		ChatModel:      "google/gemini-2.0-flash-001",
-		VisionModel:    "google/gemini-2.0-flash-001",
+		VisionModel:    "gemini-2.0-flash-001",
 		TextModel:      "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel: "text-multilingual-embedding-002",
+		ReasoningModel: "claude-4.5-haiku",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -34,7 +36,7 @@ func TestVertex(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // multiple tool calls supported on gemini endpoint only if all tools are search tools
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
@@ -42,6 +44,7 @@ func TestVertex(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Reasoning:             false, // Not supported right now because we are not using native gemini converters
 			ListModels:            false,
 		},
 	}

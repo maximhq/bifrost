@@ -377,7 +377,7 @@ class TestPydanticAIIntegration:
         except ValueError as e:
             pytest.skip(f"Provider {provider} not available: {e}")
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("structured_output"))
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("pydantic_structured_output"))
     def test_05_structured_output(self, test_config, provider, model):
         """Test Case 5: Structured output with Pydantic models - runs on providers with reliable PydanticAI structured output support"""
         if provider == "_no_providers_" or model == "_no_model_":

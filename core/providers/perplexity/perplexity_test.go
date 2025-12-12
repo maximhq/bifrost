@@ -2,6 +2,7 @@ package perplexity_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestPerplexity(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("PERPLEXITY_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("PERPLEXITY_API_KEY")) == "" {
 		t.Skip("Skipping Perplexity tests because PERPLEXITY_API_KEY is not set")
 	}
 

@@ -1038,3 +1038,103 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 
 	return copy
 }
+
+// IsAnthropicModel checks if the model is an Anthropic model.
+func IsAnthropicModel(model string) bool {
+	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
+}
+
+// IsMistralModel checks if the model is a Mistral or Codestral model.
+func IsMistralModel(model string) bool {
+	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+func IsGeminiModel(model string) bool {
+	return strings.Contains(model, "gemini")
+}
+
+// Precompiled regexes for different kinds of version suffixes.
+var (
+	// Anthropic-style date: 20250514
+	anthropicDateRe = regexp.MustCompile(`^\d{8}$`)
+
+	// OpenAI-style date: 2024-09-12
+	openAIDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+	// Generic tagged versions:
+	//   v1, v1.2, v1.2.3, rc1, alpha, beta, preview, canary, experimental, etc.
+	//
+	// NOTE: we intentionally require 'v' for numeric semver-ish versions so that
+	// things like "-4" or "-4.5" are NOT treated as version tags.
+	taggedVersionRe = regexp.MustCompile(
+		`^(?:v\d+(?:\.\d+){0,2}|rc\d+|alpha|beta|preview|canary|experimental)$`,
+	)
+)
+
+// SplitModelAndVersion splits a model id into (base, versionSuffix).
+// If no known version suffix is found, versionSuffix will be empty and
+// base will be the original id.
+//
+// Examples:
+//
+//	"claude-sonnet-4"                 -> ("claude-sonnet-4", "")
+//	"claude-sonnet-4-20250514"        -> ("claude-sonnet-4", "20250514")
+//	"gpt-4.1-2024-09-12"              -> ("gpt-4.1", "2024-09-12")
+//	"gpt-4.1-mini-2024-09-12"         -> ("gpt-4.1-mini", "2024-09-12")
+//	"some-model-v2"                   -> ("some-model", "v2")
+//	"text-embedding-3-large-beta"     -> ("text-embedding-3-large", "beta")
+//	"claude-sonnet-4.5"               -> ("claude-sonnet-4.5", "")
+func SplitModelAndVersion(id string) (base, version string) {
+	if id == "" {
+		return "", ""
+	}
+
+	parts := strings.Split(id, "-")
+	n := len(parts)
+	if n == 0 {
+		return "", ""
+	}
+
+	// 1. Try OpenAI-style date: last 3 parts, e.g. "2024-09-12".
+	if n >= 3 {
+		last3 := strings.Join(parts[n-3:], "-")
+		if openAIDateRe.MatchString(last3) {
+			base := strings.Join(parts[:n-3], "-")
+			return base, last3
+		}
+	}
+
+	// 2. Try Anthropic-style date (20250514) or tagged versions (v1, beta, etc.) in last part.
+	if n >= 2 {
+		last := parts[n-1]
+		if anthropicDateRe.MatchString(last) || taggedVersionRe.MatchString(last) {
+			base := strings.Join(parts[:n-1], "-")
+			return base, last
+		}
+	}
+
+	// 3. No recognized version suffix.
+	return id, ""
+}
+
+// BaseModelName returns the model id with any recognized version suffix stripped.
+//
+// This is your "model name without version".
+func BaseModelName(id string) string {
+	base, _ := SplitModelAndVersion(id)
+	return base
+}
+
+// SameBaseModel reports whether two model ids refer to the same base model,
+// ignoring any recognized version suffixes.
+//
+// This works even if both sides are versioned, or both unversioned.
+func SameBaseModel(a, b string) bool {
+	// Fast path: exact match.
+	if a == b {
+		return true
+	}
+
+	// Compare normalized base names.
+	return BaseModelName(a) == BaseModelName(b)
+}

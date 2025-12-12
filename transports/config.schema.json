@@ -50,6 +50,16 @@
           "type": "boolean",
           "description": "Enable request/response logging"
         },
+        "disable_content_logging": {
+          "type": "boolean",
+          "description": "Disable logging of sensitive content (inputs, outputs, embeddings, etc.)"
+        },
+        "log_retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of days to retain logs",
+          "default": 365
+        },
         "enable_governance": {
           "type": "boolean",
           "description": "Enable governance features"
@@ -152,24 +162,29 @@
                 "type": "string",
                 "description": "Budget ID"
               },
-              "name": {
-                "type": "string",
-                "description": "Budget name"
-              },
-              "limit": {
+              "max_limit": {
                 "type": "number",
-                "description": "Budget limit"
+                "description": "Maximum budget limit in dollars"
               },
-              "duration": {
+              "reset_duration": {
                 "type": "string",
-                "description": "Budget duration (e.g., '1d', '1w', '1m')"
+                "description": "Budget reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+              },
+              "current_usage": {
+                "type": "number",
+                "description": "Current usage in dollars",
+                "default": 0
+              },
+              "last_reset": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Last time budget was reset"
               }
             },
             "required": [
               "id",
-              "name",
-              "limit",
-              "duration"
+              "max_limit",
+              "reset_duration"
             ],
             "additionalProperties": false
           }
@@ -184,24 +199,45 @@
                 "type": "string",
                 "description": "Rate limit ID"
               },
-              "name": {
-                "type": "string",
-                "description": "Rate limit name"
-              },
-              "limit": {
+              "token_max_limit": {
                 "type": "integer",
-                "description": "Request limit"
+                "description": "Maximum tokens allowed"
               },
-              "duration": {
+              "token_reset_duration": {
                 "type": "string",
-                "description": "Rate limit duration (e.g., '1m', '1h')"
+                "description": "Token reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+              },
+              "token_current_usage": {
+                "type": "integer",
+                "description": "Current token usage",
+                "default": 0
+              },
+              "token_last_reset": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Last time token counter was reset"
+              },
+              "request_max_limit": {
+                "type": "integer",
+                "description": "Maximum requests allowed"
+              },
+              "request_reset_duration": {
+                "type": "string",
+                "description": "Request reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+              },
+              "request_current_usage": {
+                "type": "integer",
+                "description": "Current request usage",
+                "default": 0
+              },
+              "request_last_reset": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Last time request counter was reset"
               }
             },
             "required": [
-              "id",
-              "name",
-              "limit",
-              "duration"
+              "id"
             ],
             "additionalProperties": false
           }
@@ -223,10 +259,6 @@
               "budget_id": {
                 "type": "string",
                 "description": "Associated budget ID"
-              },
-              "rate_limit_id": {
-                "type": "string",
-                "description": "Associated rate limit ID"
               }
             },
             "required": [
@@ -258,9 +290,17 @@
                 "type": "string",
                 "description": "Associated budget ID"
               },
-              "rate_limit_id": {
-                "type": "string",
-                "description": "Associated rate limit ID"
+              "profile": {
+                "type": "object",
+                "description": "Team profile data"
+              },
+              "config": {
+                "type": "object",
+                "description": "Team configuration data"
+              },
+              "claims": {
+                "type": "object",
+                "description": "Team claims data"
               }
             },
             "required": [
@@ -284,17 +324,26 @@
                 "type": "string",
                 "description": "Virtual key name"
               },
-              "key": {
+              "description": {
                 "type": "string",
-                "description": "Virtual key value"
+                "description": "Virtual key description"
+              },
+              "value": {
+                "type": "string",
+                "description": "The virtual key value"
+              },
+              "is_active": {
+                "type": "boolean",
+                "description": "Whether the virtual key is active",
+                "default": true
               },
               "team_id": {
                 "type": "string",
-                "description": "Associated team ID"
+                "description": "Associated team ID (mutually exclusive with customer_id)"
               },
               "customer_id": {
                 "type": "string",
-                "description": "Associated customer ID"
+                "description": "Associated customer ID (mutually exclusive with team_id)"
               },
               "budget_id": {
                 "type": "string",
@@ -304,25 +353,25 @@
                 "type": "string",
                 "description": "Associated rate limit ID"
               },
-              "keys": {
+              "provider_configs": {
                 "type": "array",
-                "description": "Provider keys associated with this virtual key",
+                "description": "Provider configurations for this virtual key (empty means all providers allowed)",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "key_id": {
-                      "type": "string",
-                      "description": "Provider key ID"
-                    }
-                  },
-                  "additionalProperties": false
+                  "$ref": "#/$defs/virtual_key_provider_config"
+                }
+              },
+              "mcp_configs": {
+                "type": "array",
+                "description": "MCP configurations for this virtual key",
+                "items": {
+                  "$ref": "#/$defs/virtual_key_mcp_config"
                 }
               }
             },
             "required": [
               "id",
               "name",
-              "key"
+              "value"
             ],
             "additionalProperties": false
           }
@@ -910,6 +959,59 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "datadog"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the Datadog APM and metrics plugin",
+                  "properties": {
+                    "service_name": {
+                      "type": "string",
+                      "description": "Name of the service to report to Datadog",
+                      "default": "bifrost"
+                    },
+                    "agent_addr": {
+                      "type": "string",
+                      "description": "Address of the Datadog Agent for APM traces",
+                      "default": "localhost:8126"
+                    },
+                    "env": {
+                      "type": "string",
+                      "description": "Environment tag (e.g., production, staging)"
+                    },
+                    "version": {
+                      "type": "string",
+                      "description": "Service version tag"
+                    },
+                    "custom_tags": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Additional tags to add to all traces and metrics"
+                    },
+                    "enable_traces": {
+                      "type": "boolean",
+                      "description": "Enable APM traces (default: true)",
+                      "default": true
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
           }
         ],
         "additionalProperties": false
@@ -918,6 +1020,248 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "virtual_key_provider_config": {
+      "type": "object",
+      "description": "Provider configuration for a virtual key",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "description": "Provider config ID"
+        },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Associated virtual key ID"
+        },
+        "provider": {
+          "type": "string",
+          "description": "Provider name"
+        },
+        "weight": {
+          "type": "number",
+          "description": "Weight for load balancing",
+          "default": 1.0
+        },
+        "allowed_models": {
+          "type": "array",
+          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "items": {
+            "type": "string"
+          }
+        },
+        "budget_id": {
+          "type": "string",
+          "description": "Associated budget ID"
+        },
+        "rate_limit_id": {
+          "type": "string",
+          "description": "Associated rate limit ID"
+        },
+        "keys": {
+          "type": "array",
+          "description": "Provider keys for this config (empty means all keys allowed for this provider)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "description": "Key database ID (auto-generated)"
+              },
+              "key_id": {
+                "type": "string",
+                "description": "Key UUID identifier"
+              },
+              "name": {
+                "type": "string",
+                "description": "Key name (must be unique)"
+              },
+              "value": {
+                "type": "string",
+                "description": "API key value (can use env. prefix)"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Supported models for this key"
+              },
+              "weight": {
+                "type": "number",
+                "minimum": 0,
+                "default": 1.0,
+                "description": "Weight for load balancing"
+              },
+              "azure_key_config": {
+                "type": "object",
+                "properties": {
+                  "endpoint": {
+                    "type": "string",
+                    "description": "Azure endpoint (can use env. prefix)"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  },
+                  "api_version": {
+                    "type": "string",
+                    "description": "Azure API version"
+                  }
+                },
+                "required": [
+                  "endpoint"
+                ],
+                "additionalProperties": false
+              },
+              "vertex_key_config": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Google Cloud project ID (can use env. prefix)"
+                  },
+                  "project_number": {
+                    "type": "string",
+                    "description": "Google Cloud project number"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Google Cloud region"
+                  },
+                  "auth_credentials": {
+                    "type": "string",
+                    "description": "Authentication credentials (can use env. prefix)"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  }
+                },
+                "required": [
+                  "project_id",
+                  "region"
+                ],
+                "additionalProperties": false
+              },
+              "bedrock_key_config": {
+                "type": "object",
+                "properties": {
+                  "access_key": {
+                    "type": "string",
+                    "description": "AWS access key (can use env. prefix)"
+                  },
+                  "secret_key": {
+                    "type": "string",
+                    "description": "AWS secret key (can use env. prefix)"
+                  },
+                  "session_token": {
+                    "type": "string",
+                    "description": "AWS session token (can use env. prefix)"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "AWS region"
+                  },
+                  "arn": {
+                    "type": "string",
+                    "description": "AWS ARN"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "oneOf": [
+              {
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["azure_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["vertex_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["bedrock_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] }
+                  ]
+                }
+              }
+            ],
+            "required": [
+              "key_id",
+              "name",
+              "value"
+            ]
+          }
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_mcp_config": {
+      "type": "object",
+      "description": "MCP configuration for a virtual key",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "description": "MCP config ID"
+        },
+        "virtual_key_id": {
+          "type": "string",
+          "description": "Associated virtual key ID"
+        },
+        "mcp_client_id": {
+          "type": "integer",
+          "description": "Associated MCP client ID"
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "description": "Tools to execute for this MCP config",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "mcp_client_id"
+      ],
+      "additionalProperties": false
+    },
     "auth_config": {
       "type": "object",
       "properties": {

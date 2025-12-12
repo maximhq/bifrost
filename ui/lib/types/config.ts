@@ -163,6 +163,7 @@ export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -186,6 +187,7 @@ export interface AddProviderRequest {
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -196,6 +198,7 @@ export interface UpdateProviderRequest {
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -234,11 +237,45 @@ export interface AuthConfig {
 	disable_auth_on_inference?: boolean;
 }
 
+// Global proxy type (for global proxy configuration, not per-provider)
+export type GlobalProxyType = 'http' | 'socks5' | 'tcp'
+
+// Global proxy configuration matching Go's tables.GlobalProxyConfig
+export interface GlobalProxyConfig {
+	enabled: boolean;
+	type: GlobalProxyType;
+	url: string;
+	username?: string;
+	password?: string;
+	no_proxy?: string;
+	timeout?: number;
+	skip_tls_verify?: boolean;
+	enable_for_scim: boolean;
+	enable_for_inference: boolean;
+	enable_for_api: boolean;
+}
+
+// Default GlobalProxyConfig
+export const DefaultGlobalProxyConfig: GlobalProxyConfig = {
+	enabled: false,
+	type: 'http',
+	url: '',
+	username: '',
+	password: '',
+	no_proxy: '',
+	timeout: 30,
+	skip_tls_verify: false,
+	enable_for_scim: false,
+	enable_for_inference: false,
+	enable_for_api: false,
+}
+
 // Bifrost Config
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
 	auth_config?: AuthConfig;
+	proxy_config?: GlobalProxyConfig;
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;

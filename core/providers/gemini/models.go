@@ -1,24 +1,29 @@
 package gemini
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider) *schemas.BifrostListModelsResponse {
+func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
-		Data:          make([]schemas.Model, 0, len(response.Models)),
+		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
 	for _, model := range response.Models {
+
 		contextLength := model.InputTokenLimit + model.OutputTokenLimit
 		// Remove prefix models/ from model.Name
 		modelName := strings.TrimPrefix(model.Name, "models/")
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, modelName) {
+			continue
+		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 			ID:               string(providerKey) + "/" + modelName,
 			Name:             schemas.Ptr(model.DisplayName),
@@ -39,7 +44,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 	}
 
 	geminiResponse := &GeminiListModelsResponse{
-		Models: make([]GeminiModel, 0, len(resp.Data)),
+		Models:        make([]GeminiModel, 0, len(resp.Data)),
 		NextPageToken: resp.NextPageToken,
 	}
 

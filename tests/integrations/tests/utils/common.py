@@ -222,6 +222,29 @@ ANTHROPIC_THINKING_STREAMING_PROMPT = [
     }
 ]
 
+# Gemini Reasoning Test Prompts
+GEMINI_REASONING_PROMPT = [
+    {
+        "role": "user",
+        "content": (
+            "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. "
+            "If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, "
+            "what is the farmer's weekly profit? Please show your step-by-step reasoning."
+        ),
+    }
+]
+
+GEMINI_REASONING_STREAMING_PROMPT = [
+    {
+        "role": "user",
+        "content": (
+            "A library has 1200 books. In January, they lent out 40% of their books. In February, they got 150 books returned and lent out 200 new books. "
+            "In March, they received 80 new books as donations and lent out 25% of their current inventory. "
+            "How many books does the library have available at the end of March? Think through this step by step."
+        ),
+    }
+]
+
 IMAGE_URL_MESSAGES = [
     {
         "role": "user",
@@ -538,10 +561,10 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
             if text_content:
                 content = text_content[0].text
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
-        # Handle OpenAI format
+        # Handle OpenAI format (content can be string or list)
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
-            content = choice.message.content or ""
+            content = get_content_string(choice.message.content)
     elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
         # Handle Bedrock format
         output = response["output"]
@@ -593,7 +616,7 @@ def assert_valid_image_response(response: Any):
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
         choice = response.choices[0]
         if hasattr(choice, "message") and hasattr(choice.message, "content"):
-            content = (choice.message.content or "").lower()
+            content = get_content_string(choice.message.content).lower()
     elif isinstance(response, dict) and "output" in response:  # Bedrock (boto3)
         output = response["output"]
         if "message" in output and "content" in output["message"]:

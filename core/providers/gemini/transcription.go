@@ -10,13 +10,6 @@ import (
 func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas.BifrostTranscriptionRequest {
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
-	if provider == schemas.Vertex {
-		// Add google/ prefix for Bifrost if not already present
-		if !strings.HasPrefix(model, "google/") {
-			model = "google/" + model
-		}
-	}
-
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
 		Provider: provider,
 		Model:    model,

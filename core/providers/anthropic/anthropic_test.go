@@ -2,6 +2,7 @@ package anthropic_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestAnthropic(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
 		t.Skip("Skipping Anthropic tests because ANTHROPIC_API_KEY is not set")
 	}
 
@@ -28,7 +29,8 @@ func TestAnthropic(t *testing.T) {
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 			{Provider: schemas.Anthropic, Model: "claude-sonnet-4-20250514"},
 		},
-		VisionModel: "claude-3-7-sonnet-20250219", // Same model supports vision
+		VisionModel:    "claude-3-7-sonnet-20250219", // Same model supports vision
+		ReasoningModel: "claude-opus-4-5",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

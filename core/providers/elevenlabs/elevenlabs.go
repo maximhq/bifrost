@@ -24,6 +24,7 @@ type ElevenlabsProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for API requests
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
@@ -56,6 +57,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 		client:               client,
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 	}
 }
@@ -94,19 +96,25 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx context.Context, key sch
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(providerName, resp)
+		return nil, parseElevenlabsError(resp)
 	}
 
 	var elevenlabsResponse ElevenlabsListModelsResponse
-	rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &elevenlabsResponse, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &elevenlabsResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
-	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName)
+	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
 
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
@@ -226,7 +234,7 @@ func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key,
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(providerName, resp)
+		return nil, parseElevenlabsError(resp)
 	}
 
 	// Get the response body
@@ -243,6 +251,10 @@ func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key,
 			ModelRequested: request.Model,
 			Latency:        latency.Milliseconds(),
 		},
+	}
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
 
 	if withTimestampsRequest {
@@ -346,7 +358,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseElevenlabsError(providerName, resp)
+		return nil, parseElevenlabsError(resp)
 	}
 
 	// Create response channel
@@ -421,6 +433,10 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 			},
 		}
 
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
+		}
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil, nil), responseChan)
 	}()
@@ -483,19 +499,12 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(providerName, resp)
+		return nil, parseElevenlabsError(resp)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
-	}
-
-	var rawResponse interface{}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
-		}
 	}
 
 	chunks, err := parseTranscriptionResponse(responseBody)
@@ -516,6 +525,10 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
+		}
 		response.ExtraFields.RawResponse = rawResponse
 	}
 

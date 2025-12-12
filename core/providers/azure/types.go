@@ -1,8 +1,9 @@
 package azure
 
-// AzureAPIVersionDefault is the default Azure OpenAI API version to use when not specified.
+// AzureAPIVersionDefault is the default Azure API version to use when not specified.
 const AzureAPIVersionDefault = "2024-10-21"
 const AzureAPIVersionPreview = "preview"
+const AzureAnthropicAPIVersionDefault = "2023-06-01"
 
 type AzureModelCapabilities struct {
 	FineTune       bool `json:"fine_tune"`
@@ -20,7 +21,6 @@ type AzureModelDeprecation struct {
 type AzureModel struct {
 	ID              string                 `json:"id"`
 	Status          string                 `json:"status"`
-	Model           string                 `json:"model,omitempty"`
 	FineTune        string                 `json:"fine_tune,omitempty"`
 	Capabilities    AzureModelCapabilities `json:"capabilities,omitempty"`
 	LifecycleStatus string                 `json:"lifecycle_status"`

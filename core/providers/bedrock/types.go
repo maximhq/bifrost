@@ -1,9 +1,16 @@
 package bedrock
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // DefaultBedrockRegion is the default region for Bedrock
 const DefaultBedrockRegion = "us-east-1"
+const MinimumReasoningMaxTokens = 1
+const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
 
 // ==================== REQUEST TYPES ====================
 
@@ -40,6 +47,10 @@ func (r *BedrockTextCompletionRequest) IsStreamingRequested() bool {
 	return r.Stream
 }
 
+type BedrockServiceTier struct {
+	Type string `json:"type"` // Service tier type: "reserved" | "priority" | "default" | "flex"
+}
+
 // BedrockConverseRequest represents a Bedrock Converse API request
 type BedrockConverseRequest struct {
 	ModelID                           string                           `json:"-"`                                           // Model ID (sent in URL path, not body)
@@ -53,12 +64,79 @@ type BedrockConverseRequest struct {
 	PerformanceConfig                 *BedrockPerformanceConfig        `json:"performanceConfig,omitempty"`                 // Performance configuration
 	PromptVariables                   map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
 	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
+	ServiceTier                       *BedrockServiceTier              `json:"serviceTier,omitempty"`                       // Service tier configuration (note: camelCase in both request and response)
 	Stream                            bool                             `json:"-"`                                           // Whether streaming is requested (internal, not in JSON)
+
+	// Extra params for advanced use cases
+	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
+
+	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *BedrockConverseRequest) IsStreamingRequested() bool {
 	return r.Stream
+}
+
+// Known fields for BedrockConverseRequest
+var bedrockConverseRequestKnownFields = map[string]bool{
+	"messages":                          true,
+	"system":                            true,
+	"inferenceConfig":                   true,
+	"toolConfig":                        true,
+	"guardrailConfig":                   true,
+	"additionalModelRequestFields":      true,
+	"additionalModelResponseFieldPaths": true,
+	"performanceConfig":                 true,
+	"promptVariables":                   true,
+	"requestMetadata":                   true,
+	"serviceTier":                       true,
+	"stream":                            true,
+	"extra_params":                      true,
+	"fallbacks":                         true,
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for BedrockConverseRequest.
+// This captures all unregistered fields into ExtraParams.
+func (r *BedrockConverseRequest) UnmarshalJSON(data []byte) error {
+	// Create an alias type to avoid infinite recursion
+	type Alias BedrockConverseRequest
+
+	// First, unmarshal into the alias to populate all known fields
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Parse JSON to extract unknown fields
+	var rawData map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
+		return err
+	}
+
+	// Initialize ExtraParams if not already initialized
+	if r.ExtraParams == nil {
+		r.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract unknown fields
+	for key, value := range rawData {
+		if !bedrockConverseRequestKnownFields[key] {
+			var v interface{}
+			if err := sonic.Unmarshal(value, &v); err != nil {
+				continue // Skip fields that can't be unmarshaled
+			}
+			r.ExtraParams[key] = v
+		}
+	}
+
+	return nil
 }
 
 type BedrockMessageRole string
@@ -99,6 +177,9 @@ type BedrockContentBlock struct {
 
 	// Guard content (for guardrails)
 	GuardContent *BedrockGuardContent `json:"guardContent,omitempty"`
+
+	// Reasoning content
+	ReasoningContent *BedrockReasoningContent `json:"reasoningContent,omitempty"`
 
 	// For Tool Call Result content
 	JSON interface{} `json:"json,omitempty"`
@@ -144,6 +225,15 @@ type BedrockToolResult struct {
 // BedrockGuardContent represents guard content for guardrails
 type BedrockGuardContent struct {
 	Text *BedrockGuardContentText `json:"text,omitempty"`
+}
+
+type BedrockReasoningContent struct {
+	ReasoningText *BedrockReasoningContentText `json:"reasoningText,omitempty"`
+}
+
+type BedrockReasoningContentText struct {
+	Text      string  `json:"text"`
+	Signature *string `json:"signature,omitempty"`
 }
 
 // BedrockGuardContentText represents text content for guardrails
@@ -255,6 +345,7 @@ type BedrockConverseResponse struct {
 	Metrics                       *BedrockConverseMetrics   `json:"metrics"`                                 // Required: Response metrics
 	AdditionalModelResponseFields map[string]interface{}    `json:"additionalModelResponseFields,omitempty"` // Optional: Additional model-specific response fields
 	PerformanceConfig             *BedrockPerformanceConfig `json:"performanceConfig,omitempty"`             // Optional: Performance configuration used
+	ServiceTier                   *BedrockServiceTier       `json:"serviceTier,omitempty"`                   // Optional: Service tier that was used
 	Trace                         *BedrockConverseTrace     `json:"trace,omitempty"`                         // Optional: Guardrail trace information
 }
 
@@ -423,8 +514,9 @@ type BedrockToolUseStart struct {
 
 // BedrockContentBlockDelta represents the incremental content
 type BedrockContentBlockDelta struct {
-	Text    *string              `json:"text,omitempty"`    // Text content delta
-	ToolUse *BedrockToolUseDelta `json:"toolUse,omitempty"` // Tool use delta
+	Text             *string                      `json:"text,omitempty"`             // Text content delta
+	ReasoningContent *BedrockReasoningContentText `json:"reasoningContent,omitempty"` // Reasoning content delta
+	ToolUse          *BedrockToolUseDelta         `json:"toolUse,omitempty"`          // Tool use delta
 }
 
 // BedrockToolUseDelta represents incremental tool use content

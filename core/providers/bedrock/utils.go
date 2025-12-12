@@ -1,26 +1,99 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // convertParameters handles parameter conversion
-func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) {
+func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
+	// Parameters are optional - if not provided, just skip conversion
 	if bifrostReq.Params == nil {
-		return
+		return nil
 	}
 	// Convert inference config
 	if inferenceConfig := convertInferenceConfig(bifrostReq.Params); inferenceConfig != nil {
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
+
+	// Check for response_format and convert to tool
+	responseFormatTool := convertResponseFormatToTool(ctx, bifrostReq.Params)
+
 	// Convert tool config
 	if toolConfig := convertToolConfig(bifrostReq.Params); toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
+	}
+
+	// Convert reasoning config
+	if bifrostReq.Params.Reasoning != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
+		}
+		if bifrostReq.Params.Reasoning.MaxTokens != nil {
+			if schemas.IsAnthropicModel(bifrostReq.Model) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
+			}
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+			}
+		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+			maxTokens := DefaultCompletionMaxTokens
+			if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+				maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+			} else {
+				if bedrockReq.InferenceConfig != nil {
+					bedrockReq.InferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+				} else {
+					bedrockReq.InferenceConfig = &BedrockInferenceConfig{
+						MaxTokens: schemas.Ptr(DefaultCompletionMaxTokens),
+					}
+				}
+			}
+			minBudgetTokens := MinimumReasoningMaxTokens
+			if schemas.IsAnthropicModel(bifrostReq.Model) {
+				minBudgetTokens = anthropic.MinimumReasoningMaxTokens
+			}
+			budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, maxTokens)
+			if err != nil {
+				return err
+			}
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				"type":          "enabled",
+				"budget_tokens": budgetTokens,
+			}
+		} else {
+			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
+				"type": "disabled",
+			}
+		}
+	}
+
+	// If response_format was converted to a tool, add it to the tool config
+	if responseFormatTool != nil {
+		if bedrockReq.ToolConfig == nil {
+			bedrockReq.ToolConfig = &BedrockToolConfig{}
+		}
+		// Add the response format tool to the beginning of the tools list
+		bedrockReq.ToolConfig.Tools = append([]BedrockTool{*responseFormatTool}, bedrockReq.ToolConfig.Tools...)
+		// Force the model to use this specific tool
+		bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{
+			Tool: &BedrockToolChoiceTool{
+				Name: responseFormatTool.ToolSpec.Name,
+			},
+		}
+	}
+	if bifrostReq.Params.ServiceTier != nil {
+		bedrockReq.ServiceTier = &BedrockServiceTier{
+			Type: *bifrostReq.Params.ServiceTier,
+		}
 	}
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
@@ -106,6 +179,7 @@ func convertChatParameters(bifrostReq *schemas.BifrostChatRequest, bedrockReq *B
 			}
 		}
 	}
+	return nil
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -371,6 +445,64 @@ func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
 	return imageSource, nil
 }
 
+// convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
+// Returns nil if no response_format is present or if it's not a json_schema type
+func convertResponseFormatToTool(ctx *context.Context, params *schemas.ChatParameters) *BedrockTool {
+	if params == nil || params.ResponseFormat == nil {
+		return nil
+	}
+
+	// ResponseFormat is stored as interface{}, need to parse it
+	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// Check if type is "json_schema"
+	formatType, ok := responseFormatMap["type"].(string)
+	if !ok || formatType != "json_schema" {
+		return nil
+	}
+
+	// Extract json_schema object
+	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// Extract name and schema
+	toolName, ok := jsonSchemaObj["name"].(string)
+	if !ok || toolName == "" {
+		toolName = "json_response"
+	}
+
+	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	// Extract description from schema if available
+	description := "Returns structured JSON output"
+	if desc, ok := schemaObj["description"].(string); ok && desc != "" {
+		description = desc
+	}
+
+	// set bifrost context key structured output tool name
+	toolName = fmt.Sprintf("bf_so_%s", toolName)
+	(*ctx) = context.WithValue(*ctx, schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+
+	// Create the Bedrock tool
+	return &BedrockTool{
+		ToolSpec: &BedrockToolSpec{
+			Name:        toolName,
+			Description: schemas.Ptr(description),
+			InputSchema: BedrockToolInputSchema{
+				JSON: schemaObj,
+			},
+		},
+	}
+}
+
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
 func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceConfig {
 	var config BedrockInferenceConfig
@@ -592,8 +724,14 @@ func ToBedrockError(bifrostErr *schemas.BifrostError) *BedrockError {
 		}
 	}
 
+	// Safely extract message from nested error
+	message := ""
+	if bifrostErr.Error != nil {
+		message = bifrostErr.Error.Message
+	}
+
 	bedrockErr := &BedrockError{
-		Message: bifrostErr.Error.Message,
+		Message: message,
 	}
 
 	// Map error type/code

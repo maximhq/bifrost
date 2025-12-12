@@ -95,7 +95,7 @@ anthropic_response = client.models.generate_content(
     contents="Hello from Claude!"
 )
 
-# Azure OpenAI models
+# Azure models
 azure_response = client.models.generate_content(
     model="azure/gpt-4o",
     contents="Hello from Azure!"
@@ -130,7 +130,7 @@ const openaiResponse = await openaiModel.generateContent("Hello from OpenAI!");
 const anthropicModel = genAI.getGenerativeModel({ model: "anthropic/claude-3-sonnet-20240229" });
 const anthropicResponse = await anthropicModel.generateContent("Hello from Claude!");
 
-// Azure OpenAI models
+// Azure models
 const azureModel = genAI.getGenerativeModel({ model: "azure/gpt-4o" });
 const azureResponse = await azureModel.generateContent("Hello from Azure!");
 

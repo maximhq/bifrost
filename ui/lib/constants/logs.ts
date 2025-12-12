@@ -42,7 +42,7 @@ export const RequestTypes = [
 export const ProviderLabels: Record<ProviderName, string> = {
 	openai: "OpenAI",
 	anthropic: "Anthropic",
-	azure: "Azure OpenAI",
+	azure: "Azure",
 	bedrock: "AWS Bedrock",
 	cohere: "Cohere",
 	vertex: "Vertex AI",

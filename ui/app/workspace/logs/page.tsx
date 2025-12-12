@@ -1,20 +1,21 @@
-"use client";
+"use client"
 
-import { createColumns } from "@/app/workspace/logs/views/columns";
-import { EmptyState } from "@/app/workspace/logs/views/emptyState";
-import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet";
-import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
-import FullPageLoader from "@/components/fullPageLoader";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useWebSocket } from "@/hooks/useWebSocket";
-import { getErrorMessage, useDeleteLogsMutation, useLazyGetLogsQuery, useLazyGetLogsStatsQuery } from "@/lib/store";
-import type { ChatMessage, ChatMessageContent, ContentBlock, LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs";
-import { dateUtils } from "@/lib/types/logs";
-import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
-import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createColumns } from "@/app/workspace/logs/views/columns"
+import { EmptyState } from "@/app/workspace/logs/views/emptyState"
+import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet"
+import { LogsDataTable } from "@/app/workspace/logs/views/logsTable"
+import FullPageLoader from "@/components/fullPageLoader"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Card, CardContent } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useWebSocket } from "@/hooks/useWebSocket"
+import { getErrorMessage, useDeleteLogsMutation, useLazyGetLogsQuery, useLazyGetLogsStatsQuery } from "@/lib/store"
+import type { ChatMessage, ChatMessageContent, ContentBlock, LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs"
+import { dateUtils } from "@/lib/types/logs"
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
+import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react"
+import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 // Calculate default timestamps once at module level to prevent constant recalculation
 const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
@@ -25,16 +26,18 @@ const DEFAULT_START_TIME = (() => {
 })();
 
 export default function LogsPage() {
-	const [logs, setLogs] = useState<LogEntry[]>([]);
-	const [totalItems, setTotalItems] = useState(0); // changes with filters
-	const [stats, setStats] = useState<LogStats | null>(null);
-	const [initialLoading, setInitialLoading] = useState(true); // on initial load
-	const [fetchingLogs, setFetchingLogs] = useState(false); // on pagination/filters change
-	const [fetchingStats, setFetchingStats] = useState(false); // on stats fetch
-	const [error, setError] = useState<string | null>(null);
-	const [showEmptyState, setShowEmptyState] = useState(false);
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [totalItems, setTotalItems] = useState(0) // changes with filters
+  const [stats, setStats] = useState<LogStats | null>(null)
+  const [initialLoading, setInitialLoading] = useState(true) // on initial load
+  const [fetchingLogs, setFetchingLogs] = useState(false) // on pagination/filters change
+  const [fetchingStats, setFetchingStats] = useState(false) // on stats fetch
+  const [error, setError] = useState<string | null>(null)
+  const [showEmptyState, setShowEmptyState] = useState(false)
 
-	// RTK Query lazy hooks for manual triggering
+  const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete)
+
+  // RTK Query lazy hooks for manual triggering
 	const [triggerGetLogs] = useLazyGetLogsQuery();
 	const [triggerGetStats] = useLazyGetLogsStatsQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
@@ -487,7 +490,7 @@ export default function LogsPage() {
 		[stats, fetchingStats],
 	);
 
-	const columns = useMemo(() => createColumns(handleDelete), [handleDelete]);
+	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess])
 
 	return (
 		<div className="dark:bg-card bg-white">

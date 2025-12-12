@@ -8,6 +8,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const MinimumReasoningMaxTokens = 1
+const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+
 // ==================== REQUEST TYPES ====================
 
 // CohereChatRequest represents a Cohere  chat completion request
@@ -28,6 +31,7 @@ type CohereChatRequest struct {
 	LogProbs         *bool                   `json:"log_probs,omitempty"`          // Optional: Log probabilities
 	StrictToolChoice *bool                   `json:"strict_tool_choice,omitempty"` // Optional: Strict tool choice
 	Thinking         *CohereThinking         `json:"thinking,omitempty"`           // Optional: Reasoning configuration
+	ResponseFormat   *CohereResponseFormat   `json:"response_format,omitempty"`    // Optional: Format for the response
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -178,6 +182,20 @@ type CohereThinkingType string
 const (
 	ThinkingTypeEnabled  CohereThinkingType = "enabled"
 	ThinkingTypeDisabled CohereThinkingType = "disabled"
+)
+
+// CohereResponseFormat represents the response format configuration for Cohere chat requests
+type CohereResponseFormat struct {
+	Type       CohereResponseFormatType `json:"type"`             // Required: Response format type
+	JSONSchema *interface{}             `json:"schema,omitempty"` // Optional: JSON schema for structured output (not used when type is "text")
+}
+
+// CohereResponseFormatType represents the type of response format
+type CohereResponseFormatType string
+
+const (
+	ResponseFormatTypeText       CohereResponseFormatType = "text"
+	ResponseFormatTypeJSONObject CohereResponseFormatType = "json_object"
 )
 
 // CohereToolChoice represents tool choice configuration
@@ -518,8 +536,9 @@ type CohereStreamMessage struct {
 
 // CohereStreamContent represents content in streaming events
 type CohereStreamContent struct {
-	Type CohereContentBlockType `json:"type,omitempty"` // For content-start
-	Text *string                `json:"text,omitempty"` // For content deltas
+	Type     CohereContentBlockType `json:"type,omitempty"`     // For content-start
+	Text     *string                `json:"text,omitempty"`     // For content deltas
+	Thinking *string                `json:"thinking,omitempty"` // For thinking deltas
 }
 
 // ==================== ERROR TYPES ====================

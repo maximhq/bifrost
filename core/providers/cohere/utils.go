@@ -79,3 +79,61 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 
 	return result
 }
+
+// ConvertResponseFormatToCohere converts OpenAI-style response_format (interface{}) to Cohere's typed format
+// Input can be a map with structure: { type: "json_schema", json_schema: { schema: {...} } }
+// Output: CohereResponseFormat with flat structure: { type: "json_object", json_schema: {...} }
+func convertResponseFormatToCohere(responseFormat *interface{}) *CohereResponseFormat {
+	if responseFormat == nil {
+		return nil
+	}
+
+	// Try to extract as map
+	formatMap, ok := (*responseFormat).(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	cohereFormat := &CohereResponseFormat{}
+
+	// Extract type
+	typeStr, _ := formatMap["type"].(string)
+	switch typeStr {
+	case "text":
+		cohereFormat.Type = ResponseFormatTypeText
+	case "json_object", "json_schema":
+		cohereFormat.Type = ResponseFormatTypeJSONObject
+
+		// Extract the nested schema
+		// OpenAI format: { type: "json_schema", json_schema: { name: "X", strict: true, schema: {...} } }
+		if jsonSchemaWrapper, ok := formatMap["json_schema"].(map[string]interface{}); ok {
+			if schema, ok := jsonSchemaWrapper["schema"].(map[string]interface{}); ok {
+				var schemaInterface interface{} = schema
+				cohereFormat.JSONSchema = &schemaInterface
+			}
+		}
+	default:
+		return nil
+	}
+
+	return cohereFormat
+}
+
+// convertCohereResponseFormatToBifrost converts Cohere's typed response_format back to interface{}
+func convertCohereResponseFormatToBifrost(cohereFormat *CohereResponseFormat) *interface{} {
+	if cohereFormat == nil {
+		return nil
+	}
+
+	result := make(map[string]interface{})
+
+	if cohereFormat.JSONSchema != nil {
+		result["type"] = "json_schema"
+		result["json_schema"] = *cohereFormat.JSONSchema
+	} else {
+		result["type"] = string(cohereFormat.Type)
+	}
+
+	var resultInterface interface{} = result
+	return &resultInterface
+}

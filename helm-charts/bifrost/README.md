@@ -1,8 +1,10 @@
 # Bifrost Helm Charts
 
-[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/bifrost)](https://artifacthub.io/packages/search?repo=bifrost)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/bifrost)](https://artifacthub.io/packages/helm/bifrost/bifrost)
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
+
+**Latest Version:** 1.5.0
 
 ## Quick Start
 
@@ -14,7 +16,7 @@ helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install Bifrost with default configuration (SQLite storage)
-helm install bifrost bifrost/bifrost --set image.tag=v1.3.37
+helm install bifrost bifrost/bifrost --set image.tag=v1.5.0
 ```
 
 ## Prerequisites
@@ -33,7 +35,7 @@ helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install with default values
-helm install bifrost bifrost/bifrost --set image.tag=v1.3.37
+helm install bifrost bifrost/bifrost --set image.tag=v1.5.0
 
 # Or install with custom values
 helm install bifrost bifrost/bifrost -f my-values.yaml
@@ -71,17 +73,84 @@ cd bifrost/helm-charts/bifrost
 
 > **Important:** You must specify the `image.tag`. See available tags at [Docker Hub](https://hub.docker.com/r/maximhq/bifrost/tags).
 
+### Enterprise Private Registry
+
+For enterprise customers with private container registries, simply override the `image.repository` with your full registry URL:
+
+```yaml
+# Google Artifact Registry
+image:
+  repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
+  tag: v1.5.0
+
+# AWS ECR
+image:
+  repository: 123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost
+  tag: v1.5.0
+
+# Azure Container Registry
+image:
+  repository: yourregistry.azurecr.io/bifrost
+  tag: v1.5.0
+
+# Self-hosted registry
+image:
+  repository: registry.yourcompany.com/ai/bifrost
+  tag: v1.5.0
+```
+
+If your private registry requires authentication, configure `imagePullSecrets`:
+
+```yaml
+image:
+  repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
+  tag: v1.5.0
+
+imagePullSecrets:
+  - name: my-registry-secret
+```
+
+Create the secret beforehand:
+```bash
+kubectl create secret docker-registry my-registry-secret \
+  --docker-server=us-west1-docker.pkg.dev \
+  --docker-username=_json_key \
+  --docker-password="$(cat key.json)" \
+  --docker-email=your-email@example.com
+```
+
 ### Storage Configuration
 
-Bifrost supports two storage backends:
+Bifrost supports two storage backends (SQLite and PostgreSQL) that can be configured independently for config and logs stores.
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `storage.mode` | Storage backend: `sqlite` or `postgres` | `sqlite` |
+| `storage.mode` | Default storage backend (fallback when per-store type not set) | `sqlite` |
 | `storage.persistence.enabled` | Enable persistent storage for SQLite | `true` |
 | `storage.persistence.size` | Storage size | `10Gi` |
 | `storage.configStore.enabled` | Enable configuration store | `true` |
+| `storage.configStore.type` | Config store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
 | `storage.logsStore.enabled` | Enable logs store | `true` |
+| `storage.logsStore.type` | Logs store backend: `sqlite`, `postgres`, or `""` | `""` (uses `storage.mode`) |
+
+#### Mixed Backend Example
+
+You can use different backends for config and logs stores:
+
+```yaml
+storage:
+  mode: sqlite  # Default fallback
+  configStore:
+    enabled: true
+    type: sqlite   # Config in SQLite (fast, local)
+  logsStore:
+    enabled: true
+    type: postgres # Logs in PostgreSQL (scalable, queryable)
+
+postgresql:
+  enabled: true
+  # ... PostgreSQL configuration for logs store
+```
 
 ### PostgreSQL Configuration
 
@@ -221,6 +290,7 @@ The chart includes pre-configured examples in `values-examples/`:
 |---------------|-------------|
 | `sqlite-only.yaml` | Simple setup with SQLite (local development) |
 | `postgres-only.yaml` | PostgreSQL for config and logs |
+| `mixed-backend.yaml` | SQLite for config + PostgreSQL for logs (mixed backend) |
 | `postgres-weaviate.yaml` | PostgreSQL + Weaviate for semantic caching |
 | `postgres-redis.yaml` | PostgreSQL + Redis for semantic caching |
 | `postgres-qdrant.yaml` | PostgreSQL + Qdrant for semantic caching |

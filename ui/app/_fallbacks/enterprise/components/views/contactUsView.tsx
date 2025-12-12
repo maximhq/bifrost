@@ -10,11 +10,12 @@ interface Props {
 	title: string;
 	description: string;
 	readmeLink: string;
+	align?: "middle" | "top";
 }
 
-export default function ContactUsView({ icon, title, description, className, readmeLink }: Props) {
+export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle" }: Props) {
 	return (
-		<div className={cn("flex flex-col items-center justify-center gap-4 text-center", className)}>
+		<div className={cn("flex flex-col items-center gap-4 text-center", align === "middle" ? "justify-center" : "justify-start", className)}>
 			<div className="text-muted-foreground">{icon}</div>
 			<div className="flex flex-col gap-1">
 				<h1 className="text-muted-foreground text-xl font-medium">{title}</h1>

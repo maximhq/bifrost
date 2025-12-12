@@ -76,11 +76,11 @@ func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
 func calculateBackoff(attempt int, config *schemas.ProviderConfig) time.Duration {
 	// Calculate an exponential backoff: initial * 2^attempt
 	backoff := min(config.NetworkConfig.RetryBackoffInitial*time.Duration(1<<uint(attempt)), config.NetworkConfig.RetryBackoffMax)
-
-	// Add jitter (±20%)
+	// Add jitter (20%)
 	jitter := float64(backoff) * (0.8 + 0.4*rand.Float64())
-
-	return time.Duration(jitter)
+	result := time.Duration(jitter)
+	// Ensure we never exceed the configured maximum
+	return min(result, config.NetworkConfig.RetryBackoffMax)
 }
 
 // validateRequest validates the given request.

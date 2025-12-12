@@ -214,8 +214,12 @@ export const networkFormConfigSchema = z
 			.max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.coerce
 			.number("Retry backoff initial must be a number")
-			.min(100, "Retry backoff initial must be at least 100ms"),
-		retry_backoff_max: z.coerce.number("Retry backoff max must be a number").min(1000, "Retry backoff max must be at least 1000ms"),
+			.min(100, "Retry backoff initial must be at least 100ms")
+			.max(1000000, "Retry backoff initial must be at most 1000000ms"),
+		retry_backoff_max: z.coerce
+			.number("Retry backoff max must be a number")
+			.min(100, "Retry backoff max must be at least 100ms")
+			.max(1000000, "Retry backoff max must be at most 1000000ms"),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",
@@ -365,6 +369,7 @@ export const modelProviderConfigSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -380,6 +385,7 @@ export const formModelProviderConfigSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
@@ -396,6 +402,7 @@ export const addProviderRequestSchema = z.object({
 	network_config: networkConfigSchema.optional(),
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema.optional(),
 	proxy_config: proxyConfigSchema.optional(),
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -406,6 +413,7 @@ export const updateProviderRequestSchema = z.object({
 	network_config: networkConfigSchema,
 	concurrency_and_buffer_size: concurrencyAndBufferSizeSchema,
 	proxy_config: proxyConfigSchema,
+	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
@@ -475,6 +483,7 @@ export const performanceFormSchema = z.object({
 			.min(1, "Buffer size must be greater than 0")
 			.max(100000, "Buffer size must be less than 100000"),
 	}),
+	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
 });
 
@@ -596,6 +605,61 @@ export const mcpClientUpdateSchema = z.object({
 		),
 });
 
+// Global proxy type schema
+export const globalProxyTypeSchema = z.enum(['http', 'socks5', 'tcp']);
+
+// Global proxy configuration schema
+export const globalProxyConfigSchema = z
+	.object({
+		enabled: z.boolean(),
+		type: globalProxyTypeSchema,
+		url: z.string(),
+		username: z.string().optional(),
+		password: z.string().optional(),
+		no_proxy: z.string().optional(),
+		timeout: z.number().min(0).optional(),
+		skip_tls_verify: z.boolean().optional(),
+		enable_for_scim: z.boolean(),
+		enable_for_inference: z.boolean(),
+		enable_for_api: z.boolean(),
+	})
+	.refine(
+		(data) => {
+			// URL is required when proxy is enabled
+			if (data.enabled && (!data.url || data.url.trim().length === 0)) {
+				return false;
+			}
+			return true;
+		},
+		{
+			message: 'Proxy URL is required when proxy is enabled',
+			path: ['url'],
+		},
+	)
+	.refine(
+		(data) => {
+			// Validate URL format when provided and enabled
+			if (data.enabled && data.url && data.url.trim().length > 0) {
+				try {
+					new URL(data.url);
+					return true;
+				} catch {
+					return false;
+				}
+			}
+			return true;
+		},
+		{
+			message: 'Must be a valid URL (e.g., http://proxy.example.com:8080)',
+			path: ['url'],
+		},
+	);
+
+// Global proxy form schema for the ProxyView
+export const globalProxyFormSchema = z.object({
+	proxy_config: globalProxyConfigSchema,
+});
+
 // Export type inference helpers
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
@@ -611,3 +675,5 @@ export type MaximFormSchema = z.infer<typeof maximFormSchema>;
 export type NetworkOnlyFormSchema = z.infer<typeof networkOnlyFormSchema>;
 export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;
+export type GlobalProxyConfigSchema = z.infer<typeof globalProxyConfigSchema>;
+export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;

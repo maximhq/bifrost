@@ -11,6 +11,7 @@ import (
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -27,6 +28,7 @@ type ConfigManager interface {
 	ReloadPricingManager(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
@@ -51,6 +53,8 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bifr
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
+	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
+	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
@@ -127,7 +131,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				"disable_auth_on_inference": authConfig.DisableAuthOnInference,
 			}
 		}
-	}else{
+	} else {
 		mapConfig["auth_config"] = map[string]any{
 			"admin_username":            "",
 			"admin_password":            "",
@@ -138,6 +142,19 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	mapConfig["is_db_connected"] = h.store.ConfigStore != nil
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
+	// Fetching proxy config
+	if h.store.ConfigStore != nil {
+		proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("failed to get proxy config from store: %v", err))
+		} else if proxyConfig != nil {
+			// Redact password if present
+			if proxyConfig.Password != "" {
+				proxyConfig.Password = "<redacted>"
+			}
+			mapConfig["proxy_config"] = proxyConfig
+		}
+	}
 	SendJSON(ctx, mapConfig)
 }
 
@@ -162,7 +179,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validating framework config
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {		
+	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
@@ -260,7 +277,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating framework config
 	shouldReloadFrameworkConfig := false
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {				
+	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != *frameworkConfig.PricingURL {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
@@ -364,5 +381,136 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "configuration updated successfully",
+	})
+}
+
+// getProxyConfig handles GET /api/proxy-config - Get the current proxy configuration
+func (h *ConfigHandler) getProxyConfig(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+	proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get proxy config: %v", err))
+		return
+	}
+	if proxyConfig == nil {
+		// Return default empty config
+		SendJSON(ctx, configstoreTables.GlobalProxyConfig{
+			Enabled: false,
+			Type:    network.GlobalProxyTypeHTTP,
+		})
+		return
+	}
+	// Redact password if present
+	if proxyConfig.Password != "" {
+		proxyConfig.Password = "<redacted>"
+	}
+	SendJSON(ctx, proxyConfig)
+}
+
+// updateProxyConfig handles PUT /api/proxy-config - Update the proxy configuration
+func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "config store not initialized")
+		return
+	}
+
+	var payload configstoreTables.GlobalProxyConfig
+	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid request format: %v", err))
+		return
+	}
+
+	// Validate proxy config
+	if payload.Enabled {
+		// Validate proxy type
+		switch payload.Type {
+		case network.GlobalProxyTypeHTTP:
+			// HTTP proxy is supported
+			// Make sure the URL is provided
+			if payload.URL == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+				return
+			}
+			// Validate timeout if provided
+			if payload.Timeout < 0 {
+				SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
+				return
+			}
+		case network.GlobalProxyTypeSOCKS5, network.GlobalProxyTypeTCP:
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("proxy type %s is not yet supported", payload.Type))
+			return
+		default:
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid proxy type: %s", payload.Type))
+			return
+		}
+
+		// Validate URL is provided when enabled
+		if payload.URL == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "proxy URL is required when proxy is enabled")
+			return
+		}
+
+		// Validate timeout if provided
+		if payload.Timeout < 0 {
+			SendError(ctx, fasthttp.StatusBadRequest, "proxy timeout must be non-negative")
+			return
+		}
+	}
+
+	// Handle password - if it's "<redacted>", keep the existing password
+	if payload.Password == "<redacted>" {
+		existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get existing proxy config: %v", err))
+			return
+		}
+		if existingConfig != nil {
+			payload.Password = existingConfig.Password
+		} else {
+			payload.Password = ""
+		}
+	}
+
+	// Save proxy config
+	if err := h.store.ConfigStore.UpdateProxyConfig(ctx, &payload); err != nil {
+		logger.Warn(fmt.Sprintf("failed to save proxy configuration: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save proxy configuration: %v", err))
+		return
+	}
+
+	// Pulling the proxy config from the config store
+	newProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("failed to get proxy config from store: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get proxy config from store: %v", err))
+		return
+	}
+	if newProxyConfig == nil {
+		newProxyConfig = &configstoreTables.GlobalProxyConfig{
+			Enabled:       false,
+			Type:          network.GlobalProxyTypeHTTP,
+			URL:           "",
+			Username:      "",
+			Password:      "",
+			NoProxy:       "",
+			Timeout:       0,
+			SkipTLSVerify: false,
+		}
+	}
+
+	// Reload proxy config in the server
+	if err := h.configManager.ReloadProxyConfig(ctx, newProxyConfig); err != nil {
+		logger.Warn(fmt.Sprintf("failed to reload proxy config: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload proxy config: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "proxy configuration updated successfully",
 	})
 }

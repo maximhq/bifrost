@@ -35,6 +35,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `trace_type` | `string` | ✅ Yes | One of: `genai_extension`, `vercel`, `open_inference` |
 | `protocol` | `string` | ✅ Yes | Transport protocol: `http` or `grpc` |
 | `headers` | `object` | ❌ No | Custom headers for authentication (supports `env.VAR_NAME`) |
+| `tls_ca_cert` | `string` | ❌ No | File path to client CA certificate for TLS. Optional. Works with both gRPC and HTTP protocol |
 
 ### Environment Variable Substitution
 
@@ -48,6 +49,35 @@ Headers support environment variable substitution using the `env.` prefix:
   }
 }
 ```
+
+### Resource Attributes
+
+The plugin supports the standard `OTEL_RESOURCE_ATTRIBUTES` environment variable. Any attributes defined in this variable will be automatically attached to every span emitted by the plugin.
+
+```bash
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=production,service.version=1.2.3,team.name=platform"
+```
+
+These attributes appear as resource-level metadata on all traces:
+
+```json
+{
+  "resource": {
+    "attributes": {
+      "service.name": "bifrost",
+      "deployment.environment": "production",
+      "service.version": "1.2.3",
+      "team.name": "platform"
+    }
+  }
+}
+```
+
+This is useful for:
+- **Environment identification** - Distinguish between production, staging, and development traces
+- **Service versioning** - Track which version of your service generated the trace
+- **Team attribution** - Tag traces with team ownership for filtering and alerting
+- **Custom metadata** - Add any key-value pairs relevant to your observability needs
 
 ---
 
@@ -121,6 +151,29 @@ For Gateway mode, configure via `config.json`:
         "collector_url": "http://localhost:4318",
         "trace_type": "genai_extension",
         "protocol": "http",
+        "headers": {
+          "Authorization": "env.OTEL_API_KEY"
+        }
+      }
+    }
+  ]
+}
+```
+
+If you need to connect to an OTEL collector that requires TLS, configure `tls_ca_cert`:
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "localhost:4317",
+        "trace_type": "genai_extension",
+        "protocol": "grpc",
+        "tls_ca_cert": "/path/to/your/ca.cert",
         "headers": {
           "Authorization": "env.OTEL_API_KEY"
         }

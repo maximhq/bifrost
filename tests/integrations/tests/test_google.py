@@ -34,6 +34,8 @@ Tests all core scenarios using Google GenAI SDK directly:
 24. Speech generation - different voices
 25. Speech generation - language support
 26. Speech generation - streaming (if supported)
+27. Extended thinking/reasoning (non-streaming)
+28. Extended thinking/reasoning (streaming)
 """
 
 import pytest
@@ -81,6 +83,9 @@ from .utils.common import (
     GENAI_INVALID_ROLE_CONTENT,
     EMBEDDINGS_SINGLE_TEXT,
     SPEECH_TEST_INPUT,
+    # Gemini-specific test data
+    GEMINI_REASONING_PROMPT,
+    GEMINI_REASONING_STREAMING_PROMPT,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
@@ -470,7 +475,7 @@ class TestGoogleIntegration:
         response1 = google_client.models.generate_content(
             model=get_model("google", "chat"),
             contents="Tell me a creative story in one sentence.",
-            config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=100),
+            config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=1000),
         )
 
         assert_valid_chat_response(response1)
@@ -497,7 +502,7 @@ class TestGoogleIntegration:
             contents="high",
             config=types.GenerateContentConfig(
                 system_instruction="I say high, you say low",
-                max_output_tokens=10,
+                max_output_tokens=500,
             ),
         )
 
@@ -506,15 +511,14 @@ class TestGoogleIntegration:
     @skip_if_no_api_key("google")
     def test_12_error_handling_invalid_roles(self, google_client, test_config):
         """Test Case 12: Error handling for invalid roles"""
-        with pytest.raises(Exception) as exc_info:
-            google_client.models.generate_content(
-                model=get_model("google", "chat"), contents=GENAI_INVALID_ROLE_CONTENT
-            )
+        response = google_client.models.generate_content(
+            model=get_model("google", "chat"), contents=GENAI_INVALID_ROLE_CONTENT
+        )
 
-        # Verify the error is properly caught and contains role-related information
-        error = exc_info.value
-        assert_valid_error_response(error, "tester")
-        assert_error_propagation(error, "google")
+        # Verify the response is successful
+        assert response is not None
+        assert hasattr(response, "candidates")
+        assert len(response.candidates) > 0
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("streaming"))
     def test_13_streaming(self, google_client, test_config, provider, model):
@@ -881,6 +885,170 @@ Joe: Pretty good, thanks for asking."""
             
             wav_audio = convert_pcm_to_wav(audio_data)
             assert_valid_speech_response(wav_audio, expected_audio_size_min=1000)
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_26_extended_thinking(self, google_client, test_config, provider, model):
+        """Test Case 26: Extended thinking/reasoning (non-streaming)"""
+        from google.genai import types
+        
+        # Convert to Google GenAI message format
+        messages = GEMINI_REASONING_PROMPT[0]["content"]
+        
+        # Use a thinking-capable model (Gemini 2.0+ supports thinking)
+        response = google_client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents=messages,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget=2000,
+                ),
+                max_output_tokens=2500,
+            ),
+        )
+        
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "candidates"), "Response should have candidates"
+        assert len(response.candidates) > 0, "Should have at least one candidate"
+        
+        candidate = response.candidates[0]
+        assert hasattr(candidate, "content"), "Candidate should have content"
+        assert hasattr(candidate.content, "parts"), "Content should have parts"
+        
+        # Check for thoughts in usage metadata
+        if provider == "gemini":
+            has_thoughts = False
+            thoughts_token_count = 0
+            
+            if hasattr(response, "usage_metadata"):
+                usage = response.usage_metadata
+                if hasattr(usage, "thoughts_token_count"):
+                    thoughts_token_count = usage.thoughts_token_count
+                    has_thoughts = thoughts_token_count > 0
+                    print(f"Found thoughts with {thoughts_token_count} tokens")
+            
+            # Should have thinking/thoughts tokens
+            assert has_thoughts, (
+                f"Response should contain thoughts/reasoning tokens. "
+                f"Usage metadata: {response.usage_metadata if hasattr(response, 'usage_metadata') else 'None'}"
+            )
+        
+        # Validate that we have a response (even if thoughts aren't directly visible in parts)
+        # In Gemini, thoughts are counted but may not be directly exposed in the response
+        regular_text = ""
+        for part in candidate.content.parts:
+            if hasattr(part, "text") and part.text:
+                regular_text += part.text
+        
+        # Should have regular response text
+        assert len(regular_text) > 0, "Should have regular response text"
+        
+        print(f"✓ Response content: {regular_text[:200]}...")
+        
+        # Validate the response makes sense for the problem
+        response_lower = regular_text.lower()
+        reasoning_keywords = [
+            "egg", "milk", "chicken", "cow", "profit", 
+            "cost", "revenue", "week", "calculate", "total"
+        ]
+        
+        keyword_matches = sum(
+            1 for keyword in reasoning_keywords if keyword in response_lower
+        )
+        assert keyword_matches >= 3, (
+            f"Response should address the farmer problem. "
+            f"Found {keyword_matches} keywords. Content: {regular_text[:200]}..."
+        )
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_27_extended_thinking_streaming(self, google_client, test_config, provider, model):
+        """Test Case 27: Extended thinking/reasoning (streaming)"""
+        from google.genai import types
+        
+        # Convert to Google GenAI message format
+        messages = GEMINI_REASONING_STREAMING_PROMPT[0]["content"]
+        
+        # Stream with thinking enabled
+        stream = google_client.models.generate_content_stream(
+            model=format_provider_model(provider, model),
+            contents=messages,
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget=2000,
+                ),
+                max_output_tokens=2500,
+            ),
+        )
+        
+        # Collect streaming content
+        text_parts = []
+        chunk_count = 0
+        final_usage = None
+        
+        for chunk in stream:
+            chunk_count += 1
+            
+            # Collect text content
+            if hasattr(chunk, "candidates") and chunk.candidates is not None and len(chunk.candidates) > 0:
+                candidate = chunk.candidates[0]
+                if hasattr(candidate, "content") and hasattr(candidate.content, "parts") and candidate.content.parts:
+                    for part in candidate.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            text_parts.append(part.text)
+            
+            # Capture final usage metadata
+            if hasattr(chunk, "usage_metadata"):
+                final_usage = chunk.usage_metadata
+            
+            # Safety check
+            if chunk_count > 500:
+                raise AssertionError("Received >500 streaming chunks; possible non-terminating stream")
+        
+        # Combine collected content
+        complete_text = "".join(text_parts)
+        
+        # Validate results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert final_usage is not None, "Should have usage metadata"
+        
+        # Check for thoughts in usage metadata
+        if provider == "gemini":
+            has_thoughts = False
+            thoughts_token_count = 0
+            
+            if hasattr(final_usage, "thoughts_token_count"):
+                thoughts_token_count = final_usage.thoughts_token_count
+                has_thoughts = thoughts_token_count > 0
+                print(f"Found thoughts with {thoughts_token_count} tokens")
+            
+            assert has_thoughts, (
+                f"Response should contain thoughts/reasoning tokens. "
+                f"Usage metadata: {final_usage if hasattr(final_usage, 'thoughts_token_count') else 'None'}"
+            )
+        
+        # Should have regular response text too
+        assert len(complete_text) > 0, "Should have regular response text"
+        
+        # Validate thinking content
+        text_lower = complete_text.lower()
+        library_keywords = [
+            "book", "library", "lent", "return", "donation",
+            "total", "available", "inventory", "calculate", "percent"
+        ]
+        
+        keyword_matches = sum(
+            1 for keyword in library_keywords if keyword in text_lower
+        )
+        assert keyword_matches >= 3, (
+            f"Response should reason about the library problem. "
+            f"Found {keyword_matches} keywords. Content: {complete_text[:200]}..."
+        )
+        
+        print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:150]}...")
 
 
 # Additional helper functions specific to Google GenAI

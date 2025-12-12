@@ -3,6 +3,7 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"time"
 )
@@ -27,20 +28,93 @@ const (
 	ErrProviderDoRequest            = "failed to execute HTTP request to provider API"
 	ErrProviderResponseDecode       = "failed to decode response body from provider API"
 	ErrProviderResponseUnmarshal    = "failed to unmarshal response from provider API"
+	ErrProviderRawRequestUnmarshal  = "failed to unmarshal raw request from provider API"
 	ErrProviderRawResponseUnmarshal = "failed to unmarshal raw response from provider API"
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
 )
 
 // NetworkConfig represents the network configuration for provider connections.
 // ExtraHeaders is automatically copied during provider initialization to prevent data races.
+//
+// RetryBackoffInitial and RetryBackoffMax are stored internally as time.Duration (nanoseconds),
+// but are serialized/deserialized to/from JSON as milliseconds (integers).
+// This means:
+//   - In JSON: values are represented as milliseconds (e.g., 1000 means 1000ms)
+//   - In Go: values are time.Duration (e.g., 1000ms = 1000000000 nanoseconds)
+//   - When unmarshaling from JSON: a value of 1000 is interpreted as 1000ms, not 1000ns
+//   - When marshaling to JSON: a time.Duration is converted to milliseconds
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
 	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
 	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
 	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
 	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+}
+
+// UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
+// RetryBackoffInitial and RetryBackoffMax are interpreted as milliseconds in JSON,
+// but stored as time.Duration (nanoseconds) internally.
+func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
+	// Use an alias type to avoid infinite recursion
+	type NetworkConfigAlias struct {
+		BaseURL                        string            `json:"base_url,omitempty"`
+		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
+		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
+		MaxRetries                     int               `json:"max_retries"`
+		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
+		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+	}
+
+	var alias NetworkConfigAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	// Copy all fields
+	nc.BaseURL = alias.BaseURL
+	nc.ExtraHeaders = alias.ExtraHeaders
+	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
+	nc.MaxRetries = alias.MaxRetries
+
+	// Convert milliseconds to time.Duration (nanoseconds)
+	// Only convert if value is greater than 0
+	if alias.RetryBackoffInitial > 0 {
+		nc.RetryBackoffInitial = time.Duration(alias.RetryBackoffInitial) * time.Millisecond
+	}
+	if alias.RetryBackoffMax > 0 {
+		nc.RetryBackoffMax = time.Duration(alias.RetryBackoffMax) * time.Millisecond
+	}
+
+	return nil
+}
+
+// MarshalJSON customizes JSON marshaling for NetworkConfig.
+// RetryBackoffInitial and RetryBackoffMax are converted from time.Duration (nanoseconds)
+// to milliseconds (integers) in JSON.
+func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
+	// Use an alias type to avoid infinite recursion
+	type NetworkConfigAlias struct {
+		BaseURL                        string            `json:"base_url,omitempty"`
+		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
+		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
+		MaxRetries                     int               `json:"max_retries"`
+		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
+		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+	}
+
+	alias := NetworkConfigAlias{
+		BaseURL:                        nc.BaseURL,
+		ExtraHeaders:                   nc.ExtraHeaders,
+		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
+		MaxRetries:                     nc.MaxRetries,
+		// Convert time.Duration (nanoseconds) to milliseconds
+		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
+		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
+	}
+
+	return json.Marshal(alias)
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -164,6 +238,7 @@ type ProviderConfig struct {
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
 	Logger               Logger                `json:"-"`
 	ProxyConfig          *ProxyConfig          `json:"proxy_config,omitempty"` // Proxy configuration
+	SendBackRawRequest   bool                  `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 }

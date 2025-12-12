@@ -41,6 +41,7 @@ providers:
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
     streaming: "gpt-4o-mini"
+    thinking: "gpt-5.1"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -48,11 +49,11 @@ providers:
       - "gpt-3.5-turbo"
     
   anthropic:
-    chat: "claude-sonnet-4-20250514"
+    chat: "claude-sonnet-4-5-20250929"
     vision: "claude-3-7-sonnet-20250219"
-    tools: "claude-sonnet-4-20250514"
-    streaming: "claude-sonnet-4-20250514"
-    thinking: "claude-sonnet-4-20250514"
+    tools: "claude-sonnet-4-5-20250929"
+    streaming: "claude-sonnet-4-5-20250929"
+    thinking: "claude-opus-4-5"
     alternatives:
       - "claude-3-sonnet-20240229"
       - "claude-3-opus-20240229"
@@ -60,13 +61,14 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.0-flash"
-    vision: "gemini-2.0-flash"
-    tools: "gemini-2.0-flash"
+    chat: "gemini-2.5-flash"
+    vision: "gemini-2.5-flash"
+    tools: "gemini-2.5-flash"
+    thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
-    streaming: "gemini-2.0-flash"
+    streaming: "gemini-2.5-flash"
     alternatives:
       - "gemini-1.5-pro"
       - "gemini-1.5-flash"
@@ -78,7 +80,7 @@ providers:
     vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    thinking: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "cohere.embed-v4:0"
     alternatives:
@@ -120,12 +122,13 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: true  # PydanticAI structured output works reliably with OpenAI
+    langchain_structured_output: true
+    pydantic_structured_output: true  # PydanticAI structured output works reliably with OpenAI
     pydanticai_streaming: true  # PydanticAI streaming works with OpenAI
     
   anthropic:
@@ -149,7 +152,8 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: true  # PydanticAI structured output works with Anthropic
+    langchain_structured_output: false
+    pydantic_structured_output: true  # PydanticAI structured output works with Anthropic
     pydanticai_streaming: true  # PydanticAI streaming works with Anthropic
     
   gemini:
@@ -168,12 +172,13 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
     pydanticai_streaming: false  # PydanticAI GoogleModel streaming has asyncio issues
     
   bedrock:
@@ -197,7 +202,8 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # Bedrock not supported in PydanticAI tests
+    langchain_structured_output: true
+    pydantic_structured_output: false  # Bedrock not supported in PydanticAI tests
     pydanticai_streaming: false  # Bedrock not supported in PydanticAI tests
     
   cohere:
@@ -221,7 +227,8 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # PydanticAI CohereModel doesn't reliably support structured output
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI CohereModel doesn't reliably support structured output
     pydanticai_streaming: false  # PydanticAI CohereModel doesn't implement streaming
 
 # Scenario to capability mapping
@@ -247,7 +254,8 @@ scenario_capabilities:
   embeddings: "embeddings"
   thinking: "thinking"
   list_models: "chat"
-  structured_output: "chat"  # Structured output uses chat capability
+  langchain_structured_output: "chat"  # LangChain structured output uses chat capability
+  pydantic_structured_output: "chat"  # Structured output uses chat capability
   pydanticai_streaming: "streaming"  # PydanticAI streaming uses streaming capability
 
 # Model capabilities matrix

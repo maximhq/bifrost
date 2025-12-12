@@ -182,7 +182,7 @@ false
 {{- end -}}
 
 {{- define "bifrost.config" -}}
-{{- $config := dict }}
+{{- $config := dict "$schema" "https://www.getbifrost.ai/schema" }}
 {{- if .Values.bifrost.encryptionKey }}
 {{- $_ := set $config "encryption_key" .Values.bifrost.encryptionKey }}
 {{- end }}
@@ -218,23 +218,230 @@ false
 {{- if .Values.bifrost.client.prometheusLabels }}
 {{- $_ := set $client "prometheus_labels" .Values.bifrost.client.prometheusLabels }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "disableContentLogging" }}
+{{- $_ := set $client "disable_content_logging" .Values.bifrost.client.disableContentLogging }}
+{{- end }}
+{{- if .Values.bifrost.client.logRetentionDays }}
+{{- $_ := set $client "log_retention_days" .Values.bifrost.client.logRetentionDays }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
+{{- end }}
+{{- /* Framework */ -}}
+{{- if .Values.bifrost.framework }}
+{{- $framework := dict }}
+{{- if .Values.bifrost.framework.pricing }}
+{{- $pricing := dict }}
+{{- if .Values.bifrost.framework.pricing.pricingUrl }}
+{{- $_ := set $pricing "pricing_url" .Values.bifrost.framework.pricing.pricingUrl }}
+{{- end }}
+{{- if .Values.bifrost.framework.pricing.pricingSyncInterval }}
+{{- $_ := set $pricing "pricing_sync_interval" .Values.bifrost.framework.pricing.pricingSyncInterval }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.pricing_sync_interval }}
+{{- $_ := set $framework "pricing" $pricing }}
+{{- end }}
+{{- end }}
+{{- if $framework }}
+{{- $_ := set $config "framework" $framework }}
+{{- end }}
 {{- end }}
 {{- if .Values.bifrost.providers }}
 {{- $_ := set $config "providers" .Values.bifrost.providers }}
 {{- end }}
+{{- /* Governance */ -}}
+{{- if .Values.bifrost.governance }}
+{{- $governance := dict }}
+{{- if .Values.bifrost.governance.budgets }}
+{{- $_ := set $governance "budgets" .Values.bifrost.governance.budgets }}
+{{- end }}
+{{- if .Values.bifrost.governance.rateLimits }}
+{{- $rateLimits := list }}
+{{- range .Values.bifrost.governance.rateLimits }}
+{{- $rl := dict "id" .id }}
+{{- if .token_max_limit }}{{- $_ := set $rl "token_max_limit" .token_max_limit }}{{- end }}
+{{- if .token_reset_duration }}{{- $_ := set $rl "token_reset_duration" .token_reset_duration }}{{- end }}
+{{- if .request_max_limit }}{{- $_ := set $rl "request_max_limit" .request_max_limit }}{{- end }}
+{{- if .request_reset_duration }}{{- $_ := set $rl "request_reset_duration" .request_reset_duration }}{{- end }}
+{{- $rateLimits = append $rateLimits $rl }}
+{{- end }}
+{{- $_ := set $governance "rate_limits" $rateLimits }}
+{{- end }}
+{{- if .Values.bifrost.governance.customers }}
+{{- $_ := set $governance "customers" .Values.bifrost.governance.customers }}
+{{- end }}
+{{- if .Values.bifrost.governance.teams }}
+{{- $_ := set $governance "teams" .Values.bifrost.governance.teams }}
+{{- end }}
+{{- if .Values.bifrost.governance.virtualKeys }}
+{{- $vks := list }}
+{{- range .Values.bifrost.governance.virtualKeys }}
+{{- $vk := dict "id" .id "name" .name "value" .value }}
+{{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
+{{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
+{{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
+{{- if .budget_id }}{{- $_ := set $vk "budget_id" .budget_id }}{{- end }}
+{{- if .rate_limit_id }}{{- $_ := set $vk "rate_limit_id" .rate_limit_id }}{{- end }}
+{{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
+{{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
+{{- $vks = append $vks $vk }}
+{{- end }}
+{{- $_ := set $governance "virtual_keys" $vks }}
+{{- end }}
+{{- if .Values.bifrost.governance.authConfig }}
+{{- $authConfig := dict }}
+{{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.usernameKey }}
+{{- $_ := set $authConfig "admin_username" "env.BIFROST_ADMIN_USERNAME" }}
+{{- else if .Values.bifrost.governance.authConfig.adminUsername }}
+{{- $_ := set $authConfig "admin_username" .Values.bifrost.governance.authConfig.adminUsername }}
+{{- end }}
+{{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.passwordKey }}
+{{- $_ := set $authConfig "admin_password" "env.BIFROST_ADMIN_PASSWORD" }}
+{{- else if .Values.bifrost.governance.authConfig.adminPassword }}
+{{- $_ := set $authConfig "admin_password" .Values.bifrost.governance.authConfig.adminPassword }}
+{{- end }}
+{{- if hasKey .Values.bifrost.governance.authConfig "isEnabled" }}
+{{- $_ := set $authConfig "is_enabled" .Values.bifrost.governance.authConfig.isEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.governance.authConfig "disableAuthOnInference" }}
+{{- $_ := set $authConfig "disable_auth_on_inference" .Values.bifrost.governance.authConfig.disableAuthOnInference }}
+{{- end }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- $_ := set $governance "auth_config" $authConfig }}
+{{- end }}
+{{- end }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.auth_config }}
+{{- $_ := set $config "governance" $governance }}
+{{- end }}
+{{- end }}
+{{- /* Cluster Config */ -}}
+{{- if and .Values.bifrost.cluster .Values.bifrost.cluster.enabled }}
+{{- $cluster := dict "enabled" true }}
+{{- if .Values.bifrost.cluster.peers }}
+{{- $_ := set $cluster "peers" .Values.bifrost.cluster.peers }}
+{{- end }}
+{{- if .Values.bifrost.cluster.gossip }}
+{{- $gossip := dict }}
+{{- if .Values.bifrost.cluster.gossip.port }}
+{{- $_ := set $gossip "port" .Values.bifrost.cluster.gossip.port }}
+{{- end }}
+{{- if .Values.bifrost.cluster.gossip.config }}
+{{- $gossipConfig := dict }}
+{{- if .Values.bifrost.cluster.gossip.config.timeoutSeconds }}
+{{- $_ := set $gossipConfig "timeout_seconds" .Values.bifrost.cluster.gossip.config.timeoutSeconds }}
+{{- end }}
+{{- if .Values.bifrost.cluster.gossip.config.successThreshold }}
+{{- $_ := set $gossipConfig "success_threshold" .Values.bifrost.cluster.gossip.config.successThreshold }}
+{{- end }}
+{{- if .Values.bifrost.cluster.gossip.config.failureThreshold }}
+{{- $_ := set $gossipConfig "failure_threshold" .Values.bifrost.cluster.gossip.config.failureThreshold }}
+{{- end }}
+{{- $_ := set $gossip "config" $gossipConfig }}
+{{- end }}
+{{- $_ := set $cluster "gossip" $gossip }}
+{{- end }}
+{{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
+{{- $discovery := dict "enabled" true "type" .Values.bifrost.cluster.discovery.type }}
+{{- if .Values.bifrost.cluster.discovery.allowedAddressSpace }}
+{{- $_ := set $discovery "allowed_address_space" .Values.bifrost.cluster.discovery.allowedAddressSpace }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.k8sNamespace }}
+{{- $_ := set $discovery "k8s_namespace" .Values.bifrost.cluster.discovery.k8sNamespace }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.k8sLabelSelector }}
+{{- $_ := set $discovery "k8s_label_selector" .Values.bifrost.cluster.discovery.k8sLabelSelector }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.dnsNames }}
+{{- $_ := set $discovery "dns_names" .Values.bifrost.cluster.discovery.dnsNames }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.udpBroadcastPort }}
+{{- $_ := set $discovery "udp_broadcast_port" .Values.bifrost.cluster.discovery.udpBroadcastPort }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.consulAddress }}
+{{- $_ := set $discovery "consul_address" .Values.bifrost.cluster.discovery.consulAddress }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.etcdEndpoints }}
+{{- $_ := set $discovery "etcd_endpoints" .Values.bifrost.cluster.discovery.etcdEndpoints }}
+{{- end }}
+{{- if .Values.bifrost.cluster.discovery.mdnsService }}
+{{- $_ := set $discovery "mdns_service" .Values.bifrost.cluster.discovery.mdnsService }}
+{{- end }}
+{{- $_ := set $cluster "discovery" $discovery }}
+{{- end }}
+{{- $_ := set $config "cluster_config" $cluster }}
+{{- end }}
+{{- /* SAML Config */ -}}
+{{- if and .Values.bifrost.saml .Values.bifrost.saml.enabled }}
+{{- $saml := dict "enabled" true }}
+{{- if .Values.bifrost.saml.provider }}
+{{- $_ := set $saml "provider" .Values.bifrost.saml.provider }}
+{{- end }}
+{{- if .Values.bifrost.saml.config }}
+{{- $_ := set $saml "config" .Values.bifrost.saml.config }}
+{{- end }}
+{{- $_ := set $config "saml_config" $saml }}
+{{- end }}
+{{- /* Load Balancer Config */ -}}
+{{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
+{{- $lb := dict "enabled" true }}
+{{- if .Values.bifrost.loadBalancer.trackerConfig }}
+{{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
+{{- end }}
+{{- if .Values.bifrost.loadBalancer.bootstrap }}
+{{- $_ := set $lb "bootstrap" .Values.bifrost.loadBalancer.bootstrap }}
+{{- end }}
+{{- $_ := set $config "load_balancer_config" $lb }}
+{{- end }}
+{{- /* Guardrails Config */ -}}
+{{- if .Values.bifrost.guardrails }}
+{{- $guardrails := dict }}
+{{- if .Values.bifrost.guardrails.rules }}
+{{- $rules := list }}
+{{- range .Values.bifrost.guardrails.rules }}
+{{- $rule := dict "id" .id "name" .name "enabled" .enabled "cel_expression" .cel_expression "apply_to" .apply_to }}
+{{- if .description }}{{- $_ := set $rule "description" .description }}{{- end }}
+{{- if .sampling_rate }}{{- $_ := set $rule "sampling_rate" .sampling_rate }}{{- end }}
+{{- if .timeout }}{{- $_ := set $rule "timeout" .timeout }}{{- end }}
+{{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+{{- $_ := set $guardrails "guardrail_rules" $rules }}
+{{- end }}
+{{- if .Values.bifrost.guardrails.providers }}
+{{- $providers := list }}
+{{- range .Values.bifrost.guardrails.providers }}
+{{- $provider := dict "id" .id "provider_name" .provider_name "policy_name" .policy_name "enabled" .enabled }}
+{{- if .config }}{{- $_ := set $provider "config" .config }}{{- end }}
+{{- $providers = append $providers $provider }}
+{{- end }}
+{{- $_ := set $guardrails "guardrail_providers" $providers }}
+{{- end }}
+{{- if or $guardrails.guardrail_rules $guardrails.guardrail_providers }}
+{{- $_ := set $config "guardrails_config" $guardrails }}
+{{- end }}
+{{- end }}
 {{- /* Config Store */ -}}
-{{- if eq .Values.storage.mode "postgres" }}
+{{- if .Values.storage.configStore.enabled }}
+{{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
+{{- if eq $configStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
-{{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
-{{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
 {{- $sqliteConfigStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/config.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "config_store" $sqliteConfigStore }}
+{{- end }}
+{{- end }}
+{{- /* Logs Store */ -}}
+{{- if .Values.storage.logsStore.enabled }}
+{{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
+{{- if eq $logsStoreType "postgres" }}
+{{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
+{{- $_ := set $config "logs_store" $logsStore }}
+{{- else }}
 {{- $sqliteLogsStore := dict "enabled" true "type" "sqlite" "config" (dict "path" (printf "%s/logs.db" .Values.bifrost.appDir)) }}
 {{- $_ := set $config "logs_store" $sqliteLogsStore }}
+{{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
@@ -259,14 +466,14 @@ false
 {{- end }}
 {{- $_ := set $vectorStore "config" $weaviateConfig }}
 {{- else if eq .Values.vectorStore.type "redis" }}
-{{- $redisConfig := dict "host" (include "bifrost.redis.host" .) "port" (include "bifrost.redis.port" . | int) }}
+{{- $redisConfig := dict "addr" (printf "%s:%s" (include "bifrost.redis.host" .) (include "bifrost.redis.port" .)) }}
 {{- $password := include "bifrost.redis.password" . }}
 {{- if $password }}
 {{- $_ := set $redisConfig "password" $password }}
 {{- end }}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- if .Values.vectorStore.redis.external.database }}
-{{- $_ := set $redisConfig "database" .Values.vectorStore.redis.external.database }}
+{{- $_ := set $redisConfig "db" .Values.vectorStore.redis.external.database }}
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $redisConfig }}
@@ -374,6 +581,29 @@ false
 {{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
+{{- end }}
+{{- if .Values.bifrost.plugins.datadog.enabled }}
+{{- $datadogConfig := dict }}
+{{- $inputConfig := .Values.bifrost.plugins.datadog.config | default dict }}
+{{- if $inputConfig.service_name }}
+{{- $_ := set $datadogConfig "service_name" $inputConfig.service_name }}
+{{- end }}
+{{- if $inputConfig.agent_addr }}
+{{- $_ := set $datadogConfig "agent_addr" $inputConfig.agent_addr }}
+{{- end }}
+{{- if $inputConfig.env }}
+{{- $_ := set $datadogConfig "env" $inputConfig.env }}
+{{- end }}
+{{- if $inputConfig.version }}
+{{- $_ := set $datadogConfig "version" $inputConfig.version }}
+{{- end }}
+{{- if $inputConfig.custom_tags }}
+{{- $_ := set $datadogConfig "custom_tags" $inputConfig.custom_tags }}
+{{- end }}
+{{- if hasKey $inputConfig "enable_traces" }}
+{{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
+{{- end }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "datadog" "config" $datadogConfig) }}
 {{- end }}
 {{- if $plugins }}
 {{- $_ := set $config "plugins" $plugins }}
