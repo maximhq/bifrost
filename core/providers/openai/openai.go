@@ -315,6 +315,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx context.Context, postHo
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -332,6 +333,7 @@ func HandleOpenAITextCompletionStreaming(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
+	streamMaxTokenSize int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -418,7 +420,7 @@ func HandleOpenAITextCompletionStreaming(
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		scanner.Buffer(buf, streamMaxTokenSize)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -701,6 +703,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -720,6 +723,7 @@ func HandleOpenAIChatCompletionStreaming(
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
+	streamMaxTokenSize int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
@@ -825,7 +829,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		scanner.Buffer(buf, streamMaxTokenSize)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -1161,6 +1165,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx context.Context, postHookRun
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -1179,6 +1184,7 @@ func HandleOpenAIResponsesStreaming(
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	streamMaxTokenSize int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{
@@ -1266,7 +1272,7 @@ func HandleOpenAIResponsesStreaming(
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		scanner.Buffer(buf, streamMaxTokenSize)
 
 		startTime := time.Now()
 		lastChunkTime := startTime

@@ -110,6 +110,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx context.Context, postHookR
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -148,6 +149,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx context.Context, postHookR
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 

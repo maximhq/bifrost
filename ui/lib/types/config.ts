@@ -99,6 +99,7 @@ export interface NetworkConfig {
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
+	stream_max_token_size_in_mb?: number; // Maximum token size for streaming scanner buffer in MB
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize

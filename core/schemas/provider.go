@@ -16,6 +16,7 @@ const (
 	DefaultBufferSize              = 5000
 	DefaultConcurrency             = 1000
 	DefaultStreamBufferSize        = 5000
+	DefaultStreamMaxTokenSizeInMB  = 10 // 10MB max token size for streaming scanner
 )
 
 // Pre-defined errors for provider operations
@@ -42,19 +43,25 @@ const (
 //   - In Go: values are time.Duration (e.g., 1000ms = 1000000000 nanoseconds)
 //   - When unmarshaling from JSON: a value of 1000 is interpreted as 1000ms, not 1000ns
 //   - When marshaling to JSON: a time.Duration is converted to milliseconds
+//
+// StreamMaxTokenSizeInMB is stored internally in MB (megabytes),
+// but is serialized/deserialized to/from JSON as MB (integers).
+// When used internally for buffer allocation, it is converted to bytes (MB * 1024 * 1024).
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string            `json:"base_url,omitempty"`                 // Base URL for the provider (optional)
-	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`            // Additional headers to include in requests (optional)
-	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"` // Default timeout for requests
-	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
-	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
-	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	BaseURL                        string            `json:"base_url,omitempty"`                    // Base URL for the provider (optional)
+	ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`               // Additional headers to include in requests (optional)
+	DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`    // Default timeout for requests
+	MaxRetries                     int               `json:"max_retries"`                           // Maximum number of retries
+	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`                 // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
+	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                     // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	StreamMaxTokenSizeInMB         int               `json:"stream_max_token_size_in_mb,omitempty"` // Maximum token size for streaming scanner buffer in MB (default: 10MB)
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
 // RetryBackoffInitial and RetryBackoffMax are interpreted as milliseconds in JSON,
 // but stored as time.Duration (nanoseconds) internally.
+// StreamMaxTokenSizeInMB is interpreted as MB in JSON and stored as MB internally.
 func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
@@ -62,8 +69,9 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
-		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
-		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		RetryBackoffInitial            int64             `json:"retry_backoff_initial"`       // milliseconds in JSON
+		RetryBackoffMax                int64             `json:"retry_backoff_max"`           // milliseconds in JSON
+		StreamMaxTokenSizeInMB         int               `json:"stream_max_token_size_in_mb"` // MB in JSON
 	}
 
 	var alias NetworkConfigAlias
@@ -76,6 +84,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
+	nc.StreamMaxTokenSizeInMB = alias.StreamMaxTokenSizeInMB
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -92,6 +101,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 // MarshalJSON customizes JSON marshaling for NetworkConfig.
 // RetryBackoffInitial and RetryBackoffMax are converted from time.Duration (nanoseconds)
 // to milliseconds (integers) in JSON.
+// StreamMaxTokenSizeInMB is kept as MB in JSON.
 func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
@@ -99,8 +109,9 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
-		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
-		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		RetryBackoffInitial            int64             `json:"retry_backoff_initial"`       // milliseconds in JSON
+		RetryBackoffMax                int64             `json:"retry_backoff_max"`           // milliseconds in JSON
+		StreamMaxTokenSizeInMB         int               `json:"stream_max_token_size_in_mb"` // MB in JSON
 	}
 
 	alias := NetworkConfigAlias{
@@ -109,11 +120,18 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,
 		// Convert time.Duration (nanoseconds) to milliseconds
-		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
-		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
+		RetryBackoffInitial:    int64(nc.RetryBackoffInitial / time.Millisecond),
+		RetryBackoffMax:        int64(nc.RetryBackoffMax / time.Millisecond),
+		StreamMaxTokenSizeInMB: nc.StreamMaxTokenSizeInMB,
 	}
 
 	return json.Marshal(alias)
+}
+
+// GetStreamMaxTokenSizeInBytes returns the stream max token size converted to bytes.
+// This is used internally for buffer allocation in streaming operations.
+func (nc NetworkConfig) GetStreamMaxTokenSizeInBytes() int {
+	return nc.StreamMaxTokenSizeInMB * 1024 * 1024
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -264,6 +282,10 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 
 	if config.NetworkConfig.RetryBackoffMax == 0 {
 		config.NetworkConfig.RetryBackoffMax = DefaultRetryBackoffMax
+	}
+
+	if config.NetworkConfig.StreamMaxTokenSizeInMB == 0 {
+		config.NetworkConfig.StreamMaxTokenSizeInMB = DefaultStreamMaxTokenSizeInMB
 	}
 
 	// Create a defensive copy of ExtraHeaders to prevent data races

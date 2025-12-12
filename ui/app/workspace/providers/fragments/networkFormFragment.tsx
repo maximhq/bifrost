@@ -39,6 +39,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
+				stream_max_token_size_in_mb: provider.network_config?.stream_max_token_size_in_mb ?? DefaultNetworkConfig.stream_max_token_size_in_mb,
 			},
 		},
 	});
@@ -68,6 +69,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
+				stream_max_token_size_in_mb: data.network_config?.stream_max_token_size_in_mb ?? 10,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -93,6 +95,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
+				stream_max_token_size_in_mb: provider.network_config?.stream_max_token_size_in_mb ?? DefaultNetworkConfig.stream_max_token_size_in_mb,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -178,6 +181,30 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								)}
 							/>
 						</div>
+						<FormField
+							control={form.control}
+							name="network_config.stream_max_token_size_in_mb"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Stream Max Token Size (MB)</FormLabel>
+									<FormControl>
+										<Input
+											placeholder="10"
+											{...field}
+											value={field.value ?? ""}
+											onChange={(e) => {
+												const value = e.target.value.trim();
+												field.onChange(value === "" ? undefined : Number(value));
+											}}
+										/>
+									</FormControl>
+									<p className="text-xs text-muted-foreground">
+										Maximum buffer size for streaming responses in megabytes. Default: 10MB. Range: 1MB - 100MB.
+									</p>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="network_config.extra_headers"

@@ -329,6 +329,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx context.Context, postHo
 		nil,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -499,7 +500,7 @@ func (provider *GeminiProvider) SpeechStream(ctx context.Context, postHookRunner
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
-		scanner.Buffer(buf, 10*1024*1024) // Allow up to 10MB tokens
+		scanner.Buffer(buf, provider.networkConfig.StreamMaxTokenSize)
 		chunkIndex := -1
 		usage := &schemas.SpeechUsage{}
 		startTime := time.Now()
@@ -747,7 +748,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
-		scanner.Buffer(buf, 10*1024*1024) // Allow up to 10MB tokens
+		scanner.Buffer(buf, provider.networkConfig.StreamMaxTokenSize)
 		chunkIndex := -1
 		usage := &schemas.TranscriptionUsage{}
 		startTime := time.Now()

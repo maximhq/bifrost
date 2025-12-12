@@ -401,6 +401,7 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -418,6 +419,7 @@ func HandleAnthropicChatCompletionStreaming(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
+	streamMaxTokenSize int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -483,7 +485,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		scanner.Buffer(buf, streamMaxTokenSize)
 
 		chunkIndex := 0
 
@@ -749,6 +751,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		postHookRunner,
 		nil,
 		provider.logger,
+		provider.networkConfig.GetStreamMaxTokenSizeInBytes(),
 	)
 }
 
@@ -766,6 +769,7 @@ func HandleAnthropicResponsesStream(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	streamMaxTokenSize int,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -830,6 +834,8 @@ func HandleAnthropicResponsesStream(
 		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, streamMaxTokenSize)
 		chunkIndex := 0
 
 		startTime := time.Now()
