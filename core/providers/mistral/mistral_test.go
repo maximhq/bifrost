@@ -28,8 +28,9 @@ func TestMistral(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Mistral, Model: "mistral-small-2503"},
 		},
-		VisionModel:    "pixtral-12b-latest",
-		EmbeddingModel: "codestral-embed",
+		VisionModel:        "pixtral-12b-latest",
+		EmbeddingModel:     "codestral-embed",
+		TranscriptionModel: "voxtral-mini-latest", // Mistral's audio transcription model
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -45,6 +46,8 @@ func TestMistral(t *testing.T) {
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Transcription:         true,
+			TranscriptionStream:   true, // Streaming transcription supported
 			ListModels:            false,
 			Reasoning:             false, // Not supported right now because we are not using native mistral converters
 		},

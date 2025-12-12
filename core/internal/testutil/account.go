@@ -684,9 +684,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Mistral,
-		ChatModel: "mistral-large-2411",
-		TextModel: "", // Mistral focuses on chat
+		Provider:           schemas.Mistral,
+		ChatModel:          "mistral-large-2411",
+		TextModel:          "", // Mistral focuses on chat
+		TranscriptionModel: "voxtral-mini-latest",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -701,8 +702,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompleteEnd2End:       true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
-			Transcription:         false, // Not supported
-			TranscriptionStream:   false, // Not supported
+			Transcription:         true,  // Supported via voxtral-mini-latest
+			TranscriptionStream:   true,  // Supported via voxtral-mini-latest
 			Embedding:             true,
 			ListModels:            true,
 		},
