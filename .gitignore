@@ -56,3 +56,7 @@ test-reports
 .cursor/
 build/
 target/
+
+# Nix specific
+.direnv
+.nix-store
