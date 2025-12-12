@@ -1,0 +1,472 @@
+// Package ollama implements the Ollama provider using native Ollama APIs.
+// This file contains the type definitions for Ollama's native API.
+package ollama
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// ==================== REQUEST TYPES ====================
+
+// OllamaChatRequest represents an Ollama chat completion request using native API.
+// See: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
+type OllamaChatRequest struct {
+	Model     string          `json:"model"`                // Required: Name of the model to use
+	Messages  []OllamaMessage `json:"messages"`             // Required: Messages for the chat
+	Tools     []OllamaTool    `json:"tools,omitempty"`      // Optional: List of tools the model may use
+	Format    interface{}     `json:"format,omitempty"`     // Optional: Format of the response (e.g., "json" or JSON schema)
+	Options   *OllamaOptions  `json:"options,omitempty"`    // Optional: Model parameters
+	Stream    *bool           `json:"stream,omitempty"`     // Optional: Enable streaming (default: true)
+	KeepAlive *string         `json:"keep_alive,omitempty"` // Optional: How long to keep model loaded (e.g., "5m", "0" to unload)
+}
+
+// OllamaMessage represents a message in Ollama format.
+type OllamaMessage struct {
+	Role      string           `json:"role"`                 // "system", "user", "assistant", or "tool"
+	Content   string           `json:"content"`              // Message content
+	Images    []string         `json:"images,omitempty"`     // Optional: Base64 encoded images for multimodal models
+	ToolCalls []OllamaToolCall `json:"tool_calls,omitempty"` // Optional: Tool calls made by the assistant
+}
+
+// OllamaToolCall represents a tool call in Ollama format.
+type OllamaToolCall struct {
+	Function OllamaToolCallFunction `json:"function"`
+}
+
+// OllamaToolCallFunction represents the function details of a tool call.
+type OllamaToolCallFunction struct {
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments"`
+}
+
+// OllamaTool represents a tool definition in Ollama format.
+type OllamaTool struct {
+	Type     string             `json:"type"` // "function"
+	Function OllamaToolFunction `json:"function"`
+}
+
+// OllamaToolFunction represents a function definition for tools.
+type OllamaToolFunction struct {
+	Name        string                          `json:"name"`
+	Description string                          `json:"description"`
+	Parameters  *schemas.ToolFunctionParameters `json:"parameters,omitempty"`
+}
+
+// OllamaOptions represents model parameters for Ollama requests.
+// See: https://github.com/ollama/ollama/blob/main/docs/modelfile.md#valid-parameters-and-values
+type OllamaOptions struct {
+	// Generation parameters
+	NumPredict  *int     `json:"num_predict,omitempty"` // Maximum number of tokens to generate (similar to max_tokens)
+	Temperature *float64 `json:"temperature,omitempty"` // Sampling temperature (0.0-2.0)
+	TopP        *float64 `json:"top_p,omitempty"`       // Top-p sampling
+	TopK        *int     `json:"top_k,omitempty"`       // Top-k sampling
+	Seed        *int     `json:"seed,omitempty"`        // Random seed for reproducibility
+	Stop        []string `json:"stop,omitempty"`        // Stop sequences
+
+	// Penalty parameters
+	RepeatPenalty    *float64 `json:"repeat_penalty,omitempty"`    // Repetition penalty
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`  // Presence penalty
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"` // Frequency penalty
+	RepeatLastN      *int     `json:"repeat_last_n,omitempty"`     // Last N tokens for repeat penalty
+
+	// Context and performance
+	NumCtx    *int `json:"num_ctx,omitempty"`    // Context window size
+	NumBatch  *int `json:"num_batch,omitempty"`  // Batch size for prompt processing
+	NumGPU    *int `json:"num_gpu,omitempty"`    // Number of layers to offload to GPU
+	NumThread *int `json:"num_thread,omitempty"` // Number of threads
+
+	// Advanced parameters
+	Mirostat    *int     `json:"mirostat,omitempty"`     // Mirostat sampling (0, 1, or 2)
+	MirostatEta *float64 `json:"mirostat_eta,omitempty"` // Mirostat learning rate
+	MirostatTau *float64 `json:"mirostat_tau,omitempty"` // Mirostat target entropy
+	TfsZ        *float64 `json:"tfs_z,omitempty"`        // Tail-free sampling
+	TypicalP    *float64 `json:"typical_p,omitempty"`    // Typical p sampling
+
+	// Low-level parameters
+	UseMlock *bool `json:"use_mlock,omitempty"` // Lock model in memory
+	UseMmap  *bool `json:"use_mmap,omitempty"`  // Use memory mapping
+	Numa     *bool `json:"numa,omitempty"`      // Enable NUMA support
+}
+
+// ==================== RESPONSE TYPES ====================
+
+// OllamaChatResponse represents an Ollama chat completion response.
+type OllamaChatResponse struct {
+	Model              string         `json:"model"`                          // Model used for generation
+	CreatedAt          string         `json:"created_at"`                     // Timestamp when response was created
+	Message            *OllamaMessage `json:"message,omitempty"`              // Generated message
+	Done               bool           `json:"done"`                           // Whether generation is complete
+	DoneReason         *string        `json:"done_reason,omitempty"`          // Reason for completion ("stop", "length", "load", "unload")
+	TotalDuration      *int64         `json:"total_duration,omitempty"`       // Total time in nanoseconds
+	LoadDuration       *int64         `json:"load_duration,omitempty"`        // Time to load model in nanoseconds
+	PromptEvalCount    *int           `json:"prompt_eval_count,omitempty"`    // Number of tokens in prompt
+	PromptEvalDuration *int64         `json:"prompt_eval_duration,omitempty"` // Time to evaluate prompt in nanoseconds
+	EvalCount          *int           `json:"eval_count,omitempty"`           // Number of tokens generated
+	EvalDuration       *int64         `json:"eval_duration,omitempty"`        // Time to generate response in nanoseconds
+}
+
+// ==================== EMBEDDING TYPES ====================
+
+// OllamaEmbeddingRequest represents an Ollama embedding request.
+// See: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings
+type OllamaEmbeddingRequest struct {
+	Model     string         `json:"model"`                // Required: Name of the embedding model
+	Input     interface{}    `json:"input"`                // Required: Text to embed (string or []string)
+	Truncate  *bool          `json:"truncate,omitempty"`   // Optional: Truncate input to fit context length
+	Options   *OllamaOptions `json:"options,omitempty"`    // Optional: Model parameters
+	KeepAlive *string        `json:"keep_alive,omitempty"` // Optional: How long to keep model loaded
+}
+
+// OllamaEmbeddingResponse represents an Ollama embedding response.
+type OllamaEmbeddingResponse struct {
+	Model           string      `json:"model"`                       // Model used for embedding
+	Embeddings      [][]float64 `json:"embeddings"`                  // Generated embeddings
+	TotalDuration   *int64      `json:"total_duration,omitempty"`    // Total time in nanoseconds
+	LoadDuration    *int64      `json:"load_duration,omitempty"`     // Time to load model in nanoseconds
+	PromptEvalCount *int        `json:"prompt_eval_count,omitempty"` // Number of tokens processed
+}
+
+// ==================== LIST MODELS TYPES ====================
+
+// OllamaListModelsResponse represents the response from /api/tags endpoint.
+type OllamaListModelsResponse struct {
+	Models []OllamaModel `json:"models"`
+}
+
+// OllamaModel represents a model in Ollama's list.
+type OllamaModel struct {
+	Name       string             `json:"name"`        // Model name (e.g., "llama3.2:latest")
+	Model      string             `json:"model"`       // Model identifier
+	ModifiedAt time.Time          `json:"modified_at"` // Last modified timestamp
+	Size       int64              `json:"size"`        // Model size in bytes
+	Digest     string             `json:"digest"`      // Model digest
+	Details    OllamaModelDetails `json:"details"`     // Model details
+}
+
+// OllamaModelDetails contains detailed information about a model.
+type OllamaModelDetails struct {
+	ParentModel       string   `json:"parent_model,omitempty"` // Parent model name
+	Format            string   `json:"format"`                 // Model format (e.g., "gguf")
+	Family            string   `json:"family"`                 // Model family (e.g., "llama")
+	Families          []string `json:"families,omitempty"`     // Additional families
+	ParameterSize     string   `json:"parameter_size"`         // Parameter count (e.g., "8B")
+	QuantizationLevel string   `json:"quantization_level"`     // Quantization (e.g., "Q4_0")
+}
+
+// ==================== ERROR TYPES ====================
+
+// OllamaError represents an error response from Ollama's API.
+type OllamaError struct {
+	Error string `json:"error"`
+}
+
+// ==================== STREAMING TYPES ====================
+
+// OllamaStreamResponse represents a single streaming chunk from Ollama.
+// It's the same structure as OllamaChatResponse but used during streaming.
+type OllamaStreamResponse struct {
+	Model              string         `json:"model"`
+	CreatedAt          string         `json:"created_at"`
+	Message            *OllamaMessage `json:"message,omitempty"`
+	Done               bool           `json:"done"`
+	DoneReason         *string        `json:"done_reason,omitempty"`
+	TotalDuration      *int64         `json:"total_duration,omitempty"`
+	LoadDuration       *int64         `json:"load_duration,omitempty"`
+	PromptEvalCount    *int           `json:"prompt_eval_count,omitempty"`
+	PromptEvalDuration *int64         `json:"prompt_eval_duration,omitempty"`
+	EvalCount          *int           `json:"eval_count,omitempty"`
+	EvalDuration       *int64         `json:"eval_duration,omitempty"`
+}
+
+// ==================== HELPER METHODS ====================
+
+// ToBifrostChatResponse converts an Ollama chat response to Bifrost format.
+func (r *OllamaChatResponse) ToBifrostChatResponse(model string) *schemas.BifrostChatResponse {
+	if r == nil {
+		return nil
+	}
+
+	// Parse timestamp
+	created := int(time.Now().Unix())
+	if r.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.CreatedAt); err == nil {
+			created = int(t.Unix())
+		}
+	}
+
+	response := &schemas.BifrostChatResponse{
+		Model:   model,
+		Created: created,
+		Object:  "chat.completion",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.Ollama,
+		},
+	}
+
+	// Build the choice
+	if r.Message != nil {
+		var toolCalls []schemas.ChatAssistantMessageToolCall
+		if len(r.Message.ToolCalls) > 0 {
+			for i, tc := range r.Message.ToolCalls {
+				args, _ := json.Marshal(tc.Function.Arguments)
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+					Index: uint16(i),
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr(tc.Function.Name), // Ollama doesn't provide IDs, use name
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &tc.Function.Name,
+						Arguments: string(args),
+					},
+				})
+			}
+		}
+
+		var assistantMessage *schemas.ChatAssistantMessage
+		if len(toolCalls) > 0 {
+			assistantMessage = &schemas.ChatAssistantMessage{
+				ToolCalls: toolCalls,
+			}
+		}
+
+		choice := schemas.BifrostResponseChoice{
+			Index: 0,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+				Message: &schemas.ChatMessage{
+					Role: schemas.ChatMessageRole(r.Message.Role),
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &r.Message.Content,
+					},
+					ChatAssistantMessage: assistantMessage,
+				},
+			},
+			FinishReason: r.mapFinishReason(),
+		}
+		response.Choices = []schemas.BifrostResponseChoice{choice}
+	}
+
+	// Map usage
+	response.Usage = r.toUsage()
+
+	return response
+}
+
+// mapFinishReason maps Ollama's done_reason to Bifrost format.
+func (r *OllamaChatResponse) mapFinishReason() *string {
+	if r.DoneReason == nil {
+		if r.Done {
+			return schemas.Ptr("stop")
+		}
+		return nil
+	}
+
+	switch *r.DoneReason {
+	case "stop":
+		return schemas.Ptr("stop")
+	case "length":
+		return schemas.Ptr("length")
+	case "load", "unload":
+		return schemas.Ptr("stop")
+	default:
+		return r.DoneReason
+	}
+}
+
+// toUsage converts Ollama usage info to Bifrost format.
+func (r *OllamaChatResponse) toUsage() *schemas.BifrostLLMUsage {
+	usage := &schemas.BifrostLLMUsage{}
+
+	if r.PromptEvalCount != nil {
+		usage.PromptTokens = *r.PromptEvalCount
+	}
+	if r.EvalCount != nil {
+		usage.CompletionTokens = *r.EvalCount
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
+	return usage
+}
+
+// ToBifrostStreamResponse converts an Ollama streaming chunk to Bifrost format.
+func (r *OllamaStreamResponse) ToBifrostStreamResponse(chunkIndex int) (*schemas.BifrostChatResponse, bool) {
+	if r == nil {
+		return nil, false
+	}
+
+	response := &schemas.BifrostChatResponse{
+		Model:  r.Model,
+		Object: "chat.completion.chunk",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionStreamRequest,
+			Provider:    schemas.Ollama,
+			ChunkIndex:  chunkIndex,
+		},
+	}
+
+	// Parse timestamp
+	if r.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.CreatedAt); err == nil {
+			response.Created = int(t.Unix())
+		}
+	}
+
+	// Build delta content
+	if r.Message != nil {
+		var toolCalls []schemas.ChatAssistantMessageToolCall
+		if len(r.Message.ToolCalls) > 0 {
+			for i, tc := range r.Message.ToolCalls {
+				args, _ := json.Marshal(tc.Function.Arguments)
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+					Index: uint16(i),
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr(tc.Function.Name),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &tc.Function.Name,
+						Arguments: string(args),
+					},
+				})
+			}
+		}
+
+		delta := &schemas.ChatStreamResponseChoiceDelta{}
+
+		if r.Message.Role != "" {
+			role := string(r.Message.Role)
+			delta.Role = &role
+		}
+
+		if r.Message.Content != "" {
+			delta.Content = &r.Message.Content
+		}
+
+		if len(toolCalls) > 0 {
+			delta.ToolCalls = toolCalls
+		}
+
+		choice := schemas.BifrostResponseChoice{
+			Index: 0,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: delta,
+			},
+		}
+
+		// Set finish reason on final chunk
+		if r.Done {
+			if r.DoneReason != nil {
+				switch *r.DoneReason {
+				case "stop":
+					choice.FinishReason = schemas.Ptr("stop")
+				case "length":
+					choice.FinishReason = schemas.Ptr("length")
+				default:
+					choice.FinishReason = schemas.Ptr("stop")
+				}
+			} else {
+				choice.FinishReason = schemas.Ptr("stop")
+			}
+		}
+
+		response.Choices = []schemas.BifrostResponseChoice{choice}
+	}
+
+	// Add usage on final chunk
+	if r.Done {
+		usage := &schemas.BifrostLLMUsage{}
+		if r.PromptEvalCount != nil {
+			usage.PromptTokens = *r.PromptEvalCount
+		}
+		if r.EvalCount != nil {
+			usage.CompletionTokens = *r.EvalCount
+		}
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		response.Usage = usage
+	}
+
+	return response, r.Done
+}
+
+// ToBifrostEmbeddingResponse converts an Ollama embedding response to Bifrost format.
+func (r *OllamaEmbeddingResponse) ToBifrostEmbeddingResponse(model string) *schemas.BifrostEmbeddingResponse {
+	if r == nil {
+		return nil
+	}
+
+	response := &schemas.BifrostEmbeddingResponse{
+		Model:  model,
+		Object: "list",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.EmbeddingRequest,
+			Provider:    schemas.Ollama,
+		},
+	}
+
+	// Convert embeddings to Bifrost format
+	for i, embedding := range r.Embeddings {
+		// Convert []float64 to []float32
+		embeddingFloat32 := make([]float32, len(embedding))
+		for j, v := range embedding {
+			embeddingFloat32[j] = float32(v)
+		}
+
+		response.Data = append(response.Data, schemas.EmbeddingData{
+			Object: "embedding",
+			Embedding: schemas.EmbeddingStruct{
+				EmbeddingArray: embeddingFloat32,
+			},
+			Index: i,
+		})
+	}
+
+	// Convert usage
+	if r.PromptEvalCount != nil {
+		response.Usage = &schemas.BifrostLLMUsage{
+			PromptTokens: *r.PromptEvalCount,
+			TotalTokens:  *r.PromptEvalCount,
+		}
+	}
+
+	return response
+}
+
+// ToBifrostListModelsResponse converts an Ollama list models response to Bifrost format.
+func (r *OllamaListModelsResponse) ToBifrostListModelsResponse(providerName schemas.ModelProvider, configuredModels []string) *schemas.BifrostListModelsResponse {
+	if r == nil {
+		return nil
+	}
+
+	response := &schemas.BifrostListModelsResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerName,
+		},
+	}
+
+	// Create a set of configured models for quick lookup
+	configuredSet := make(map[string]bool)
+	for _, m := range configuredModels {
+		configuredSet[m] = true
+	}
+
+	for _, model := range r.Models {
+		// Filter models if configuredModels is non-empty
+		if len(configuredModels) > 0 && !configuredSet[model.Name] {
+			continue
+		}
+
+		created := model.ModifiedAt.Unix()
+		ownedBy := "ollama"
+
+		bifrostModel := schemas.Model{
+			ID:      model.Name,
+			Created: &created,
+			OwnedBy: &ownedBy,
+		}
+
+		response.Data = append(response.Data, bifrostModel)
+	}
+
+	return response
+}
