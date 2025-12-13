@@ -17,3 +17,8 @@ func splitJSONL(data []byte) [][]byte {
 	}
 	return lines
 }
+
+// BatchDelete is not supported by Azure provider.
+func (provider *AzureProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}

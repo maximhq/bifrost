@@ -85,6 +85,7 @@ type BatchRequest struct {
 	RetrieveRequest *schemas.BifrostBatchRetrieveRequest
 	CancelRequest   *schemas.BifrostBatchCancelRequest
 	ResultsRequest  *schemas.BifrostBatchResultsRequest
+	DeleteRequest   *schemas.BifrostBatchDeleteRequest
 }
 
 // FileRequest wraps a Bifrost file request with its type information.
@@ -154,6 +155,10 @@ type BatchCancelResponseConverter func(ctx *context.Context, resp *schemas.Bifro
 // BatchResultsResponseConverter is a function that converts BifrostBatchResultsResponse to integration-specific format.
 // It takes a BifrostBatchResultsResponse and returns the format expected by the specific integration.
 type BatchResultsResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchResultsResponse) (interface{}, error)
+
+// BatchDeleteResponseConverter is a function that converts BifrostBatchDeleteResponse to integration-specific format.
+// It takes a BifrostBatchDeleteResponse and returns the format expected by the specific integration.
+type BatchDeleteResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchDeleteResponse) (interface{}, error)
 
 // FileUploadResponseConverter is a function that converts BifrostFileUploadResponse to integration-specific format.
 // It takes a BifrostFileUploadResponse and returns the format expected by the specific integration.
@@ -283,6 +288,7 @@ type RouteConfig struct {
 	BatchRetrieveResponseConverter BatchRetrieveResponseConverter // Function to convert BifrostBatchRetrieveResponse to integration format
 	BatchCancelResponseConverter   BatchCancelResponseConverter   // Function to convert BifrostBatchCancelResponse to integration format
 	BatchResultsResponseConverter  BatchResultsResponseConverter  // Function to convert BifrostBatchResultsResponse to integration format
+	BatchDeleteResponseConverter   BatchDeleteResponseConverter   // Function to convert BifrostBatchDeleteResponse to integration format
 	FileUploadResponseConverter    FileUploadResponseConverter    // Function to convert BifrostFileUploadResponse to integration format
 	FileListResponseConverter      FileListResponseConverter      // Function to convert BifrostFileListResponse to integration format
 	FileRetrieveResponseConverter  FileRetrieveResponseConverter  // Function to convert BifrostFileRetrieveResponse to integration format
@@ -418,6 +424,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// or performing request validation after parsing
 		if config.PreCallback != nil {
 			if err := config.PreCallback(ctx, bifrostCtx, req); err != nil {
+				// Check if this is a resumable upload init that was already handled
+				if err == ErrResumableUploadInit {
+					// Response was already written by the PreCallback, just return
+					return
+				}
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute pre-request callback: "+err.Error()))
 				return
 			}
@@ -811,6 +822,28 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			response = batchResponse
 		}
 
+	case schemas.BatchDeleteRequest:
+		if batchReq.DeleteRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch delete request"))
+			return
+		}
+		batchResponse, bifrostErr := g.client.BatchDeleteRequest(requestCtx, batchReq.DeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, batchResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.BatchDeleteResponseConverter != nil {
+			response, err = config.BatchDeleteResponseConverter(bifrostCtx, batchResponse)
+		} else {
+			response = batchResponse
+		}
+
 	default:
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Unknown batch request type"))
 		return
@@ -837,19 +870,31 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file upload request"))
 			return
 		}
+		fmt.Printf("[DEBUG] router: calling FileUploadRequest for provider=%s, purpose=%s, filename=%s\n", fileReq.UploadRequest.Provider, fileReq.UploadRequest.Purpose, fileReq.UploadRequest.Filename)
 		fileResponse, bifrostErr := g.client.FileUploadRequest(requestCtx, fileReq.UploadRequest)
 		if bifrostErr != nil {
+			errMsg := "unknown error"
+			if bifrostErr.Error != nil {
+				errMsg = bifrostErr.Error.Message
+			}
+			fmt.Printf("[DEBUG] router: FileUploadRequest error: %s (provider=%s)\n", errMsg, fileReq.UploadRequest.Provider)
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
 		}
+		fmt.Printf("[DEBUG] router: FileUploadRequest success, response ID=%s\n", fileResponse.ID)
 		if config.PostCallback != nil {
+			fmt.Printf("[DEBUG] router: calling PostCallback\n")
 			if err := config.PostCallback(ctx, req, fileResponse); err != nil {
+				fmt.Printf("[DEBUG] router: PostCallback error: %v\n", err)
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
 				return
 			}
+			fmt.Printf("[DEBUG] router: PostCallback success\n")
 		}
 		if config.FileUploadResponseConverter != nil {
+			fmt.Printf("[DEBUG] router: calling FileUploadResponseConverter\n")
 			response, err = config.FileUploadResponseConverter(bifrostCtx, fileResponse)
+			fmt.Printf("[DEBUG] router: FileUploadResponseConverter done, err=%v\n", err)
 		} else {
 			response = fileResponse
 		}
@@ -974,6 +1019,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 	}
 
 	if err != nil {
+		fmt.Printf("[DEBUG] router: file response conversion error: %v\n", err)
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert file response"))
 		return
 	}

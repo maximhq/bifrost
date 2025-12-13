@@ -283,7 +283,7 @@ func (provider *OpenRouterProvider) TranscriptionStream(ctx context.Context, pos
 }
 
 // BatchCreate is not supported by OpenRouter provider.
-func (provider *OpenRouterProvider) BatchCreate(_ context.Context, _ schemas.Key,_ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) BatchCreate(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
 }
 
@@ -302,11 +302,15 @@ func (provider *OpenRouterProvider) BatchCancel(_ context.Context, _ schemas.Key
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by OpenRouter provider.
+func (provider *OpenRouterProvider) BatchDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by OpenRouter provider.
 func (provider *OpenRouterProvider) BatchResults(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
-
 
 // FileUpload is not supported by OpenRouter provider.
 func (provider *OpenRouterProvider) FileUpload(ctx context.Context, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
@@ -332,4 +336,3 @@ func (provider *OpenRouterProvider) FileDelete(ctx context.Context, key schemas.
 func (provider *OpenRouterProvider) FileContent(ctx context.Context, key schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }
-
