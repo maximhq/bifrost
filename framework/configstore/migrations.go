@@ -80,6 +80,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddEnabledColumnToKeyTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
 		return err
 	}
@@ -1088,6 +1091,49 @@ func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error 
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEnabledColumnToKeyTable adds the enabled column to the config_keys table
+func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_enabled_column_to_key_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Check if column already exists
+			if !mg.HasColumn(&tables.TableKey{}, "enabled") {
+				// Add the column
+				if err := mg.AddColumn(&tables.TableKey{}, "enabled"); err != nil {
+					return fmt.Errorf("failed to add enabled column: %w", err)
+				}
+
+			}
+			// Set default = true for existing rows
+			if err := tx.Exec("UPDATE config_keys SET enabled = TRUE WHERE enabled IS NULL").Error; err != nil {
+				return fmt.Errorf("failed to backfill enabled column: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if mg.HasColumn(&tables.TableKey{}, "enabled") {
+				if err := mg.DropColumn(&tables.TableKey{}, "enabled"); err != nil {
+					return fmt.Errorf("failed to drop enabled column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running enabled column migration: %s", err.Error())
 	}
 	return nil
 }

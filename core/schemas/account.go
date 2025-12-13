@@ -14,6 +14,7 @@ type Key struct {
 	AzureKeyConfig   *AzureKeyConfig   `json:"azure_key_config,omitempty"`   // Azure-specific key configuration
 	VertexKeyConfig  *VertexKeyConfig  `json:"vertex_key_config,omitempty"`  // Vertex-specific key configuration
 	BedrockKeyConfig *BedrockKeyConfig `json:"bedrock_key_config,omitempty"` // AWS Bedrock-specific key configuration
+	Enabled          *bool             `json:"enabled,omitempty"`            // Whether the key is active (default:true)
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.
