@@ -740,177 +740,153 @@ func detectAudioMimeType(audioData []byte) string {
 	return "audio/mp3"
 }
 
-// convertGeminiSchemaToJSONSchema converts Gemini Schema to JSON Schema format
-// This converts uppercase type values (STRING, NUMBER, etc.) to lowercase (string, number, etc.)
-// and converts the struct to a map[string]interface{} format
-func convertGeminiSchemaToJSONSchema(geminiSchema *Schema) map[string]interface{} {
-	if geminiSchema == nil {
+// normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
+func normalizeSchemaTypes(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
 		return nil
 	}
 
-	// First, marshal the schema to JSON and unmarshal to map to get all fields
-	schemaBytes, err := sonic.Marshal(geminiSchema)
-	if err != nil {
-		return nil
+	normalized := make(map[string]interface{}, len(schema))
+	for k, v := range schema {
+		normalized[k] = v
 	}
 
-	var schemaMap map[string]interface{}
-	if err := sonic.Unmarshal(schemaBytes, &schemaMap); err != nil {
-		return nil
+	// Normalize type field if it exists
+	if typeVal, ok := normalized["type"].(string); ok {
+		normalized["type"] = strings.ToLower(typeVal)
 	}
 
-	// Convert type from uppercase to lowercase
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
-	}
-
-	// Recursively convert nested properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
+	// Recursively normalize properties (create new map only if present)
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{}, len(properties))
 		for key, prop := range properties {
 			if propMap, ok := prop.(map[string]interface{}); ok {
-				// Check if this is a Schema struct that was marshaled
-				if propType, hasType := propMap["type"].(string); hasType {
-					// Convert the type
-					propMap["type"] = convertGeminiTypeToJSONSchemaType(propType)
-					// Recursively convert nested properties and items
-					convertedProps[key] = convertNestedSchema(propMap)
-				} else {
-					convertedProps[key] = propMap
-				}
+				newProps[key] = normalizeSchemaTypes(propMap)
 			} else {
-				convertedProps[key] = prop
+				newProps[key] = prop
 			}
 		}
-		schemaMap["properties"] = convertedProps
+		normalized["properties"] = newProps
 	}
 
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
-		}
+	// Recursively normalize items (for arrays)
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		normalized["items"] = normalizeSchemaTypes(items)
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
+	// Recursively normalize anyOf
+	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
+		newAnyOf := make([]interface{}, len(anyOf))
+		for i, item := range anyOf {
 			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
+				newAnyOf[i] = normalizeSchemaTypes(itemMap)
 			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
+				newAnyOf[i] = item
 			}
 		}
-		schemaMap["anyOf"] = convertedAnyOf
+		normalized["anyOf"] = newAnyOf
 	}
 
-	return schemaMap
+	// Recursively normalize oneOf
+	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
+		newOneOf := make([]interface{}, len(oneOf))
+		for i, item := range oneOf {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				newOneOf[i] = normalizeSchemaTypes(itemMap)
+			} else {
+				newOneOf[i] = item
+			}
+		}
+		normalized["oneOf"] = newOneOf
+	}
+
+	return normalized
 }
 
-// convertNestedSchema recursively converts nested schema structures
-func convertNestedSchema(schemaMap map[string]interface{}) map[string]interface{} {
-	// Convert type if present
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
+// buildJSONSchemaFromMap converts a schema map to ResponsesTextConfigFormatJSONSchema
+// with individual fields properly populated (not nested under Schema field)
+func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.ResponsesTextConfigFormatJSONSchema {
+	// Normalize types (OBJECT → object, STRING → string, etc.)
+	normalizedSchemaMap := normalizeSchemaTypes(schemaMap)
+
+	jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
+
+	// Extract type
+	if typeVal, ok := normalizedSchemaMap["type"].(string); ok {
+		jsonSchema.Type = schemas.Ptr(typeVal)
 	}
 
-	// Recursively convert properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
-		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				convertedProps[key] = convertNestedSchema(propMap)
-			} else {
-				convertedProps[key] = prop
+	// Extract properties
+	if properties, ok := normalizedSchemaMap["properties"].(map[string]interface{}); ok {
+		jsonSchema.Properties = &properties
+	}
+
+	// Extract required fields
+	if required, ok := normalizedSchemaMap["required"].([]interface{}); ok {
+		requiredStrs := make([]string, 0, len(required))
+		for _, r := range required {
+			if str, ok := r.(string); ok {
+				requiredStrs = append(requiredStrs, str)
 			}
 		}
-		schemaMap["properties"] = convertedProps
-	}
-
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
+		if len(requiredStrs) > 0 {
+			jsonSchema.Required = requiredStrs
 		}
+	} else if requiredStrs, ok := normalizedSchemaMap["required"].([]string); ok && len(requiredStrs) > 0 {
+		jsonSchema.Required = requiredStrs
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
-			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
-			}
-		}
-		schemaMap["anyOf"] = convertedAnyOf
+	// Extract description
+	if description, ok := normalizedSchemaMap["description"].(string); ok {
+		jsonSchema.Description = schemas.Ptr(description)
 	}
 
-	return schemaMap
-}
-
-// convertGeminiTypeToJSONSchemaType converts Gemini's uppercase type values to JSON Schema lowercase
-func convertGeminiTypeToJSONSchemaType(geminiType string) string {
-	switch geminiType {
-	case "STRING":
-		return "string"
-	case "NUMBER":
-		return "number"
-	case "INTEGER":
-		return "integer"
-	case "BOOLEAN":
-		return "boolean"
-	case "ARRAY":
-		return "array"
-	case "OBJECT":
-		return "object"
-	case "NULL":
-		return "null"
-	case "TYPE_UNSPECIFIED":
-		return "" // Empty string for unspecified
-	default:
-		// If already lowercase or unknown, return as-is
-		return geminiType
+	// Extract additionalProperties
+	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
+		jsonSchema.AdditionalProperties = schemas.Ptr(additionalProps)
 	}
+
+	// Extract name/title
+	if name, ok := normalizedSchemaMap["name"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(name)
+	} else if title, ok := normalizedSchemaMap["title"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(title)
+	}
+
+	return jsonSchema
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
 func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
-	var schema interface{}
+	var schemaMap map[string]interface{}
 	name := "response_schema"
 
 	// Prefer responseSchema over responseJsonSchema
 	if responseSchema != nil {
-		// Convert Gemini Schema to JSON Schema format
-		schema = convertGeminiSchemaToJSONSchema(responseSchema)
-		if responseSchema.Title != "" {
-			name = responseSchema.Title
-		}
-	} else if responseJsonSchema != nil {
-		if schemaMap, ok := responseJsonSchema.(map[string]interface{}); ok {
-			// Create a deep copy to avoid modifying the original
-			schemaBytes, err := sonic.Marshal(schemaMap)
-			if err == nil {
-				var copiedMap map[string]interface{}
-				if err := sonic.Unmarshal(schemaBytes, &copiedMap); err == nil {
-					// Recursively convert the schema to ensure all types are lowercase
-					schema = convertNestedSchema(copiedMap)
-					if title, ok := copiedMap["title"].(string); ok && title != "" {
-						name = title
-					}
-				} else {
-					schema = responseJsonSchema
+		// Convert Schema struct to map
+		schemaBytes, err := sonic.Marshal(responseSchema)
+		if err == nil {
+			if err := sonic.Unmarshal(schemaBytes, &schemaMap); err == nil {
+				if responseSchema.Title != "" {
+					name = responseSchema.Title
 				}
-			} else {
-				schema = responseJsonSchema
 			}
-		} else {
-			schema = responseJsonSchema
+			// If unmarshal failed, schemaMap remains nil - will try next option
 		}
-	} else {
-		// No schema provided - use older json_object mode
+	}
+
+	if schemaMap == nil && responseJsonSchema != nil {
+		// Use responseJsonSchema directly if it's a map
+		if m, ok := responseJsonSchema.(map[string]interface{}); ok {
+			schemaMap = m
+			if title, ok := m["title"].(string); ok && title != "" {
+				name = title
+			}
+		}
+	}
+
+	// No schema provided - use json_object mode
+	if schemaMap == nil {
 		return &schemas.ResponsesTextConfig{
 			Format: &schemas.ResponsesTextConfigFormat{
 				Type: "json_object",
@@ -918,14 +894,15 @@ func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interf
 		}
 	}
 
+	// Build JSONSchema with individual fields spread out
+	jsonSchema := buildJSONSchemaFromMap(schemaMap)
+
 	return &schemas.ResponsesTextConfig{
 		Format: &schemas.ResponsesTextConfigFormat{
-			Type: "json_schema",
-			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-				Name:   schemas.Ptr(name),
-				Strict: schemas.Ptr(false),
-				Schema: schemas.Ptr(schema),
-			},
+			Type:       "json_schema",
+			Name:       schemas.Ptr(name),
+			Strict:     schemas.Ptr(false),
+			JSONSchema: jsonSchema,
 		},
 	}
 }

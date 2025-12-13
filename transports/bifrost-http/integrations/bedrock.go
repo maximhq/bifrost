@@ -31,7 +31,7 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 		},
 		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
-				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest()
+				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest(ctx)
 				if err != nil {
 					return nil, fmt.Errorf("failed to convert bedrock request: %w", err)
 				}
@@ -65,7 +65,7 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				// Mark as streaming request
 				bedrockReq.Stream = true
-				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest()
+				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest(ctx)
 				if err != nil {
 					return nil, fmt.Errorf("failed to convert bedrock request: %w", err)
 				}

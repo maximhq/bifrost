@@ -1857,6 +1857,75 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 	return messages
 }
 
+// convertTextConfigToGenerationConfig converts ResponsesTextConfig to Gemini's GenerationConfig fields
+func convertTextConfigToGenerationConfig(textConfig *schemas.ResponsesTextConfig, config *GenerationConfig) {
+	if textConfig == nil || config == nil {
+		return
+	}
+
+	if textConfig.Format == nil {
+		return
+	}
+
+	switch textConfig.Format.Type {
+	case "json_schema":
+		config.ResponseMIMEType = "application/json"
+		if textConfig.Format.JSONSchema != nil {
+			if schema := reconstructSchemaFromJSONSchema(textConfig.Format.JSONSchema); schema != nil {
+				config.ResponseJSONSchema = schema
+			}
+			// no schema, mime type remains as is
+		}
+
+	case "json_object":
+		config.ResponseMIMEType = "application/json"
+
+	case "text":
+		config.ResponseMIMEType = "text/plain"
+	}
+}
+
+// reconstructSchemaFromJSONSchema rebuilds a schema map from ResponsesTextConfigFormatJSONSchema
+func reconstructSchemaFromJSONSchema(jsonSchema *schemas.ResponsesTextConfigFormatJSONSchema) interface{} {
+	if jsonSchema.Schema != nil {
+		return *jsonSchema.Schema
+	}
+
+	// New format: Schema is spread across individual fields
+	schema := make(map[string]interface{})
+
+	if jsonSchema.Type != nil {
+		schema["type"] = *jsonSchema.Type
+	}
+
+	if jsonSchema.Properties != nil {
+		schema["properties"] = *jsonSchema.Properties
+	}
+
+	if len(jsonSchema.Required) > 0 {
+		schema["required"] = jsonSchema.Required
+	}
+
+	if jsonSchema.Description != nil {
+		schema["description"] = *jsonSchema.Description
+	}
+
+	if jsonSchema.AdditionalProperties != nil {
+		schema["additionalProperties"] = *jsonSchema.AdditionalProperties
+	}
+
+	if jsonSchema.Name != nil {
+		schema["title"] = *jsonSchema.Name
+	}
+
+	// Return nil if no fields were populated
+	if len(schema) == 0 {
+		return nil
+	}
+
+	return schema
+}
+
 // convertParamsToGenerationConfigResponses converts ChatParameters to GenerationConfig for Responses
 func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(params *schemas.ResponsesParameters) GenerationConfig {
 	config := GenerationConfig{}
@@ -1887,6 +1956,9 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
 		}
 	}
+	if params.Text != nil {
+		convertTextConfigToGenerationConfig(params.Text, &config)
+	}
 
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
@@ -1909,6 +1981,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.StopSequences = val
 			}
 		}
+
 	}
 
 	return config

@@ -503,6 +503,52 @@ func convertResponseFormatToTool(ctx *context.Context, params *schemas.ChatParam
 	}
 }
 
+// convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
+func convertTextFormatToTool(ctx *context.Context, textConfig *schemas.ResponsesTextConfig) *BedrockTool {
+	if textConfig == nil || textConfig.Format == nil {
+		return nil
+	}
+
+	format := textConfig.Format
+	if format.Type != "json_schema" {
+		return nil
+	}
+
+	if format.JSONSchema == nil {
+		return nil
+	}
+
+	toolName := "json_response"
+	if format.Name != nil && strings.TrimSpace(*format.Name) != "" {
+		toolName = strings.TrimSpace(*format.Name)
+	}
+
+	description := "Returns structured JSON output"
+	if format.JSONSchema.Description != nil {
+		description = *format.JSONSchema.Description
+	}
+
+	toolName = fmt.Sprintf("bf_so_%s", toolName)
+	(*ctx) = context.WithValue(*ctx, schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+
+	var schemaObj any
+	if format.JSONSchema.Schema != nil {
+		schemaObj = *format.JSONSchema.Schema
+	} else {
+		return nil // Schema is required for Bedrock tooling
+	}
+
+	return &BedrockTool{
+		ToolSpec: &BedrockToolSpec{
+			Name:        toolName,
+			Description: schemas.Ptr(description),
+			InputSchema: BedrockToolInputSchema{
+				JSON: schemaObj,
+			},
+		},
+	}
+}
+
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
 func convertInferenceConfig(params *schemas.ChatParameters) *BedrockInferenceConfig {
 	var config BedrockInferenceConfig

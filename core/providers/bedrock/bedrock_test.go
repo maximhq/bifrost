@@ -457,6 +457,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
+	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -945,9 +946,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockReq *bedrock.BedrockConverseRequest
-				actual, err = bedrockReq.ToBifrostResponsesRequest()
+				actual, err = bedrockReq.ToBifrostResponsesRequest(&ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesRequest()
+				actual, err = tt.input.ToBifrostResponsesRequest(&ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1526,6 +1527,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	toolInput := map[string]interface{}{
 		"location": "NYC",
 	}
+	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -1669,9 +1671,9 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockResp *bedrock.BedrockConverseResponse
-				actual, err = bedrockResp.ToBifrostResponsesResponse()
+				actual, err = bedrockResp.ToBifrostResponsesResponse(&ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesResponse()
+				actual, err = tt.input.ToBifrostResponsesResponse(&ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1736,7 +1738,8 @@ func TestToBedrockResponsesRequest_AdditionalFields(t *testing.T) {
 		},
 	}
 
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(req)
+	ctx := context.Background()
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
@@ -1762,7 +1765,8 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 		},
 	}
 
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(req)
+	ctx := context.Background()
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 

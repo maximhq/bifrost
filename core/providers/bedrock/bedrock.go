@@ -929,7 +929,7 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToBedrockResponsesRequest(request) },
+		func() (any, error) { return ToBedrockResponsesRequest(&ctx, request) },
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -954,7 +954,7 @@ func (provider *BedrockProvider) Responses(ctx context.Context, key schemas.Key,
 	}
 
 	// Convert using the new response converter
-	bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse()
+	bifrostResponse, err := bedrockResponse.ToBifrostResponsesResponse(&ctx)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert bedrock response", err, providerName)
 	}
@@ -997,7 +997,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToBedrockResponsesRequest(request) },
+		func() (any, error) { return ToBedrockResponsesRequest(&ctx, request) },
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr

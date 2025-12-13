@@ -33,9 +33,9 @@ Tests all core scenarios using Google GenAI SDK directly:
 23. Speech generation - multi speaker
 24. Speech generation - different voices
 25. Speech generation - language support
-26. Speech generation - streaming (if supported)
-27. Extended thinking/reasoning (non-streaming)
-28. Extended thinking/reasoning (streaming)
+26. Extended thinking/reasoning (non-streaming)
+27. Extended thinking/reasoning (streaming)
+28. Structured outputs with thinking_budget enabled
 """
 
 import pytest
@@ -1049,6 +1049,84 @@ Joe: Pretty good, thanks for asking."""
         )
         
         print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:150]}...")
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_28_structured_output_with_thinking(self, google_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        """Test Case 28: Structured outputs with thinking_budget enabled
+        """
+        from google.genai import types
+        from pydantic import BaseModel
+        
+        # Define a Pydantic model for structured output
+        class MathProblem(BaseModel):
+            problem_statement: str
+            reasoning_steps: list[str]
+            final_answer: int
+            confidence: str
+        
+        messages = "A farmer sells eggs at $3 per dozen and milk at $5 per gallon. " \
+                   "In a week, she sells 20 dozen eggs and 15 gallons of milk. " \
+                   "Calculate her total weekly revenue. Show your reasoning steps."
+        
+        response = google_client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents=messages,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MathProblem,
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget=2400,
+                ),
+                max_output_tokens=3000,
+            ),
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        
+        assert hasattr(response, "parsed"), "Response should have 'parsed' attribute"
+        
+        parsed = response.parsed
+        assert parsed is not None, (
+            "The response returned narrative text instead of JSON matching the schema. "
+            "Check the raw response text to confirm."
+        )
+        
+        # Validate it's an instance of our Pydantic model
+        assert isinstance(parsed, MathProblem), (
+            f"response.parsed should be a MathProblem instance, got {type(parsed)}"
+        )
+        
+        # Validate the fields exist and have correct types
+        assert hasattr(parsed, "problem_statement"), "Should have problem_statement field"
+        assert hasattr(parsed, "reasoning_steps"), "Should have reasoning_steps field"
+        assert hasattr(parsed, "final_answer"), "Should have final_answer field"
+        assert hasattr(parsed, "confidence"), "Should have confidence field"
+        
+        assert isinstance(parsed.problem_statement, str), "problem_statement should be string"
+        assert isinstance(parsed.reasoning_steps, list), "reasoning_steps should be list"
+        assert isinstance(parsed.final_answer, int), "final_answer should be int"
+        assert isinstance(parsed.confidence, str), "confidence should be string"
+        
+        # Check that reasoning steps were provided
+        assert len(parsed.reasoning_steps) > 0, "Should have at least one reasoning step"
+        
+        # Verify thinking tokens were counted (Gemini only)
+        if provider == "gemini" and hasattr(response, "usage_metadata"):
+            usage = response.usage_metadata
+            if hasattr(usage, "thoughts_token_count"):
+                thoughts_token_count = usage.thoughts_token_count
+                print(f"✓ Thinking tokens used: {thoughts_token_count}")
+        
+        print("✓ Structured output with thinking works correctly!")
+        print(f"  Problem: {parsed.problem_statement[:80]}...")
+        print(f"  Steps: {len(parsed.reasoning_steps)} reasoning steps")
+        print(f"  Answer: {parsed.final_answer}")
+        print(f"  Confidence: {parsed.confidence}")
 
 
 # Additional helper functions specific to Google GenAI
