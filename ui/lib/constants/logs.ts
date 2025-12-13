@@ -16,6 +16,7 @@ export const KnownProvidersNames = [
 	"perplexity",
 	"sgl",
 	"vertex",
+	"nebius",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -56,6 +57,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cerebras: "Cerebras",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
+	nebius: "Nebius Token Factory"
 } as const;
 
 // Helper function to get provider label, supporting custom providers
