@@ -83,6 +83,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAdd200kTokenPricingColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationMoveKeysToProviderConfig(ctx, db); err != nil {
 		return err
 	}
@@ -1135,6 +1138,54 @@ func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) e
 			}
 			if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_token_batches"); err != nil {
 				return err
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAdd200kTokenPricingColumns adds pricing columns for 200k token tier models
+func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_200k_token_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_above_200k_tokens",
+				"output_cost_per_token_above_200k_tokens",
+				"cache_creation_input_token_cost_above_200k_tokens",
+				"cache_read_input_token_cost_above_200k_tokens",
+			}
+
+			for _, field := range columns {
+				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_above_200k_tokens",
+				"output_cost_per_token_above_200k_tokens",
+				"cache_creation_input_token_cost_above_200k_tokens",
+				"cache_read_input_token_cost_above_200k_tokens",
+			}
+
+			for _, field := range columns {
+				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
 			}
 			return nil
 		},

@@ -96,6 +96,12 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
 		OutputCostPerCharacterAbove128kTokens:     entry.OutputCostPerCharacterAbove128kTokens,
 
+		//Pricing above 200k tokens (for gemini models)
+		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokens:          entry.OutputCostPerTokenAbove200kTokens,
+		CacheCreationInputTokenCostAbove200kTokens: entry.CacheCreationInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokens:     entry.CacheReadInputTokenCostAbove200kTokens,
+
 		// Cache and batch pricing
 		CacheReadInputTokenCost:   entry.CacheReadInputTokenCost,
 		InputCostPerTokenBatches:  entry.InputCostPerTokenBatches,
@@ -108,25 +114,29 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 // convertTableModelPricingToPricingData converts the TableModelPricing struct to a DataSheetPricingEntry struct
 func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
 	return &PricingEntry{
-		Provider:                                  pricing.Provider,
-		Mode:                                      pricing.Mode,
-		InputCostPerToken:                         pricing.InputCostPerToken,
-		OutputCostPerToken:                        pricing.OutputCostPerToken,
-		InputCostPerImage:                         pricing.InputCostPerImage,
-		InputCostPerVideoPerSecond:                pricing.InputCostPerVideoPerSecond,
-		InputCostPerAudioPerSecond:                pricing.InputCostPerAudioPerSecond,
-		InputCostPerCharacter:                     pricing.InputCostPerCharacter,
-		OutputCostPerCharacter:                    pricing.OutputCostPerCharacter,
-		InputCostPerTokenAbove128kTokens:          pricing.InputCostPerTokenAbove128kTokens,
-		InputCostPerCharacterAbove128kTokens:      pricing.InputCostPerCharacterAbove128kTokens,
-		InputCostPerImageAbove128kTokens:          pricing.InputCostPerImageAbove128kTokens,
-		InputCostPerVideoPerSecondAbove128kTokens: pricing.InputCostPerVideoPerSecondAbove128kTokens,
-		InputCostPerAudioPerSecondAbove128kTokens: pricing.InputCostPerAudioPerSecondAbove128kTokens,
-		OutputCostPerTokenAbove128kTokens:         pricing.OutputCostPerTokenAbove128kTokens,
-		OutputCostPerCharacterAbove128kTokens:     pricing.OutputCostPerCharacterAbove128kTokens,
-		CacheReadInputTokenCost:                   pricing.CacheReadInputTokenCost,
-		InputCostPerTokenBatches:                  pricing.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
+		Provider:                                   pricing.Provider,
+		Mode:                                       pricing.Mode,
+		InputCostPerToken:                          pricing.InputCostPerToken,
+		OutputCostPerToken:                         pricing.OutputCostPerToken,
+		InputCostPerImage:                          pricing.InputCostPerImage,
+		InputCostPerVideoPerSecond:                 pricing.InputCostPerVideoPerSecond,
+		InputCostPerAudioPerSecond:                 pricing.InputCostPerAudioPerSecond,
+		InputCostPerCharacter:                      pricing.InputCostPerCharacter,
+		OutputCostPerCharacter:                     pricing.OutputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:           pricing.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:       pricing.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:           pricing.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:  pricing.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:  pricing.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:          pricing.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:      pricing.OutputCostPerCharacterAbove128kTokens,
+		InputCostPerTokenAbove200kTokens:           pricing.InputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokens:          pricing.OutputCostPerTokenAbove200kTokens,
+		CacheCreationInputTokenCostAbove200kTokens: pricing.CacheCreationInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokens:     pricing.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCost:                    pricing.CacheReadInputTokenCost,
+		InputCostPerTokenBatches:                   pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                  pricing.OutputCostPerTokenBatches,
 	}
 }
 

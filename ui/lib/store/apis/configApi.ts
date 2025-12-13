@@ -86,6 +86,15 @@ export const configApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Config"],
 		}),
+
+		// Force a pricing sync immediately
+		forcePricingSync: builder.mutation<null, void>({
+			query: () => ({
+				url: "/pricing/force-sync",
+				method: "POST",
+			}),
+			invalidatesTags: ["Config"],
+		}),
 	}),
 });
 
@@ -94,6 +103,7 @@ export const {
 	useGetCoreConfigQuery,
 	useUpdateCoreConfigMutation,
 	useUpdateProxyConfigMutation,
+	useForcePricingSyncMutation,
 	useLazyGetCoreConfigQuery,
 	useGetLatestReleaseQuery,
 	useLazyGetLatestReleaseQuery,

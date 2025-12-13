@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { getErrorMessage, useForcePricingSyncMutation, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
@@ -19,6 +19,7 @@ export default function PricingConfigView() {
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.framework_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
+	const [forcePricingSync, { isLoading: isForceSyncing }] = useForcePricingSyncMutation();
 
 	const {
 		register,
@@ -69,6 +70,15 @@ export default function PricingConfigView() {
 		}
 	};
 
+	const handleForceSync = async () => {
+		try {
+			await forcePricingSync().unwrap();
+			toast.success("Pricing sync triggered successfully.");
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		}
+	};
+
 	return (
 		<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 			<div className="flex items-center justify-between">
@@ -76,9 +86,19 @@ export default function PricingConfigView() {
 					<h2 className="text-2xl font-semibold tracking-tight">Pricing Configuration</h2>
 					<p className="text-muted-foreground text-sm">Configure custom pricing datasheet and sync intervals.</p>
 				</div>
-				<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+				<div className="flex items-center gap-2">
+					<Button
+						variant="outline"
+						type="button"
+						onClick={handleForceSync}
+						disabled={isForceSyncing || !hasSettingsUpdateAccess}
+					>
+						{isForceSyncing ? "Forcing..." : "Force Sync Now"}
+					</Button>
+					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+						{isLoading ? "Saving..." : "Save Changes"}
+					</Button>
+				</div>
 			</div>
 
 			<div className="space-y-4">
