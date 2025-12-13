@@ -867,6 +867,805 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx context.Context, req *sch
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// BatchCreateRequest creates a new batch job for asynchronous processing.
+func (bifrost *Bifrost) BatchCreateRequest(ctx context.Context, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch create request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch create request",
+			},
+		}
+	}
+	if req.InputFileID == "" && len(req.Requests) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "either input_file_id or requests is required for batch create request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch create request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+		return provider.BatchCreate(ctx, key, req)
+	}, schemas.BatchCreateRequest, req.Provider, req.Model)
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchCreateRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// BatchListRequest lists batch jobs for the specified provider.
+func (bifrost *Bifrost) BatchListRequest(ctx context.Context, req *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch list request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch list request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch list request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var keys []schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, err = bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if err != nil {
+			return nil, newBifrostError(err)
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+		return provider.BatchList(ctx, keys, req)
+	}, schemas.BatchListRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchListRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// BatchRetrieveRequest retrieves a specific batch job.
+func (bifrost *Bifrost) BatchRetrieveRequest(ctx context.Context, req *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch retrieve request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch retrieve request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch retrieve request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch retrieve request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+		return provider.BatchRetrieve(ctx, key, req)
+	}, schemas.BatchRetrieveRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchRetrieveRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// BatchCancelRequest cancels a batch job.
+func (bifrost *Bifrost) BatchCancelRequest(ctx context.Context, req *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch cancel request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch cancel request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch cancel request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch cancel request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+		return provider.BatchCancel(ctx, key, req)
+	}, schemas.BatchCancelRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchCancelRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// BatchResultsRequest retrieves results from a completed batch job.
+func (bifrost *Bifrost) BatchResultsRequest(ctx context.Context, req *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch results request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch results request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch results request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch results request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+		return provider.BatchResults(ctx, key, req)
+	}, schemas.BatchResultsRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.BatchResultsRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// FileUploadRequest uploads a file to the specified provider.
+func (bifrost *Bifrost) FileUploadRequest(ctx context.Context, req *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file upload request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file upload request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if len(req.File) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file content is required for file upload request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for file upload request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+		return provider.FileUpload(ctx, key, req)
+	}, schemas.FileUploadRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.FileUploadRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// FileListRequest lists files from the specified provider.
+func (bifrost *Bifrost) FileListRequest(ctx context.Context, req *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file list request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileListRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file list request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileListRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for file list request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileListRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var keys []schemas.Key
+	var keyErr error
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr = bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+		return provider.FileList(ctx, keys, req)
+	}, schemas.FileListRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.FileListRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// FileRetrieveRequest retrieves file metadata from the specified provider.
+func (bifrost *Bifrost) FileRetrieveRequest(ctx context.Context, req *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file retrieve request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file retrieve request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file retrieve request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for file retrieve request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+		return provider.FileRetrieve(ctx, key, req)
+	}, schemas.FileRetrieveRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.FileRetrieveRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// FileDeleteRequest deletes a file from the specified provider.
+func (bifrost *Bifrost) FileDeleteRequest(ctx context.Context, req *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file delete request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file delete request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file delete request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for file delete request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+		return provider.FileDelete(ctx, key, req)
+	}, schemas.FileDeleteRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.FileDeleteRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
+// FileContentRequest downloads file content from the specified provider.
+func (bifrost *Bifrost) FileContentRequest(ctx context.Context, req *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file content request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file content request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file content request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for file content request",
+			},
+		}
+	}
+
+	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	if err != nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
+	}
+	if config == nil {
+		return nil, newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
+	}
+
+	// Determine the base provider type for key requirement checks
+	baseProvider := req.Provider
+	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+		baseProvider = config.CustomProviderConfig.BaseProviderType
+	}
+
+	var key schemas.Key
+	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		keys, keyErr := bifrost.getAllSupportedKeys(&ctx, req.Provider, baseProvider)
+		if keyErr != nil {
+			return nil, newBifrostError(keyErr)
+		}
+		if len(keys) > 0 {
+			key = keys[0]
+		}
+	}
+
+	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+		return provider.FileContent(ctx, key, req)
+	}, schemas.FileContentRequest, req.Provider, "")
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType: schemas.FileContentRequest,
+			Provider:    req.Provider,
+		}
+		return nil, bifrostErr
+	}
+	return response, nil
+}
+
 // RemovePlugin removes a plugin from the server.
 func (bifrost *Bifrost) RemovePlugin(name string) error {
 

@@ -1,11 +1,15 @@
+// Package anthropic implements the Anthropic provider for the Bifrost API.
 package anthropic
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -123,7 +127,7 @@ func (provider *AnthropicProvider) buildRequestURL(ctx context.Context, defaultP
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string, meta *providerUtils.RequestMetadata) ([]byte, time.Duration, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -152,7 +156,7 @@ func (provider *AnthropicProvider) completeRequest(ctx context.Context, jsonData
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-		return nil, latency, parseAnthropicError(resp)
+		return nil, latency, parseAnthropicError(resp, meta)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -196,7 +200,10 @@ func (provider *AnthropicProvider) listModelsByKey(ctx context.Context, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseAnthropicError(resp)
+		return nil, parseAnthropicError(resp, &providerUtils.RequestMetadata{
+			Provider:    provider.GetProviderKey(),
+			RequestType: schemas.ListModelsRequest,
+		})
 	}
 
 	// Parse Anthropic's response
@@ -262,7 +269,11 @@ func (provider *AnthropicProvider) TextCompletion(ctx context.Context, key schem
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.TextCompletionRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +334,11 @@ func (provider *AnthropicProvider) ChatCompletion(ctx context.Context, key schem
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.ChatCompletionRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -408,6 +423,11 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx context.Context, pos
 		postHookRunner,
 		nil,
 		provider.logger,
+		&providerUtils.RequestMetadata{
+			Provider:    provider.GetProviderKey(),
+			Model:       request.Model,
+			RequestType: schemas.ChatCompletionStreamRequest,
+		},
 	)
 }
 
@@ -426,6 +446,7 @@ func HandleAnthropicChatCompletionStreaming(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
+	meta *providerUtils.RequestMetadata,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -467,7 +488,7 @@ func HandleAnthropicChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseAnthropicError(resp)
+		return nil, parseAnthropicError(resp, meta)
 	}
 
 	// Create response channel
@@ -680,7 +701,11 @@ func (provider *AnthropicProvider) Responses(ctx context.Context, key schemas.Ke
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.ResponsesRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -752,6 +777,11 @@ func (provider *AnthropicProvider) ResponsesStream(ctx context.Context, postHook
 		postHookRunner,
 		nil,
 		provider.logger,
+		&providerUtils.RequestMetadata{
+			Provider:    provider.GetProviderKey(),
+			Model:       request.Model,
+			RequestType: schemas.ResponsesStreamRequest,
+		},
 	)
 }
 
@@ -770,6 +800,7 @@ func HandleAnthropicResponsesStream(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	meta *providerUtils.RequestMetadata,
 ) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -811,7 +842,7 @@ func HandleAnthropicResponsesStream(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseAnthropicError(resp)
+		return nil, parseAnthropicError(resp, meta)
 	}
 
 	// Create response channel
@@ -999,6 +1030,438 @@ func HandleAnthropicResponsesStream(
 	return responseChan, nil
 }
 
+// BatchCreate creates a new batch job.
+func (provider *AnthropicProvider) BatchCreate(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if len(request.Requests) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("requests array is required for Anthropic batch API", nil, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/messages/batches", schemas.BatchCreateRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Build request body
+	anthropicReq := &AnthropicBatchCreateRequest{
+		Requests: make([]AnthropicBatchRequestItem, len(request.Requests)),
+	}
+
+	for i, r := range request.Requests {
+		anthropicReq.Requests[i] = AnthropicBatchRequestItem{
+			CustomID: r.CustomID,
+			Params:   r.Params,
+		}
+		// Use Body if Params is empty
+		if anthropicReq.Requests[i].Params == nil && r.Body != nil {
+			anthropicReq.Requests[i].Params = r.Body
+		}
+	}
+
+	jsonData, err := sonic.Marshal(anthropicReq)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+	}
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.BatchCreateRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicBatchResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropicResp.ToBifrostBatchCreateResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+}
+
+// BatchList lists batch jobs.
+func (provider *AnthropicProvider) BatchList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchListRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL with query params
+	baseURL := provider.buildRequestURL(ctx, "/v1/messages/batches", schemas.BatchListRequest)
+	values := url.Values{}
+	if request.Limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", request.Limit))
+	}
+	if request.BeforeID != nil && *request.BeforeID != "" {
+		values.Set("before_id", *request.BeforeID)
+	}
+	if request.AfterID != nil && *request.AfterID != "" {
+		values.Set("after_id", *request.AfterID)
+	}
+	requestURL := baseURL
+	if encodedValues := values.Encode(); encodedValues != "" {
+		requestURL += "?" + encodedValues
+	}
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	// Use first key if available
+	if len(keys) > 0 && keys[0].Value != "" {
+		req.Header.Set("x-api-key", keys[0].Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.BatchListRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicBatchListResponse
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	bifrostResp := &schemas.BifrostBatchListResponse{
+		Object:  "list",
+		FirstID: anthropicResp.FirstID,
+		LastID:  anthropicResp.LastID,
+		HasMore: anthropicResp.HasMore,
+		Data:    make([]schemas.BifrostBatchRetrieveResponse, len(anthropicResp.Data)),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchListRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	for i, batch := range anthropicResp.Data {
+		bifrostResp.Data[i] = *batch.ToBifrostBatchRetrieveResponse(providerName, 0, false, false, nil, nil)
+	}
+
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
+// BatchRetrieve retrieves a specific batch job.
+func (provider *AnthropicProvider) BatchRetrieve(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	// batch id is required
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, schemas.Anthropic)
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(
+		ctx,
+		"/v1/messages/batches/"+url.PathEscape(request.BatchID),
+		schemas.BatchRetrieveRequest,
+	))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.BatchRetrieveRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicBatchResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result := anthropicResp.ToBifrostBatchRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse)
+	result.ExtraFields.RequestType = schemas.BatchRetrieveRequest
+	return result, nil
+}
+
+// BatchCancel cancels a batch job.
+func (provider *AnthropicProvider) BatchCancel(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchCancelRequest); err != nil {
+		return nil, err
+	}
+
+	// batch id is required
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, schemas.Anthropic)
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/cancel")
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.BatchCancelRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicBatchResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result := &schemas.BifrostBatchCancelResponse{
+		ID:     anthropicResp.ID,
+		Object: anthropicResp.Type,
+		Status: ToBifrostBatchStatus(anthropicResp.ProcessingStatus),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchCancelRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		result.ExtraFields.RawRequest = rawRequest
+	}
+
+	if anthropicResp.CancelInitiatedAt != nil {
+		cancellingAt := parseAnthropicTimestamp(*anthropicResp.CancelInitiatedAt)
+		result.CancellingAt = &cancellingAt
+	}
+
+	if anthropicResp.RequestCounts != nil {
+		result.RequestCounts = schemas.BatchRequestCounts{
+			Total:     anthropicResp.RequestCounts.Processing + anthropicResp.RequestCounts.Succeeded + anthropicResp.RequestCounts.Errored + anthropicResp.RequestCounts.Canceled + anthropicResp.RequestCounts.Expired,
+			Completed: anthropicResp.RequestCounts.Succeeded,
+			Failed:    anthropicResp.RequestCounts.Errored,
+		}
+	}
+
+	if sendBackRawResponse {
+		result.ExtraFields.RawResponse = rawResponse
+	}
+
+	return result, nil
+}
+
+// BatchResults retrieves batch results.
+func (provider *AnthropicProvider) BatchResults(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
+		return nil, err
+	}
+
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, schemas.Anthropic)
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/results")
+	req.Header.SetMethod(http.MethodGet)
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.BatchResultsRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Parse JSONL content - each line is a separate result
+	var results []schemas.BatchResultItem
+	lines := splitJSONL(body)
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+
+		var anthropicResult AnthropicBatchResultItem
+		if err := sonic.Unmarshal(line, &anthropicResult); err != nil {
+			provider.logger.Warn(fmt.Sprintf("failed to parse batch result line: %v", err))
+			continue
+		}
+
+		// Convert to Bifrost format
+		resultItem := schemas.BatchResultItem{
+			CustomID: anthropicResult.CustomID,
+			Result: &schemas.BatchResultData{
+				Type:    anthropicResult.Result.Type,
+				Message: anthropicResult.Result.Message,
+			},
+		}
+
+		if anthropicResult.Result.Error != nil {
+			resultItem.Error = &schemas.BatchResultError{
+				Code:    anthropicResult.Result.Error.Type,
+				Message: anthropicResult.Result.Error.Message,
+			}
+		}
+
+		results = append(results, resultItem)
+	}
+
+	return &schemas.BifrostBatchResultsResponse{
+		BatchID: request.BatchID,
+		Results: results,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchResultsRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}, nil
+}
+
+// splitJSONL splits JSONL content into individual lines.
+func splitJSONL(data []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			if i > start {
+				lines = append(lines, data[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		lines = append(lines, data[start:])
+	}
+	return lines
+}
+
 // Embedding is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) Embedding(ctx context.Context, key schemas.Key, input *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
@@ -1022,4 +1485,413 @@ func (provider *AnthropicProvider) Transcription(ctx context.Context, key schema
 // TranscriptionStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+}
+
+// parseStreamAnthropicError parses Anthropic streaming error responses.
+func parseStreamAnthropicError(resp *fasthttp.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
+	statusCode := resp.StatusCode()
+	body := resp.Body()
+	return providerUtils.NewProviderAPIError(string(body), nil, statusCode, providerType, nil, nil)
+}
+
+// FileUpload uploads a file to Anthropic's Files API.
+func (provider *AnthropicProvider) FileUpload(ctx context.Context, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if len(request.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("file content is required", nil, providerName)
+	}
+
+	// Create multipart form data
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add file field
+	filename := request.Filename
+	if filename == "" {
+		filename = "file"
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
+	}
+	if _, err := part.Write(request.File); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err, providerName)
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/files", schemas.FileUploadRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(writer.FormDataContentType())
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
+
+	req.SetBody(buf.Bytes())
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.FileUploadRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicFileResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropicResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+}
+
+// FileList lists files from Anthropic's Files API.
+func (provider *AnthropicProvider) FileList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if len(keys) == 0 {
+		return nil, providerUtils.NewConfigurationError("no keys provided", providerName)
+	}
+
+	key := keys[0]
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL with query params
+	baseURL := provider.buildRequestURL(ctx, "/v1/files", schemas.FileListRequest)
+	values := url.Values{}
+	if request.Limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", request.Limit))
+	}
+	if request.After != nil && *request.After != "" {
+		values.Set("after_id", *request.After)
+	}
+	requestURL := baseURL
+	if encodedValues := values.Encode(); encodedValues != "" {
+		requestURL += "?" + encodedValues
+	}
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.FileListRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicFileListResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert to Bifrost response
+	bifrostResp := &schemas.BifrostFileListResponse{
+		Object:  "list",
+		HasMore: anthropicResp.HasMore,
+		Data:    make([]schemas.FileObject, len(anthropicResp.Data)),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileListRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+
+	for i, file := range anthropicResp.Data {
+		bifrostResp.Data[i] = schemas.FileObject{
+			ID:        file.ID,
+			Object:    file.Type,
+			Bytes:     file.SizeBytes,
+			CreatedAt: parseAnthropicFileTimestamp(file.CreatedAt),
+			Filename:  file.Filename,
+			Purpose:   schemas.FilePurposeBatch,
+			Status:    schemas.FileStatusProcessed,
+		}
+	}
+
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResp, nil
+}
+
+// FileRetrieve retrieves file metadata from Anthropic's Files API.
+func (provider *AnthropicProvider) FileRetrieve(ctx context.Context, key schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.FileRetrieveRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicFileResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return anthropicResp.ToBifrostFileRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+}
+
+// FileDelete deletes a file from Anthropic's Files API.
+func (provider *AnthropicProvider) FileDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+	req.Header.SetMethod(http.MethodDelete)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.FileDeleteRequest, providerName, "")
+	}
+
+	// For 204 No Content, return success without parsing body
+	if resp.StatusCode() == fasthttp.StatusNoContent {
+		return &schemas.BifrostFileDeleteResponse{
+			ID:      request.FileID,
+			Object:  "file",
+			Deleted: true,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileDeleteRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			},
+		}, nil
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var anthropicResp AnthropicFileDeleteResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &anthropicResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	result := &schemas.BifrostFileDeleteResponse{
+		ID:      anthropicResp.ID,
+		Object:  "file",
+		Deleted: anthropicResp.Type == "file_deleted",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileDeleteRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		result.ExtraFields.RawRequest = rawRequest
+	}
+
+	if sendBackRawResponse {
+		result.ExtraFields.RawResponse = rawResponse
+	}
+
+	return result, nil
+}
+
+// FileContent downloads file content from Anthropic's Files API.
+// Note: Only files created by skills or the code execution tool can be downloaded.
+func (provider *AnthropicProvider) FileContent(ctx context.Context, key schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileContentRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+	req.Header.SetMethod(http.MethodGet)
+
+	if key.Value != "" {
+		req.Header.Set("x-api-key", key.Value)
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseAnthropicError(resp, schemas.FileContentRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Get content type from response
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	content := append([]byte(nil), body...)
+	return &schemas.BifrostFileContentResponse{
+		FileID:      request.FileID,
+		Content:     content,
+		ContentType: contentType,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileContentRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}, nil
 }

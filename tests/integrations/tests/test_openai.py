@@ -48,11 +48,24 @@ Tests all core scenarios using OpenAI SDK directly:
 37. Responses API - streaming with tools
 38. Responses API - reasoning
 39. Text Completions - simple prompt
-42. Text Completions - streaming
+40. Text Completions - streaming
+41. Files API - file upload
+42. Files API - file list
+43. Files API - file retrieve
+44. Files API - file delete
+45. Files API - file content
+46. Batch API - batch create with Files API
+47. Batch API - batch list
+48. Batch API - batch retrieve
+49. Batch API - batch cancel
+50. Batch API - end-to-end with Files API
+
+Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
 
 import pytest
 import json
+import time
 from openai import OpenAI
 from typing import List, Dict, Any
 
@@ -129,8 +142,17 @@ from .utils.common import (
     TEXT_COMPLETION_STREAMING_PROMPT,
     assert_valid_text_completion_response,
     collect_text_completion_streaming_content,
+    # Files API utilities
+    create_batch_jsonl_content,
+    assert_valid_file_response,
+    assert_valid_file_list_response,
+    assert_valid_file_delete_response,
+    # Batch API utilities
+    assert_valid_batch_response,
+    assert_valid_batch_list_response,
+    create_batch_inline_requests,
 )
-from .utils.config_loader import get_model
+from .utils.config_loader import get_model, get_config
 from .utils.parametrize import (
     get_cross_provider_params_for_scenario,
     format_provider_model,
@@ -180,6 +202,22 @@ def convert_to_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return [{"type": "function", "function": tool} for tool in tools]
 
 
+def get_provider_openai_client(provider):
+    """Create OpenAI client for given provider (provider passed via extra_body/extra_query)"""
+    from .utils.config_loader import get_integration_url, get_config
+
+    api_key = get_api_key(provider)
+    base_url = get_integration_url("openai")
+    config = get_config()
+    api_config = config.get_api_config()
+
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=api_config.get("timeout", 300),
+    )
+
+
 @pytest.fixture
 def openai_client():
     """Create OpenAI client for testing"""
@@ -218,7 +256,9 @@ def test_config():
 class TestOpenAIIntegration:
     """Test suite for OpenAI integration with cross-provider support"""
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("simple_chat")
+    )
     def test_01_simple_chat(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -233,7 +273,9 @@ class TestOpenAIIntegration:
         assert response.choices[0].message.content is not None
         assert len(response.choices[0].message.content) > 0
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multi_turn_conversation")
+    )
     def test_02_multi_turn_conversation(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -247,10 +289,7 @@ class TestOpenAIIntegration:
         assert_valid_chat_response(response)
         content = get_content_string(response.choices[0].message.content)
         # Should mention population or numbers since we asked about Paris population
-        assert any(
-            word in content
-            for word in ["population", "million", "people", "inhabitants"]
-        )
+        assert any(word in content for word in ["population", "million", "people", "inhabitants"])
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
     def test_03_single_tool_call(self, openai_client, test_config, provider, model):
@@ -269,7 +308,9 @@ class TestOpenAIIntegration:
         assert tool_calls[0]["name"] == "get_weather"
         assert "location" in tool_calls[0]["arguments"]
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls")
+    )
     def test_04_multiple_tool_calls(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -290,7 +331,9 @@ class TestOpenAIIntegration:
         assert "get_weather" in tool_names
         assert "calculate" in tool_names
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling")
+    )
     def test_05_end2end_tool_calling(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -312,9 +355,7 @@ class TestOpenAIIntegration:
 
         # Add tool response
         tool_calls = extract_openai_tool_calls(response)
-        tool_response = mock_tool_response(
-            tool_calls[0]["name"], tool_calls[0]["arguments"]
-        )
+        tool_response = mock_tool_response(tool_calls[0]["name"], tool_calls[0]["arguments"])
 
         messages.append(
             {
@@ -334,7 +375,9 @@ class TestOpenAIIntegration:
         weather_location_keywords = WEATHER_KEYWORDS + LOCATION_KEYWORDS
         assert any(word in content for word in weather_location_keywords)
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("automatic_function_calling"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("automatic_function_calling")
+    )
     def test_06_automatic_function_calling(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -365,7 +408,9 @@ class TestOpenAIIntegration:
 
         assert_valid_image_response(response)
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_base64"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("image_base64")
+    )
     def test_08_image_base64(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -378,7 +423,9 @@ class TestOpenAIIntegration:
 
         assert_valid_image_response(response)
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_images"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("multiple_images")
+    )
     def test_09_multiple_images(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -484,9 +531,7 @@ class TestOpenAIIntegration:
         # Test 3: Temperature and top_p parameters
         response3 = openai_client.chat.completions.create(
             model=get_model("openai", "chat"),
-            messages=[
-                {"role": "user", "content": "Tell me a creative story in one sentence."}
-            ],
+            messages=[{"role": "user", "content": "Tell me a creative story in one sentence."}],
             temperature=0.9,
             top_p=0.9,
             max_tokens=100,
@@ -552,9 +597,7 @@ class TestOpenAIIntegration:
 
                 # Validate tool streaming results
                 assert chunk_count_tools > 0, "Should receive at least one chunk with tools"
-                assert (
-                    tool_calls_detected_tools
-                ), "Should detect tool calls in streaming response"
+                assert tool_calls_detected_tools, "Should detect tool calls in streaming response"
 
     @skip_if_no_api_key("openai")
     def test_14_speech_synthesis(self, openai_client, test_config):
@@ -582,9 +625,7 @@ class TestOpenAIIntegration:
         assert_valid_speech_response(audio_content2, expected_audio_size_min=500)
 
         # Verify that different voices produce different audio
-        assert (
-            audio_content != audio_content2
-        ), "Different voices should produce different audio"
+        assert audio_content != audio_content2, "Different voices should produce different audio"
 
     @skip_if_no_api_key("openai")
     def test_15_transcription_audio(self, openai_client, test_config):
@@ -770,7 +811,9 @@ class TestOpenAIIntegration:
 
         # Test multiple voices
         voices_tested = []
-        for voice in get_provider_voices("openai", count=3):  # Test first 3 voices to avoid too many API calls
+        for voice in get_provider_voices(
+            "openai", count=3
+        ):  # Test first 3 voices to avoid too many API calls
             response = openai_client.audio.speech.create(
                 model=get_model("openai", "speech"),
                 voice=voice,
@@ -824,9 +867,7 @@ class TestOpenAIIntegration:
         # Verify response structure
         assert len(response.data) == 1, "Should have exactly one embedding"
         assert response.data[0].index == 0, "First embedding should have index 0"
-        assert (
-            response.data[0].object == "embedding"
-        ), "Object type should be 'embedding'"
+        assert response.data[0].object == "embedding", "Object type should be 'embedding'"
 
         # Verify model in response
         assert response.model is not None, "Response should include model name"
@@ -840,9 +881,7 @@ class TestOpenAIIntegration:
         )
 
         expected_count = len(EMBEDDINGS_MULTIPLE_TEXTS)
-        assert_valid_embeddings_batch_response(
-            response, expected_count, expected_dimensions=1536
-        )
+        assert_valid_embeddings_batch_response(response, expected_count, expected_dimensions=1536)
 
         # Verify each embedding has correct index
         for i, embedding_obj in enumerate(response.data):
@@ -895,13 +934,9 @@ class TestOpenAIIntegration:
 
         # Test dissimilarity between different topic embeddings
         # Weather vs Programming
-        weather_prog_similarity = calculate_cosine_similarity(
-            embeddings[0], embeddings[1]
-        )
+        weather_prog_similarity = calculate_cosine_similarity(embeddings[0], embeddings[1])
         # Weather vs Stock Market
-        weather_stock_similarity = calculate_cosine_similarity(
-            embeddings[0], embeddings[2]
-        )
+        weather_stock_similarity = calculate_cosine_similarity(embeddings[0], embeddings[2])
         # Programming vs Machine Learning (should be more similar)
         prog_ml_similarity = calculate_cosine_similarity(embeddings[1], embeddings[3])
 
@@ -960,9 +995,7 @@ class TestOpenAIIntegration:
 
         # Verify token usage is reported for longer text
         assert response.usage is not None, "Usage should be reported for longer text"
-        assert (
-            response.usage.total_tokens > 20
-        ), "Longer text should consume more tokens"
+        assert response.usage.total_tokens > 20, "Longer text should consume more tokens"
 
     @skip_if_no_api_key("openai")
     def test_27_embedding_error_handling(self, openai_client, test_config):
@@ -1004,9 +1037,7 @@ class TestOpenAIIntegration:
                 dimensions=custom_dimensions,
             )
 
-            assert_valid_embedding_response(
-                response, expected_dimensions=custom_dimensions
-            )
+            assert_valid_embedding_response(response, expected_dimensions=custom_dimensions)
 
             # Compare with default dimensions
             response_default = openai_client.embeddings.create(
@@ -1074,12 +1105,8 @@ class TestOpenAIIntegration:
         )
 
         assert_valid_embedding_response(response_single)
-        assert (
-            response_single.usage is not None
-        ), "Single embedding should have usage data"
-        assert (
-            response_single.usage.total_tokens > 0
-        ), "Single embedding should consume tokens"
+        assert response_single.usage is not None, "Single embedding should have usage data"
+        assert response_single.usage.total_tokens > 0, "Single embedding should consume tokens"
         single_tokens = response_single.usage.total_tokens
 
         # Batch embedding
@@ -1087,15 +1114,9 @@ class TestOpenAIIntegration:
             model=get_model("openai", "embeddings"), input=EMBEDDINGS_MULTIPLE_TEXTS
         )
 
-        assert_valid_embeddings_batch_response(
-            response_batch, len(EMBEDDINGS_MULTIPLE_TEXTS)
-        )
-        assert (
-            response_batch.usage is not None
-        ), "Batch embedding should have usage data"
-        assert (
-            response_batch.usage.total_tokens > 0
-        ), "Batch embedding should consume tokens"
+        assert_valid_embeddings_batch_response(response_batch, len(EMBEDDINGS_MULTIPLE_TEXTS))
+        assert response_batch.usage is not None, "Batch embedding should have usage data"
+        assert response_batch.usage.total_tokens > 0, "Batch embedding should consume tokens"
         batch_tokens = response_batch.usage.total_tokens
 
         # Batch should consume more tokens than single
@@ -1111,7 +1132,7 @@ class TestOpenAIIntegration:
         assert (
             0.5 * texts_ratio <= token_ratio <= 2.0 * texts_ratio
         ), f"Token usage ratio ({token_ratio:.2f}) should be roughly proportional to text count ({texts_ratio})"
-    
+
     @skip_if_no_api_key("openai")
     def test_31_list_models(self, openai_client, test_config):
         """Test Case 31: List models"""
@@ -1190,7 +1211,9 @@ class TestOpenAIIntegration:
             keyword in content_lower for keyword in mars_keywords
         ), f"Response should contain Mars-related content from astronomy expert. Got: {content}"
 
-    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses_image"))
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("responses_image")
+    )
     def test_34_responses_with_image(self, openai_client, test_config, provider, model):
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -1268,9 +1291,9 @@ class TestOpenAIIntegration:
 
         # Validate function call structure
         assert hasattr(function_call_message, "name"), "Function call should have name"
-        assert function_call_message.name == "get_weather", (
-            f"Function call should be 'get_weather', got {function_call_message.name}"
-        )
+        assert (
+            function_call_message.name == "get_weather"
+        ), f"Function call should be 'get_weather', got {function_call_message.name}"
 
         # Check arguments if present
         if hasattr(function_call_message, "arguments"):
@@ -1282,9 +1305,9 @@ class TestOpenAIIntegration:
 
             assert "location" in args, "Function call should have location argument"
             location_lower = str(args["location"]).lower()
-            assert "boston" in location_lower, (
-                f"Location should mention Boston, got {args['location']}"
-            )
+            assert (
+                "boston" in location_lower
+            ), f"Location should mention Boston, got {args['location']}"
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses"))
     def test_36_responses_streaming(self, openai_client, test_config, provider, model):
@@ -1319,9 +1342,9 @@ class TestOpenAIIntegration:
         has_content_events = any(
             "delta" in evt or "text" in evt or "output" in evt for evt in event_types
         )
-        assert has_content_events, (
-            f"Should receive content-related events. Got events: {list(event_types.keys())}"
-        )
+        assert (
+            has_content_events
+        ), f"Should receive content-related events. Got events: {list(event_types.keys())}"
 
         # Check content quality - should be a poem about AI
         content_lower = content.lower()
@@ -1371,9 +1394,7 @@ class TestOpenAIIntegration:
         assert chunk_count > 0, "Should receive at least one chunk"
 
         # Check for tool-related events
-        has_tool_events = any(
-            "function" in evt or "tool" in evt for evt in event_types
-        )
+        has_tool_events = any("function" in evt or "tool" in evt for evt in event_types)
 
         # Either should have tool calls detected or tool-related events
         assert tool_calls_detected or has_tool_events, (
@@ -1407,14 +1428,14 @@ class TestOpenAIIntegration:
             # Extract all content from the response (output and summary)
             content = ""
             has_reasoning_content = False
-            
+
             # Check output messages
             for message in response.output:
                 if hasattr(message, "type"):
                     # Check if we have a reasoning message type
                     if message.type == "reasoning":
                         has_reasoning_content = True
-                
+
                 # Check regular content
                 if hasattr(message, "content") and message.content:
                     if isinstance(message.content, str):
@@ -1426,7 +1447,7 @@ class TestOpenAIIntegration:
                             # Check for reasoning content blocks
                             if hasattr(block, "type") and block.type == "reasoning_text":
                                 has_reasoning_content = True
-                
+
                 # Check summary field within output messages (reasoning models)
                 if hasattr(message, "summary") and message.summary:
                     has_reasoning_content = True  # Presence of summary indicates reasoning
@@ -1437,9 +1458,15 @@ class TestOpenAIIntegration:
                             elif isinstance(summary_item, dict) and "text" in summary_item:
                                 content += " " + summary_item["text"]
                             # Check for summary_text type
-                            if hasattr(summary_item, "type") and summary_item.type == "summary_text":
+                            if (
+                                hasattr(summary_item, "type")
+                                and summary_item.type == "summary_text"
+                            ):
                                 has_reasoning_content = True
-                            elif isinstance(summary_item, dict) and summary_item.get("type") == "summary_text":
+                            elif (
+                                isinstance(summary_item, dict)
+                                and summary_item.get("type") == "summary_text"
+                            ):
                                 has_reasoning_content = True
                     elif isinstance(message.summary, str):
                         content += " " + message.summary
@@ -1458,7 +1485,7 @@ class TestOpenAIIntegration:
                 "speed",
                 "mile",
             ]
-            
+
             # Should mention at least some reasoning keywords
             keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in content_lower)
             assert keyword_matches >= 3, (
@@ -1478,11 +1505,11 @@ class TestOpenAIIntegration:
                 "because",
                 "since",
             ]
-            
+
             has_steps = any(indicator in content_lower for indicator in step_indicators)
-            assert has_steps, (
-                f"Response should show step-by-step reasoning. Content: {content[:200]}..."
-            )
+            assert (
+                has_steps
+            ), f"Response should show step-by-step reasoning. Content: {content[:200]}..."
 
             # Log if reasoning content was detected
             if has_reasoning_content:
@@ -1494,10 +1521,10 @@ class TestOpenAIIntegration:
             has_calculation = any(
                 char in content for char in [":", "+", "-", "*", "/", "="]
             ) or any(
-                time_word in content_lower 
+                time_word in content_lower
                 for time_word in ["4:00", "5:00", "6:00", "4 pm", "5 pm", "6 pm"]
             )
-            
+
             if has_calculation:
                 print("Success: Response contains calculations or time values")
 
@@ -1507,14 +1534,14 @@ class TestOpenAIIntegration:
             error_str = str(e).lower()
             if "reasoning" in error_str or "not supported" in error_str:
                 print(f"Info: Model {model_to_use} may not fully support reasoning parameters")
-                
+
                 # Fallback: Try without reasoning parameters
                 response = openai_client.responses.create(
                     model=model_to_use,
                     input=RESPONSES_REASONING_INPUT,
                     max_output_tokens=800,
                 )
-                
+
                 # Just validate we get a response
                 assert_valid_responses_response(response, min_content_length=30)
                 print("Success: Got valid response without reasoning parameters")
@@ -1559,9 +1586,7 @@ class TestOpenAIIntegration:
         )
 
         # Collect streaming content
-        content, chunk_count = collect_text_completion_streaming_content(
-            stream, timeout=300
-        )
+        content, chunk_count = collect_text_completion_streaming_content(stream, timeout=300)
 
         # Validate streaming results
         assert chunk_count > 0, "Should receive at least one chunk"
@@ -1580,16 +1605,978 @@ class TestOpenAIIntegration:
             "byte",
             "network",
         ]
-        
+
         # Should mention technology or be poetic (haiku structure)
         has_tech = any(keyword in content_lower for keyword in tech_keywords)
         has_lines = "\n" in content  # Haikus have line breaks
-        
-        assert has_tech or has_lines or len(content) > 10, (
-            f"Completion should be haiku-like or about technology. Got: {content}"
-        )
+
+        assert (
+            has_tech or has_lines or len(content) > 10
+        ), f"Completion should be haiku-like or about technology. Got: {content}"
 
         # Should have multiple chunks for streaming
         assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
 
         print(f"Success: Streamed haiku ({chunk_count} chunks): {content}")
+
+    # =========================================================================
+    # FILES API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
+    )
+    def test_41_file_upload(self, openai_client, test_config, provider, model):
+        """Test Case 41: Upload a file for batch processing"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        # Get S3 settings from config (bedrock uses S3 for file storage)
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Create JSONL content for batch with provider-specific model
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+
+        # Upload the file (provider passed via extra_body)
+        response = client.files.create(
+            file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        # Validate response
+        assert_valid_file_response(response, expected_purpose="batch")
+
+        print(f"Success: Uploaded file with ID: {response.id} for provider {provider}")
+
+        try:
+            # List files and verify uploaded file exists (provider passed via extra_query)
+            list_response = client.files.list(
+                extra_query={
+                    "provider": provider,
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                }
+            )
+            assert_valid_file_list_response(list_response, min_count=1)
+
+            # Check that our uploaded file is in the list
+            file_ids = [f.id for f in list_response.data]
+            assert response.id in file_ids, f"Uploaded file {response.id} should be in file list"
+
+            print(f"Success: Verified file {response.id} exists in file list")
+
+        finally:
+            # Clean up - delete the file (provider and storage_config passed via extra_query)
+            try:
+                client.files.delete(
+                    response.id,
+                    extra_query={"provider": provider},
+                )
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
+    def test_42_file_list(self, openai_client, test_config, provider, model):
+        """Test Case 42: List uploaded files"""
+
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        # First upload a file to ensure we have at least one
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+
+        client = get_provider_openai_client(provider)
+
+        uploaded_file = client.files.create(
+            file=("test_list.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        try:
+            # List files (provider passed via extra_query)
+            response = client.files.list(
+                extra_query={
+                    "provider": provider,
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                }
+            )
+
+            # Validate response
+            assert_valid_file_list_response(response, min_count=1)
+
+            # Check that our uploaded file is in the list
+            file_ids = [f.id for f in response.data]
+            assert (
+                uploaded_file.id in file_ids
+            ), f"Uploaded file {uploaded_file.id} should be in file list"
+
+            print(f"Success: Listed {len(response.data)} files")
+
+        finally:
+            # Clean up (provider passed via extra_query)
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_retrieve")
+    )
+    def test_43_file_retrieve(self, openai_client, test_config, provider, model):
+        """Test Case 43: Retrieve file metadata by ID"""
+
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_retrieve scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        # First upload a file
+        jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
+
+        client = get_provider_openai_client(provider)
+
+        uploaded_file = client.files.create(
+            file=("test_retrieve.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        try:
+            # Retrieve file metadata (provider passed via extra_query)
+            response = client.files.retrieve(uploaded_file.id, extra_query={"provider": provider})
+            # Validate response
+            assert_valid_file_response(response, expected_purpose="batch")
+            assert (
+                response.id == uploaded_file.id
+            ), f"Retrieved file ID should match: expected {uploaded_file.id}, got {response.id}"
+            assert (
+                response.filename == "test_retrieve.jsonl"
+            ), f"Filename should match: expected 'test_retrieve.jsonl', got {response.filename}"
+
+            print(f"Success: Retrieved file metadata for {response.id}")
+
+        finally:
+            # Clean up (provider passed via extra_query)
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_delete")
+    )
+    def test_44_file_delete(self, openai_client, test_config, provider, model):
+        """Test Case 44: Delete an uploaded file"""
+        # First upload a file
+        jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=1)
+
+        client = get_provider_openai_client(provider)
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        uploaded_file = client.files.create(
+            file=("test_delete.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        # Delete the file (provider passed via extra_query)
+        response = client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+
+        # Validate response
+        assert_valid_file_delete_response(response, expected_id=uploaded_file.id)
+
+        print(f"Success: Deleted file {response.id}")
+
+        # Verify file is no longer retrievable (provider passed via extra_query)
+        with pytest.raises(Exception):
+            client.files.retrieve(uploaded_file.id, extra_query={"provider": provider})
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_content")
+    )
+    def test_45_file_content(self, openai_client, test_config, provider, model):
+        """Test Case 45: Download file content"""
+
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_download scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Create and upload a file with known content
+        jsonl_content = create_batch_jsonl_content(model=model, provider=provider, num_requests=2)
+
+        uploaded_file = client.files.create(
+            file=("test_content.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        print(f"Success: Uploaded file with ID: {uploaded_file.id} for provider {provider}")
+
+        try:
+            # Download file content (provider passed via extra_query)
+            response = client.files.content(uploaded_file.id, extra_query={"provider": provider})
+
+            # Validate content
+            assert response is not None, "File content should not be None"
+
+            # The response might be bytes or have a read method
+            if hasattr(response, "read"):
+                content = response.read()
+            elif hasattr(response, "content"):
+                content = response.content
+            else:
+                content = response
+
+            # Decode if bytes
+            if isinstance(content, bytes):
+                content = content.decode("utf-8")
+
+            # Verify content contains expected JSONL structure
+            assert "custom_id" in content, "Content should contain 'custom_id'"
+            assert "request-1" in content, "Content should contain 'request-1'"
+
+            print(f"Success: Downloaded file content ({len(content)} bytes)")
+
+        finally:
+            # Clean up (provider passed via extra_query)
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    # =========================================================================
+    # BATCH API TEST CASES
+    # =========================================================================
+
+    # -------------------------------------------------------------------------
+    # Batch Create Tests - Provider-Specific Input Methods
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
+    )
+    def test_46_batch_create_with_file(self, openai_client, test_config, provider, model):
+        """Test Case 46: Create a batch job using Files API or inline requests
+
+        This test uploads a JSONL file first, then creates a batch using the file ID.
+        For Anthropic, uses inline requests via extra_body instead of file upload.
+        Uses OpenAI SDK with extra_body to pass provider.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Anthropic uses inline requests instead of file-based batching
+        if provider == "anthropic":
+            batch = None
+            try:
+                # Create inline requests for Anthropic
+                requests = create_batch_inline_requests(
+                    model=model, num_requests=2, provider=provider, sdk="anthropic"
+                )
+
+                # Create batch job with inline requests via extra_body
+                batch = client.batches.create(
+                    input_file_id="",
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "requests": requests,
+                    },
+                )
+
+                # Validate response
+                assert_valid_batch_response(batch)
+                print(
+                    f"Success: Created inline batch with ID: {batch.id}, status: {batch.status} for provider {provider}"
+                )
+
+            finally:
+                # Clean up - cancel batch if created
+                if batch:
+                    try:
+                        client.batches.cancel(
+                            batch.id,
+                            extra_body={"provider": provider},
+                        )
+                    except Exception as e:
+                        print(f"Info: Could not cancel batch (may already be processed): {e}")
+            return
+
+        # File-based batching for other providers (Bedrock, OpenAI)
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+        role_arn = integration_settings.get("batch_role_arn")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        if not role_arn:
+            pytest.skip("Batch role ARN not configured for Bedrock batch tests")
+
+        # Build output S3 URI for Bedrock batch
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+
+        # First upload a file for batch processing
+        jsonl_content = create_batch_jsonl_content(
+            model=model,
+            num_requests=2,
+            provider=provider,
+        )
+
+        uploaded_file = client.files.create(
+            file=("batch_create_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        batch = None
+        try:
+            # Create batch job using file ID (provider passed via extra_body)
+            # For Bedrock: role_arn, output_s3_uri, and model are required
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body={
+                    "provider": provider,
+                    "model": model,
+                    "role_arn": role_arn,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+            # Validate response
+            assert_valid_batch_response(batch)
+            assert (
+                batch.input_file_id == uploaded_file.id
+            ), f"Input file ID should match: expected {uploaded_file.id}, got {batch.input_file_id}"
+
+            print(
+                f"Success: Created file-based batch with ID: {batch.id}, status: {batch.status} for provider {provider}"
+            )
+
+        finally:
+            # Clean up - cancel batch if created, then delete file
+            if batch:
+                try:
+                    client.batches.cancel(
+                        batch.id,
+                        extra_body={
+                            "provider": provider,
+                            "model": model,
+                            "role_arn": role_arn,
+                            "output_s3_uri": output_s3_uri,
+                        },
+                    )
+                except Exception as e:
+                    print(f"Info: Could not cancel batch (may already be processed): {e}")
+
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
+    def test_47_batch_list(self, openai_client, test_config, provider, model):
+        """Test Case 47: List batch jobs
+
+        Tests batch listing across all providers using OpenAI SDK.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_list scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        role_arn = integration_settings.get("batch_role_arn")
+
+        if not role_arn:
+            pytest.skip("Batch role ARN not configured for Bedrock batch tests")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Use OpenAI SDK for batch list (provider passed via extra_query)
+        response = client.batches.list(
+            limit=10, extra_query={"provider": provider, "model": model, "role_arn": role_arn}
+        )
+        assert_valid_batch_list_response(response, min_count=0)
+        batch_count = len(response.data)
+
+        print(f"Success: Listed {batch_count} batches for provider {provider}")
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_retrieve")
+    )
+    def test_48_batch_retrieve(self, openai_client, test_config, provider, model):
+        """Test Case 48: Retrieve batch status by ID
+
+        Creates a batch using file-based method or inline requests, then retrieves it using OpenAI SDK.
+        For Anthropic, uses inline requests via extra_body instead of file upload.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_retrieve scenario")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Anthropic uses inline requests instead of file-based batching
+        if provider == "anthropic":
+            batch_id = None
+            try:
+                # Create batch with inline requests
+                requests = create_batch_inline_requests(
+                    model=model, num_requests=1, provider=provider, sdk="anthropic"
+                )
+                batch = client.batches.create(
+                    input_file_id="",
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "requests": requests,
+                    },
+                )
+                batch_id = batch.id
+
+                # Retrieve using SDK (provider passed via extra_query)
+                retrieved_batch = client.batches.retrieve(
+                    batch_id, extra_query={"provider": provider}
+                )
+                assert_valid_batch_response(retrieved_batch)
+                assert retrieved_batch.id == batch_id
+                print(
+                    f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status} for provider {provider}"
+                )
+
+            finally:
+                # Clean up
+                if batch_id:
+                    try:
+                        client.batches.cancel(batch_id, extra_body={"provider": provider})
+                    except Exception:
+                        pass
+            return
+
+        # File-based batching for other providers (Bedrock, OpenAI)
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+        role_arn = integration_settings.get("batch_role_arn")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        if provider == "bedrock" and not role_arn:
+            pytest.skip("Batch role ARN not configured for Bedrock batch tests")
+
+        # Build output S3 URI for Bedrock batch
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+
+        batch_id = None
+        uploaded_file = None
+
+        try:
+            # Create file for batch processing
+            jsonl_content = create_batch_jsonl_content(
+                model=model, num_requests=1, provider=provider
+            )
+            print(f"Creating file for batch processing: {jsonl_content}")
+            uploaded_file = client.files.create(
+                file=("batch_retrieve_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={
+                    "provider": provider,
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                },
+            )
+
+            # Create batch using file ID (provider passed via extra_body)
+            # For Bedrock: role_arn, output_s3_uri, and model are required
+            extra_body = {"provider": provider}
+            if provider == "bedrock":
+                extra_body["model"] = model
+                extra_body["role_arn"] = role_arn
+                extra_body["output_s3_uri"] = output_s3_uri
+
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body=extra_body,
+            )
+            batch_id = batch.id
+
+            # Retrieve using SDK (provider passed via extra_query)
+            retrieved_batch = client.batches.retrieve(batch_id, extra_query={"provider": provider})
+            assert_valid_batch_response(retrieved_batch)
+            assert retrieved_batch.id == batch_id
+            print(
+                f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status} for provider {provider}"
+            )
+
+        finally:
+            # Clean up
+            if batch_id:
+                try:
+                    client.batches.cancel(batch_id, extra_body={"provider": provider})
+                except Exception:
+                    pass
+            if uploaded_file:
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                except Exception:
+                    pass
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_cancel")
+    )
+    def test_49_batch_cancel(self, openai_client, test_config, provider, model):
+        """Test Case 49: Cancel a batch job
+
+        Creates a batch using file-based method or inline requests, then cancels it using OpenAI SDK.
+        For Anthropic, uses inline requests via extra_body instead of file upload.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_cancel scenario")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Anthropic uses inline requests instead of file-based batching
+        if provider == "anthropic":
+            batch_id = None
+            try:
+                # Create batch with inline requests
+                requests = create_batch_inline_requests(
+                    model=model, num_requests=1, provider=provider, sdk="anthropic"
+                )
+                batch = client.batches.create(
+                    input_file_id="",
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "requests": requests,
+                    },
+                )
+                batch_id = batch.id
+
+                # Cancel using SDK (provider passed via extra_body for POST)
+                cancelled_batch = client.batches.cancel(batch_id, extra_body={"provider": provider})
+                assert cancelled_batch is not None
+                assert cancelled_batch.id == batch_id
+                assert cancelled_batch.status in ["cancelling", "cancelled"]
+                print(
+                    f"Success: Cancelled batch {batch_id}, status: {cancelled_batch.status} for provider {provider}"
+                )
+
+            except Exception:
+                # Cleanup even on failure
+                pass
+            return
+
+        # File-based batching for other providers (Bedrock, OpenAI)
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+        role_arn = integration_settings.get("batch_role_arn")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        if provider == "bedrock" and not role_arn:
+            pytest.skip("Batch role ARN not configured for Bedrock batch tests")
+
+        # Build output S3 URI for Bedrock batch
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+
+        batch_id = None
+        uploaded_file = None
+
+        try:
+            # Create file for batch processing (provider passed via extra_body)
+            jsonl_content = create_batch_jsonl_content(
+                model=model, num_requests=1, provider=provider
+            )
+            file_extra_body = {"provider": provider}
+            if provider == "bedrock":
+                file_extra_body["storage_config"] = {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                }
+            uploaded_file = client.files.create(
+                file=("batch_cancel_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body=file_extra_body,
+            )
+
+            # Create batch using file ID (provider passed via extra_body)
+            # For Bedrock: role_arn, output_s3_uri, and model are required
+            extra_body = {"provider": provider}
+            if provider == "bedrock":
+                extra_body["model"] = model
+                extra_body["role_arn"] = role_arn
+                extra_body["output_s3_uri"] = output_s3_uri
+
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body=extra_body,
+            )
+            batch_id = batch.id
+
+            # Cancel using SDK (provider passed via extra_body for POST)
+            cancelled_batch = client.batches.cancel(batch_id, extra_body={"provider": provider})
+            assert cancelled_batch is not None
+            assert cancelled_batch.id == batch_id
+            assert cancelled_batch.status in ["cancelling", "cancelled"]
+            print(
+                f"Success: Cancelled batch {batch_id}, status: {cancelled_batch.status} for provider {provider}"
+            )
+
+        finally:
+            # Clean up (provider passed via extra_query)
+            if uploaded_file:
+                try:
+                    client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                except Exception:
+                    pass
+
+    # -------------------------------------------------------------------------
+    # Batch End-to-End Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("batch_file_upload")
+    )
+    def test_50_batch_e2e_file_api(self, openai_client, test_config, provider, model):
+        """Test Case 50: End-to-end batch workflow using Files API or inline requests
+
+        Complete workflow: upload file -> create batch -> poll status -> verify in list.
+        For Anthropic, uses inline requests via extra_body instead of file upload.
+        Uses OpenAI SDK with extra_body/extra_query to pass provider.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+        role_arn = integration_settings.get("batch_role_arn")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        if not role_arn:
+            pytest.skip("Batch role ARN not configured for Bedrock batch tests")
+
+        # Get provider-specific client
+        client = get_provider_openai_client(provider)
+
+        # Anthropic uses inline requests instead of file-based batching
+        if provider == "anthropic":
+            batch = None
+            try:
+                # Step 1: Create inline requests for Anthropic
+                print(f"Step 1: Creating inline requests for provider {provider}...")
+                requests = create_batch_inline_requests(
+                    model=model, num_requests=2, provider=provider, sdk="anthropic"
+                )
+                print(f"  Created {len(requests)} inline requests")
+
+                # Step 2: Create batch job with inline requests via extra_body
+                print("Step 2: Creating batch job with inline requests...")
+                batch = client.batches.create(
+                    input_file_id="dummy-file-id",
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    extra_body={
+                        "provider": provider,
+                        "requests": requests,
+                    },
+                )
+                assert_valid_batch_response(batch)
+                print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+                # Step 3: Poll batch status (with timeout)
+                print("Step 3: Polling batch status...")
+                max_polls = 5
+                poll_interval = 2  # seconds
+
+                for i in range(max_polls):
+                    retrieved_batch = client.batches.retrieve(
+                        batch.id, extra_query={"provider": provider}
+                    )
+                    print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+
+                    if retrieved_batch.status in [
+                        "completed",
+                        "failed",
+                        "expired",
+                        "cancelled",
+                        "ended",
+                    ]:
+                        print(f"  Batch reached terminal state: {retrieved_batch.status}")
+                        break
+
+                    if (
+                        hasattr(retrieved_batch, "request_counts")
+                        and retrieved_batch.request_counts
+                    ):
+                        counts = retrieved_batch.request_counts
+                        print(
+                            f"    Request counts - total: {counts.total}, completed: {counts.completed}, failed: {counts.failed}"
+                        )
+
+                    time.sleep(poll_interval)
+
+                # Step 4: Verify batch is in the list
+                print("Step 4: Verifying batch in list...")
+                batch_list = client.batches.list(limit=20, extra_query={"provider": provider})
+                batch_ids = [b.id for b in batch_list.data]
+                assert batch.id in batch_ids, f"Batch {batch.id} should be in the batch list"
+                print(f"  Verified batch {batch.id} is in list")
+
+                print(
+                    f"Success: Inline batch E2E completed for batch {batch.id} (provider: {provider})"
+                )
+
+            finally:
+                if batch:
+                    try:
+                        client.batches.cancel(batch.id, extra_body={"provider": provider})
+                        print(f"Cleanup: Cancelled batch {batch.id}")
+                    except Exception as e:
+                        print(f"Cleanup info: Could not cancel batch: {e}")
+            return
+
+        # File-based batching for other providers (OpenAI)
+        # Step 1: Create and upload batch input file (provider passed via extra_body)
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+
+        print(f"Step 1: Uploading batch input file for provider {provider}...")
+        uploaded_file = client.files.create(
+            file=("batch_e2e_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+        assert_valid_file_response(uploaded_file, expected_purpose="batch")
+        print(f"  Uploaded file: {uploaded_file.id}")
+
+        # Build output S3 URI for Bedrock batch
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+
+        batch = None
+        try:
+            # Step 2: Create batch job using file ID (provider passed via extra_body)
+            print("Step 2: Creating batch job with file ID...")
+            batch = client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={
+                    "test": "e2e_file",
+                    "source": "bifrost-integration-tests",                    
+                },
+                extra_body={
+                    "provider": provider,
+                    "model": model,
+                    "role_arn": role_arn,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+            assert_valid_batch_response(batch)
+            print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+            # Step 3: Poll batch status (with timeout) (provider passed via extra_query)
+            print("Step 3: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+            total_requests = 0
+            for i in range(max_polls):
+                retrieved_batch = client.batches.retrieve(
+                    batch.id, extra_query={"provider": provider}
+                )
+                print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+
+                if retrieved_batch.status in ["completed", "failed", "expired", "cancelled"]:
+                    print(f"  Batch reached terminal state: {retrieved_batch.status}")
+                    break
+
+                if hasattr(retrieved_batch, "request_counts") and retrieved_batch.request_counts:
+                    counts = retrieved_batch.request_counts
+                    print(
+                        f"    Request counts - total: {counts.total}, completed: {counts.completed}, failed: {counts.failed}"
+                    )
+                    total_requests = counts.total
+                time.sleep(poll_interval)
+
+            if provider != "bedrock":
+                # For bedrock, unless job status is completed or partially completed, counts are not available
+                assert total_requests == 2, f"Total requests should be 2, got {total_requests}"
+
+            # Step 4: Verify batch is in the list (provider passed via extra_query)
+            print("Step 4: Verifying batch in list...")
+            batch_list = client.batches.list(limit=20, extra_query={"provider": provider})
+            batch_ids = [b.id for b in batch_list.data]
+            assert batch.id in batch_ids, f"Batch {batch.id} should be in the batch list"
+            print(f"  Verified batch {batch.id} is in list")
+
+            print(f"Success: File API E2E completed for batch {batch.id} (provider: {provider})")
+
+        finally:
+            if batch:
+                try:
+                    client.batches.cancel(batch.id, extra_body={"provider": provider})
+                    print(f"Cleanup: Cancelled batch {batch.id}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not cancel batch: {e}")
+
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+                print(f"Cleanup: Deleted file {uploaded_file.id}")
+            except Exception as e:
+                print(f"Cleanup warning: Failed to delete file: {e}")

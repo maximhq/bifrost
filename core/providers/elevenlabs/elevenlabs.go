@@ -96,7 +96,10 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx context.Context, key sch
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseElevenlabsError(resp)
+		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			RequestType: schemas.ListModelsRequest,
+		})
 	}
 
 	var elevenlabsResponse ElevenlabsListModelsResponse
@@ -234,7 +237,11 @@ func (provider *ElevenlabsProvider) Speech(ctx context.Context, key schemas.Key,
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(resp)
+		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.SpeechRequest,
+		})
 	}
 
 	// Get the response body
@@ -358,7 +365,11 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx context.Context, postHookRu
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseElevenlabsError(resp)
+		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.SpeechStreamRequest,
+		})
 	}
 
 	// Create response channel
@@ -499,7 +510,11 @@ func (provider *ElevenlabsProvider) Transcription(ctx context.Context, key schem
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, parseElevenlabsError(resp)
+		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.TranscriptionRequest,
+		})
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
@@ -695,4 +710,54 @@ func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx context.Contex
 
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// BatchCreate is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchCreate(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
+}
+
+// BatchList is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
+}
+
+// BatchRetrieve is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchRetrieve(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
+}
+
+// BatchCancel is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchCancel(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchResults is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) BatchResults(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
+}
+
+// FileUpload is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) FileUpload(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+}
+
+// FileList is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) FileList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
+}
+
+// FileRetrieve is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) FileRetrieve(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
+}
+
+// FileDelete is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) FileDelete(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
+}
+
+// FileContent is not supported by Elevenlabs provider.
+func (provider *ElevenlabsProvider) FileContent(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }

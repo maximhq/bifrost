@@ -131,7 +131,17 @@ export type RequestType =
 	| "speech"
 	| "speech_stream"
 	| "transcription"
-	| "transcription_stream";
+	| "transcription_stream"
+	| "batch_create"
+	| "batch_list"
+	| "batch_retrieve"
+	| "batch_cancel"
+	| "batch_results"
+	| "file_upload"
+	| "file_list"
+	| "file_retrieve"
+	| "file_delete"
+	| "file_content";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {

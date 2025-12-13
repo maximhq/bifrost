@@ -7,13 +7,38 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func parseVertexError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
+func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
+	var providerName schemas.ModelProvider
+	if meta != nil {
+		providerName = meta.Provider
+	}
+
 	var openAIErr schemas.BifrostError
 	var vertexErr []VertexError
 
 	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		if meta != nil {
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				Provider:       meta.Provider,
+				ModelRequested: meta.Model,
+				RequestType:    meta.RequestType,
+			}
+		}
+		return bifrostErr
+	}
+
+	createError := func(message string) *schemas.BifrostError {
+		bifrostErr := providerUtils.NewProviderAPIError(message, nil, resp.StatusCode(), providerName, nil, nil)
+		if meta != nil {
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				Provider:       meta.Provider,
+				ModelRequested: meta.Model,
+				RequestType:    meta.RequestType,
+			}
+		}
+		return bifrostErr
 	}
 
 	if err := sonic.Unmarshal(decodedBody, &openAIErr); err != nil || openAIErr.Error == nil {
@@ -25,20 +50,28 @@ func parseVertexError(providerName schemas.ModelProvider, resp *fasthttp.Respons
 				// Try VertexValidationError format (validation errors from Mistral endpoint)
 				var validationErr VertexValidationError
 				if err := sonic.Unmarshal(decodedBody, &validationErr); err != nil {
-					return providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+					if meta != nil {
+						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+							Provider:       meta.Provider,
+							ModelRequested: meta.Model,
+							RequestType:    meta.RequestType,
+						}
+					}
+					return bifrostErr
 				}
 				if len(validationErr.Detail) > 0 {
-					return providerUtils.NewProviderAPIError(validationErr.Detail[0].Msg, nil, resp.StatusCode(), providerName, nil, nil)
+					return createError(validationErr.Detail[0].Msg)
 				}
-				return providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), providerName, nil, nil)
+				return createError("Unknown error")
 			}
-			return providerUtils.NewProviderAPIError(vertexErr.Error.Message, nil, resp.StatusCode(), providerName, nil, nil)
+			return createError(vertexErr.Error.Message)
 		}
 		if len(vertexErr) > 0 {
-			return providerUtils.NewProviderAPIError(vertexErr[0].Error.Message, nil, resp.StatusCode(), providerName, nil, nil)
+			return createError(vertexErr[0].Error.Message)
 		}
-		return providerUtils.NewProviderAPIError("Unknown error", nil, resp.StatusCode(), providerName, nil, nil)
+		return createError("Unknown error")
 	}
 	// OpenAI error format succeeded with valid Error field
-	return providerUtils.NewProviderAPIError(openAIErr.Error.Message, nil, resp.StatusCode(), providerName, nil, nil)
+	return createError(openAIErr.Error.Message)
 }

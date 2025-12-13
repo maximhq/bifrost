@@ -22,6 +22,7 @@ class Config:
     max_retries: int = 3
     debug: bool = False
 
+
 # Image Test Data
 IMAGE_URL = "https://pub-cdead89c2f004d8f963fd34010c479d0.r2.dev/Gfp-wisconsin-madison-the-nature-boardwalk.jpg"
 IMAGE_URL_SECONDARY = "https://goo.gle/instrument-img"
@@ -349,9 +350,7 @@ INVALID_ROLE_MESSAGES = [
 GENAI_INVALID_ROLE_CONTENT = [
     {
         "role": "tester",  # Invalid role that should be caught by Bifrost
-        "parts": [
-            {"text": "Hello! This should fail due to invalid role in GenAI format."}
-        ],
+        "parts": [{"text": "Hello! This should fail due to invalid role in GenAI format."}],
     }
 ]
 
@@ -409,18 +408,14 @@ def safe_eval_arithmetic(expression: str) -> float:
             if type(node.op) in ALLOWED_OPS:
                 return ALLOWED_OPS[type(node.op)](eval_node(node.operand))
             else:
-                raise ValueError(
-                    f"Unsupported unary operation: {type(node.op).__name__}"
-                )
+                raise ValueError(f"Unsupported unary operation: {type(node.op).__name__}")
         elif isinstance(node, ast.BinOp):
             if type(node.op) in ALLOWED_OPS:
                 left = eval_node(node.left)
                 right = eval_node(node.right)
                 return ALLOWED_OPS[type(node.op)](left, right)
             else:
-                raise ValueError(
-                    f"Unsupported binary operation: {type(node.op).__name__}"
-                )
+                raise ValueError(f"Unsupported binary operation: {type(node.op).__name__}")
         else:
             raise ValueError(f"Unsupported expression type: {type(node).__name__}")
 
@@ -521,7 +516,9 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
     elif hasattr(response, "content") and isinstance(response.content, list):
         for content in response.content:
             if hasattr(content, "type") and content.type == "tool_use":
-                tool_calls.append({"id": content.id, "name": content.name, "arguments": content.input})
+                tool_calls.append(
+                    {"id": content.id, "name": content.name, "arguments": content.input}
+                )
 
     # Handle Bedrock format
     elif isinstance(response, dict) and "output" in response:
@@ -533,11 +530,13 @@ def extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
                     if isinstance(content, dict) and "toolUse" in content:
                         tool_use = content["toolUse"]
                         if isinstance(tool_use, dict):
-                            tool_calls.append({
-                                "id": tool_use.get("toolUseId"),
-                                "name": tool_use.get("name"),
-                                "arguments": tool_use.get("input")
-                            })
+                            tool_calls.append(
+                                {
+                                    "id": tool_use.get("toolUseId"),
+                                    "name": tool_use.get("name"),
+                                    "arguments": tool_use.get("input"),
+                                }
+                            )
 
     return tool_calls
 
@@ -555,9 +554,7 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
             content = response.content
         elif isinstance(response.content, list) and len(response.content) > 0:
             # Handle list content (like Anthropic)
-            text_content = [
-                c for c in response.content if hasattr(c, "type") and c.type == "text"
-            ]
+            text_content = [c for c in response.content if hasattr(c, "type") and c.type == "text"]
             if text_content:
                 content = text_content[0].text
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
@@ -569,10 +566,10 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
         # Handle Bedrock format
         output = response["output"]
         if "message" in output and "content" in output["message"]:
-             for item in output["message"]["content"]:
-                 if "text" in item:
-                     content = item["text"]
-                     break
+            for item in output["message"]["content"]:
+                if "text" in item:
+                    content = item["text"]
+                    break
 
     assert (
         len(content) >= min_length
@@ -608,9 +605,7 @@ def assert_valid_image_response(response: Any):
         if isinstance(response.content, str):
             content = response.content.lower()
         elif isinstance(response.content, list):
-            text_content = [
-                c for c in response.content if hasattr(c, "type") and c.type == "text"
-            ]
+            text_content = [c for c in response.content if hasattr(c, "type") and c.type == "text"]
             if text_content:
                 content = text_content[0].text.lower()
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
@@ -665,14 +660,10 @@ def assert_valid_image_response(response: Any):
     ]
     has_image_reference = any(keyword in content for keyword in image_keywords)
 
-    assert (
-        has_image_reference
-    ), f"Response should reference the image content. Got: {content}"
+    assert has_image_reference, f"Response should reference the image content. Got: {content}"
 
 
-def assert_valid_error_response(
-    response_or_exception: Any, expected_invalid_role: str = "tester"
-):
+def assert_valid_error_response(response_or_exception: Any, expected_invalid_role: str = "tester"):
     """
     Assert that an error response or exception properly indicates an invalid role error.
 
@@ -695,9 +686,7 @@ def assert_valid_error_response(
             if isinstance(error_data, dict):
                 if "error" in error_data:
                     if isinstance(error_data["error"], dict):
-                        error_message = error_data["error"].get(
-                            "message", str(error_data["error"])
-                        )
+                        error_message = error_data["error"].get("message", str(error_data["error"]))
                         error_type = error_data["error"].get("type", "")
                     else:
                         error_message = str(error_data["error"])
@@ -776,9 +765,7 @@ def assert_error_propagation(error_response: Any, integration: str):
 
             # Check nested error structure
             error_obj = error_data["error"]
-            assert (
-                "message" in error_obj
-            ), "OpenAI error.error should have 'message' field"
+            assert "message" in error_obj, "OpenAI error.error should have 'message' field"
             assert "type" in error_obj, "OpenAI error.error should have 'type' field"
             assert "code" in error_obj, "OpenAI error.error should have 'code' field"
 
@@ -788,13 +775,9 @@ def assert_error_propagation(error_response: Any, integration: str):
             error_data = error_response.response.json()
             assert "type" in error_data, "Anthropic error should have 'type' field"
             # Type field can be empty string if not set in original error
-            assert isinstance(
-                error_data["type"], str
-            ), "Anthropic error type should be a string"
+            assert isinstance(error_data["type"], str), "Anthropic error type should be a string"
             assert "error" in error_data, "Anthropic error should have 'error' field"
-            assert (
-                "type" in error_data["error"]
-            ), "Anthropic error.error should have 'type' field"
+            assert "type" in error_data["error"], "Anthropic error.error should have 'type' field"
             assert (
                 "message" in error_data["error"]
             ), "Anthropic error.error should have 'message' field"
@@ -813,15 +796,11 @@ def assert_error_propagation(error_response: Any, integration: str):
             assert isinstance(
                 error_obj["code"], int
             ), "Gemini error.error.code should be an integer"
-            assert (
-                "message" in error_obj
-            ), "Gemini error.error should have 'message' field"
+            assert "message" in error_obj, "Gemini error.error should have 'message' field"
             assert isinstance(
                 error_obj["message"], str
             ), "Gemini error.error.message should be a string"
-            assert (
-                "status" in error_obj
-            ), "Gemini error.error should have 'status' field"
+            assert "status" in error_obj, "Gemini error.error should have 'status' field"
             assert isinstance(
                 error_obj["status"], str
             ), "Gemini error.error.status should be a string"
@@ -829,9 +808,7 @@ def assert_error_propagation(error_response: Any, integration: str):
     return True
 
 
-def assert_valid_streaming_response(
-    chunk: Any, integration: str, is_final: bool = False
-):
+def assert_valid_streaming_response(chunk: Any, integration: str, is_final: bool = False):
     """
     Assert that a streaming response chunk is valid for the given integration.
 
@@ -845,20 +822,14 @@ def assert_valid_streaming_response(
     if integration.lower() == "openai":
         # OpenAI streaming format
         assert hasattr(chunk, "choices"), "OpenAI streaming chunk should have choices"
-        assert (
-            len(chunk.choices) > 0
-        ), "OpenAI streaming chunk should have at least one choice"
+        assert len(chunk.choices) > 0, "OpenAI streaming chunk should have at least one choice"
 
         choice = chunk.choices[0]
         assert hasattr(choice, "delta"), "OpenAI streaming choice should have delta"
 
         # Check for content or tool calls in delta
-        has_content = (
-            hasattr(choice.delta, "content") and choice.delta.content is not None
-        )
-        has_tool_calls = (
-            hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls is not None
-        )
+        has_content = hasattr(choice.delta, "content") and choice.delta.content is not None
+        has_tool_calls = hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls is not None
         has_role = hasattr(choice.delta, "role") and choice.delta.role is not None
 
         # Ignore completely empty deltas (like Cohere content-start with empty text)
@@ -872,28 +843,20 @@ def assert_valid_streaming_response(
             ), "OpenAI delta should have content, tool_calls, or role (except for final chunks)"
 
         if is_final:
-            assert hasattr(
-                choice, "finish_reason"
-            ), "Final chunk should have finish_reason"
-            assert (
-                choice.finish_reason is not None
-            ), "Final chunk finish_reason should not be None"
+            assert hasattr(choice, "finish_reason"), "Final chunk should have finish_reason"
+            assert choice.finish_reason is not None, "Final chunk finish_reason should not be None"
 
     elif integration.lower() == "anthropic":
         # Anthropic streaming format
         assert hasattr(chunk, "type"), "Anthropic streaming chunk should have type"
 
         if chunk.type == "content_block_delta":
-            assert hasattr(
-                chunk, "delta"
-            ), "Content block delta should have delta field"
+            assert hasattr(chunk, "delta"), "Content block delta should have delta field"
 
             # Validate based on delta type
             if hasattr(chunk.delta, "type"):
                 if chunk.delta.type == "text_delta":
-                    assert hasattr(
-                        chunk.delta, "text"
-                    ), "Text delta should have text field"
+                    assert hasattr(chunk.delta, "text"), "Text delta should have text field"
                 elif chunk.delta.type == "thinking_delta":
                     assert hasattr(
                         chunk.delta, "thinking"
@@ -907,9 +870,7 @@ def assert_valid_streaming_response(
 
     elif integration.lower() in ["google", "gemini", "genai"]:
         # Google streaming format
-        assert hasattr(
-            chunk, "candidates"
-        ), "Google streaming chunk should have candidates"
+        assert hasattr(chunk, "candidates"), "Google streaming chunk should have candidates"
         assert (
             len(chunk.candidates) > 0
         ), "Google streaming chunk should have at least one candidate"
@@ -918,14 +879,10 @@ def assert_valid_streaming_response(
         assert hasattr(candidate, "content"), "Google candidate should have content"
 
         if is_final:
-            assert hasattr(
-                candidate, "finish_reason"
-            ), "Final chunk should have finish_reason"
+            assert hasattr(candidate, "finish_reason"), "Final chunk should have finish_reason"
 
 
-def collect_streaming_content(
-    stream, integration: str, timeout: int = 30
-) -> tuple[str, int, bool]:
+def collect_streaming_content(stream, integration: str, timeout: int = 30) -> tuple[str, int, bool]:
     """
     Collect content from a streaming response and validate the stream.
 
@@ -993,19 +950,14 @@ def collect_streaming_content(
         elif integration.lower() in ["google", "gemini", "genai"]:
             if hasattr(chunk, "candidates") and len(chunk.candidates) > 0:
                 candidate = chunk.candidates[0]
-                if (
-                    hasattr(candidate.content, "parts")
-                    and len(candidate.content.parts) > 0
-                ):
+                if hasattr(candidate.content, "parts") and len(candidate.content.parts) > 0:
                     for part in candidate.content.parts:
                         if hasattr(part, "text") and part.text:
                             content_parts.append(part.text)
 
         # Safety check
         if chunk_count > 500:
-            raise ValueError(
-                "Received too many streaming chunks, something might be wrong"
-            )
+            raise ValueError("Received too many streaming chunks, something might be wrong")
 
     content = "".join(content_parts)
     return content, chunk_count, tool_calls_detected
@@ -1039,17 +991,17 @@ SPEECH_TEST_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
 def get_provider_voice(provider: str, voice_type: str = "primary") -> str:
     """
     Get an appropriate voice for the given provider.
-    
+
     Args:
         provider: The provider name (e.g., "openai", "google", "gemini")
         voice_type: The type of voice - "primary", "secondary", or "tertiary"
-    
+
     Returns:
         The voice name for the specified provider and type
     """
     # Normalize provider name
     provider_lower = provider.lower()
-    
+
     # OpenAI voices
     if provider_lower == "openai":
         return {
@@ -1057,7 +1009,7 @@ def get_provider_voice(provider: str, voice_type: str = "primary") -> str:
             "secondary": "nova",
             "tertiary": "echo",
         }.get(voice_type, "alloy")
-    
+
     # Google/Gemini voices (using capitalized names as per Google GenAI SDK)
     elif provider_lower in ["google", "gemini"]:
         return {
@@ -1065,7 +1017,7 @@ def get_provider_voice(provider: str, voice_type: str = "primary") -> str:
             "secondary": "Puck",
             "tertiary": "Aoede",
         }.get(voice_type, "Kore")
-    
+
     # Default to OpenAI voices for other providers
     else:
         return {
@@ -1078,16 +1030,16 @@ def get_provider_voice(provider: str, voice_type: str = "primary") -> str:
 def get_provider_voices(provider: str, count: int = 3) -> List[str]:
     """
     Get a list of voices for the given provider.
-    
+
     Args:
         provider: The provider name (e.g., "openai", "google", "gemini")
         count: Number of voices to return
-    
+
     Returns:
         List of voice names for the specified provider
     """
     provider_lower = provider.lower()
-    
+
     if provider_lower == "openai":
         voices = ["alloy", "nova", "echo", "fable", "onyx", "shimmer"]
     elif provider_lower in ["google", "gemini"]:
@@ -1095,7 +1047,7 @@ def get_provider_voices(provider: str, count: int = 3) -> List[str]:
     else:
         # Default to OpenAI voices
         voices = ["alloy", "nova", "echo", "fable", "onyx", "shimmer"]
-    
+
     return voices[:count]
 
 
@@ -1178,9 +1130,7 @@ def assert_valid_speech_response(response: Any, expected_audio_size_min: int = 1
                     break
 
     assert audio_data is not None, "Speech response should contain audio data"
-    assert isinstance(
-        audio_data, bytes
-    ), f"Audio data should be bytes, got {type(audio_data)}"
+    assert isinstance(audio_data, bytes), f"Audio data should be bytes, got {type(audio_data)}"
     assert (
         len(audio_data) >= expected_audio_size_min
     ), f"Audio data should be at least {expected_audio_size_min} bytes, got {len(audio_data)}"
@@ -1245,14 +1195,10 @@ def assert_valid_embedding_response(
 
     # Check if it's an OpenAI-style response object
     if hasattr(response, "data"):
-        assert (
-            len(response.data) > 0
-        ), "Embedding response should contain at least one embedding"
+        assert len(response.data) > 0, "Embedding response should contain at least one embedding"
 
         embedding = response.data[0].embedding
-        assert isinstance(
-            embedding, list
-        ), f"Embedding should be a list, got {type(embedding)}"
+        assert isinstance(embedding, list), f"Embedding should be a list, got {type(embedding)}"
         assert len(embedding) > 0, "Embedding should not be empty"
         assert all(
             isinstance(x, (int, float)) for x in embedding
@@ -1265,12 +1211,8 @@ def assert_valid_embedding_response(
 
         # Check if usage information is present
         if hasattr(response, "usage") and response.usage:
-            assert hasattr(
-                response.usage, "total_tokens"
-            ), "Usage should include total_tokens"
-            assert (
-                response.usage.total_tokens > 0
-            ), "Token usage should be greater than 0"
+            assert hasattr(response.usage, "total_tokens"), "Usage should include total_tokens"
+            assert response.usage.total_tokens > 0, "Token usage should be greater than 0"
 
     elif hasattr(response, "embeddings"):
         assert len(response.embeddings) > 0, "Embedding should not be empty"
@@ -1334,12 +1276,8 @@ def assert_valid_embeddings_batch_response(
 
         # Check usage information
         if hasattr(response, "usage") and response.usage:
-            assert hasattr(
-                response.usage, "total_tokens"
-            ), "Usage should include total_tokens"
-            assert (
-                response.usage.total_tokens > 0
-            ), "Token usage should be greater than 0"
+            assert hasattr(response.usage, "total_tokens"), "Usage should include total_tokens"
+            assert response.usage.total_tokens > 0, "Token usage should be greater than 0"
 
     # Check if it's a direct list of embeddings
     elif isinstance(response, list):
@@ -1362,14 +1300,10 @@ def assert_valid_embeddings_batch_response(
                 ), f"Embedding {i}: expected {expected_dimensions} dimensions, got {len(embedding)}"
 
     else:
-        raise AssertionError(
-            f"Invalid embeddings batch response format: {type(response)}"
-        )
+        raise AssertionError(f"Invalid embeddings batch response format: {type(response)}")
 
 
-def calculate_cosine_similarity(
-    embedding1: List[float], embedding2: List[float]
-) -> float:
+def calculate_cosine_similarity(embedding1: List[float], embedding2: List[float]) -> float:
     """Calculate cosine similarity between two embedding vectors"""
     import math
 
@@ -1467,7 +1401,7 @@ def assert_valid_streaming_transcription_response(chunk: Any, integration: str):
                 text_chunk, str
             ), f"Text chunk should be string, got {type(text_chunk)}"
             # Note: text chunks can be empty in streaming (e.g., just punctuation updates)
-    
+
     elif integration.lower() in ["google", "gemini"]:
         # For Google GenAI, transcription returns GenerateContentResponse objects
         # The text is available through response.text or response.candidates
@@ -1482,7 +1416,7 @@ def assert_valid_streaming_transcription_response(chunk: Any, integration: str):
                             if hasattr(part, "text") and part.text:
                                 text_chunk = part.text
                                 break
-        
+
         # Note: Google streaming chunks can be empty or contain only metadata
 
 
@@ -1527,9 +1461,7 @@ def collect_streaming_speech_content(
 
         # Safety check
         if chunk_count > 1000:
-            raise ValueError(
-                "Received too many speech streaming chunks, something might be wrong"
-            )
+            raise ValueError("Received too many speech streaming chunks, something might be wrong")
 
     # Combine all audio chunks
     complete_audio = b"".join(audio_chunks)
@@ -1561,9 +1493,7 @@ def collect_streaming_transcription_content(
 
         # Check timeout
         if time.time() - start_time > timeout:
-            raise TimeoutError(
-                f"Transcription streaming took longer than {timeout} seconds"
-            )
+            raise TimeoutError(f"Transcription streaming took longer than {timeout} seconds")
 
         # Validate chunk
         assert_valid_streaming_transcription_response(chunk, integration)
@@ -1576,7 +1506,7 @@ def collect_streaming_transcription_content(
                 text_chunks.append(chunk.content)
             elif isinstance(chunk, str):
                 text_chunks.append(chunk)
-        
+
         elif integration.lower() in ["google", "gemini"]:
             # For Google GenAI streaming
             if hasattr(chunk, "text") and chunk.text:
@@ -1607,6 +1537,7 @@ def get_api_key(integration: str) -> str:
         "openai": "OPENAI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
         "google": "GEMINI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
         "litellm": "LITELLM_API_KEY",
         "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
     }
@@ -1661,7 +1592,7 @@ def assert_valid_responses_response(response: Any, min_content_length: int = 1):
     # Check for message content in output or summary
     has_content = False
     total_content = ""
-    
+
     for message in response.output:
         # Check for regular content
         if hasattr(message, "content") and message.content:
@@ -1676,7 +1607,7 @@ def assert_valid_responses_response(response: Any, min_content_length: int = 1):
                         total_content += block.text
                         if len(block.text) >= min_content_length:
                             has_content = True
-        
+
         # Check for summary field within output messages (for reasoning models)
         if hasattr(message, "summary") and message.summary:
             if isinstance(message.summary, list):
@@ -1693,7 +1624,6 @@ def assert_valid_responses_response(response: Any, min_content_length: int = 1):
                 total_content += message.summary
                 if len(message.summary) >= min_content_length:
                     has_content = True
-    
 
     assert has_content, (
         f"Response should contain content of at least {min_content_length} characters. "
@@ -1777,9 +1707,7 @@ def collect_responses_streaming_content(
 
         # Safety check
         if chunk_count > 1000:
-            raise ValueError(
-                "Received too many streaming chunks, something might be wrong"
-            )
+            raise ValueError("Received too many streaming chunks, something might be wrong")
 
     # Combine all content parts
     complete_content = "".join(content_parts)
@@ -1823,8 +1751,7 @@ def assert_valid_text_completion_response(response: Any, min_content_length: int
     assert hasattr(first_choice, "text"), "Choice should have 'text' attribute"
     assert isinstance(first_choice.text, str), "Text should be a string"
     assert len(first_choice.text) >= min_content_length, (
-        f"Text should be at least {min_content_length} characters, "
-        f"got {len(first_choice.text)}"
+        f"Text should be at least {min_content_length} characters, " f"got {len(first_choice.text)}"
     )
 
     # Check for usage information if present
@@ -1833,9 +1760,7 @@ def assert_valid_text_completion_response(response: Any, min_content_length: int
         assert response.usage.total_tokens > 0, "Total tokens should be greater than 0"
 
 
-def collect_text_completion_streaming_content(
-    stream, timeout: int = 30
-) -> tuple[str, int]:
+def collect_text_completion_streaming_content(stream, timeout: int = 30) -> tuple[str, int]:
     """
     Collect content from a text completion streaming response.
 
@@ -1867,13 +1792,12 @@ def collect_text_completion_streaming_content(
 
         # Safety check
         if chunk_count > 1000:
-            raise ValueError(
-                "Received too many streaming chunks, something might be wrong"
-            )
+            raise ValueError("Received too many streaming chunks, something might be wrong")
 
     # Combine all content parts
     complete_content = "".join(content_parts)
     return complete_content, chunk_count
+
 
 def get_content_string(content: Any) -> str:
     """Get a string representation of content"""
@@ -1889,3 +1813,393 @@ def get_content_string(content: Any) -> str:
         return " ".join(filter(None, parts))
     else:
         return ""
+
+
+# =============================================================================
+# Files API Test Utilities
+# =============================================================================
+
+
+def create_batch_jsonl_content(
+    model: str = "gpt-4o-mini", num_requests: int = 2, provider: str | None = None
+) -> str:
+    """
+    Create JSONL content for batch API testing.
+
+    Args:
+        model: The model to use in batch requests
+        num_requests: Number of requests to include
+        provider: Provider name (e.g., 'openai', 'anthropic'). If provided,
+                  formats the model as 'provider/model'
+
+    Returns:
+        JSONL formatted string with batch requests
+    """
+    requests = []
+    prompts = [
+        "What is 2 + 2?",
+        "What is the capital of France?",
+        "Name a primary color.",
+        "What planet is closest to the Sun?",
+    ]
+
+    # Format model with provider prefix if specified
+    # formatted_model = f"{provider}/{model}" if provider else model
+
+    for i in range(num_requests):
+        request = {
+            "custom_id": f"request-{i+1}",
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": model,
+                "messages": [{"role": "user", "content": prompts[i % len(prompts)]}],
+                "max_tokens": 50,
+            },
+        }
+        requests.append(json.dumps(request))
+
+    return "\n".join(requests)
+
+
+def assert_valid_file_response(response, expected_purpose: str | None = None) -> None:
+    """
+    Assert that a file upload/retrieve response is valid.
+
+    Args:
+        response: The file response object
+        expected_purpose: Expected purpose field (optional)
+    """
+    assert response is not None, "File response should not be None"
+    assert hasattr(response, "id"), "File response should have 'id' attribute"
+    assert response.id is not None, "File ID should not be None"
+    assert len(response.id) > 0, "File ID should not be empty"
+
+    assert hasattr(response, "object"), "File response should have 'object' attribute"
+    assert response.object == "file", f"Object should be 'file', got {response.object}"
+
+    assert hasattr(response, "bytes"), "File response should have 'bytes' attribute"
+    assert response.bytes > 0, "File bytes should be greater than 0"
+
+    assert hasattr(response, "filename"), "File response should have 'filename' attribute"
+    assert response.filename is not None, "Filename should not be None"
+
+    assert hasattr(response, "purpose"), "File response should have 'purpose' attribute"
+    if expected_purpose:
+        assert (
+            response.purpose == expected_purpose
+        ), f"Purpose should be '{expected_purpose}', got {response.purpose}"
+
+
+def assert_valid_file_list_response(response, min_count: int = 0) -> None:
+    """
+    Assert that a file list response is valid.
+
+    Args:
+        response: The file list response object
+        min_count: Minimum expected number of files
+    """
+    assert response is not None, "File list response should not be None"
+    assert hasattr(response, "data"), "File list response should have 'data' attribute"
+    assert isinstance(response.data, list), "Data should be a list"
+    assert (
+        len(response.data) >= min_count
+    ), f"Should have at least {min_count} files, got {len(response.data)}"
+
+
+def assert_valid_file_delete_response(response, expected_id: str | None = None) -> None:
+    """
+    Assert that a file delete response is valid.
+
+    Args:
+        response: The file delete response object
+        expected_id: Expected file ID that was deleted
+    """
+    assert response is not None, "File delete response should not be None"
+    assert hasattr(response, "id"), "Delete response should have 'id' attribute"
+    assert hasattr(response, "deleted"), "Delete response should have 'deleted' attribute"
+    assert response.deleted is True, "Deleted should be True"
+
+    if expected_id:
+        assert (
+            response.id == expected_id
+        ), f"Deleted file ID should be '{expected_id}', got {response.id}"
+
+
+# =============================================================================
+# Batch API Test Utilities
+# =============================================================================
+
+BATCH_VALID_STATUSES = [
+    "validating",
+    "failed",
+    "in_progress",
+    "finalizing",
+    "completed",
+    "expired",
+    "cancelling",
+    "cancelled",
+]
+
+
+def assert_valid_batch_response(response, expected_status: str | None = None) -> None:
+    """
+    Assert that a batch create/retrieve response is valid.
+
+    Args:
+        response: The batch response object
+        expected_status: Expected status (optional)
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "id"), "Batch response should have 'id' attribute"
+    assert response.id is not None, "Batch ID should not be None"
+    assert len(response.id) > 0, "Batch ID should not be empty"
+
+    assert hasattr(response, "object"), "Batch response should have 'object' attribute"
+    assert response.object == "batch", f"Object should be 'batch', got {response.object}"
+
+    assert hasattr(response, "status"), "Batch response should have 'status' attribute"
+    assert (
+        response.status in BATCH_VALID_STATUSES
+    ), f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+
+    if expected_status:
+        assert (
+            response.status == expected_status
+        ), f"Status should be '{expected_status}', got {response.status}"
+
+    assert hasattr(response, "endpoint"), "Batch response should have 'endpoint' attribute"
+
+
+def assert_valid_batch_list_response(response, min_count: int = 0) -> None:
+    """
+    Assert that a batch list response is valid.
+
+    Args:
+        response: The batch list response object
+        min_count: Minimum expected number of batches
+    """
+    assert response is not None, "Batch list response should not be None"
+    assert hasattr(response, "data"), "Batch list response should have 'data' attribute"
+    assert isinstance(response.data, list), "Data should be a list"
+    assert (
+        len(response.data) >= min_count
+    ), f"Should have at least {min_count} batches, got {len(response.data)}"
+
+
+# =============================================================================
+# Batch API - Provider-Specific Utilities
+# =============================================================================
+
+# Batch inline request prompts
+BATCH_INLINE_PROMPTS = [
+    "What is 2 + 2?",
+    "What is the capital of France?",
+    "Name a primary color.",
+    "What planet is closest to the Sun?",
+]
+
+
+def create_batch_inline_requests(
+    model: str, num_requests: int = 2, provider: str | None = None, sdk: str | None = None
+) -> List[Dict[str, Any]]:
+    """
+    Create inline requests array for batch API (Anthropic/Gemini/OpenAI inline format).
+
+    Args:
+        model: The model to use in batch requests
+        num_requests: Number of requests to include
+        provider: Provider name (e.g., 'openai', 'anthropic', 'gemini', 'bedrock')
+
+    Returns:
+        List of inline request items
+    """
+    requests = []
+
+    # Format model with provider prefix if specified
+    formatted_model = f"{provider}/{model}" if provider else model
+
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+
+        # Build the request body/params based on provider
+        if sdk == "anthropic":
+            # Anthropic uses 'params' instead of 'body'
+            if provider == "openai":
+                request_item = {
+                    "custom_id": f"request-{i+1}",
+                    "params": {
+                        "url": "/v1/chat/completions",
+                        "model": model,  # Anthropic doesn't use provider prefix
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 100,
+                    },
+                }
+            else:
+                request_item = {
+                    "custom_id": f"request-{i+1}",
+                    "params": {
+                        "model": model,  # Anthropic doesn't use provider prefix
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 100,
+                    },
+                }
+        elif sdk == "gemini":
+            # Gemini batch uses inline content format
+            request_item = {
+                "custom_id": f"request-{i+1}",
+                "body": {
+                    "model": model,  # Gemini doesn't use provider prefix
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                },
+            }
+        elif sdk == "openai":
+            # OpenAI/Azure style - use body with full model path
+            request_item = {
+                "custom_id": f"request-{i+1}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": formatted_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                },
+            }
+        else:
+            raise ValueError(f"Invalid SDK: {sdk}")
+        requests.append(request_item)
+
+    return requests
+
+
+def get_bedrock_s3_config() -> Dict[str, Optional[str]]:
+    """
+    Get Bedrock S3 configuration from environment variables.
+
+    Returns:
+        Dictionary with S3 configuration:
+        - s3_bucket: S3 bucket name (from AWS_S3_BUCKET)
+        - role_arn: IAM role ARN (from AWS_BEDROCK_ROLE_ARN)
+        - output_s3_prefix: Output S3 prefix (from AWS_OUTPUT_S3_PREFIX or default)
+        - region: AWS region (from AWS_REGION or default us-west-2)
+    """
+    return {
+        "s3_bucket": os.environ.get("AWS_S3_BUCKET"),
+        "role_arn": os.environ.get("AWS_BEDROCK_ROLE_ARN"),
+        "output_s3_prefix": os.environ.get("AWS_OUTPUT_S3_PREFIX", "bifrost-batch-output/"),
+        "region": os.environ.get("AWS_REGION", "us-west-2"),
+    }
+
+
+def is_bedrock_s3_configured() -> bool:
+    """
+    Check if Bedrock S3 configuration is available.
+
+    Returns:
+        True if AWS_S3_BUCKET is set, False otherwise
+    """
+    config = get_bedrock_s3_config()
+    return config["s3_bucket"] is not None and len(config["s3_bucket"]) > 0
+
+
+def get_bedrock_batch_extra_params() -> Dict[str, Any]:
+    """
+    Get extra params required for Bedrock batch API.
+
+    Returns:
+        Dictionary with role_arn and output_s3_uri
+
+    Raises:
+        ValueError if required S3 config is not available
+    """
+    config = get_bedrock_s3_config()
+
+    if not config["s3_bucket"]:
+        raise ValueError("AWS_S3_BUCKET environment variable is required for Bedrock batch API")
+
+    output_s3_uri = f"s3://{config['s3_bucket']}/{config['output_s3_prefix']}"
+
+    extra_params = {
+        "output_s3_uri": output_s3_uri,
+    }
+
+    # Add role_arn if available
+    if config["role_arn"]:
+        extra_params["role_arn"] = config["role_arn"]
+
+    return extra_params
+
+
+def create_bedrock_batch_s3_uri(
+    bucket: str, prefix: str = "bifrost-batch-input/", filename: str | None = None
+) -> str:
+    """
+    Create an S3 URI for Bedrock batch input.
+
+    Args:
+        bucket: S3 bucket name
+        prefix: S3 key prefix
+        filename: Optional filename (auto-generated if not provided)
+
+    Returns:
+        S3 URI string (e.g., s3://bucket/prefix/filename.jsonl)
+    """
+    import time
+
+    if filename is None:
+        filename = f"batch-input-{int(time.time())}.jsonl"
+
+    return f"s3://{bucket}/{prefix}{filename}"
+
+
+def assert_valid_batch_inline_response(response, provider: str | None = None) -> None:
+    """
+    Assert that a batch response from inline requests is valid.
+    This handles provider-specific response formats.
+
+    Args:
+        response: The batch response object
+        provider: Provider name for provider-specific validation
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "id"), "Batch response should have 'id' attribute"
+    assert response.id is not None, "Batch ID should not be None"
+    assert len(response.id) > 0, "Batch ID should not be empty"
+
+    # Check status - different providers may return different valid statuses
+    if provider == "anthropic":
+        # Anthropic uses processing_status field with values: in_progress, canceling, ended
+        valid_statuses = ["in_progress", "canceling", "ended"]
+        if hasattr(response, "processing_status") and response.processing_status:
+            assert (
+                response.processing_status in valid_statuses
+            ), f"Processing status should be one of {valid_statuses}, got {response.processing_status}"
+        else:
+            assert hasattr(response, "status"), "Batch response should have 'status' attribute"
+            assert (
+                response.status in BATCH_VALID_STATUSES
+            ), f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+    elif provider == "gemini":
+        # Gemini synchronous batch returns completed immediately
+        assert hasattr(response, "status"), "Batch response should have 'status' attribute"
+        assert (
+            response.status in BATCH_VALID_STATUSES or response.status == "completed"
+        ), f"Status should be valid for Gemini, got {response.status}"
+    else:
+        # OpenAI/Azure/Bedrock
+        assert hasattr(response, "status"), "Batch response should have 'status' attribute"
+        assert (
+            response.status in BATCH_VALID_STATUSES
+        ), f"Status should be one of {BATCH_VALID_STATUSES}, got {response.status}"
+
+
+def skip_if_no_bedrock_s3():
+    """
+    Pytest skip decorator/marker for tests requiring Bedrock S3 configuration.
+    Use as: @skip_if_no_bedrock_s3() or call skip_if_no_bedrock_s3() at test start.
+    """
+    import pytest
+
+    if not is_bedrock_s3_configured():
+        pytest.skip("Bedrock S3 tests require AWS_S3_BUCKET environment variable")

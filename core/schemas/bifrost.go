@@ -95,6 +95,16 @@ const (
 	SpeechStreamRequest         RequestType = "speech_stream"
 	TranscriptionRequest        RequestType = "transcription"
 	TranscriptionStreamRequest  RequestType = "transcription_stream"
+	BatchCreateRequest          RequestType = "batch_create"
+	BatchListRequest            RequestType = "batch_list"
+	BatchRetrieveRequest        RequestType = "batch_retrieve"
+	BatchCancelRequest          RequestType = "batch_cancel"
+	BatchResultsRequest         RequestType = "batch_results"
+	FileUploadRequest           RequestType = "file_upload"
+	FileListRequest             RequestType = "file_list"
+	FileRetrieveRequest         RequestType = "file_retrieve"
+	FileDeleteRequest           RequestType = "file_delete"
+	FileContentRequest          RequestType = "file_content"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.

@@ -13,6 +13,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+var bifrostContextKeyProvider = schemas.BifrostContextKey("provider")
+
 var availableIntegrations = []string{
 	"openai",
 	"anthropic",

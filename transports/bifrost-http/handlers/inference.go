@@ -147,6 +147,35 @@ var transcriptionParamsKnownFields = map[string]bool{
 	"file_format":     true,
 }
 
+var batchCreateParamsKnownFields = map[string]bool{
+	"model":             true,
+	"input_file_id":     true,
+	"requests":          true,
+	"endpoint":          true,
+	"completion_window": true,
+	"metadata":          true,
+}
+
+var batchListParamsKnownFields = map[string]bool{
+	"provider": true,
+	"limit":    true,
+	"after":    true,
+	"before":   true,
+}
+
+var fileUploadParamsKnownFields = map[string]bool{
+	"purpose": true,
+	"file":    true,
+}
+
+var fileListParamsKnownFields = map[string]bool{
+	"provider": true,
+	"purpose":  true,
+	"limit":    true,
+	"after":    true,
+	"order":    true,
+}
+
 type BifrostParams struct {
 	Model        string   `json:"model"`                   // Model to use in "provider/model" format
 	Fallbacks    []string `json:"fallbacks"`               // Fallback providers and models in "provider/model" format
@@ -279,6 +308,24 @@ type TranscriptionRequest struct {
 	*schemas.TranscriptionParameters
 }
 
+// BatchCreateRequest is a bifrost batch create request
+type BatchCreateRequest struct {
+	Model            string                     `json:"model"`                       // Model in "provider/model" format
+	InputFileID      string                     `json:"input_file_id,omitempty"`     // OpenAI-style file ID
+	Requests         []schemas.BatchRequestItem `json:"requests,omitempty"`          // Anthropic-style inline requests
+	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
+	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
+	Metadata         map[string]string          `json:"metadata,omitempty"`
+}
+
+// BatchListRequest is a bifrost batch list request
+type BatchListRequest struct {
+	Provider string  `json:"provider"`         // Provider name
+	Limit    int     `json:"limit,omitempty"`  // Maximum number of batches to return
+	After    *string `json:"after,omitempty"`  // Cursor for pagination
+	Before   *string `json:"before,omitempty"` // Cursor for pagination
+}
+
 // Helper functions
 
 // parseFallbacks extracts fallbacks from string array and converts to Fallback structs
@@ -297,7 +344,7 @@ func parseFallbacks(fallbackStrings []string) ([]schemas.Fallback, error) {
 }
 
 // extractExtraParams processes unknown fields from JSON data into ExtraParams
-func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]interface{}, error) {
+func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]any, error) {
 	// Parse JSON to extract unknown fields
 	var rawData map[string]json.RawMessage
 	if err := sonic.Unmarshal(data, &rawData); err != nil {
@@ -305,10 +352,10 @@ func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]in
 	}
 
 	// Extract unknown fields
-	extraParams := make(map[string]interface{})
+	extraParams := make(map[string]any)
 	for key, value := range rawData {
 		if !knownFields[key] {
-			var v interface{}
+			var v any
 			if err := sonic.Unmarshal(value, &v); err != nil {
 				continue // Skip fields that can't be unmarshaled
 			}
@@ -346,6 +393,20 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
+
+	// Batch API endpoints
+	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, middlewares...))
+	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, middlewares...))
+	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, middlewares...))
+	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, middlewares...))
+	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, middlewares...))
+
+	// File API endpoints
+	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, middlewares...))
+	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, middlewares...))
+	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, middlewares...))
+	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, middlewares...))
+	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, middlewares...))
 }
 
 // listModels handles GET /v1/models - Process list models requests
@@ -1178,4 +1239,491 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 	}
 
 	return nil
+}
+
+// batchCreate handles POST /v1/batches - Create a new batch job
+func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
+	var req BatchCreateRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Parse provider from model string
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format or provider must be specified")
+		return
+	}
+
+	// Validate that at least one of InputFileID or Requests is provided
+	if req.InputFileID == "" && len(req.Requests) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id or requests is required")
+		return
+	}
+
+	// Extract extra params
+	extraParams, err := extractExtraParams(ctx.PostBody(), batchCreateParamsKnownFields)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
+	}
+
+	// Build Bifrost batch create request
+	bifrostBatchReq := &schemas.BifrostBatchCreateRequest{
+		Provider:         schemas.ModelProvider(provider),
+		Model:            modelName,
+		InputFileID:      req.InputFileID,
+		Requests:         req.Requests,
+		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
+		CompletionWindow: req.CompletionWindow,
+		Metadata:         req.Metadata,
+		ExtraParams:      extraParams,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchCreateRequest(*bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// batchList handles GET /v1/batches - List batch jobs
+func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Parse limit parameter
+	limit := 0
+	if limitStr := ctx.QueryArgs().Peek("limit"); len(limitStr) > 0 {
+		if n, err := strconv.Atoi(string(limitStr)); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	// Parse pagination parameters
+	var after, before *string
+	if afterStr := ctx.QueryArgs().Peek("after"); len(afterStr) > 0 {
+		s := string(afterStr)
+		after = &s
+	}
+	if beforeStr := ctx.QueryArgs().Peek("before"); len(beforeStr) > 0 {
+		s := string(beforeStr)
+		before = &s
+	}
+
+	// Build Bifrost batch list request
+	bifrostBatchReq := &schemas.BifrostBatchListRequest{
+		Provider: schemas.ModelProvider(provider),
+		Limit:    limit,
+		After:    after,
+		BeforeID: before,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchListRequest(*bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// batchRetrieve handles GET /v1/batches/{batch_id} - Retrieve a batch job
+func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
+	// Get batch ID from URL parameter
+	batchID, ok := ctx.UserValue("batch_id").(string)
+	if !ok || batchID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost batch retrieve request
+	bifrostBatchReq := &schemas.BifrostBatchRetrieveRequest{
+		Provider: schemas.ModelProvider(provider),
+		BatchID:  batchID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchRetrieveRequest(*bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// batchCancel handles POST /v1/batches/{batch_id}/cancel - Cancel a batch job
+func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
+	// Get batch ID from URL parameter
+	batchID := ctx.UserValue("batch_id").(string)
+	if batchID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost batch cancel request
+	bifrostBatchReq := &schemas.BifrostBatchCancelRequest{
+		Provider: schemas.ModelProvider(provider),
+		BatchID:  batchID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchCancelRequest(*bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// batchResults handles GET /v1/batches/{batch_id}/results - Get batch results
+func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
+	// Get batch ID from URL parameter
+	batchID := ctx.UserValue("batch_id").(string)
+	if batchID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "batch_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost batch results request
+	bifrostBatchReq := &schemas.BifrostBatchResultsRequest{
+		Provider: schemas.ModelProvider(provider),
+		BatchID:  batchID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.BatchResultsRequest(*bifrostCtx, bifrostBatchReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// fileUpload handles POST /v1/files - Upload a file
+func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to parse multipart form: %v", err))
+		return
+	}
+
+	// Get provider from query parameters or header
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		// Try to get from header (for OpenAI SDK compatibility)
+		provider = string(ctx.Request.Header.Peek("x-model-provider"))
+		// Try to get from extra_body
+		if provider == "" && len(form.Value["provider"]) > 0 {
+			provider = string(form.Value["provider"][0])
+		}
+	}
+
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter or x-model-provider header is required")
+		return
+	}
+
+	// Extract purpose (required)
+	purposeValues := form.Value["purpose"]
+	if len(purposeValues) == 0 || purposeValues[0] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "purpose is required")
+		return
+	}
+	purpose := purposeValues[0]
+
+	// Extract file (required)
+	fileHeaders := form.File["file"]
+	if len(fileHeaders) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "file is required")
+		return
+	}
+
+	fileHeader := fileHeaders[0]
+
+	// Open and read the file
+	file, err := fileHeader.Open()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open uploaded file: %v", err))
+		return
+	}
+	defer file.Close()
+
+	// Read file data
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file: %v", err))
+		return
+	}
+
+	// Build Bifrost file upload request
+	bifrostFileReq := &schemas.BifrostFileUploadRequest{
+		Provider: schemas.ModelProvider(provider),
+		File:     fileData,
+		Filename: fileHeader.Filename,
+		Purpose:  schemas.FilePurpose(purpose),
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FileUploadRequest(*bifrostCtx, bifrostFileReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// fileList handles GET /v1/files - List files
+func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("x-model-provider"))
+	if provider == "" {
+		// Try to get from header
+		provider = string(ctx.Request.Header.Peek("x-model-provider"))
+		if provider == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "x-model-provider query parameter or x-model-provider header is required")
+			return
+		}
+	}
+
+	// Parse optional parameters
+	purpose := string(ctx.QueryArgs().Peek("purpose"))
+
+	limit := 0
+	if limitStr := ctx.QueryArgs().Peek("limit"); len(limitStr) > 0 {
+		if n, err := strconv.Atoi(string(limitStr)); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	var after, order *string
+	if afterStr := ctx.QueryArgs().Peek("after"); len(afterStr) > 0 {
+		s := string(afterStr)
+		after = &s
+	}
+	if orderStr := ctx.QueryArgs().Peek("order"); len(orderStr) > 0 {
+		s := string(orderStr)
+		order = &s
+	}
+
+	// Build Bifrost file list request
+	bifrostFileReq := &schemas.BifrostFileListRequest{
+		Provider: schemas.ModelProvider(provider),
+		Purpose:  schemas.FilePurpose(purpose),
+		Limit:    limit,
+		After:    after,
+		Order:    order,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FileListRequest(*bifrostCtx, bifrostFileReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// fileRetrieve handles GET /v1/files/{file_id} - Retrieve file metadata
+func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
+	// Get file ID from URL parameter
+	fileID := ctx.UserValue("file_id").(string)
+	if fileID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost file retrieve request
+	bifrostFileReq := &schemas.BifrostFileRetrieveRequest{
+		Provider: schemas.ModelProvider(provider),
+		FileID:   fileID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FileRetrieveRequest(*bifrostCtx, bifrostFileReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// fileDelete handles DELETE /v1/files/{file_id} - Delete a file
+func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
+	// Get file ID from URL parameter
+	fileID := ctx.UserValue("file_id").(string)
+	if fileID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost file delete request
+	bifrostFileReq := &schemas.BifrostFileDeleteRequest{
+		Provider: schemas.ModelProvider(provider),
+		FileID:   fileID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FileDeleteRequest(*bifrostCtx, bifrostFileReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// fileContent handles GET /v1/files/{file_id}/content - Download file content
+func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
+	// Get file ID from URL parameter
+	fileID := ctx.UserValue("file_id").(string)
+	if fileID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "file_id is required")
+		return
+	}
+
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost file content request
+	bifrostFileReq := &schemas.BifrostFileContentRequest{
+		Provider: schemas.ModelProvider(provider),
+		FileID:   fileID,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FileContentRequest(*bifrostCtx, bifrostFileReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Set appropriate headers for file download
+	ctx.Response.Header.Set("Content-Type", resp.ContentType)
+	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Content)))
+	ctx.Response.SetBody(resp.Content)
 }

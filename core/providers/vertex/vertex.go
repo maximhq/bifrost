@@ -459,7 +459,11 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 		}
-		return nil, parseVertexError(providerName, resp)
+		return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ChatCompletionRequest,
+		})
 	}
 
 	if schemas.IsAnthropicModel(deployment) {
@@ -665,6 +669,11 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
+			&providerUtils.RequestMetadata{
+				Provider:    providerName,
+				Model:       request.Model,
+				RequestType: schemas.ChatCompletionStreamRequest,
+			},
 		)
 	} else if schemas.IsGeminiModel(deployment) {
 		// Use Gemini-style streaming for Gemini models
@@ -896,7 +905,11 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 			}
-			return nil, parseVertexError(providerName, resp)
+			return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
+				Provider:    providerName,
+				Model:       request.Model,
+				RequestType: schemas.ResponsesRequest,
+			})
 		}
 
 		// Create response object from pool
@@ -1016,7 +1029,11 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
 			}
-			return nil, parseVertexError(providerName, resp)
+			return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
+				Provider:    providerName,
+				Model:       request.Model,
+				RequestType: schemas.ResponsesRequest,
+			})
 		}
 
 		geminiResponse := &gemini.GenerateContentResponse{}
@@ -1146,6 +1163,11 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			postHookRunner,
 			postResponseConverter,
 			provider.logger,
+			&providerUtils.RequestMetadata{
+				Provider:    provider.GetProviderKey(),
+				Model:       request.Model,
+				RequestType: schemas.ResponsesStreamRequest,
+			},
 		)
 	} else if schemas.IsGeminiModel(deployment) {
 		region := key.VertexKeyConfig.Region
@@ -1435,4 +1457,55 @@ func (provider *VertexProvider) getModelDeployment(key schemas.Key, model string
 		}
 	}
 	return model
+}
+
+// BatchCreate is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchCreate(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
+}
+
+// BatchList is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
+}
+
+// BatchRetrieve is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchRetrieve(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
+}
+
+// BatchCancel is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchCancel(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchResults is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchResults(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
+}
+
+// FileUpload is not yet implemented for Vertex AI provider.
+// Vertex AI uses Google Cloud Storage (GCS) for batch input/output files.
+func (provider *VertexProvider) FileUpload(ctx context.Context, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+}
+
+// FileList is not yet implemented for Vertex AI provider.
+func (provider *VertexProvider) FileList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
+}
+
+// FileRetrieve is not yet implemented for Vertex AI provider.
+func (provider *VertexProvider) FileRetrieve(ctx context.Context, key schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
+}
+
+// FileDelete is not yet implemented for Vertex AI provider.
+func (provider *VertexProvider) FileDelete(ctx context.Context, key schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
+}
+
+// FileContent is not yet implemented for Vertex AI provider.
+func (provider *VertexProvider) FileContent(ctx context.Context, key schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }

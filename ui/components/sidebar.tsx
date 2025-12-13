@@ -386,7 +386,7 @@ export default function AppSidebar() {
 					url: "/workspace/user-groups",
 					icon: Users,
 					description: "Manage users & groups",
-					hasAccess: hasCustomersAccess || hasTeamsAccess,					
+					hasAccess: hasCustomersAccess || hasTeamsAccess,
 				},
 				{
 					title: "User Provisioning",
@@ -479,6 +479,7 @@ export default function AppSidebar() {
 	}, []);
 
 	const showNewReleaseBanner = useMemo(() => {
+		if (IS_ENTERPRISE) return false;
 		if (latestRelease && version) {
 			return compareVersions(latestRelease.name, version) > 0;
 		}
