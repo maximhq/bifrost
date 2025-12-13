@@ -2748,6 +2748,22 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 	}
 
+	var requestedKeyName string
+	if ctx != nil {
+		if keyName, ok := (*ctx).Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+			requestedKeyName = strings.TrimSpace(keyName)
+		}
+	}
+
+	if requestedKeyName != "" {
+		for _, key := range supportedKeys {
+			if key.Name == requestedKeyName {
+				return key, nil
+			}
+		}
+		return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", requestedKeyName, providerKey)
+	}
+
 	if len(supportedKeys) == 1 {
 		return supportedKeys[0], nil
 	}

@@ -103,6 +103,7 @@ type BifrostContextKey string
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
 	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                      // string
+	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                 // string (explicit key name selection)
 	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
 	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
 	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct

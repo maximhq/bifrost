@@ -11,6 +11,7 @@ var NoDeadline time.Time
 
 var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
+	BifrostContextKeyAPIKeyName,
 	BifrostContextKeyRequestID,
 	BifrostContextKeyFallbackRequestID,
 	BifrostContextKeyDirectKey,
