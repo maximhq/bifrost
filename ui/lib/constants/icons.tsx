@@ -325,6 +325,56 @@ export const ProviderIcons = {
         );
     },
 
+    nebius: ({ size = "md", className = "", theme }: IconProps) => {
+        const resolvedSize = resolveSize(size);
+        
+        return theme === "light" ? (
+            <svg
+                width={resolvedSize}
+                height={resolvedSize}
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className={className}
+            >
+                <title>Nebius</title>
+                <rect width="24" height="24" rx="4" fill="#1A1A2E"/>
+                <path
+                    d="M7 17V7H9.5L14.5 13.5V7H17V17H14.5L9.5 10.5V17H7Z"
+                    fill="white"
+                />
+                <path
+                    d="M5 5L7 7M19 5L17 7M5 19L7 17M19 19L17 17"
+                    stroke="#6366F1"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                />
+            </svg>
+        ) : (
+            <svg
+                width={resolvedSize}
+                height={resolvedSize}
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className={className}
+            >
+                <title>Nebius</title>
+                <rect width="24" height="24" rx="4" fill="#E8E8F0"/>
+                <path
+                    d="M7 17V7H9.5L14.5 13.5V7H17V17H14.5L9.5 10.5V17H7Z"
+                    fill="#1A1A2E"
+                />
+                <path
+                    d="M5 5L7 7M19 5L17 7M5 19L7 17M19 19L17 17"
+                    stroke="#6366F1"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                />
+            </svg>
+        );
+    },
+
     ollama: ({ size = "md", className = "", theme }: IconProps) => {
         const resolvedSize = resolveSize(size);
         return theme === "light" ? (
