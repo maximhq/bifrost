@@ -46,6 +46,7 @@ import (
 //   - Authorization: Bearer token format only (e.g., "Bearer sk-...") - OpenAI style
 //   - x-api-key: Direct API key value - Anthropic style
 //   - x-goog-api-key: Direct API key value - Google Gemini style
+// 	 - x-bf-api-key references a stored API key name rather than the raw secret.
 //   - Keys are extracted and stored in the context using schemas.BifrostContextKey
 //   - This enables explicit key usage for requests via headers
 //
@@ -53,6 +54,11 @@ import (
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
 //   - This is critical for streaming requests where write errors indicate client disconnects
 //   - Also useful for non-streaming requests to allow provider-level cancellation
+//
+// 7. Extra Headers (x-bf-eh-*):
+//   - Any header starting with 'x-bf-eh-' is collected and added to the map stored under schemas.BifrostContextKeyExtraHeaders
+//   - The prefix is stripped, the remainder is lower-cased, and duplicate names append values
+//   - This allows callers to send arbitrary context metadata without needing to extend the public schema
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -87,6 +93,24 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	})
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
+	// Initialize extra headers map for headers prefixed with x-bf-eh-
+	extraHeaders := make(map[string][]string)
+	// Denylist of header names that should not be accepted (case-insensitive)
+	denylist := map[string]bool{
+		"authorization":       true,
+		"proxy-authorization": true,
+		"cookie":              true,
+		"host":                true,
+		"content-length":      true,
+		"connection":          true,
+		"transfer-encoding":   true,
+
+		// prevent auth/key overrides via x-bf-eh-*
+		"x-api-key":      true,
+		"x-goog-api-key": true,
+		"x-bf-api-key":   true,
+		"x-bf-vk":        true,
+	}
 
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
@@ -221,6 +245,21 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			}
 			return true
 		}
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
+			// Skip empty header names after prefix removal
+			if labelName == "" {
+				return true
+			}
+			// Normalize header name to lowercase
+			labelName = strings.ToLower(labelName)
+			// Validate against denylist
+			if denylist[labelName] {
+				return true
+			}
+			// Append header value (allow multiple values for the same header)
+			extraHeaders[labelName] = append(extraHeaders[labelName], string(value))
+			return true
+		}
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
 			if valueStr := string(value); valueStr == "true" {
@@ -234,6 +273,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
 		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(maxim.TagsKey), maximTags)
+	}
+
+	// Store collected extra headers in the context if any were found
+	if len(extraHeaders) > 0 {
+		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
 	if allowDirectKeys {

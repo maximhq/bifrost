@@ -1,0 +1,1 @@
+feat: added force sync function in pricing and pricing according to 200k token
