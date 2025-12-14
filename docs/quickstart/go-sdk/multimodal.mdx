@@ -62,15 +62,28 @@ if err != nil {
 	panic(err)
 }
 
+// Handle image generation response
 if len(response.Data) > 0 {
-	if response.Data[0].URL != nil {
-		// Handle image generation response
-		fmt.Printf("Generated image URL: %s\n", *response.Data[0].URL)
+	imageData := response.Data[0]
+	
+	// Handle URL response (when response_format is "url")
+	if imageData.URL != "" {
+		fmt.Printf("Generated image URL: %s\n", imageData.URL)
 	}
-
+	
+	// Handle base64-encoded response (when response_format is "b64_json")
+	if imageData.B64JSON != "" {
+		fmt.Printf("Generated base64 image (length: %d)\n", len(imageData.B64JSON))
+	}
+	
+	// Handle revised prompt if present
+	if imageData.RevisedPrompt != "" {
+		fmt.Printf("Revised prompt: %s\n", imageData.RevisedPrompt)
+	}
 }
+
+// Handle usage metrics
 if response.Usage != nil {
-	// Handle usage metrics
 	fmt.Printf("Usage: %d tokens\n", response.Usage.TotalTokens)
 }
 ```

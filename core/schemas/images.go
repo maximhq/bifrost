@@ -21,7 +21,7 @@ type ImageGenerationInput struct {
 
 type ImageGenerationParameters struct {
 	N              *int                   `json:"n,omitempty"`               // Number of images (1-10)
-	Size           *string                `json:"size,omitempty"`            // "256x256", "512x512", "1024x1024", "1792x1024", "1024x1792", 1536x1024", "1024x1536", "auto"
+	Size           *string                `json:"size,omitempty"`            // "256x256", "512x512", "1024x1024", "1792x1024", "1024x1792", "1536x1024", "1024x1536", "auto"
 	Quality        *string                `json:"quality,omitempty"`         // "auto", "high", "medium", "low"
 	Style          *string                `json:"style,omitempty"`           // "natural", "vivid"
 	ResponseFormat *string                `json:"response_format,omitempty"` // "url", "b64_json"
