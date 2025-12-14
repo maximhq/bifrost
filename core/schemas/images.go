@@ -54,7 +54,7 @@ type ImageUsage struct {
 // Streaming Response
 type BifrostImageGenerationStreamResponse struct {
 	ID            string                     `json:"id"`
-	Type          string                     `json:"type"`                     // "image.chunk", "image.complete", "error"
+	Type          string                     `json:"type"`                     // "image_generation.partial_image", "image_generation.completed", "error"
 	Index         int                        `json:"index"`                    // Which image (0-N)
 	ChunkIndex    int                        `json:"chunk_index"`              // Chunk order within image
 	PartialB64    string                     `json:"partial_b64,omitempty"`    // Base64 chunk

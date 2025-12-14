@@ -809,11 +809,18 @@ func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.
 
 	deployment, bifrostErr := provider.getModelDeployment(key, azureRequest.Model)
 	if bifrostErr != nil {
-		return nil, providerUtils.NewBifrostOperationError("could not get model deployment", err, providerName)
+		return nil, bifrostErr
 	}
 
-	response, _, latency, bifrostErr := provider.completeRequest(ctx, jsonData, "images/generations", key, deployment, azureRequest.Model, schemas.ImageGenerationRequest)
-
+	response, _, latency, bifrostErr := provider.completeRequest(
+		ctx,
+		jsonData,
+		fmt.Sprintf("openai/deployments/%s/images/generations", deployment),
+		key,
+		deployment,
+		request.Model,
+		schemas.ImageGenerationRequest,
+	)
 	// Handle error response
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -824,7 +831,7 @@ func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.
 	}
 
 	// Convert Azure response to Bifrost format.
-	bifrostResp := ToBifrostImageResponse(azureResponse, azureRequest.Model, latency)
+	bifrostResp := ToBifrostImageResponse(azureResponse, request.Model, latency)
 	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
 	bifrostResp.ExtraFields.ModelRequested = request.Model
 	bifrostResp.ExtraFields.ModelDeployment = deployment

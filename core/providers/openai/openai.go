@@ -2495,12 +2495,12 @@ func HandleOpenAIImageGenerationStreaming(
 					lastChunkTime = time.Now()
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk), responseChan)
 				}
-			} else {
-				chunkIndex++
 			}
 
 			// Handle completion chunk
 			if response.Type == ImageGenerationCompleted {
+				// Ensure completion chunk has a strictly increasing index.
+				chunkIndex++
 				completionChunk := &schemas.BifrostImageGenerationStreamResponse{
 					ID:         uuid.NewString(),
 					Index:      response.PartialImageIndex,
@@ -2535,6 +2535,7 @@ func HandleOpenAIImageGenerationStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
 					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, completionChunk),
 					responseChan)
+				return // Stop processing after completion
 			}
 		}
 

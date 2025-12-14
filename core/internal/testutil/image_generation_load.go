@@ -9,6 +9,7 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -145,16 +146,17 @@ func RunImageGenerationStreamLoadTest(t *testing.T, client *bifrost.Bifrost, ctx
 
 					// Create derived context for this stream
 					streamCtx, cancel := context.WithCancel(ctx)
-					defer cancel()
 
 					streamChan, bifrostErr := client.ImageGenerationStreamRequest(streamCtx, request)
 					if bifrostErr != nil {
+						cancel()
 						atomic.AddInt64(&errorCount, 1)
 						t.Logf("⚠️  Stream %d-%d failed to start: %v", streamID, j, GetErrorMessage(bifrostErr))
 						continue
 					}
 
 					if streamChan == nil {
+						cancel()
 						atomic.AddInt64(&errorCount, 1)
 						t.Logf("⚠️  Stream %d-%d returned nil channel", streamID, j)
 						continue
@@ -174,13 +176,15 @@ func RunImageGenerationStreamLoadTest(t *testing.T, client *bifrost.Bifrost, ctx
 
 						if stream.BifrostImageGenerationStreamResponse != nil {
 							chunkCount++
-							if stream.BifrostImageGenerationStreamResponse.Type == "image_generation.completed" {
+							if stream.BifrostImageGenerationStreamResponse.Type == string(openai.ImageGenerationCompleted) {
 								completed = true
 								cancel()
 								continue
 							}
 						}
 					}
+
+					cancel()
 
 					mu.Lock()
 					totalChunks += chunkCount

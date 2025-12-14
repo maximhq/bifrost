@@ -1257,7 +1257,6 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
-	defer cancel()
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
@@ -1268,6 +1267,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
 		return
 	}
+	defer cancel()
 
 	// Execute request
 	resp, bifrostErr := h.client.ImageGenerationRequest(*bifrostCtx, bifrostReq)

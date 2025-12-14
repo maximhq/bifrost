@@ -37,6 +37,8 @@ export const RequestTypes = [
 	"speech_stream",
 	"transcription",
 	"transcription_stream",
+	"image_generation",
+	"image_generation_stream",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -101,6 +103,8 @@ export const RequestTypeLabels = {
 	speech_stream: "Speech Stream",
 	transcription: "Transcription",
 	transcription_stream: "Transcription Stream",
+	image_generation: "Image Generation",
+	image_generation_stream: "Image Generation Stream",
 } as const;
 
 export const RequestTypeColors = {
@@ -128,6 +132,8 @@ export const RequestTypeColors = {
 	speech_stream: "bg-pink-100 text-pink-800",
 	transcription: "bg-orange-100 text-orange-800",
 	transcription_stream: "bg-lime-100 text-lime-800",
+	image_generation: "bg-indigo-100 text-indigo-800",
+	image_generation_stream: "bg-purple-100 text-purple-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];
