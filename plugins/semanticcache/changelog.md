@@ -1,2 +1,1 @@
-- chore: updating core to 1.2.37 and framework to 1.1.47
 - feat: added semantic caching support for image generation

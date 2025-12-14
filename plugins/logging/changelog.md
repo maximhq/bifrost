@@ -1,2 +1,0 @@
-- feat: support for raw request logging
-- chore: updating core to 1.2.37 and framework to 1.1.47
