@@ -1254,6 +1254,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
 	if bifrostCtx == nil {
+		cancel()
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
@@ -1261,6 +1262,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
 		if req.ResponseFormat != nil && *req.ResponseFormat == "url" {
+			cancel()
 			SendError(ctx, fasthttp.StatusBadRequest, "streaming images must be requested in base64")
 			return
 		}
