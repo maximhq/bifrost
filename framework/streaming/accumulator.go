@@ -113,6 +113,8 @@ func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
 	chunk.Delta = nil
 	chunk.FinishReason = nil
 	chunk.ErrorDetails = nil
+	chunk.ChunkIndex = 0
+	chunk.ImageIndex = 0
 	chunk.Cost = nil
 	chunk.SemanticCacheDebug = nil
 	chunk.TokenUsage = nil

@@ -82,8 +82,6 @@ var StandardProviders = []ModelProvider{
 // RequestType represents the type of request being made to a provider.
 type RequestType string
 
-// ImageGenerationRequest and ImageGenerationStreamRequest represent the RequestType values for image generation.
-// They are currently defined in core/schema.
 const (
 	ListModelsRequest            RequestType = "list_models"
 	TextCompletionRequest        RequestType = "text_completion"

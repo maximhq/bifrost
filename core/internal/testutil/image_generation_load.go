@@ -143,7 +143,11 @@ func RunImageGenerationStreamLoadTest(t *testing.T, client *bifrost.Bifrost, ctx
 						},
 					}
 
-					streamChan, bifrostErr := client.ImageGenerationStreamRequest(ctx, request)
+					// Create derived context for this stream
+					streamCtx, cancel := context.WithCancel(ctx)
+					defer cancel()
+
+					streamChan, bifrostErr := client.ImageGenerationStreamRequest(streamCtx, request)
 					if bifrostErr != nil {
 						atomic.AddInt64(&errorCount, 1)
 						t.Logf("⚠️  Stream %d-%d failed to start: %v", streamID, j, GetErrorMessage(bifrostErr))
@@ -160,17 +164,20 @@ func RunImageGenerationStreamLoadTest(t *testing.T, client *bifrost.Bifrost, ctx
 					chunkCount := int64(0)
 					completed := false
 
+					// Process stream until completion or error
 					for stream := range streamChan {
 						if stream.BifrostError != nil {
 							t.Logf("⚠️  Stream %d-%d error: %v", streamID, j, GetErrorMessage(stream.BifrostError))
-							break
+							cancel()
+							continue
 						}
 
 						if stream.BifrostImageGenerationStreamResponse != nil {
 							chunkCount++
 							if stream.BifrostImageGenerationStreamResponse.Type == "image_generation.completed" {
 								completed = true
-								break
+								cancel()
+								continue
 							}
 						}
 					}
@@ -260,9 +267,20 @@ func RunImageGenerationCacheLoadTest(t *testing.T, client *bifrost.Bifrost, ctx 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-
+				// Create new request for each goroutine to avoid data race
+				localRequest := &schemas.BifrostImageGenerationRequest{
+					Provider: testConfig.Provider,
+					Model:    testConfig.ImageGenerationModel,
+					Input: &schemas.ImageGenerationInput{
+						Prompt: cachePrompt,
+					},
+					Params: &schemas.ImageGenerationParameters{
+						Size:           bifrost.Ptr("1024x1024"),
+						ResponseFormat: bifrost.Ptr("b64_json"),
+					},
+				}
 				reqStart := time.Now()
-				response, bifrostErr := client.ImageGenerationRequest(ctx, request)
+				response, bifrostErr := client.ImageGenerationRequest(ctx, localRequest)
 				reqDuration := time.Since(reqStart)
 
 				mu.Lock()

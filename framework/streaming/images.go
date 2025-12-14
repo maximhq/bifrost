@@ -243,7 +243,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		if shouldProcess {
 			data, processErr := a.processAccumulatedImageStreamingChunks(requestID, bifrostErr, isFinalChunk)
 			if processErr != nil {
-				a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
+				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
 				return nil, processErr
 			}
 			return &ProcessedStreamResponse{
@@ -262,7 +262,7 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 	// This is going to be a delta response
 	data, processErr := a.processAccumulatedImageStreamingChunks(requestID, bifrostErr, isFinalChunk)
 	if processErr != nil {
-		a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
+		a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
 		return nil, processErr
 	}
 

@@ -181,10 +181,16 @@ export function useImageStream(options: UseImageStreamOptions = {}) {
   // Start streaming request
   const stream = useCallback(
     async (request: ImageStreamRequest) => {
+      cancel();
       reset();
       expectedImagesRef.current = request.n || 1;
 
-      setState((prev) => ({ ...prev, isStreaming: true, error: null }));
+      setState((prev) => ({
+        ...prev,
+        isStreaming: true,
+        error: null,
+        images: Array.from({ length: expectedImagesRef.current }, (_, i) => ({ index: i })),
+      }));
 
       abortControllerRef.current = new AbortController();
 
@@ -265,7 +271,7 @@ export function useImageStream(options: UseImageStreamOptions = {}) {
         options.onError?.(errorMsg);
       }
     },
-    [reset, processChunk, options]
+    [cancel, reset, processChunk, options]
   );
 
   // Cleanup on unmount

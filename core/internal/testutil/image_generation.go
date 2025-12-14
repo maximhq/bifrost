@@ -99,8 +99,8 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Validate base64 if present
 		if imageData.B64JSON != "" {
-			if len(imageData.B64JSON) < 100 {
-				t.Errorf("❌ Base64 image data too short: %d bytes", len(imageData.B64JSON))
+			if len(imageData.B64JSON) < 50*1000 {
+				t.Errorf("❌ Base64 image data too short: %d bytes (expected minimum: 50 KB for 1024x1024 image)", len(imageData.B64JSON))
 			}
 		}
 

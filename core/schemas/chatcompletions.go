@@ -236,23 +236,15 @@ type ChatToolType string
 
 // ChatToolType values
 const (
-	ChatToolTypeFunction        ChatToolType = "function"
-	ChatToolTypeCustom          ChatToolType = "custom"
-	ChatToolTypeImageGeneration ChatToolType = "image_generation"
+	ChatToolTypeFunction ChatToolType = "function"
+	ChatToolTypeCustom   ChatToolType = "custom"
 )
 
 // ChatTool represents a tool definition.
 type ChatTool struct {
-	Type            ChatToolType             `json:"type"`
-	Function        *ChatToolFunction        `json:"function,omitempty"` // Function definition
-	Custom          *ChatToolCustom          `json:"custom,omitempty"`   // Custom tool definition
-	ImageGeneration *ChatToolImageGeneration `json:"image_generation,omitempty"`
-}
-
-// ChatToolImageGeneration represents an image generation tool definition
-type ChatToolImageGeneration struct {
-	// No parameters needed - tool call arguments contain prompt and params
-	// This matches OpenAI's pattern where tool definition is minimal
+	Type     ChatToolType      `json:"type"`
+	Function *ChatToolFunction `json:"function,omitempty"` // Function definition
+	Custom   *ChatToolCustom   `json:"custom,omitempty"`   // Custom tool definition
 }
 
 // ChatToolFunction represents a function definition.

@@ -48,11 +48,17 @@ func TestImageGenerationRequestSerialization(t *testing.T) {
 				if data["model"] != "dall-e-3" {
 					t.Errorf("Expected model 'dall-e-3', got %v", data["model"])
 				}
-				input := data["input"].(map[string]interface{})
+				input, ok := data["input"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("Failed to assert 'input' as map[string]interface{}, got %T", data["input"])
+				}
 				if input["prompt"] != "a cute cat" {
 					t.Errorf("Expected prompt 'a cute cat', got %v", input["prompt"])
 				}
-				params := data["params"].(map[string]interface{})
+				params, ok := data["params"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("Failed to assert 'params' as map[string]interface{}, got %T", data["params"])
+				}
 				if params["size"] != "1024x1024" {
 					t.Errorf("Expected size '1024x1024', got %v", params["size"])
 				}
@@ -189,7 +195,10 @@ func TestImageGenerationResponseSerialization(t *testing.T) {
 		t.Errorf("Expected id 'img-123', got %v", data["id"])
 	}
 
-	dataArr := data["data"].([]interface{})
+	dataArr, ok := data["data"].([]interface{})
+	if !ok {
+		t.Fatalf("Failed to assert 'data' as []interface{}, got %T", data["data"])
+	}
 	if len(dataArr) != 2 {
 		t.Errorf("Expected 2 images, got %d", len(dataArr))
 	}
@@ -217,8 +226,12 @@ func TestImageStreamResponseSerialization(t *testing.T) {
 				if data["type"] != "image_generation.partial_image" {
 					t.Errorf("Expected type 'image_generation.partial_image'")
 				}
-				if int(data["chunk_index"].(float64)) != 3 {
-					t.Errorf("Expected chunk_index 3")
+				chunkIndex, ok := data["chunk_index"].(float64)
+				if !ok {
+					t.Fatalf("Failed to assert 'chunk_index' as float64, got %T", data["chunk_index"])
+				}
+				if int(chunkIndex) != 3 {
+					t.Errorf("Expected chunk_index 3, got %d", int(chunkIndex))
 				}
 			},
 		},
@@ -235,9 +248,16 @@ func TestImageStreamResponseSerialization(t *testing.T) {
 				if data["type"] != "image_generation.completed" {
 					t.Errorf("Expected type 'image_generation.completed'")
 				}
-				usage := data["usage"].(map[string]interface{})
-				if int(usage["total_tokens"].(float64)) != 15 {
-					t.Errorf("Expected total_tokens 15")
+				usage, ok := data["usage"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("Failed to assert 'usage' as map[string]interface{}, got %T", data["usage"])
+				}
+				totalTokens, ok := usage["total_tokens"].(float64)
+				if !ok {
+					t.Fatalf("Failed to assert 'total_tokens' as float64, got %T", usage["total_tokens"])
+				}
+				if int(totalTokens) != 15 {
+					t.Errorf("Expected total_tokens 15, got %d", int(totalTokens))
 				}
 			},
 		},
@@ -246,9 +266,14 @@ func TestImageStreamResponseSerialization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			jsonBytes, _ := sonic.Marshal(tt.chunk)
+			jsonBytes, err := sonic.Marshal(tt.chunk)
+			if err != nil {
+				t.Fatalf("Serialization failed: %v", err)
+			}
 			var data map[string]interface{}
-			json.Unmarshal(jsonBytes, &data)
+			if err := json.Unmarshal(jsonBytes, &data); err != nil {
+				t.Fatalf("Failed to unmarshal JSON: %v", err)
+			}
 			tt.verify(t, data)
 		})
 	}

@@ -288,6 +288,8 @@ type OpenAIListModelsResponse struct {
 	Data   []OpenAIModel `json:"data"`
 }
 
+type ImageGenerationEventType string
+
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
 type OpenAIImageGenerationRequest struct {
 	Model          string  `json:"model"`

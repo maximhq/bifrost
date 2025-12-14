@@ -120,7 +120,10 @@ func TestOpenAIRequestJSONOutput(t *testing.T) {
 		},
 	})
 
-	jsonBytes, _ := sonic.Marshal(req)
+	jsonBytes, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("Serialization failed: %v", err)
+	}
 	jsonStr := string(jsonBytes)
 
 	// Verify JSON structure matches OpenAI API

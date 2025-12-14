@@ -1419,21 +1419,19 @@ func (provider *VertexProvider) ImageGenerationStream(ctx context.Context, postH
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
-  for _, content := range requestBody.Contents {
-    for _, part := range content.Parts {
-      // Remove id from function_call
-      if part.FunctionCall != nil {
-        part.FunctionCall.ID = ""
-      }
-
-      // Remove id from function_response
-      if part.FunctionResponse != nil {
-        part.FunctionResponse.ID = ""
-      }
-    }
-  }
+	for _, content := range requestBody.Contents {
+		for _, part := range content.Parts {
+			// Remove id from function_call
+			if part.FunctionCall != nil {
+				part.FunctionCall.ID = ""
+			}
+			// Remove id from function_response
+			if part.FunctionResponse != nil {
+				part.FunctionResponse.ID = ""
+			}
+		}
+	}
 }
-
 
 func (provider *VertexProvider) getModelDeployment(key schemas.Key, model string) string {
 	if key.VertexKeyConfig == nil {

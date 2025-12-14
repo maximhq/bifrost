@@ -85,7 +85,7 @@ func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]flo
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
 func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, error) {
-	// Special handling for image generation (hash = prompt + size + quality + styele + n)
+	// Special handling for image generation (hash = prompt + size + quality + style + n)
 	if req.RequestType == schemas.ImageGenerationRequest || req.RequestType == schemas.ImageGenerationStreamRequest {
 		if req.ImageGenerationRequest != nil {
 			return plugin.getImageCacheKey(req.ImageGenerationRequest), nil

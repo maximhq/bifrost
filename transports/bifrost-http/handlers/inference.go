@@ -1231,7 +1231,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
-		// Continue witout extra params
+		// Continue without extra params
 	} else {
 		req.ImageGenerationParameters.ExtraParams = extraParams
 	}
