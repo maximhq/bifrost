@@ -57,6 +57,8 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAIEmbeddingRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *openai.OpenAIImageGenerationRequest:
+				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *schemas.BifrostListModelsRequest:
 				r.Provider = schemas.Azure
 			}

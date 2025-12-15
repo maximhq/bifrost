@@ -1,0 +1,1 @@
+- feat: added semantic caching support for image generation

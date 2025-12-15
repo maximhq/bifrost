@@ -131,7 +131,9 @@ export type RequestType =
 	| "speech"
 	| "speech_stream"
 	| "transcription"
-	| "transcription_stream";
+	| "transcription_stream"
+	| "image_generation"
+	| "image_generation_stream";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -146,6 +148,8 @@ export interface AllowedRequests {
 	speech_stream: boolean;
 	transcription: boolean;
 	transcription_stream: boolean;
+	image_generation: boolean;
+	image_generation_stream: boolean; 
 	list_models: boolean;
 }
 

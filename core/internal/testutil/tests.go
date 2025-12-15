@@ -51,6 +51,14 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunListModelsTest,
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
+		RunImageGenerationTest,
+		RunImageGenerationStreamTest,
+		RunImageGenerationFallbackTest,
+		RunImageGenerationCacheTest,
+		RunImageGenerationErrorTest,
+		RunImageGenerationLoadTest,
+		RunImageGenerationStreamLoadTest,
+		RunImageGenerationCacheLoadTest,
 	}
 
 	// Execute all test scenarios

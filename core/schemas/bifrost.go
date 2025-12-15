@@ -83,18 +83,20 @@ var StandardProviders = []ModelProvider{
 type RequestType string
 
 const (
-	ListModelsRequest           RequestType = "list_models"
-	TextCompletionRequest       RequestType = "text_completion"
-	TextCompletionStreamRequest RequestType = "text_completion_stream"
-	ChatCompletionRequest       RequestType = "chat_completion"
-	ChatCompletionStreamRequest RequestType = "chat_completion_stream"
-	ResponsesRequest            RequestType = "responses"
-	ResponsesStreamRequest      RequestType = "responses_stream"
-	EmbeddingRequest            RequestType = "embedding"
-	SpeechRequest               RequestType = "speech"
-	SpeechStreamRequest         RequestType = "speech_stream"
-	TranscriptionRequest        RequestType = "transcription"
-	TranscriptionStreamRequest  RequestType = "transcription_stream"
+	ListModelsRequest            RequestType = "list_models"
+	TextCompletionRequest        RequestType = "text_completion"
+	TextCompletionStreamRequest  RequestType = "text_completion_stream"
+	ChatCompletionRequest        RequestType = "chat_completion"
+	ChatCompletionStreamRequest  RequestType = "chat_completion_stream"
+	ResponsesRequest             RequestType = "responses"
+	ResponsesStreamRequest       RequestType = "responses_stream"
+	EmbeddingRequest             RequestType = "embedding"
+	SpeechRequest                RequestType = "speech"
+	SpeechStreamRequest          RequestType = "speech_stream"
+	TranscriptionRequest         RequestType = "transcription"
+	TranscriptionStreamRequest   RequestType = "transcription_stream"
+	ImageGenerationRequest       RequestType = "image_generation"
+	ImageGenerationStreamRequest RequestType = "image_generation_stream"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -143,17 +145,19 @@ type Fallback struct {
 // - EmbeddingRequest
 // - SpeechRequest
 // - TranscriptionRequest
+// - ImageGenerationRequest
 // NOTE: Bifrost Request is submitted back to pool after every use so DO NOT keep references to this struct after use, especially in go routines.
 type BifrostRequest struct {
 	RequestType RequestType
 
-	ListModelsRequest     *BifrostListModelsRequest
-	TextCompletionRequest *BifrostTextCompletionRequest
-	ChatRequest           *BifrostChatRequest
-	ResponsesRequest      *BifrostResponsesRequest
-	EmbeddingRequest      *BifrostEmbeddingRequest
-	SpeechRequest         *BifrostSpeechRequest
-	TranscriptionRequest  *BifrostTranscriptionRequest
+	ListModelsRequest      *BifrostListModelsRequest
+	TextCompletionRequest  *BifrostTextCompletionRequest
+	ChatRequest            *BifrostChatRequest
+	ResponsesRequest       *BifrostResponsesRequest
+	EmbeddingRequest       *BifrostEmbeddingRequest
+	SpeechRequest          *BifrostSpeechRequest
+	TranscriptionRequest   *BifrostTranscriptionRequest
+	ImageGenerationRequest *BifrostImageGenerationRequest
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -171,6 +175,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.SpeechRequest.Provider, br.SpeechRequest.Model, br.SpeechRequest.Fallbacks
 	case br.TranscriptionRequest != nil:
 		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks
+	case br.ImageGenerationRequest != nil:
+		return br.ImageGenerationRequest.Provider, br.ImageGenerationRequest.Model, br.ImageGenerationRequest.Fallbacks
 	}
 
 	return "", "", nil
@@ -190,6 +196,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.SpeechRequest.Provider = provider
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Provider = provider
+	case br.ImageGenerationRequest != nil:
+		br.ImageGenerationRequest.Provider = provider
 	}
 }
 
@@ -207,6 +215,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.SpeechRequest.Model = model
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Model = model
+	case br.ImageGenerationRequest != nil:
+		br.ImageGenerationRequest.Model = model
 	}
 }
 
@@ -224,6 +234,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.SpeechRequest.Fallbacks = fallbacks
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Fallbacks = fallbacks
+	case br.ImageGenerationRequest != nil:
+		br.ImageGenerationRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -241,6 +253,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.SpeechRequest.RawRequestBody = rawRequestBody
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.RawRequestBody = rawRequestBody
+	case br.ImageGenerationRequest != nil:
+		br.ImageGenerationRequest.RawRequestBody = rawRequestBody
 	}
 }
 
@@ -248,15 +262,17 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
-	TextCompletionResponse      *BifrostTextCompletionResponse
-	ChatResponse                *BifrostChatResponse
-	ResponsesResponse           *BifrostResponsesResponse
-	ResponsesStreamResponse     *BifrostResponsesStreamResponse
-	EmbeddingResponse           *BifrostEmbeddingResponse
-	SpeechResponse              *BifrostSpeechResponse
-	SpeechStreamResponse        *BifrostSpeechStreamResponse
-	TranscriptionResponse       *BifrostTranscriptionResponse
-	TranscriptionStreamResponse *BifrostTranscriptionStreamResponse
+	TextCompletionResponse        *BifrostTextCompletionResponse
+	ChatResponse                  *BifrostChatResponse
+	ResponsesResponse             *BifrostResponsesResponse
+	ResponsesStreamResponse       *BifrostResponsesStreamResponse
+	EmbeddingResponse             *BifrostEmbeddingResponse
+	SpeechResponse                *BifrostSpeechResponse
+	SpeechStreamResponse          *BifrostSpeechStreamResponse
+	TranscriptionResponse         *BifrostTranscriptionResponse
+	TranscriptionStreamResponse   *BifrostTranscriptionStreamResponse
+	ImageGenerationResponse       *BifrostImageGenerationResponse
+	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
 }
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
@@ -279,6 +295,10 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.TranscriptionResponse.ExtraFields
 	case r.TranscriptionStreamResponse != nil:
 		return &r.TranscriptionStreamResponse.ExtraFields
+	case r.ImageGenerationResponse != nil:
+		return &r.ImageGenerationResponse.ExtraFields
+	case r.ImageGenerationStreamResponse != nil:
+		return &r.ImageGenerationStreamResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
@@ -326,6 +346,7 @@ type BifrostStream struct {
 	*BifrostResponsesStreamResponse
 	*BifrostSpeechStreamResponse
 	*BifrostTranscriptionStreamResponse
+	*BifrostImageGenerationStreamResponse
 	*BifrostError
 }
 
@@ -342,6 +363,8 @@ func (bs BifrostStream) MarshalJSON() ([]byte, error) {
 		return sonic.Marshal(bs.BifrostSpeechStreamResponse)
 	} else if bs.BifrostTranscriptionStreamResponse != nil {
 		return sonic.Marshal(bs.BifrostTranscriptionStreamResponse)
+	} else if bs.BifrostImageGenerationStreamResponse != nil {
+		return sonic.Marshal(bs.BifrostImageGenerationStreamResponse)
 	} else if bs.BifrostError != nil {
 		return sonic.Marshal(bs.BifrostError)
 	}

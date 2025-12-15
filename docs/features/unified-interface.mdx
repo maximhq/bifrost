@@ -85,24 +85,24 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 
 The following table summarizes which operations are supported by each provider via Bifrost’s unified interface.
 
-| Provider | Models | Text | Text (stream) | Chat | Chat (stream) | Responses | Responses (stream) | Embeddings | TTS | TTS (stream) | STT | STT (stream) |
-|----------|--------|------|----------------|------|---------------|-----------|--------------------|------------|-----|-------------|-----|--------------|
-| Anthropic (`anthropic/<model>`) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Azure (`azure/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Bedrock (`bedrock/<model>`) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Cerebras (`cerebras/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Cohere (`cohere/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Elevenlabs (`elevenlabs/<model>`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ |
-| Gemini (`gemini/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Groq (`groq/<model>`) | ✅ | 🟡 | 🟡 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Mistral (`mistral/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Ollama (`ollama/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| OpenAI (`openai/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| OpenRouter (`openrouter/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Parasail (`parasail/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Perplexity (`perplexity/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| SGL (`sgl/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Vertex AI (`vertex/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Provider | Models | Text | Text (stream) | Chat | Chat (stream) | Responses | Responses (stream) | Embeddings | TTS | TTS (stream) | STT | STT (stream) | Image Generation | Image Generation (stream) |
+|----------|--------|------|----------------|------|---------------|-----------|--------------------|------------|-----|-------------|-----|--------------|------------------|---------------------------|
+| Anthropic (`anthropic/<model>`) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Azure (`azure/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | 
+| Bedrock (`bedrock/<model>`) | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Cerebras (`cerebras/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Cohere (`cohere/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Elevenlabs (`elevenlabs/<model>`) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | 
+| Gemini (`gemini/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | 
+| Groq (`groq/<model>`) | ✅ | 🟡 | 🟡 | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Mistral (`mistral/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Ollama (`ollama/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| OpenAI (`openai/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 
+| OpenRouter (`openrouter/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Parasail (`parasail/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Perplexity (`perplexity/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| SGL (`sgl/<model>`) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
+| Vertex AI (`vertex/<model>`) | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 
 
 - 🟡 Not supported by the downstream provider, but internally implemented by Bifrost as a fallback.
 - ❌ Not supported by the downstream provider, hence not supported by Bifrost.

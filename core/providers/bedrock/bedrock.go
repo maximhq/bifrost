@@ -664,7 +664,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx context.Context, postH
 					},
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(textResponse, nil, nil, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(textResponse, nil, nil, nil, nil, nil), responseChan)
 			}
 		}
 	}()
@@ -891,7 +891,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						response.ExtraFields.RawResponse = string(message.Payload)
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 				}
 			}
 		}
@@ -905,7 +905,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -1063,7 +1063,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 							finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						}
 
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, finalResponse, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, finalResponse, nil, nil, nil), responseChan)
 					}
 					break
 				}
@@ -1157,7 +1157,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 							response.ExtraFields.RawResponse = string(message.Payload)
 						}
 
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 					}
 				}
 			}
@@ -1281,6 +1281,16 @@ func (provider *BedrockProvider) Transcription(ctx context.Context, key schemas.
 // TranscriptionStream is not supported by the Bedrock provider.
 func (provider *BedrockProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, schemas.Bedrock)
+}
+
+// ImageGeneration is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
 func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) (string, string) {

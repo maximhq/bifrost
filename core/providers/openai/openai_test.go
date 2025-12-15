@@ -38,6 +38,7 @@ func TestOpenAI(t *testing.T) {
 		},
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ReasoningModel:       "o1",
+		ImageGenerationModel: "dall-e-3",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
@@ -60,6 +61,8 @@ func TestOpenAI(t *testing.T) {
 			Embedding:             true,
 			Reasoning:             true,
 			ListModels:            true,
+			ImageGeneration:       true,
+			ImageGenerationStream: true,
 		},
 	}
 

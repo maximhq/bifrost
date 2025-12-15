@@ -130,6 +130,14 @@ type SpeechStreamResponseConverter func(ctx *context.Context, resp *schemas.Bifr
 // It takes a BifrostTranscriptionStreamResponse and returns the event type and the streaming format expected by the specific integration.
 type TranscriptionStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error)
 
+// ImageGenerationResponseConverter is a function that converts BifrostImageGenerationResponse to integration-specific format.
+// It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
+type ImageGenerationResponseConverter func(ctx *context.Context, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
+
+// ImageGenerationStreamResponseConverter is a function that converts BifrostImageGenerationStreamResponse to integration-specific streaming format.
+// It takes a BifrostImageGenerationStreamResponse and returns the event type and the streaming format expected by the specific integration.
+type ImageGenerationStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(ctx *context.Context, err *schemas.BifrostError) interface{}
@@ -181,6 +189,7 @@ type StreamConfig struct {
 	ResponsesStreamResponseConverter     ResponsesStreamResponseConverter     // Function to convert BifrostResponsesResponse to streaming format
 	SpeechStreamResponseConverter        SpeechStreamResponseConverter        // Function to convert BifrostSpeechResponse to streaming format
 	TranscriptionStreamResponseConverter TranscriptionStreamResponseConverter // Function to convert BifrostTranscriptionResponse to streaming format
+	ImageGenerationStreamResponseConverter ImageGenerationStreamResponseConverter // Function to convert BifrostImageGenerationStreamResponse to streaming format
 	ErrorConverter                       StreamErrorConverter                 // Function to convert BifrostError to streaming error format
 }
 
@@ -209,6 +218,7 @@ type RouteConfig struct {
 	EmbeddingResponseConverter     EmbeddingResponseConverter     // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
 	SpeechResponseConverter        SpeechResponseConverter        // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter TranscriptionResponseConverter // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
+	ImageGenerationResponseConverter ImageGenerationResponseConverter // Function to convert BifrostImageGenerationResponse to integration format (SHOULD NOT BE NIL)
 	ErrorConverter                 ErrorConverter                 // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig                   *StreamConfig                  // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback                    PreRequestCallback             // Optional: called after parsing but before Bifrost processing
@@ -566,6 +576,29 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
+	case bifrostReq.ImageGenerationRequest != nil:
+		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(requestCtx, bifrostReq.ImageGenerationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageGenerationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageGenerationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageGenerationResponse)
 	default:
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid request type"))
 		return
@@ -617,6 +650,8 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		stream, bifrostErr = g.client.SpeechStreamRequest(streamCtx, bifrostReq.SpeechRequest)
 	} else if bifrostReq.TranscriptionRequest != nil {
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(streamCtx, bifrostReq.TranscriptionRequest)
+	} else if bifrostReq.ImageGenerationRequest != nil {
+		stream, bifrostErr = g.client.ImageGenerationStreamRequest(streamCtx, bifrostReq.ImageGenerationRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -801,6 +836,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *co
 					eventType, convertedResponse, err = config.StreamConfig.SpeechStreamResponseConverter(bifrostCtx, chunk.BifrostSpeechStreamResponse)
 				case chunk.BifrostTranscriptionStreamResponse != nil:
 					eventType, convertedResponse, err = config.StreamConfig.TranscriptionStreamResponseConverter(bifrostCtx, chunk.BifrostTranscriptionStreamResponse)
+				case chunk.BifrostImageGenerationStreamResponse != nil:
+					eventType, convertedResponse, err = config.StreamConfig.ImageGenerationStreamResponseConverter(bifrostCtx, chunk.BifrostImageGenerationStreamResponse)
 				default:
 					requestType := safeGetRequestType(chunk)
 					convertedResponse, err = nil, fmt.Errorf("no response converter found for request type: %s", requestType)
