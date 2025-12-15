@@ -708,7 +708,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		}
 
 		// Construct the URL for Gemini streaming
-		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, true)
+		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":streamGenerateContent")
 
 		// Add alt=sse parameter
 		if authQuery != "" {
@@ -974,7 +974,7 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
 
-		url := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, false)
+		url := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":generateContent")
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1200,7 +1200,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 		}
 
 		// Construct the URL for Gemini streaming
-		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, true)
+		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":streamGenerateContent")
 		// Add alt=sse parameter
 		if authQuery != "" {
 			completeURL = fmt.Sprintf("%s?alt=sse&%s", completeURL, authQuery)
@@ -1496,4 +1496,213 @@ func (provider *VertexProvider) FileDelete(_ context.Context, _ []schemas.Key, _
 // FileContent is not yet implemented for Vertex AI provider.
 func (provider *VertexProvider) FileContent(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
+}
+
+// CountTokens counts the number of tokens in the provided content using Vertex AI's countTokens endpoint.
+// Supports Gemini models with both text and image content.
+func (provider *VertexProvider) CountTokens(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	if key.VertexKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
+	}
+
+	deployment := provider.getModelDeployment(key, request.Model)
+	// strip google/ prefix if present
+	if after, ok := strings.CutPrefix(deployment, "google/"); ok {
+		deployment = after
+	}
+
+	var (
+		jsonBody   []byte
+		bifrostErr *schemas.BifrostError
+	)
+
+	if schemas.IsAnthropicModel(deployment) {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (any, error) {
+				return anthropic.ToAnthropicResponsesRequest(request)
+			},
+			providerName,
+		)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		var payload map[string]any
+		if err := sonic.Unmarshal(jsonBody, &payload); err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
+		}
+
+		payload["model"] = deployment
+		if _, exists := payload["anthropic_version"]; !exists {
+			payload["anthropic_version"] = DefaultVertexAnthropicVersion
+		}
+
+		delete(payload, "region")
+		delete(payload, "max_tokens")
+		delete(payload, "temperature")
+
+		newBody, err := sonic.Marshal(payload)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+		}
+		jsonBody = newBody
+	} else {
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (any, error) { return gemini.ToGeminiResponsesRequest(request), nil },
+			providerName,
+		)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		var payload map[string]any
+		if err := sonic.Unmarshal(jsonBody, &payload); err == nil {
+			delete(payload, "toolConfig")
+			delete(payload, "generationConfig")
+			delete(payload, "systemInstruction")
+			newBody, err := sonic.Marshal(payload)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+			}
+			jsonBody = newBody
+		}
+	}
+
+	projectID := key.VertexKeyConfig.ProjectID
+	if projectID == "" {
+		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
+	}
+
+	region := key.VertexKeyConfig.Region
+	if region == "" {
+		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
+	}
+
+	authQuery := ""
+	var completeURL string
+
+	if schemas.IsAnthropicModel(deployment) {
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/count-tokens:rawPredict", projectID)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", region, projectID, region)
+		}
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
+		}
+
+		completeURL = getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, ":countTokens")
+	}
+
+	if completeURL == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("count tokens is not supported for model/deployment: %s", deployment), providerName)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	if authQuery != "" {
+		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+	} else {
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	req.SetRequestURI(completeURL)
+	req.SetBody(jsonBody)
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+		}
+		return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.CountTokensRequest,
+		})
+	}
+
+	if schemas.IsAnthropicModel(deployment) {
+		anthropicResponse := &anthropic.AnthropicCountTokensResponse{}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), anthropicResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := anthropicResponse.ToBifrostCountTokensResponse(request.Model)
+		response.ExtraFields.RequestType = schemas.CountTokensRequest
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
+		}
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+	}
+
+	vertexResponse := VertexCountTokensResponse{}
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := vertexResponse.ToBifrostCountTokensResponse(request.Model)
+	response.ExtraFields.RequestType = schemas.CountTokensRequest
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	if request.Model != deployment {
+		response.ExtraFields.ModelDeployment = deployment
+	}
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }

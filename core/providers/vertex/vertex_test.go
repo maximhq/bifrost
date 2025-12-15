@@ -46,6 +46,7 @@ func TestVertex(t *testing.T) {
 			Embedding:             true,
 			Reasoning:             false, // Not supported right now because we are not using native gemini converters
 			ListModels:            false,
+			CountTokens:           true,
 		},
 	}
 

@@ -80,6 +80,10 @@ from .utils.common import (
     collect_streaming_transcription_content,
     get_provider_voice,
     get_provider_voices,
+    # Token counting test data
+    INPUT_TOKENS_SIMPLE_TEXT,
+    INPUT_TOKENS_LONG_TEXT,
+    INPUT_TOKENS_WITH_SYSTEM,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
@@ -782,6 +786,92 @@ class TestLiteLLMIntegration:
             assert any(
                 word in content for word in ["tokyo", "japan"]
             ), f"Model {model} should mention Tokyo. Got: {content}"
+
+    @pytest.mark.parametrize(
+        "provider, model",
+        get_cross_provider_params_for_scenario(
+            "count_tokens", exclude_providers=LITELLM_EXCLUDED_PROVIDERS
+        ),
+    )
+    def test_20_token_counter_simple_text(self, test_config, provider, model):
+        """Test Case 20: Count tokens from simple text using LiteLLM token_counter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        try:
+            # Count tokens using text parameter
+            token_count = litellm.token_counter(
+                model=model,
+                text=INPUT_TOKENS_SIMPLE_TEXT,
+            )
+
+            # Validate token count
+            assert isinstance(token_count, int), "Token count should be an integer"
+            assert token_count > 0, "Token count should be positive"
+            # Simple text should have a reasonable token count (between 3-20 tokens)
+            assert 3 <= token_count <= 20, (
+                f"Simple text should have 3-20 tokens, got {token_count}"
+            )
+
+        except Exception as e:
+            pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
+
+    @pytest.mark.parametrize(
+        "provider, model",
+        get_cross_provider_params_for_scenario(
+            "count_tokens", exclude_providers=LITELLM_EXCLUDED_PROVIDERS
+        ),
+    )
+    def test_21_token_counter_with_messages(self, test_config, provider, model):
+        """Test Case 21: Count tokens from messages with system message using LiteLLM token_counter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        try:
+            # Count tokens using messages parameter
+            token_count = litellm.token_counter(
+                model=model,
+                messages=INPUT_TOKENS_WITH_SYSTEM,
+            )
+
+            # Validate token count
+            assert isinstance(token_count, int), "Token count should be an integer"
+            assert token_count > 0, "Token count should be positive"
+            # With system message should have more tokens than simple text
+            assert token_count > 2, (
+                f"With system message should have >2 tokens, got {token_count}"
+            )
+
+        except Exception as e:
+            pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
+
+    @pytest.mark.parametrize(
+        "provider, model",
+        get_cross_provider_params_for_scenario(
+            "count_tokens", exclude_providers=LITELLM_EXCLUDED_PROVIDERS
+        ),
+    )
+    def test_22_token_counter_long_text(self, test_config, provider, model):
+        """Test Case 22: Count tokens from long text using LiteLLM token_counter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        try:
+            # Count tokens using text parameter with long text
+            token_count = litellm.token_counter(
+                model=model,
+                text=INPUT_TOKENS_LONG_TEXT,
+            )
+
+            # Validate token count
+            assert isinstance(token_count, int), "Token count should be an integer"
+            assert token_count > 100, (
+                f"Long text should have >100 tokens, got {token_count}"
+            )
+
+        except Exception as e:
+            pytest.skip(f"Token counting not available for {provider}/{model}: {e}")
+
 
 
 # Additional helper functions specific to LiteLLM

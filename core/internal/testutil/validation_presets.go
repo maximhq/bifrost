@@ -112,6 +112,20 @@ func EmbeddingExpectations(expectedTexts []string) ResponseExpectations {
 	}
 }
 
+// CountTokensExpectations returns validation expectations for count tokens scenarios
+func CountTokensExpectations() ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:    false, // CountTokens doesn't return text content
+		ExpectedChoiceCount:  0,
+		ShouldHaveUsageStats: true,
+		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true,
+		ProviderSpecific: map[string]interface{}{
+			"response_type": "count_tokens",
+		},
+	}
+}
+
 // StreamingExpectations returns validation expectations for streaming scenarios
 func StreamingExpectations() ResponseExpectations {
 	expectations := BasicChatExpectations()
@@ -275,6 +289,9 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 			return EmbeddingExpectations(texts)
 		}
 		return EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
+
+	case "CountTokens":
+		return CountTokensExpectations()
 
 	case "CompleteEnd2End":
 		return ConversationExpectations([]string{"complete", "comprehensive", "full"})

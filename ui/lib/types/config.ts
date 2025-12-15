@@ -148,6 +148,7 @@ export type RequestType =
 	| "speech_stream"
 	| "transcription"
 	| "transcription_stream"
+	| "count_tokens"
 	| "batch_create"
 	| "batch_list"
 	| "batch_retrieve"
@@ -172,6 +173,7 @@ export interface AllowedRequests {
 	speech_stream: boolean;
 	transcription: boolean;
 	transcription_stream: boolean;
+	count_tokens: boolean;
 	list_models: boolean;
 }
 

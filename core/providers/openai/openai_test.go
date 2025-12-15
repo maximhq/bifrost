@@ -72,6 +72,7 @@ func TestOpenAI(t *testing.T) {
 			FileDelete:            true,
 			FileContent:           true,
 			FileBatchInput:        true,
+			CountTokens:           true,
 			ChatAudio:             true,
 		},
 	}

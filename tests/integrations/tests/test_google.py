@@ -47,72 +47,67 @@ Tests all core scenarios using Google GenAI SDK directly:
 37. Batch API - batch retrieve
 38. Batch API - batch cancel
 39. Batch API - end-to-end with Files API
+40. Count tokens (Cross-Provider)
 """
 
-import pytest
-import base64
-import json
-import requests
-import tempfile
-import os
-from PIL import Image
 import io
+import json
+import os
+import tempfile
 import wave
+from typing import Any, Dict, List
+
+import pytest
+import requests
 from google import genai
-from google.genai.types import HttpOptions
 from google.genai import types
-from typing import List, Dict, Any
+from google.genai.types import HttpOptions
+from PIL import Image
 
 from .utils.common import (
-    Config,
-    SIMPLE_CHAT_MESSAGES,
-    SINGLE_TOOL_CALL_MESSAGES,
-    MULTIPLE_TOOL_CALL_MESSAGES,
-    IMAGE_URL_SECONDARY,
     BASE64_IMAGE,
-    INVALID_ROLE_MESSAGES,
-    STREAMING_CHAT_MESSAGES,
-    STREAMING_TOOL_CALL_MESSAGES,
-    WEATHER_TOOL,
+    # Batch API utilities
+    BATCH_INLINE_PROMPTS,
     CALCULATOR_TOOL,
-    assert_valid_chat_response,
-    assert_valid_embedding_response,
-    assert_valid_image_response,
-    assert_valid_error_response,
-    assert_error_propagation,
-    assert_valid_streaming_response,
-    assert_valid_transcription_response,
-    assert_valid_streaming_transcription_response,
-    assert_valid_speech_response,
-    collect_streaming_content,
-    collect_streaming_transcription_content,
-    generate_test_audio,
-    get_provider_voice,
-    get_provider_voices,
-    get_api_key,
-    skip_if_no_api_key,
     COMPARISON_KEYWORDS,
-    WEATHER_KEYWORDS,
-    LOCATION_KEYWORDS,
-    GENAI_INVALID_ROLE_CONTENT,
     EMBEDDINGS_SINGLE_TEXT,
-    SPEECH_TEST_INPUT,
     # Gemini-specific test data
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
-    # Batch API utilities
-    BATCH_INLINE_PROMPTS,
+    GENAI_INVALID_ROLE_CONTENT,
+    IMAGE_URL_SECONDARY,
+    INPUT_TOKENS_LONG_TEXT,
+    INPUT_TOKENS_SIMPLE_TEXT,
+    INPUT_TOKENS_WITH_SYSTEM,
+    LOCATION_KEYWORDS,
+    MULTIPLE_TOOL_CALL_MESSAGES,
+    SIMPLE_CHAT_MESSAGES,
+    SINGLE_TOOL_CALL_MESSAGES,
+    WEATHER_KEYWORDS,
+    WEATHER_TOOL,
+    Config,
+    assert_valid_chat_response,
+    assert_valid_embedding_response,
+    assert_valid_image_response,
+    assert_valid_input_tokens_response,
+    assert_valid_speech_response,
+    assert_valid_transcription_response,
+    generate_test_audio,
+    get_api_key,
+    get_provider_voice,
+    get_provider_voices,
+    skip_if_no_api_key,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
-    get_cross_provider_params_for_scenario,
     format_provider_model,
+    get_cross_provider_params_for_scenario,
 )
 
 
 def get_provider_google_client(provider: str = "gemini"):
     """Create Google GenAI client with x-model-provider header for given provider"""
-    from .utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
     base_url = get_integration_url("google")
@@ -199,9 +194,10 @@ def convert_to_google_tools(tools: List[Dict[str, Any]]) -> List[Any]:
 
 def load_image_from_url(url: str):
     """Load image from URL for Google GenAI"""
-    from google.genai import types
-    import io
     import base64
+    import io
+
+    from google.genai import types
 
     if url.startswith("data:image"):
         # Base64 image - extract the base64 data part
@@ -1722,7 +1718,7 @@ Joe: Pretty good, thanks for asking."""
             print(f"Success: Deleted file {file_name}")
             
             # Verify file is no longer retrievable
-            with pytest.raises(Exception):
+            with pytest.raises(RuntimeError):
                 client.files.get(name=file_name)
             
             print(f"Success: Verified file {file_name} no longer exists")
@@ -2025,6 +2021,51 @@ Joe: Pretty good, thanks for asking."""
                     print(f"Cleanup: Deleted file {uploaded_file.name}")
                 except Exception as e:
                     print(f"Cleanup warning: Failed to delete file: {e}")
+
+    # =========================================================================
+    # INPUT TOKENS / TOKEN COUNTING TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_40a_input_tokens_simple_text(self, google_client, test_config, provider, model):
+        """Test Case 40a: Input tokens count with simple text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"Testing input tokens for provider {provider}, model {model}...")
+        response =  google_client.models.count_tokens(
+            model=format_provider_model(provider, model),
+            contents=[{"role": "user", "parts": [{"text": INPUT_TOKENS_SIMPLE_TEXT}]}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "google")
+
+        # Simple text should have a reasonable token count (between 3-20 tokens)
+        assert 3 <= response.total_tokens <= 20, (
+            f"Simple text should have 3-20 tokens, got {response.total_tokens}"
+        )
+
+    # Google does not support counting token request with system message so this test has only 2 parts
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_40b_input_tokens_long_text(self, google_client, test_config, provider, model):
+        """Test Case 40b: Input tokens count with long text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = google_client.models.count_tokens(
+            model=format_provider_model(provider, model),
+            contents=[{"role": "user", "parts": [{"text": INPUT_TOKENS_LONG_TEXT}]}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response,"google")
+
+        # Long text should have significantly more tokens
+        assert response.total_tokens > 100, (
+            f"Long text should have >100 tokens, got {response.total_tokens}"
+        )
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

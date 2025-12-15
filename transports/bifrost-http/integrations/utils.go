@@ -170,8 +170,12 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *context.
 	}
 	ctx.SetContentType("application/json")
 
-	errorBody, err := sonic.Marshal(errorConverter(bifrostCtx, bifrostErr))
+	// Marshal the error for response and log the error for diagnostics
+	responseObj := errorConverter(bifrostCtx, bifrostErr)
+	errorBody, err := sonic.Marshal(responseObj)
 	if err != nil {
+		// Log the marshal failure and return a plain text error
+		g.logger.Error("failed to marshal error response", "err", err, "path", extractExactPath(ctx))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", err))
 		return

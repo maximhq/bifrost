@@ -53,6 +53,7 @@ type TestScenarios struct {
 	FileDelete            bool // File API delete functionality
 	FileContent           bool // File API content download functionality
 	FileBatchInput        bool // Whether batch create supports file-based input (InputFileID)
+	CountTokens           bool // Count tokens functionality
 	ChatAudio             bool // Chat completion with audio input/output functionality
 }
 

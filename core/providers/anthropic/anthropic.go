@@ -2055,3 +2055,71 @@ func (provider *AnthropicProvider) FileContent(ctx context.Context, keys []schem
 
 	return nil, lastErr
 }
+
+// CountTokens counts tokens for a given request using Anthropic's API.
+func (provider *AnthropicProvider) CountTokens(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToAnthropicResponsesRequest(request) },
+		provider.GetProviderKey(),
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(jsonData, &payload); err == nil {
+		delete(payload, "max_tokens")
+		delete(payload, "temperature")
+		newData, err := sonic.Marshal(payload)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
+		}
+		jsonData = newData
+	}
+
+	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.CountTokensRequest,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	anthropicResponse := &AnthropicCountTokensResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
+		responseBody,
+		anthropicResponse,
+		jsonData,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
+
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := anthropicResponse.ToBifrostCountTokensResponse(request.Model)
+	response.Model = request.Model
+
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	response.ExtraFields.RequestType = schemas.CountTokensRequest
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}

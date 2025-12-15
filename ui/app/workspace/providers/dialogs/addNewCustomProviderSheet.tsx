@@ -52,6 +52,7 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 				speech_stream: true,
 				transcription: true,
 				transcription_stream: true,
+				count_tokens: true,
 				list_models: true,
 			},
 			request_path_overrides: undefined,

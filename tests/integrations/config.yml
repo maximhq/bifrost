@@ -52,6 +52,7 @@ providers:
     file_retrieve: "gpt-4o-mini"
     file_delete: "gpt-4o-mini"
     file_content: "gpt-4o-mini"
+    count_tokens: "gpt-4o-mini"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -73,6 +74,7 @@ providers:
     file_list: "claude-sonnet-4-20250514"
     file_delete: "claude-sonnet-4-20250514"
     file_content: "claude-sonnet-4-20250514"
+    count_tokens: "claude-sonnet-4-5-20250929"
     alternatives:
       - "claude-3-sonnet-20240229"
       - "claude-3-opus-20240229"
@@ -100,6 +102,7 @@ providers:
     file_content: "gemini-2.0-flash"
     file_download: "gemini-2.0-flash"
     file_delete: "gemini-2.0-flash"
+    count_tokens: "gemini-2.5-flash"
     alternatives:
       - "gemini-1.5-pro"
       - "gemini-1.5-flash"
@@ -133,6 +136,7 @@ providers:
     tools: "command-a-03-2025"
     embeddings: "embed-v4.0"
     streaming: "command-a-03-2025"
+    count_tokens: "command-a-03-2025"
     alternatives:
       - "command-r-plus"
 
@@ -184,6 +188,7 @@ provider_scenarios:
     file_retrieve: true
     file_delete: true
     file_content: true
+    count_tokens: true
     
   anthropic:
     simple_chat: true
@@ -222,6 +227,7 @@ provider_scenarios:
     file_retrieve: false
     file_delete: true
     file_content: false
+    count_tokens: true
     
   gemini:
     simple_chat: true
@@ -260,6 +266,7 @@ provider_scenarios:
     file_retrieve: true
     file_delete: true
     file_content: false  # Gemini doesn't support direct file download
+    count_tokens: true
     
   bedrock:
     simple_chat: true
@@ -336,6 +343,7 @@ provider_scenarios:
     file_retrieve: false
     file_delete: false
     file_content: false
+    count_tokens: true
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types
@@ -376,6 +384,7 @@ scenario_capabilities:
   file_retrieve: "file_retrieve"  # Uses file_retrieve model directly
   file_delete: "file_delete"  # Uses file_delete model directly
   file_content: "file_content"  # Uses file_content model directly
+  count_tokens: "chat"
 
 # Model capabilities matrix
 model_capabilities:

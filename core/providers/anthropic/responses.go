@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
@@ -2200,7 +2200,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					},
 				}
 				if isOutputMessage {
-					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -2228,7 +2228,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			// Handle redacted thinking (encrypted content)
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + utils.GetRandomString(50)),
+					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
@@ -2311,7 +2311,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			Role: role,
 		}
 		if isOutputMessage {
-			bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+			bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 			bifrostMsg.Content = &schemas.ResponsesMessageContent{
 				ContentBlocks: accumulatedTextContent,
 			}
@@ -2331,7 +2331,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				},
 			}
 			if isOutputMessage {
-				bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+				bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 			}
 
 			// Check for computer tool use
@@ -2368,7 +2368,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 				if isOutputMessage {
 					// For output messages, use ContentBlocks with ResponsesOutputMessageContentTypeText
 					bifrostMsg = schemas.ResponsesMessage{
-						ID:   schemas.Ptr("msg_" + utils.GetRandomString(50)),
+						ID:   schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
@@ -2409,7 +2409,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					},
 				}
 				if isOutputMessage {
-					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -2425,7 +2425,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 		case AnthropicContentBlockTypeRedactedThinking:
 			if block.Data != nil {
 				bifrostMsg := schemas.ResponsesMessage{
-					ID:   schemas.Ptr("rs_" + utils.GetRandomString(50)),
+					ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 					ResponsesReasoning: &schemas.ResponsesReasoning{
 						Summary:          []schemas.ResponsesReasoningSummary{},
@@ -2446,7 +2446,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					},
 				}
 				if isOutputMessage {
-					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 				}
 
 				// here need to check for computer tool use
@@ -2537,7 +2537,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					},
 				}
 				if isOutputMessage {
-					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
 				}
 				// Initialize the nested struct before any writes
 				bifrostMsg.ResponsesToolMessage.Output = &schemas.ResponsesToolMessageOutputStruct{}
@@ -2578,7 +2578,7 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 	// This ensures reasoning comes before any text/tool blocks (Bedrock compatibility)
 	if len(reasoningContentBlocks) > 0 {
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + utils.GetRandomString(50)),
+			ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(50)),
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary: []schemas.ResponsesReasoningSummary{},

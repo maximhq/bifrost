@@ -32,6 +32,7 @@ const PROVIDER_ENDPOINTS: Partial<Record<BaseProvider, Partial<Record<RequestTyp
 		speech_stream: "/v1/audio/speech",
 		transcription: "/v1/audio/transcriptions",
 		transcription_stream: "/v1/audio/transcriptions",
+		count_tokens: "/v1/responses/tokens",
 	},
 	anthropic: {
 		chat_completion: "/v1/messages",
@@ -69,6 +70,7 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "speech_stream", label: "Speech Stream" },
 	{ key: "transcription", label: "Transcription" },
 	{ key: "transcription_stream", label: "Transcription Stream" },
+	{ key: "count_tokens", label: "Count Tokens" },
 ];
 
 export function AllowedRequestsFields({ control, namePrefix = "allowed_requests", providerType }: AllowedRequestsFieldsProps) {

@@ -40,36 +40,37 @@ Prompt Caching Tests:
 23. Prompt caching with tools checkpoint
 """
 
-import pytest
-import boto3
-import json
 import base64
+import json
 import time
 import urllib.request
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
+import boto3
+import pytest
 
 from .utils.common import (
-    Config,
     BASE64_IMAGE,
-    WEATHER_TOOL,
     CALCULATOR_TOOL,
-    PROMPT_CACHING_TOOLS,
-    SIMPLE_CHAT_MESSAGES,
+    LOCATION_KEYWORDS,
     MULTI_TURN_MESSAGES,
     MULTIPLE_TOOL_CALL_MESSAGES,
     PROMPT_CACHING_LARGE_CONTEXT,
-    mock_tool_response,
-    assert_valid_chat_response,
-    assert_has_tool_calls,
-    extract_tool_calls,
-    skip_if_no_api_key,
+    PROMPT_CACHING_TOOLS,
+    SIMPLE_CHAT_MESSAGES,
     WEATHER_KEYWORDS,
-    LOCATION_KEYWORDS,
+    WEATHER_TOOL,
+    Config,
+    assert_has_tool_calls,
+    assert_valid_chat_response,
+    extract_tool_calls,
+    mock_tool_response,
+    skip_if_no_api_key,
 )
-from .utils.config_loader import get_model, get_config, get_integration_url
+from .utils.config_loader import get_config, get_integration_url, get_model
 from .utils.parametrize import (
-    get_cross_provider_params_for_scenario,
     format_provider_model,
+    get_cross_provider_params_for_scenario,
 )
 
 
@@ -1496,7 +1497,7 @@ class TestBedrockIntegration:
 
             job_arn = create_response["jobArn"]
 
-            print(f"stopping the job")
+            print("stopping the job")
 
             # Cancel the job
             bedrock_client.stop_model_invocation_job(jobIdentifier=job_arn)

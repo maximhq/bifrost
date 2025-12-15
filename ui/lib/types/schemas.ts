@@ -334,6 +334,7 @@ export const allowedRequestsSchema = z.object({
 	speech_stream: z.boolean(),
 	transcription: z.boolean(),
 	transcription_stream: z.boolean(),
+	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 });
 

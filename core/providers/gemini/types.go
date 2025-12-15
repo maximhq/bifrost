@@ -71,6 +71,7 @@ type GeminiGenerationRequest struct {
 	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
+	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
@@ -1701,4 +1702,17 @@ type GeminiFileRetrieveRequest struct {
 // GeminiFileDeleteRequest request represents the request for deleting a file.
 type GeminiFileDeleteRequest struct {
 	FileID string `json:"file_id"`
+}
+
+// GeminiCountTokensResponse represents the response from Google Gemini's count tokens API.
+type GeminiCountTokensResponse struct {
+	// Response from models.countTokens
+	// TotalTokens is the number of tokens that the Model tokenizes the prompt into.
+	TotalTokens int32 `json:"totalTokens,omitempty"`
+	// Number of tokens in the cached part of the prompt (the cached content).
+	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
+	// Output only. List of modalities that were processed in the request input.
+	PromptTokensDetails []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	// Output only. List of modalities that were processed in the cached content.
+	CacheTokensDetails []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
 }

@@ -249,6 +249,42 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// Input tokens endpoint (for counting tokens in a request)
+	for _, path := range []string{
+		"/v1/responses/input_tokens",
+		"/responses/input_tokens",
+		"/openai/deployments/{deployment-id}/responses/input_tokens",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIResponsesRequest{}
+			},
+			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
+					return &schemas.BifrostRequest{
+						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(),
+					}, nil
+				}
+				return nil, errors.New("invalid request type for input tokens")
+			},
+			CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+
 	// Embeddings endpoint
 	for _, path := range []string{
 		"/v1/embeddings",
@@ -500,7 +536,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					if createReq.Provider == "" {
 						createReq.Provider = schemas.OpenAI
-					}										
+					}
 					// For Bedrock, extract extra params from raw body
 					// ExtraParams has json:"-" tag so it's not auto-populated
 					if createReq.Provider == schemas.Bedrock {
@@ -1202,7 +1238,7 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 	purposeValues := form.Value["purpose"]
 	if len(purposeValues) == 0 || purposeValues[0] == "" {
 		return errors.New("purpose field is required")
-	}	
+	}
 	uploadReq.Purpose = schemas.FilePurpose(purposeValues[0])
 
 	// Extract file (required)

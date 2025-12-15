@@ -685,6 +685,45 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// CountTokensRequest sends a count tokens request to the specified provider.
+func (bifrost *Bifrost) CountTokensRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "count tokens request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CountTokensRequest,
+			},
+		}
+	}
+	if req.Input == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for count tokens request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.CountTokensRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CountTokensRequest
+	bifrostReq.CountTokensRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CountTokensResponse, nil
+}
+
 // EmbeddingRequest sends an embedding request to the specified provider.
 func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -2103,6 +2142,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		fallbackReq.ResponsesRequest = &tmp
 	}
 
+	if req.CountTokensRequest != nil {
+		tmp := *req.CountTokensRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CountTokensRequest = &tmp
+	}
+
 	if req.EmbeddingRequest != nil {
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
@@ -2871,6 +2917,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.ResponsesResponse = responsesResponse
+	case schemas.CountTokensRequest:
+		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CountTokensResponse = countTokensResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -3153,6 +3205,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
+	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil

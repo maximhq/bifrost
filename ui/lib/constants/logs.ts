@@ -39,6 +39,7 @@ export const RequestTypes = [
 	"speech_stream",
 	"transcription",
 	"transcription_stream",
+	"count_tokens",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -105,6 +106,7 @@ export const RequestTypeLabels = {
 	speech_stream: "Speech Stream",
 	transcription: "Transcription",
 	transcription_stream: "Transcription Stream",
+	count_tokens: "Count Tokens",
 
 	batch_create: "Batch Create",
 	batch_list: "Batch List",
@@ -146,6 +148,7 @@ export const RequestTypeColors = {
 	speech_stream: "bg-pink-100 text-pink-800",
 	transcription: "bg-orange-100 text-orange-800",
 	transcription_stream: "bg-lime-100 text-lime-800",
+	count_tokens: "bg-cyan-100 text-cyan-800",
 
 	batch_create: "bg-green-100 text-green-800",
 	batch_list: "bg-blue-100 text-blue-800",

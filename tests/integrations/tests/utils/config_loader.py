@@ -6,11 +6,11 @@ for constructing integration URLs through the Bifrost gateway.
 """
 
 import os
-import yaml
-from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import yaml
 
 # Integration to provider mapping
 # Maps integration names to their underlying provider configurations
@@ -277,15 +277,15 @@ class ConfigLoader:
 
         # Bifrost configuration
         bifrost = self.get_bifrost_config()
-        print(f"\n🌉 BIFROST GATEWAY:")
+        print("\n🌉 BIFROST GATEWAY:")
         print(f"  Base URL: {bifrost.base_url}")
-        print(f"  Endpoints:")
+        print("  Endpoints:")
         for integration, endpoint in bifrost.endpoints.items():
             full_url = f"{bifrost.base_url.rstrip('/')}/{endpoint}"
             print(f"    {integration}: {full_url}")
 
         # Model configurations
-        print(f"\n🤖 MODEL CONFIGURATIONS (via providers):")
+        print("\n🤖 MODEL CONFIGURATIONS (via providers):")
         for integration, provider in INTEGRATION_TO_PROVIDER_MAP.items():
             if "providers" in self._config and provider in self._config["providers"]:
                 models = self._config["providers"][provider]
@@ -298,7 +298,7 @@ class ConfigLoader:
 
         # API settings
         api_config = self.get_api_config()
-        print(f"\n⚙️  API SETTINGS:")
+        print("\n⚙️  API SETTINGS:")
         print(f"  Timeout: {api_config['timeout']}s")
         print(f"  Max Retries: {api_config['max_retries']}")
         print(f"  Retry Delay: {api_config['retry_delay']}s")

@@ -347,6 +347,38 @@ func ValidateEmbeddingResponse(t *testing.T, response *schemas.BifrostEmbeddingR
 	return result
 }
 
+// ValidateCountTokensResponse performs comprehensive validation for count tokens responses
+func ValidateCountTokensResponse(t *testing.T, response *schemas.BifrostCountTokensResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	validateCountTokensFields(t, response, expectations, &result)
+	collectCountTokensResponseMetrics(response, &result)
+	logValidationResults(t, result, scenarioName)
+
+	return result
+}
+
 // =============================================================================
 // VALIDATION HELPER FUNCTIONS - CHAT RESPONSE
 // =============================================================================
@@ -1065,6 +1097,63 @@ func validateEmbeddingFields(t *testing.T, response *schemas.BifrostEmbeddingRes
 }
 
 // =============================================================================
+// VALIDATION HELPER FUNCTIONS - COUNT TOKENS RESPONSE
+// =============================================================================
+
+func validateCountTokensFields(t *testing.T, response *schemas.BifrostCountTokensResponse, expectations ResponseExpectations, result *ValidationResult) {
+	_ = t
+
+	if strings.TrimSpace(response.Model) == "" && expectations.ShouldHaveModel {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Expected model field but got empty")
+	}
+
+	if response.InputTokens <= 0 {
+		result.Passed = false
+		result.Errors = append(result.Errors, fmt.Sprintf("input_tokens should be > 0, got %d", response.InputTokens))
+	}
+
+	if response.OutputTokens != nil {
+		if *response.OutputTokens < 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("output_tokens should be >= 0, got %d", *response.OutputTokens))
+		}
+	}
+
+	if response.TotalTokens != nil {
+		if *response.TotalTokens < response.InputTokens {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("total_tokens (%d) should be >= input_tokens (%d)", *response.TotalTokens, response.InputTokens))
+		}
+	}
+
+	if response.ExtraFields.RequestType != schemas.CountTokensRequest {
+		result.Passed = false
+		result.Errors = append(result.Errors, fmt.Sprintf("Request type mismatch: expected %s, got %s", schemas.CountTokensRequest, response.ExtraFields.RequestType))
+	}
+
+	if expectations.ProviderSpecific != nil {
+		if expectedProvider, ok := expectations.ProviderSpecific["expected_provider"].(string); ok {
+			if string(response.ExtraFields.Provider) != expectedProvider {
+				result.Passed = false
+				result.Errors = append(result.Errors, fmt.Sprintf("Provider mismatch: expected %s, got %s", expectedProvider, string(response.ExtraFields.Provider)))
+			}
+		}
+	}
+
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency < 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Invalid latency: %d ms (should be non-negative)", response.ExtraFields.Latency))
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
+
+	result.MetricsCollected["count_tokens_validation"] = "completed"
+}
+
+// =============================================================================
 // VALIDATION HELPER FUNCTIONS - LIST MODELS RESPONSE
 // =============================================================================
 
@@ -1156,6 +1245,16 @@ func collectEmbeddingResponseMetrics(response *schemas.BifrostEmbeddingResponse,
 		}
 		result.MetricsCollected["embedding_dimensions"] = dimensions
 	}
+}
+
+func collectCountTokensResponseMetrics(response *schemas.BifrostCountTokensResponse, result *ValidationResult) {
+	result.MetricsCollected["input_tokens"] = response.InputTokens
+	result.MetricsCollected["has_total_tokens"] = response.TotalTokens != nil
+	if response.TotalTokens != nil {
+		result.MetricsCollected["total_tokens"] = *response.TotalTokens
+	}
+	result.MetricsCollected["has_model"] = response.Model != ""
+	result.MetricsCollected["request_type"] = response.ExtraFields.RequestType
 }
 
 // extractChatToolCallNames extracts tool call function names from chat response for error messages

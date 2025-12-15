@@ -59,109 +59,101 @@ Tests all core scenarios using OpenAI SDK directly:
 48. Batch API - batch retrieve
 49. Batch API - batch cancel
 50. Batch API - end-to-end with Files API
+51. Count tokens (Cross-Provider)
 
 Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
 
-import pytest
 import json
 import time
+from typing import Any
+
+import pytest
 from openai import OpenAI
-from typing import List, Dict, Any
 
 from .utils.common import (
-    Config,
-    SIMPLE_CHAT_MESSAGES,
-    MULTI_TURN_MESSAGES,
-    SINGLE_TOOL_CALL_MESSAGES,
-    MULTIPLE_TOOL_CALL_MESSAGES,
-    IMAGE_URL_MESSAGES,
-    IMAGE_BASE64_MESSAGES,
-    MULTIPLE_IMAGES_MESSAGES,
-    COMPLEX_E2E_MESSAGES,
-    INVALID_ROLE_MESSAGES,
-    STREAMING_CHAT_MESSAGES,
-    STREAMING_TOOL_CALL_MESSAGES,
-    WEATHER_TOOL,
     CALCULATOR_TOOL,
-    mock_tool_response,
-    assert_valid_chat_response,
-    assert_has_tool_calls,
-    assert_valid_image_response,
-    assert_valid_error_response,
-    assert_error_propagation,
-    assert_valid_streaming_response,
-    get_content_string,
-    collect_streaming_content,
-    extract_tool_calls,
-    get_api_key,
-    skip_if_no_api_key,
     COMPARISON_KEYWORDS,
-    WEATHER_KEYWORDS,
-    LOCATION_KEYWORDS,
-    # Speech and Transcription utilities
-    SPEECH_TEST_INPUT,
-    SPEECH_TEST_VOICES,
-    TRANSCRIPTION_TEST_INPUTS,
-    generate_test_audio,
-    TEST_AUDIO_DATA,
-    assert_valid_speech_response,
-    assert_valid_transcription_response,
-    assert_valid_streaming_speech_response,
-    assert_valid_streaming_transcription_response,
-    collect_streaming_speech_content,
-    collect_streaming_transcription_content,
-    get_provider_voice,
-    get_provider_voices,
-    # Embeddings utilities
-    EMBEDDINGS_SINGLE_TEXT,
+    COMPLEX_E2E_MESSAGES,
+    EMBEDDINGS_DIFFERENT_TEXTS,
+    EMBEDDINGS_LONG_TEXT,
     EMBEDDINGS_MULTIPLE_TEXTS,
     EMBEDDINGS_SIMILAR_TEXTS,
-    EMBEDDINGS_DIFFERENT_TEXTS,
-    EMBEDDINGS_EMPTY_TEXTS,
-    EMBEDDINGS_LONG_TEXT,
-    assert_valid_embedding_response,
-    assert_valid_embeddings_batch_response,
-    calculate_cosine_similarity,
-    assert_embeddings_similarity,
-    assert_embeddings_dissimilarity,
-    # Responses API utilities
-    RESPONSES_SIMPLE_TEXT_INPUT,
-    RESPONSES_TEXT_WITH_SYSTEM,
+    # Embeddings utilities
+    EMBEDDINGS_SINGLE_TEXT,
+    IMAGE_BASE64_MESSAGES,
+    IMAGE_URL_MESSAGES,
+    INPUT_TOKENS_LONG_TEXT,
+    # Input Tokens utilities
+    INPUT_TOKENS_SIMPLE_TEXT,
+    INPUT_TOKENS_WITH_SYSTEM,
+    INVALID_ROLE_MESSAGES,
+    LOCATION_KEYWORDS,
+    MULTI_TURN_MESSAGES,
+    MULTIPLE_IMAGES_MESSAGES,
+    MULTIPLE_TOOL_CALL_MESSAGES,
     RESPONSES_IMAGE_INPUT,
-    RESPONSES_TOOL_CALL_INPUT,
-    RESPONSES_STREAMING_INPUT,
     RESPONSES_REASONING_INPUT,
-    convert_to_responses_tools,
-    assert_valid_responses_response,
-    assert_responses_has_tool_calls,
-    collect_responses_streaming_content,
-    assert_valid_responses_streaming_chunk,
-    # Text Completions utilities
+    RESPONSES_SIMPLE_TEXT_INPUT,
+    RESPONSES_STREAMING_INPUT,
+    RESPONSES_TEXT_WITH_SYSTEM,
+    RESPONSES_TOOL_CALL_INPUT,
+    SIMPLE_CHAT_MESSAGES,
+    SINGLE_TOOL_CALL_MESSAGES,
+    # Speech and Transcription utilities
+    SPEECH_TEST_INPUT,
+    STREAMING_CHAT_MESSAGES,
+    STREAMING_TOOL_CALL_MESSAGES,
     TEXT_COMPLETION_SIMPLE_PROMPT,
     TEXT_COMPLETION_STREAMING_PROMPT,
-    assert_valid_text_completion_response,
-    collect_text_completion_streaming_content,
-    # Files API utilities
-    create_batch_jsonl_content,
-    assert_valid_file_response,
-    assert_valid_file_list_response,
-    assert_valid_file_delete_response,
+    WEATHER_KEYWORDS,
+    WEATHER_TOOL,
+    Config,
+    assert_error_propagation,
+    assert_has_tool_calls,
+    assert_valid_batch_list_response,
     # Batch API utilities
     assert_valid_batch_response,
-    assert_valid_batch_list_response,
+    assert_valid_chat_response,
+    assert_valid_embedding_response,
+    assert_valid_embeddings_batch_response,
+    assert_valid_error_response,
+    assert_valid_file_delete_response,
+    assert_valid_file_list_response,
+    assert_valid_file_response,
+    assert_valid_image_response,
+    assert_valid_input_tokens_response,
+    assert_valid_responses_response,
+    assert_valid_speech_response,
+    assert_valid_text_completion_response,
+    assert_valid_transcription_response,
+    calculate_cosine_similarity,
+    collect_responses_streaming_content,
+    collect_streaming_content,
+    collect_streaming_transcription_content,
+    collect_text_completion_streaming_content,
+    convert_to_responses_tools,
     create_batch_inline_requests,
+    # Files API utilities
+    create_batch_jsonl_content,
+    extract_tool_calls,
+    generate_test_audio,
+    get_api_key,
+    get_content_string,
+    get_provider_voice,
+    get_provider_voices,
+    mock_tool_response,
+    skip_if_no_api_key,
 )
-from .utils.config_loader import get_model, get_config
+from .utils.config_loader import get_config, get_model
 from .utils.parametrize import (
-    get_cross_provider_params_for_scenario,
     format_provider_model,
+    get_cross_provider_params_for_scenario,
 )
-from .utils.config_loader import get_config
 
 
 # Helper functions (defined early for use in test methods)
-def extract_openai_tool_calls(response: Any) -> List[Dict[str, Any]]:
+def extract_openai_tool_calls(response: Any) -> list[dict[str, Any]]:
     """Extract tool calls from OpenAI response format with proper type checking"""
     tool_calls = []
 
@@ -197,14 +189,14 @@ def extract_openai_tool_calls(response: Any) -> List[Dict[str, Any]]:
     return tool_calls
 
 
-def convert_to_openai_tools(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def convert_to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert common tool format to OpenAI format"""
     return [{"type": "function", "function": tool} for tool in tools]
 
 
 def get_provider_openai_client(provider):
     """Create OpenAI client for given provider (provider passed via extra_body/extra_query)"""
-    from .utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key(provider)
     base_url = get_integration_url("openai")
@@ -221,7 +213,7 @@ def get_provider_openai_client(provider):
 @pytest.fixture
 def openai_client():
     """Create OpenAI client for testing"""
-    from .utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key("openai")
     base_url = get_integration_url("openai")
@@ -1140,6 +1132,7 @@ class TestOpenAIIntegration:
         response = openai_client.models.list()
         assert response.data is not None
         assert len(response.data) > 0
+
 
     # =========================================================================
     # RESPONSES API TEST CASES
@@ -2554,3 +2547,65 @@ class TestOpenAIIntegration:
                 print(f"Cleanup: Deleted file {uploaded_file.id}")
             except Exception as e:
                 print(f"Cleanup warning: Failed to delete file: {e}")
+    
+    # =========================================================================
+    # INPUT TOKENS / TOKEN COUNTING TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_51a_input_tokens_simple_text(self, openai_client, provider, model):
+        """Test Case 51a: Input tokens count with simple text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = openai_client.responses.input_tokens.count(
+            model=format_provider_model(provider, model),
+            input=INPUT_TOKENS_SIMPLE_TEXT,
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "openai")
+
+        # Simple text should have a reasonable token count (between 3-20 tokens)
+        assert 3 <= response.input_tokens <= 20, (
+            f"Simple text should have 3-20 tokens, got {response.input_tokens}"
+        )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_51b_input_tokens_with_system_message(self, openai_client, provider, model):
+        """Test Case 51b: Input tokens count with system message"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = openai_client.responses.input_tokens.count(
+            model=format_provider_model(provider, model),
+            input=INPUT_TOKENS_WITH_SYSTEM,
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "openai")
+
+        # With system message should have more tokens than simple text
+        assert response.input_tokens > 2, (
+            f"With system message should have >2 tokens, got {response.input_tokens}"
+        )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_51c_input_tokens_long_text(self, openai_client, provider, model):
+        """Test Case 51c: Input tokens count with long text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = openai_client.responses.input_tokens.count(
+            model=format_provider_model(provider, model),
+            input=INPUT_TOKENS_LONG_TEXT,
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "openai")
+
+        # Long text should have significantly more tokens
+        assert response.input_tokens > 100, (
+            f"Long text should have >100 tokens, got {response.input_tokens}"
+        )
+

@@ -2208,3 +2208,8 @@ func (provider *AzureProvider) BatchResults(ctx context.Context, keys []schemas.
 
 	return batchResultsResp, nil
 }
+
+// CountTokens is not supported by the Azure provider.
+func (provider *AzureProvider) CountTokens(_ context.Context, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}

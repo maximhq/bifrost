@@ -105,8 +105,9 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"speech_stream",
 		"transcription",
 		"transcription_stream",
+		"count_tokens",
 	],
-	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream"],
+	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
 	gemini: [
 		"list_models",
 		"chat_completion",
@@ -118,8 +119,9 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"transcription_stream",
 		"speech",
 		"speech_stream",
+		"count_tokens",
 	],
-	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding"],
+	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
 	bedrock: ["list_models", "text_completion", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding"],
 };
 

@@ -65,6 +65,7 @@ func TestGemini(t *testing.T) {
 			FileDelete:            true,
 			FileContent:           false,
 			FileBatchInput:        true,
+			CountTokens:           true,
 		},
 	}
 

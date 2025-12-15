@@ -104,6 +104,7 @@ func TestBedrock(t *testing.T) {
 			FileDelete:            true,
 			FileContent:           true,
 			FileBatchInput:        true,
+			CountTokens:           false, // Not supported
 		},
 	}
 

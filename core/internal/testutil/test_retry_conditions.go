@@ -842,3 +842,79 @@ func (c *InvalidEmbeddingDimensionCondition) ShouldRetry(response *schemas.Bifro
 func (c *InvalidEmbeddingDimensionCondition) GetConditionName() string {
 	return "InvalidEmbeddingDimension"
 }
+
+// =============================================================================
+// COUNT TOKENS CONDITIONS
+// =============================================================================
+
+// EmptyCountTokensCondition checks for missing or invalid token counts
+type EmptyCountTokensCondition struct{}
+
+func (c *EmptyCountTokensCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {
+	// If there's an error, let other conditions handle it
+	if err != nil {
+		return false, ""
+	}
+
+	// No response at all
+	if response == nil {
+		return true, "response is nil"
+	}
+
+	// Check if count tokens response exists
+	if response.CountTokensResponse == nil {
+		return true, "count tokens response is nil"
+	}
+
+	countTokensResp := response.CountTokensResponse
+
+	// Check if token counts are valid
+	if countTokensResp.InputTokens <= 0 {
+		return true, "input_tokens is zero or negative"
+	}
+
+	// Check if total tokens is at least as large as input tokens
+	if countTokensResp.TotalTokens != nil {
+		if *countTokensResp.TotalTokens < countTokensResp.InputTokens {
+			return true, fmt.Sprintf("total_tokens (%d) is less than input_tokens (%d)", *countTokensResp.TotalTokens, countTokensResp.InputTokens)
+		}
+	}
+
+	return false, ""
+}
+
+func (c *EmptyCountTokensCondition) GetConditionName() string {
+	return "EmptyCountTokens"
+}
+
+// InvalidCountTokensCondition checks for invalid token count data
+type InvalidCountTokensCondition struct{}
+
+func (c *InvalidCountTokensCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {
+	if err != nil || response == nil {
+		return false, ""
+	}
+
+	// Check if count tokens response exists
+	if response.CountTokensResponse == nil {
+		return false, ""
+	}
+
+	countTokensResp := response.CountTokensResponse
+
+	// Check if model is set
+	if strings.TrimSpace(countTokensResp.Model) == "" {
+		return true, "model field is empty"
+	}
+
+	// Check if request type is set correctly
+	if countTokensResp.ExtraFields.RequestType != schemas.CountTokensRequest {
+		return true, fmt.Sprintf("invalid request type: got %s, expected %s", countTokensResp.ExtraFields.RequestType, schemas.CountTokensRequest)
+	}
+
+	return false, ""
+}
+
+func (c *InvalidCountTokensCondition) GetConditionName() string {
+	return "InvalidCountTokens"
+}

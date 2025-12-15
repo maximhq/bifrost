@@ -37,6 +37,10 @@
       "description": "Endpoints for creating vector embeddings from text."
     },
     {
+      "name": "Tokens",
+      "description": "Endpoints for token counting operations."
+    },
+    {
       "name": "Audio",
       "description": "Endpoints for audio processing, including speech synthesis and transcription."
     },
@@ -301,6 +305,39 @@
               "text/event-stream": {
                 "schema": {
                   "$ref": "#/components/schemas/BifrostStream"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/count_tokens": {
+      "post": {
+        "summary": "Count Tokens",
+        "description": "Counts tokens for the provided messages and model.",
+        "operationId": "countTokens",
+        "tags": [
+          "Bifrost Core",
+          "Tokens"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountTokensRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token count response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountTokensResponse"
                 }
               }
             }
@@ -6787,6 +6824,245 @@
           }
         }
       },
+      "BifrostCost": {
+        "type": "object",
+        "properties": {
+          "input_tokens_cost": {
+            "type": "number"
+          },
+          "output_tokens_cost": {
+            "type": "number"
+          },
+          "request_cost": {
+            "type": "number"
+          },
+          "total_cost": {
+            "type": "number"
+          }
+        }
+      },
+      "ResponsesResponseInputTokens": {
+        "type": "object",
+        "properties": {
+          "text_tokens": {
+            "type": "integer"
+          },
+          "audio_tokens": {
+            "type": "integer"
+          },
+          "image_tokens": {
+            "type": "integer"
+          },
+          "cached_tokens": {
+            "type": "integer",
+            "description": "Tokens read from or used to create cache entries."
+          }
+        }
+      },
+      "ResponsesResponseOutputTokens": {
+        "type": "object",
+        "properties": {
+          "text_tokens": {
+            "type": "integer"
+          },
+          "accepted_prediction_tokens": {
+            "type": "integer"
+          },
+          "audio_tokens": {
+            "type": "integer"
+          },
+          "reasoning_tokens": {
+            "type": "integer"
+          },
+          "rejected_prediction_tokens": {
+            "type": "integer"
+          },
+          "citation_tokens": {
+            "type": "integer"
+          },
+          "num_search_queries": {
+            "type": "integer"
+          },
+          "cached_tokens": {
+            "type": "integer",
+            "description": "Tokens used to create cache entries."
+          }
+        }
+      },
+      "ResponsesResponseUsage": {
+        "type": "object",
+        "properties": {
+          "input_tokens": {
+            "type": "integer"
+          },
+          "input_tokens_details": {
+            "$ref": "#/components/schemas/ResponsesResponseInputTokens"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "output_tokens_details": {
+            "$ref": "#/components/schemas/ResponsesResponseOutputTokens"
+          },
+          "total_tokens": {
+            "type": "integer"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/BifrostCost"
+          }
+        }
+      },
+      "CountTokensRequest": {
+        "type": "object",
+        "required": [
+          "model",
+          "input"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Model identifier in 'provider/model' format"
+          },
+          "input": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesMessage"
+            },
+            "description": "Messages to tokenize",
+            "minItems": 1
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fallback models in 'provider/model' format"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResponsesTool"
+            }
+          },
+          "stream": {
+            "type": "boolean"
+          },
+          "stream_format": {
+            "type": "string"
+          },
+          "background": {
+            "type": "boolean"
+          },
+          "conversation": {
+            "type": "string"
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "max_tool_calls": {
+            "type": "integer"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parallel_tool_calls": {
+            "type": "boolean"
+          },
+          "previous_response_id": {
+            "type": "string"
+          },
+          "prompt_cache_key": {
+            "type": "string"
+          },
+          "reasoning": {
+            "$ref": "#/components/schemas/ResponsesParametersReasoning"
+          },
+          "safety_identifier": {
+            "type": "string"
+          },
+          "service_tier": {
+            "type": "string"
+          },
+          "stream_options": {
+            "$ref": "#/components/schemas/ResponsesStreamOptions"
+          },
+          "store": {
+            "type": "boolean"
+          },
+          "temperature": {
+            "type": "number"
+          },
+          "text": {
+            "$ref": "#/components/schemas/ResponsesTextConfig"
+          },
+          "top_logprobs": {
+            "type": "integer"
+          },
+          "top_p": {
+            "type": "number"
+          },
+          "tool_choice": {
+            "$ref": "#/components/schemas/ResponsesToolChoice"
+          },
+          "truncation": {
+            "type": "string"
+          }
+        }
+      },
+      "CountTokensResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string",
+            "description": "Response object type"
+          },
+          "model": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "input_tokens_details": {
+            "$ref": "#/components/schemas/ResponsesResponseInputTokens",
+            "description": "Detailed input token breakdown. Only populated for Vertex and Gemini providers."
+          },
+          "tokens": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "Array of token IDs"
+          },
+          "token_strings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Array of token strings (if available)"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_tokens": {
+            "type": "integer",
+            "nullable": true
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostResponseExtraFields"
+          }
+        }
+      },
       "ResponsesParametersReasoning": {
         "type": "object",
         "properties": {
@@ -7691,9 +7967,29 @@
       "BifrostLLMUsage": {
         "type": "object",
         "properties": {
-          "prompt_tokens": { "type": "integer" },
-          "completion_tokens": { "type": "integer" },
-          "total_tokens": { "type": "integer" }
+          "prompt_tokens": {
+            "type": "integer",
+            "description": "Number of prompt tokens"
+          },
+          "prompt_tokens_details": {
+            "$ref": "#/components/schemas/ResponsesResponseInputTokens",
+            "description": "Breakdown of prompt tokens"
+          },
+          "completion_tokens": {
+            "type": "integer",
+            "description": "Number of completion tokens"
+          },
+          "completion_tokens_details": {
+            "$ref": "#/components/schemas/ResponsesResponseOutputTokens",
+            "description": "Breakdown of completion tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "description": "Total tokens for the request"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/BifrostCost"
+          }
         }
       },
       "SpeechInput": {

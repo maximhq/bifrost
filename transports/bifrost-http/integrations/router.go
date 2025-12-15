@@ -176,6 +176,10 @@ type FileDeleteResponseConverter func(ctx *context.Context, resp *schemas.Bifros
 // Note: This may return binary data or a wrapper object depending on the integration.
 type FileContentResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileContentResponse) (interface{}, error)
 
+// CountTokensResponseConverter is a function that converts BifrostCountTokensResponse to integration-specific format.
+// It takes a BifrostCountTokensResponse and returns the format expected by the specific integration.
+type CountTokensResponseConverter func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error)
+
 // TextStreamResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific streaming format.
 // It takes a BifrostTextCompletionResponse and returns the event type and the streaming format expected by the specific integration.
 type TextStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error)
@@ -288,6 +292,7 @@ type RouteConfig struct {
 	FileRetrieveResponseConverter  FileRetrieveResponseConverter  // Function to convert BifrostFileRetrieveResponse to integration format
 	FileDeleteResponseConverter    FileDeleteResponseConverter    // Function to convert BifrostFileDeleteResponse to integration format
 	FileContentResponseConverter   FileContentResponseConverter   // Function to convert BifrostFileContentResponse to integration format
+	CountTokensResponseConverter   CountTokensResponseConverter   // Function to convert BifrostCountTokensResponse to integration format
 	ErrorConverter                 ErrorConverter                 // Function to convert BifrostError to integration format (SHOULD NOT BE NIL)
 	StreamConfig                   *StreamConfig                  // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback                    PreRequestCallback             // Optional: called after parsing but before Bifrost processing
@@ -680,6 +685,33 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
+	case bifrostReq.CountTokensRequest != nil:
+		countTokensResponse, bifrostErr := g.client.CountTokensRequest(requestCtx, bifrostReq.CountTokensRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, countTokensResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if countTokensResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		if config.CountTokensResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "CountTokensResponseConverter not configured"))
+			return
+		}
+		response, err = config.CountTokensResponseConverter(bifrostCtx, countTokensResponse)
 	default:
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid request type"))
 		return

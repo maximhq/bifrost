@@ -173,6 +173,7 @@ type AllowedRequests struct {
 	ChatCompletionStream bool `json:"chat_completion_stream"`
 	Responses            bool `json:"responses"`
 	ResponsesStream      bool `json:"responses_stream"`
+	CountTokens          bool `json:"count_tokens"`
 	Embedding            bool `json:"embedding"`
 	Speech               bool `json:"speech"`
 	SpeechStream         bool `json:"speech_stream"`
@@ -211,6 +212,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
+	case CountTokensRequest:
+		return ar.CountTokens
 	case EmbeddingRequest:
 		return ar.Embedding
 	case SpeechRequest:
@@ -329,6 +332,8 @@ type Provider interface {
 	Responses(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
 	ResponsesStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStream, *BifrostError)
+	// CountTokens performs a count tokens request
+	CountTokens(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx context.Context, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Speech performs a text to speech request

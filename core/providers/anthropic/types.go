@@ -599,3 +599,8 @@ func parseAnthropicFileTimestamp(timestamp string) int64 {
 	}
 	return t.Unix()
 }
+
+// AnthropicCountTokensResponse models the payload returned by Anthropic's count tokens endpoint.
+type AnthropicCountTokensResponse struct {
+	InputTokens int `json:"input_tokens"`
+}

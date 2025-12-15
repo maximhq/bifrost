@@ -5,12 +5,11 @@ that can be used across all integration-specific test files.
 """
 
 import ast
-import base64
 import json
 import operator
 import os
-from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 
 # Test Configuration
@@ -682,11 +681,11 @@ def safe_eval_arithmetic(expression: str) -> float:
         # Evaluate the AST
         return eval_node(tree.body)
     except SyntaxError as e:
-        raise SyntaxError(f"Invalid syntax in expression '{expression}': {e}")
+        raise SyntaxError(f"Invalid syntax in expression '{expression}': {e}") from e
     except ZeroDivisionError:
-        raise ZeroDivisionError(f"Division by zero in expression '{expression}'")
+        raise ZeroDivisionError(f"Division by zero in expression '{expression}'") from None
     except Exception as e:
-        raise ValueError(f"Error evaluating expression '{expression}': {e}")
+        raise ValueError(f"Error evaluating expression '{expression}': {e}") from e
 
 
 def mock_tool_response(tool_name: str, args: Dict[str, Any]) -> str:
@@ -951,7 +950,7 @@ def assert_valid_error_response(response_or_exception: Any, expected_invalid_rol
                     error_message = error_data.get("message", str(error_data))
             else:
                 error_message = str(error_data)
-        except:
+        except Exception:
             error_message = str(response_or_exception)
 
     elif hasattr(response_or_exception, "message"):
@@ -1311,9 +1310,9 @@ def get_provider_voices(provider: str, count: int = 3) -> List[str]:
 # Generate a simple test audio file (sine wave) for transcription testing
 def generate_test_audio() -> bytes:
     """Generate a simple sine wave audio file for testing transcription"""
-    import wave
     import math
     import struct
+    import wave
 
     # Audio parameters
     sample_rate = 16000  # 16kHz sample rate
@@ -1567,7 +1566,7 @@ def calculate_cosine_similarity(embedding1: List[float], embedding2: List[float]
     assert len(embedding1) == len(embedding2), "Embeddings must have the same dimension"
 
     # Calculate dot product
-    dot_product = sum(a * b for a, b in zip(embedding1, embedding2))
+    dot_product = sum(a * b for a, b in zip(embedding1, embedding2, strict=False))
 
     # Calculate magnitudes
     magnitude1 = math.sqrt(sum(a * a for a in embedding1))
@@ -2066,7 +2065,7 @@ def get_content_string(content: Any) -> str:
             if isinstance(c, dict):
                 parts.append(c.get("text", ""))
             elif hasattr(c, "text"):
-                parts.append(getattr(c, "text") or "")
+                parts.append(c.text or "")
         return " ".join(filter(None, parts))
     else:
         return ""
@@ -2538,3 +2537,51 @@ def get_content_string_with_summary(response: Any) -> tuple[str, bool]:
                 elif isinstance(message.summary, str):
                     content += " " + message.summary
     return content, has_reasoning_content
+
+
+# =========================================================================
+# INPUT TOKENS / TOKEN COUNTING UTILITIES
+# =========================================================================
+
+# Test inputs for token counting
+INPUT_TOKENS_SIMPLE_TEXT = "Hello, how are you?"
+INPUT_TOKENS_LONG_TEXT = "This is a longer text that should have more tokens. " * 20
+INPUT_TOKENS_WITH_SYSTEM = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"},
+]
+INPUT_TOKENS_WITH_TOOLS = {
+    "messages": [{"role": "user", "content": "What's the weather in Paris?"}],
+    "tools": [WEATHER_TOOL],
+}
+
+
+def assert_valid_input_tokens_response(response: Any, library: str):
+    """
+    Assert that a response from input_tokens endpoint is valid.
+    
+    Args:
+        response: The response object from input_tokens.count()
+        library: Name of the library/integration used (e.g., 'openai', 'google').
+    """
+    assert response is not None, "Response should not be None"
+
+    if library == "google":
+        assert hasattr(response, "total_tokens"), "Response should have total_tokens attribute for Gemini"
+        assert isinstance(response.total_tokens, int), "total_tokens should be a int for Gemini"
+        assert response.total_tokens > 0, f"total_tokens should be positive, got {response.total_tokens}"
+    elif library == "openai":
+        assert isinstance(response.object, str), "object should be a string"
+        assert (
+            "input_tokens" in response.object
+        ), f"object should indicate input_tokens, got {response.object}"
+
+        assert isinstance(response.input_tokens, int), "input_tokens should be an integer"
+        assert response.input_tokens > 0, (
+            f"input_tokens should be positive, got {response.input_tokens}"
+        )
+    else:
+        assert hasattr(response, "input_tokens"), "Response should have input_tokens attribute"
+        assert isinstance(response.input_tokens, int), "input_tokens should be an integer"
+        assert response.input_tokens > 0, f"input_tokens should be positive, got {response.input_tokens}"
+    

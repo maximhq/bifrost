@@ -39,71 +39,63 @@ Tests all core scenarios using Anthropic SDK directly:
 28. Prompt caching - system message checkpoint
 29. Prompt caching - messages checkpoint
 30. Prompt caching - tools checkpoint
+31. Count tokens (Cross-Provider)
 """
 
 import logging
-from uuid import uuid4
+from typing import Any, Dict, List
+
 import pytest
-import base64
-import requests
 from anthropic import Anthropic
-from typing import List, Dict, Any
 
 from .utils.common import (
-    Config,
-    SIMPLE_CHAT_MESSAGES,
-    MULTI_TURN_MESSAGES,
-    SINGLE_TOOL_CALL_MESSAGES,
-    MULTIPLE_TOOL_CALL_MESSAGES,
-    IMAGE_URL,
-    BASE64_IMAGE,
-    INVALID_ROLE_MESSAGES,
-    STREAMING_CHAT_MESSAGES,
-    STREAMING_TOOL_CALL_MESSAGES,
-    WEATHER_TOOL,
-    CALCULATOR_TOOL,
-    ALL_TOOLS,
-    PROMPT_CACHING_TOOLS,
-    create_batch_jsonl_content,
-    mock_tool_response,
-    assert_valid_chat_response,
-    assert_has_tool_calls,
-    assert_valid_image_response,
-    assert_valid_error_response,
-    assert_error_propagation,
-    assert_valid_streaming_response,
-    collect_streaming_content,
-    extract_tool_calls,
-    get_api_key,
-    skip_if_no_api_key,
-    COMPARISON_KEYWORDS,
-    WEATHER_KEYWORDS,
-    LOCATION_KEYWORDS,
     # Anthropic-specific test data
     ANTHROPIC_THINKING_PROMPT,
     ANTHROPIC_THINKING_STREAMING_PROMPT,
+    BASE64_IMAGE,
+    CALCULATOR_TOOL,
+    COMPARISON_KEYWORDS,
+    IMAGE_URL,
+    INPUT_TOKENS_LONG_TEXT,
+    INPUT_TOKENS_SIMPLE_TEXT,
+    INPUT_TOKENS_WITH_SYSTEM,
+    INVALID_ROLE_MESSAGES,
+    LOCATION_KEYWORDS,
+    MULTI_TURN_MESSAGES,
+    MULTIPLE_TOOL_CALL_MESSAGES,
     PROMPT_CACHING_LARGE_CONTEXT,
-    # Files API utilities
-    assert_valid_file_response,
-    assert_valid_file_list_response,
-    assert_valid_file_delete_response,
-    # Batch API utilities
-    create_batch_inline_requests,
+    PROMPT_CACHING_TOOLS,
+    SIMPLE_CHAT_MESSAGES,
+    SINGLE_TOOL_CALL_MESSAGES,
+    STREAMING_CHAT_MESSAGES,
+    STREAMING_TOOL_CALL_MESSAGES,
+    WEATHER_KEYWORDS,
+    WEATHER_TOOL,
+    Config,
+    assert_has_tool_calls,
     assert_valid_batch_inline_response,
-    assert_valid_batch_list_response,
+    assert_valid_chat_response,
+    assert_valid_image_response,
+    assert_valid_input_tokens_response,
+    collect_streaming_content,
+    # Files API utilities
+    create_batch_inline_requests,
+    create_batch_jsonl_content,
+    extract_tool_calls,
+    get_api_key,
+    mock_tool_response,
 )
-from .utils.config_loader import get_model
+from .utils.config_loader import get_config, get_model
 from .utils.parametrize import (
-    get_cross_provider_params_for_scenario,
     format_provider_model,
+    get_cross_provider_params_for_scenario,
 )
-from .utils.config_loader import get_config
 
 
 @pytest.fixture
 def anthropic_client():
     """Create Anthropic client for testing"""
-    from .utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key("anthropic")
     base_url = get_integration_url("anthropic")
@@ -135,7 +127,7 @@ def test_config():
 
 def get_provider_anthropic_client(provider):
     """Create Anthropic client with x-model-provider header for given provider"""
-    from .utils.config_loader import get_integration_url, get_config
+    from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key("anthropic")
     base_url = get_integration_url("anthropic")
@@ -539,7 +531,7 @@ class TestAnthropicIntegration:
         # If there were tool calls, handle them
         tool_calls = extract_anthropic_tool_calls(response1)
         if tool_calls:
-            for i, tool_call in enumerate(tool_calls):
+            for _i, tool_call in enumerate(tool_calls):
                 tool_response = mock_tool_response(tool_call["name"], tool_call["arguments"])
 
                 # Find the corresponding tool use ID
@@ -824,7 +816,7 @@ class TestAnthropicIntegration:
                     if event.content_block and event.content_block.type:
                         if event.content_block.type == "thinking":
                             has_thinking_block_start = True
-                            print(f"Thinking block started")
+                            print("Thinking block started")
 
                 # Handle content_block_delta events
                 elif event_type == "content_block_delta":
@@ -1274,7 +1266,7 @@ class TestAnthropicIntegration:
 
             # Validate response
             assert cancelled_batch is not None, "Cancelled batch should not be None"
-            assert cancelled_batch.id == batch_id, f"Batch ID should match"
+            assert cancelled_batch.id == batch_id, "Batch ID should match"
             # Anthropic uses different status values
             assert cancelled_batch.processing_status in [
                 "canceling",
@@ -1333,7 +1325,7 @@ class TestAnthropicIntegration:
                     or "in_progress" in error_str
                     or "processing" in error_str
                 ):
-                    print(f"Info: Batch results not yet available (batch still processing)")
+                    print("Info: Batch results not yet available (batch still processing)")
                 else:
                     print(f"Info: Could not retrieve results: {results_error}")
 
@@ -1606,6 +1598,78 @@ class TestAnthropicIntegration:
         
         print(f"✓ Tools caching validated - Cache created: {cache_write_tokens} tokens, "
               f"Cache read: {cache_read_tokens} tokens")
+    
+    # =========================================================================
+    # INPUT TOKENS / TOKEN COUNTING TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_31a_input_tokens_simple_text(self, anthropic_client, test_config, provider, model):
+        """Test Case 31a: Input tokens count with simple text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = anthropic_client.beta.messages.count_tokens(
+            model=format_provider_model(provider, model),
+            messages=[{"role": "user", "content": INPUT_TOKENS_SIMPLE_TEXT}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "anthropic")
+
+        # Simple text should have a reasonable token count (between 3-20 tokens)
+        assert 3 <= response.input_tokens <= 20, (
+            f"Simple text should have 3-20 tokens, got {response.input_tokens}"
+        )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_31b_input_tokens_with_system_message(self, anthropic_client, test_config, provider, model):
+        """Test Case 31b: Input tokens count with system message"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        # Convert to Anthropic format
+        messages = convert_to_anthropic_messages(INPUT_TOKENS_WITH_SYSTEM)
+        
+        # Extract system message if present
+        system_message = None
+        for msg in INPUT_TOKENS_WITH_SYSTEM:
+            if msg.get("role") == "system":
+                system_message = msg.get("content")
+                break
+            
+        response = anthropic_client.beta.messages.count_tokens(
+            model=format_provider_model(provider, model),
+            system=system_message,
+            messages=messages,
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "anthropic")
+
+        # With system message should have more tokens than simple text
+        assert response.input_tokens > 2, (
+            f"With system message should have >2 tokens, got {response.input_tokens}"
+        )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_31c_input_tokens_long_text(self, anthropic_client, test_config, provider, model):
+        """Test Case 31c: Input tokens count with long text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = anthropic_client.beta.messages.count_tokens(
+            model=format_provider_model(provider, model),
+            messages=[{"role": "user", "content": INPUT_TOKENS_LONG_TEXT}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "anthropic")
+
+        # Long text should have significantly more tokens
+        assert response.input_tokens > 100, (
+            f"Long text should have >100 tokens, got {response.input_tokens}"
+        )
 
 
 # Additional helper functions specific to Anthropic

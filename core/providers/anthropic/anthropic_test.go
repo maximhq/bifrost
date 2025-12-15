@@ -61,6 +61,7 @@ func TestAnthropic(t *testing.T) {
 			FileDelete:            true,
 			FileContent:           false,
 			FileBatchInput:        false, // Anthropic batch API only supports inline requests, not file-based input
+			CountTokens:           true,
 		},
 	}
 

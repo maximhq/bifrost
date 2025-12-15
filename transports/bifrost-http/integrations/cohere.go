@@ -96,5 +96,33 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 	})
 
+	// Tokenize endpoint (v1/tokenize)
+	routes = append(routes, RouteConfig{
+		Path:   pathPrefix + "/v1/tokenize",
+		Method: "POST",
+		GetRequestTypeInstance: func() interface{} {
+			return &cohere.CohereCountTokensRequest{}
+		},
+		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			if cohereReq, ok := req.(*cohere.CohereCountTokensRequest); ok {
+				return &schemas.BifrostRequest{
+					CountTokensRequest: cohereReq.ToBifrostResponsesRequest(),
+				}, nil
+			}
+			return nil, errors.New("invalid count tokens request type")
+		},
+		CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Cohere {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	})
+
 	return routes
 }

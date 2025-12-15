@@ -147,6 +147,15 @@ var transcriptionParamsKnownFields = map[string]bool{
 	"file_format":     true,
 }
 
+var countTokensParamsKnownFields = map[string]bool{
+	"model":        true,
+	"messages":     true,
+	"fallbacks":    true,
+	"tools":        true,
+	"instructions": true,
+	"text":         true,
+}
+
 var batchCreateParamsKnownFields = map[string]bool{
 	"model":             true,
 	"input_file_id":     true,
@@ -288,6 +297,47 @@ type TranscriptionRequest struct {
 	*schemas.TranscriptionParameters
 }
 
+type CountTokensRequest struct {
+	Messages []schemas.ResponsesMessage `json:"messages"`
+	Tools    []schemas.ResponsesTool    `json:"tools,omitempty"`
+	BifrostParams
+	*schemas.ResponsesParameters
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for CountTokensRequest.
+// This is needed because ResponsesParameters has a custom UnmarshalJSON method,
+// which interferes with sonic's handling of the embedded BifrostParams struct.
+func (cr *CountTokensRequest) UnmarshalJSON(data []byte) error {
+	// First, unmarshal BifrostParams fields directly
+	type bifrostAlias BifrostParams
+	var bp bifrostAlias
+	if err := sonic.Unmarshal(data, &bp); err != nil {
+		return err
+	}
+	cr.BifrostParams = BifrostParams(bp)
+
+	// Unmarshal messages and tools
+	var msgStruct struct {
+		Messages []schemas.ResponsesMessage `json:"messages"`
+		Tools    []schemas.ResponsesTool    `json:"tools,omitempty"`
+	}
+	if err := sonic.Unmarshal(data, &msgStruct); err != nil {
+		return err
+	}
+	cr.Messages = msgStruct.Messages
+	cr.Tools = msgStruct.Tools
+
+	// Unmarshal ResponsesParameters (which has its own custom unmarshaller)
+	if cr.ResponsesParameters == nil {
+		cr.ResponsesParameters = &schemas.ResponsesParameters{}
+	}
+	if err := sonic.Unmarshal(data, cr.ResponsesParameters); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // BatchCreateRequest is a bifrost batch create request
 type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
@@ -373,6 +423,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
+	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, middlewares...))
 
 	// Batch API endpoints
 	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, middlewares...))
@@ -983,6 +1034,81 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// countTokens handles POST /v1/count_tokens - Process count tokens requests
+func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
+	// Parse request body
+	req := CountTokensRequest{
+		ResponsesParameters: &schemas.ResponsesParameters{},
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		return
+	}
+
+	// Create BifrostResponsesRequest directly using segregated structure
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	// Parse fallbacks using helper function
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Extract extra params
+	if req.ResponsesParameters == nil {
+		req.ResponsesParameters = &schemas.ResponsesParameters{}
+	}
+	extraParams, err := extractExtraParams(ctx.PostBody(), countTokensParamsKnownFields)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
+	} else {
+		req.ResponsesParameters.ExtraParams = extraParams
+	}
+
+	// Set tools if provided
+	if len(req.Tools) > 0 {
+		req.ResponsesParameters.Tools = req.Tools
+	}
+
+	// Create segregated BifrostResponsesRequest
+	// Validate messages are present
+	if len(req.Messages) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "messages is required for count tokens")
+		return
+	}
+
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.Messages,
+		Params:    req.ResponsesParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel() // Ensure cleanup on function exit
+
+	// Make count tokens request
+	response, bifrostErr := h.client.CountTokensRequest(*bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, response)
 }
 
 // handleStreamingTextCompletion handles streaming text completion requests using Server-Sent Events (SSE)

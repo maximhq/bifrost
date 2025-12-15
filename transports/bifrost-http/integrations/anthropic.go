@@ -276,6 +276,34 @@ func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *cont
 	return errors.New("invalid request type for Anthropic list models")
 }
 
+// CreateAnthropicCountTokensRouteConfigs creates route configurations for Anthropic count tokens endpoint.
+func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	return []RouteConfig{
+		{
+			Type:   RouteConfigTypeAnthropic,
+			Path:   pathPrefix + "/v1/messages/count_tokens",
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &anthropic.AnthropicMessageRequest{}
+			},
+			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					return &schemas.BifrostRequest{
+						CountTokensRequest: anthropicReq.ToBifrostResponsesRequest(*ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid request type for Anthropic count tokens")
+			},
+			CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+				return anthropic.ToAnthropicCountTokensResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				return anthropic.ToAnthropicChatCompletionError(err)
+			},
+		},
+	}
+}
+
 // CreateAnthropicBatchRouteConfigs creates route configurations for Anthropic Batch API endpoints.
 func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -858,6 +886,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
 	routes := CreateAnthropicRouteConfigs("/anthropic")
 	routes = append(routes, CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...)
+	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicBatchRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 

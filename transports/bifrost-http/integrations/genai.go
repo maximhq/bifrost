@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
+
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 
@@ -35,7 +36,11 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
-				if geminiReq.IsEmbedding {
+				if geminiReq.IsCountTokens {
+					return &schemas.BifrostRequest{
+						CountTokensRequest: geminiReq.ToBifrostResponsesRequest(),
+					}, nil
+				} else if geminiReq.IsEmbedding {
 					return &schemas.BifrostRequest{
 						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(),
 					}, nil
@@ -66,6 +71,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		TranscriptionResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			return gemini.ToGeminiTranscriptionResponse(resp), nil
+		},
+		CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			return gemini.ToGeminiCountTokensResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -366,6 +374,9 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 	// Check if this is a streaming request
 	isStreaming := strings.HasSuffix(modelStr, ":streamGenerateContent")
 
+	// Check if this is a count tokens request
+	isCountTokens := strings.HasSuffix(modelStr, ":countTokens")
+
 	// Remove Google GenAI API endpoint suffixes if present
 	for _, sfx := range []string{
 		":streamGenerateContent",
@@ -384,15 +395,17 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 	}
 
 	// Set the model and flags in the request
-	if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
-		geminiReq.Model = modelStr
-		geminiReq.Stream = isStreaming
-		geminiReq.IsEmbedding = isEmbedding
+	switch r := req.(type) {
+	case *gemini.GeminiGenerationRequest:
+		r.Model = modelStr
+		r.Stream = isStreaming
+		r.IsEmbedding = isEmbedding
+		r.IsCountTokens = isCountTokens
 
 		// Detect if this is a speech or transcription request by examining the request body
 		// Speech detection takes priority over transcription
-		geminiReq.IsSpeech = isSpeechRequest(geminiReq)
-		geminiReq.IsTranscription = isTranscriptionRequest(geminiReq)
+		r.IsSpeech = isSpeechRequest(r)
+		r.IsTranscription = isTranscriptionRequest(r)
 
 		return nil
 	}

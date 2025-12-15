@@ -2742,3 +2742,7 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	}
 	return path, deployment
 }
+
+func (provider *BedrockProvider) CountTokens(_ context.Context, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
+}

@@ -87,12 +87,8 @@ func getRequestBodyForAnthropicResponses(ctx context.Context, request *schemas.B
 // getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests
 // for custom/fine-tuned models, it uses the projectNumber
 // for gemini models, it uses the projectID
-func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, isStreaming bool) string {
+func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, method string) string {
 	var url string
-	method := ":generateContent"
-	if isStreaming {
-		method = ":streamGenerateContent"
-	}
 	if schemas.IsAllDigitsASCII(deployment) {
 		// Custom/fine-tuned models use projectNumber
 		if region == "global" {

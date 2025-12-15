@@ -110,6 +110,7 @@ const (
 	FileRetrieveRequest         RequestType = "file_retrieve"
 	FileDeleteRequest           RequestType = "file_delete"
 	FileContentRequest          RequestType = "file_content"
+	CountTokensRequest          RequestType = "count_tokens"
 	UnknownRequest              RequestType = "unknown"
 )
 
@@ -157,6 +158,7 @@ type Fallback struct {
 // - TextCompletionRequest
 // - ChatRequest
 // - ResponsesRequest
+// - CountTokensRequest
 // - EmbeddingRequest
 // - SpeechRequest
 // - TranscriptionRequest
@@ -168,6 +170,7 @@ type BifrostRequest struct {
 	TextCompletionRequest *BifrostTextCompletionRequest
 	ChatRequest           *BifrostChatRequest
 	ResponsesRequest      *BifrostResponsesRequest
+	CountTokensRequest    *BifrostResponsesRequest
 	EmbeddingRequest      *BifrostEmbeddingRequest
 	SpeechRequest         *BifrostSpeechRequest
 	TranscriptionRequest  *BifrostTranscriptionRequest
@@ -192,6 +195,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ChatRequest.Provider, br.ChatRequest.Model, br.ChatRequest.Fallbacks
 	case br.ResponsesRequest != nil:
 		return br.ResponsesRequest.Provider, br.ResponsesRequest.Model, br.ResponsesRequest.Fallbacks
+	case br.CountTokensRequest != nil:
+		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.SpeechRequest != nil:
@@ -260,6 +265,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ChatRequest.Provider = provider
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Provider = provider
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
 	case br.SpeechRequest != nil:
@@ -277,6 +284,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ChatRequest.Model = model
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Model = model
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
 	case br.SpeechRequest != nil:
@@ -294,6 +303,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ChatRequest.Fallbacks = fallbacks
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Fallbacks = fallbacks
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
@@ -311,6 +322,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ChatRequest.RawRequestBody = rawRequestBody
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.RawRequestBody = rawRequestBody
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
@@ -328,6 +341,7 @@ type BifrostResponse struct {
 	ChatResponse                *BifrostChatResponse
 	ResponsesResponse           *BifrostResponsesResponse
 	ResponsesStreamResponse     *BifrostResponsesStreamResponse
+	CountTokensResponse         *BifrostCountTokensResponse
 	EmbeddingResponse           *BifrostEmbeddingResponse
 	SpeechResponse              *BifrostSpeechResponse
 	SpeechStreamResponse        *BifrostSpeechStreamResponse
@@ -355,6 +369,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesResponse.ExtraFields
 	case r.ResponsesStreamResponse != nil:
 		return &r.ResponsesStreamResponse.ExtraFields
+	case r.CountTokensResponse != nil:
+		return &r.CountTokensResponse.ExtraFields
 	case r.EmbeddingResponse != nil:
 		return &r.EmbeddingResponse.ExtraFields
 	case r.SpeechResponse != nil:
