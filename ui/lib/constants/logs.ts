@@ -16,6 +16,7 @@ export const KnownProvidersNames = [
 	"perplexity",
 	"sgl",
 	"vertex",
+	"nebius",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -56,6 +57,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cerebras: "Cerebras",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
+	nebius: "Nebius Token Factory",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -101,6 +103,20 @@ export const RequestTypeLabels = {
 	speech_stream: "Speech Stream",
 	transcription: "Transcription",
 	transcription_stream: "Transcription Stream",
+
+	batch_create: "Batch Create",
+	batch_list: "Batch List",
+	batch_retrieve: "Batch Retrieve",
+	batch_cancel: "Batch Cancel",
+	batch_results: "Batch Results",
+
+	file_upload: "File Upload",
+	file_list: "File List",
+	file_retrieve: "File Retrieve",
+	file_delete: "File Delete",
+	file_content: "File Content",
+
+	
 } as const;
 
 export const RequestTypeColors = {
@@ -128,6 +144,18 @@ export const RequestTypeColors = {
 	speech_stream: "bg-pink-100 text-pink-800",
 	transcription: "bg-orange-100 text-orange-800",
 	transcription_stream: "bg-lime-100 text-lime-800",
+
+	batch_create: "bg-green-100 text-green-800",
+	batch_list: "bg-blue-100 text-blue-800",
+	batch_retrieve: "bg-red-100 text-red-800",
+	batch_cancel: "bg-yellow-100 text-yellow-800",
+	batch_results: "bg-purple-100 text-purple-800",
+	
+	file_upload: "bg-pink-100 text-pink-800",
+	file_list: "bg-lime-100 text-lime-800",
+	file_retrieve: "bg-orange-100 text-orange-800",
+	file_delete: "bg-red-100 text-red-800",
+	file_content: "bg-blue-100 text-blue-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];

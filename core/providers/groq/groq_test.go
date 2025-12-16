@@ -3,6 +3,7 @@ package groq_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -12,7 +13,7 @@ import (
 
 func TestGroq(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("GROQ_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("GROQ_API_KEY")) == "" {
 		t.Skip("Skipping Groq tests because GROQ_API_KEY is not set")
 	}
 
@@ -33,6 +34,7 @@ func TestGroq(t *testing.T) {
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
 		EmbeddingModel: "", // Groq doesn't support embedding
+		ReasoningModel: "openai/gpt-oss-120b",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true, // Supported via chat completion conversion
 			TextCompletionStream:  true, // Supported via chat completion streaming conversion
@@ -50,6 +52,7 @@ func TestGroq(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			ListModels:            true,
+			Reasoning:             true,
 		},
 	}
 

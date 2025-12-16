@@ -1,6 +1,10 @@
 package openai
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"strings"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // ToBifrostResponsesRequest converts an OpenAI responses request to Bifrost format
 func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
@@ -34,20 +38,72 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
-	// Preparing final input
-	input := OpenAIResponsesRequestInput{
-		OpenAIResponsesRequestInputArray: bifrostReq.Input,
+
+	var messages []schemas.ResponsesMessage
+	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
+	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
+	for _, message := range bifrostReq.Input {
+		if message.ResponsesReasoning != nil {
+			// According to OpenAI's Responses API format specification, for non-gpt-oss models, a message
+			// with ResponsesReasoning != nil and non-empty Content.ContentBlocks but empty Summary and
+			// nil EncryptedContent represents a reasoning-only message that should be skipped, as these
+			// models do not support reasoning content blocks in the output. This constraint ensures
+			// compatibility with OpenAI's intended responses format behavior where reasoning-only messages
+			// without summaries are not included in the request payload for non-gpt-oss models.
+			if len(message.ResponsesReasoning.Summary) == 0 &&
+				message.Content != nil &&
+				len(message.Content.ContentBlocks) > 0 &&
+				!strings.Contains(bifrostReq.Model, "gpt-oss") &&
+				message.ResponsesReasoning.EncryptedContent == nil {
+				continue
+			}
+
+			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
+			if len(message.ResponsesReasoning.Summary) > 0 &&
+				strings.Contains(bifrostReq.Model, "gpt-oss") &&
+				message.Content == nil {
+				var newMessage schemas.ResponsesMessage
+				newMessage.ID = message.ID
+				newMessage.Type = message.Type
+				newMessage.Status = message.Status
+				newMessage.Role = message.Role
+
+				// Convert summaries to content blocks
+				contentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.ResponsesReasoning.Summary))
+				for _, summary := range message.ResponsesReasoning.Summary {
+					contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+						Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+						Text: schemas.Ptr(summary.Text),
+					})
+				}
+				newMessage.Content = &schemas.ResponsesMessageContent{
+					ContentBlocks: contentBlocks,
+				}
+				messages = append(messages, newMessage)
+			} else {
+				messages = append(messages, message)
+			}
+		} else {
+			messages = append(messages, message)
+		}
 	}
 	// Updating params
 	params := bifrostReq.Params
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model: bifrostReq.Model,
-		Input: input,
+		Input: OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: messages,
+		},
 	}
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
+			req.ResponsesParameters.MaxOutputTokens = schemas.Ptr(MinMaxCompletionTokens)
+		}
+		// Drop user field if it exceeds OpenAI's 64 character limit
+		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
 		// Filter out tools that OpenAI doesn't support
 		req.filterUnsupportedTools()
 	}

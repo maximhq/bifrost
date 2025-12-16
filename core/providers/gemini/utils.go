@@ -8,55 +8,70 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// convertGenerationConfigToChatParameters converts Gemini GenerationConfig to ChatParameters
-func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *schemas.ChatParameters {
-	params := &schemas.ChatParameters{
+func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
+	params := &schemas.ResponsesParameters{
 		ExtraParams: make(map[string]interface{}),
 	}
 
 	config := r.GenerationConfig
 
-	// Map generation config fields to parameters
 	if config.Temperature != nil {
 		params.Temperature = config.Temperature
 	}
 	if config.TopP != nil {
 		params.TopP = config.TopP
 	}
+	if config.Logprobs != nil {
+		params.TopLogProbs = schemas.Ptr(int(*config.Logprobs))
+	}
 	if config.TopK != nil {
 		params.ExtraParams["top_k"] = *config.TopK
 	}
 	if config.MaxOutputTokens > 0 {
-		params.MaxCompletionTokens = schemas.Ptr(int(config.MaxOutputTokens))
+		params.MaxOutputTokens = schemas.Ptr(int(config.MaxOutputTokens))
+	}
+	if config.ThinkingConfig != nil {
+		params.Reasoning = &schemas.ResponsesParametersReasoning{}
+		if strings.Contains(r.Model, "openai") {
+			params.Reasoning.Summary = schemas.Ptr("auto")
+		}
+		if config.ThinkingConfig.ThinkingBudget != nil {
+			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
+		}
+		if config.ThinkingConfig.ThinkingLevel != ThinkingLevelUnspecified {
+			switch config.ThinkingConfig.ThinkingLevel {
+			case ThinkingLevelLow:
+				params.Reasoning.Effort = schemas.Ptr("low")
+			case ThinkingLevelHigh:
+				params.Reasoning.Effort = schemas.Ptr("high")
+			}
+		}
 	}
 	if config.CandidateCount > 0 {
 		params.ExtraParams["candidate_count"] = config.CandidateCount
 	}
 	if len(config.StopSequences) > 0 {
-		params.Stop = config.StopSequences
+		params.ExtraParams["stop_sequences"] = config.StopSequences
 	}
 	if config.PresencePenalty != nil {
-		params.PresencePenalty = config.PresencePenalty
+		params.ExtraParams["presence_penalty"] = config.PresencePenalty
 	}
 	if config.FrequencyPenalty != nil {
-		params.FrequencyPenalty = config.FrequencyPenalty
+		params.ExtraParams["frequency_penalty"] = config.FrequencyPenalty
 	}
 	if config.Seed != nil {
-		params.Seed = schemas.Ptr(int(*config.Seed))
+		params.ExtraParams["seed"] = int(*config.Seed)
 	}
 	if config.ResponseMIMEType != "" {
-		params.ExtraParams["response_mime_type"] = config.ResponseMIMEType
-
-		// Convert Gemini's response format to OpenAI's response_format for compatibility
 		switch config.ResponseMIMEType {
 		case "application/json":
-			params.ResponseFormat = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
+			params.Text = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
 		case "text/plain":
-			// Gemini text/plain → OpenAI text format
-			var responseFormat interface{} = map[string]interface{}{
-				"type": "text",
+			params.Text = &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "text",
+				},
 			}
-			params.ResponseFormat = &responseFormat
 		}
 	}
 	if config.ResponseSchema != nil {
@@ -68,15 +83,11 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToChatParameters() *sch
 	if config.ResponseLogprobs {
 		params.ExtraParams["response_logprobs"] = config.ResponseLogprobs
 	}
-	if config.Logprobs != nil {
-		params.ExtraParams["logprobs"] = *config.Logprobs
-	}
-
 	return params
 }
 
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
-func (r *GeminiGenerationRequest) convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
+func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParameters {
 	params := schemas.ToolFunctionParameters{
 		Type: strings.ToLower(string(schema.Type)),
 	}
@@ -197,16 +208,30 @@ func isImageMimeType(mimeType string) bool {
 	return false
 }
 
-// ensureExtraParams ensures that bifrostReq.Params and bifrostReq.Params.ExtraParams are initialized
-func ensureExtraParams(bifrostReq *schemas.BifrostChatRequest) {
-	if bifrostReq.Params == nil {
-		bifrostReq.Params = &schemas.ChatParameters{
-			ExtraParams: make(map[string]interface{}),
-		}
+var (
+	// Maps Gemini finish reasons to Bifrost format
+	geminiFinishReasonToBifrost = map[FinishReason]string{
+		FinishReasonStop:                  "stop",
+		FinishReasonMaxTokens:             "length",
+		FinishReasonSafety:                "content_filter",
+		FinishReasonRecitation:            "content_filter",
+		FinishReasonLanguage:              "content_filter",
+		FinishReasonOther:                 "stop",
+		FinishReasonBlocklist:             "content_filter",
+		FinishReasonProhibitedContent:     "content_filter",
+		FinishReasonSPII:                  "content_filter",
+		FinishReasonMalformedFunctionCall: "tool_calls",
+		FinishReasonImageSafety:           "content_filter",
+		FinishReasonUnexpectedToolCall:    "tool_calls",
 	}
-	if bifrostReq.Params.ExtraParams == nil {
-		bifrostReq.Params.ExtraParams = make(map[string]interface{})
+)
+
+// ConvertGeminiFinishReasonToBifrost converts Gemini finish reasons to Bifrost format
+func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
+	if bifrostReason, ok := geminiFinishReasonToBifrost[providerReason]; ok {
+		return bifrostReason
 	}
+	return string(providerReason)
 }
 
 // extractUsageMetadata extracts usage metadata from the Gemini response
@@ -220,6 +245,72 @@ func (r *GenerateContentResponse) extractUsageMetadata() (int, int, int, int, in
 		reasoningTokens = int(r.UsageMetadata.ThoughtsTokenCount)
 	}
 	return inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens
+}
+
+// convertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
+func convertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     int(metadata.PromptTokenCount),
+		CompletionTokens: int(metadata.CandidatesTokenCount),
+		TotalTokens:      int(metadata.TotalTokenCount),
+	}
+
+	// Add cached tokens if present
+	if metadata.CachedContentTokenCount > 0 {
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			CachedTokens: int(metadata.CachedContentTokenCount),
+		}
+	}
+
+	// Add reasoning tokens if present
+	if metadata.ThoughtsTokenCount > 0 {
+		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			ReasoningTokens: int(metadata.ThoughtsTokenCount),
+		}
+	}
+
+	return usage
+}
+
+// convertGeminiUsageMetadataToResponsesUsage converts Gemini usage metadata to Bifrost responses usage
+func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.ResponsesResponseUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.ResponsesResponseUsage{
+		TotalTokens:         int(metadata.TotalTokenCount),
+		InputTokens:         int(metadata.PromptTokenCount),
+		OutputTokens:        int(metadata.CandidatesTokenCount),
+		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{},
+		InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
+	}
+
+	// Add cached tokens if present
+	if metadata.CachedContentTokenCount > 0 {
+		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+			CachedTokens: int(metadata.CachedContentTokenCount),
+		}
+	}
+
+	if metadata.CandidatesTokensDetails != nil {
+		for _, detail := range metadata.CandidatesTokensDetails {
+			switch detail.Modality {
+			case "AUDIO":
+				usage.OutputTokensDetails.AudioTokens = int(detail.TokenCount)
+			}
+		}
+	}
+
+	if metadata.ThoughtsTokenCount > 0 {
+		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+	}
+
+	return usage
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
@@ -257,6 +348,21 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	if params.FrequencyPenalty != nil {
 		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
+	}
+	if params.Reasoning != nil {
+		config.ThinkingConfig = &GenerationConfigThinkingConfig{
+			IncludeThoughts: true,
+		}
+		if params.Reasoning.MaxTokens != nil {
+			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
+		} else if params.Reasoning.Effort != nil {
+			switch *params.Reasoning.Effort {
+			case "minimal", "low":
+				config.ThinkingConfig.ThinkingLevel = ThinkingLevelLow
+			case "medium", "high":
+				config.ThinkingConfig.ThinkingLevel = ThinkingLevelHigh
+			}
+		}
 	}
 
 	// Handle response_format to response_schema conversion
@@ -565,6 +671,11 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 				Parts: parts,
 				Role:  string(message.Role),
 			}
+			if message.Role == schemas.ChatMessageRoleUser {
+				content.Role = "user"
+			} else {
+				content.Role = "model"
+			}
 			contents = append(contents, content)
 		}
 	}
@@ -629,193 +740,171 @@ func detectAudioMimeType(audioData []byte) string {
 	return "audio/mp3"
 }
 
-// convertGeminiSchemaToJSONSchema converts Gemini Schema to JSON Schema format
-// This converts uppercase type values (STRING, NUMBER, etc.) to lowercase (string, number, etc.)
-// and converts the struct to a map[string]interface{} format
-func convertGeminiSchemaToJSONSchema(geminiSchema *Schema) map[string]interface{} {
-	if geminiSchema == nil {
+// normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
+func normalizeSchemaTypes(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
 		return nil
 	}
 
-	// First, marshal the schema to JSON and unmarshal to map to get all fields
-	schemaBytes, err := sonic.Marshal(geminiSchema)
-	if err != nil {
-		return nil
+	normalized := make(map[string]interface{}, len(schema))
+	for k, v := range schema {
+		normalized[k] = v
 	}
 
-	var schemaMap map[string]interface{}
-	if err := sonic.Unmarshal(schemaBytes, &schemaMap); err != nil {
-		return nil
+	// Normalize type field if it exists
+	if typeVal, ok := normalized["type"].(string); ok {
+		normalized["type"] = strings.ToLower(typeVal)
 	}
 
-	// Convert type from uppercase to lowercase
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
-	}
-
-	// Recursively convert nested properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
+	// Recursively normalize properties (create new map only if present)
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{}, len(properties))
 		for key, prop := range properties {
 			if propMap, ok := prop.(map[string]interface{}); ok {
-				// Check if this is a Schema struct that was marshaled
-				if propType, hasType := propMap["type"].(string); hasType {
-					// Convert the type
-					propMap["type"] = convertGeminiTypeToJSONSchemaType(propType)
-					// Recursively convert nested properties and items
-					convertedProps[key] = convertNestedSchema(propMap)
-				} else {
-					convertedProps[key] = propMap
-				}
+				newProps[key] = normalizeSchemaTypes(propMap)
 			} else {
-				convertedProps[key] = prop
+				newProps[key] = prop
 			}
 		}
-		schemaMap["properties"] = convertedProps
+		normalized["properties"] = newProps
 	}
 
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
-		}
+	// Recursively normalize items (for arrays)
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		normalized["items"] = normalizeSchemaTypes(items)
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
+	// Recursively normalize anyOf
+	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
+		newAnyOf := make([]interface{}, len(anyOf))
+		for i, item := range anyOf {
 			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
+				newAnyOf[i] = normalizeSchemaTypes(itemMap)
 			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
+				newAnyOf[i] = item
 			}
 		}
-		schemaMap["anyOf"] = convertedAnyOf
+		normalized["anyOf"] = newAnyOf
 	}
 
-	return schemaMap
+	// Recursively normalize oneOf
+	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
+		newOneOf := make([]interface{}, len(oneOf))
+		for i, item := range oneOf {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				newOneOf[i] = normalizeSchemaTypes(itemMap)
+			} else {
+				newOneOf[i] = item
+			}
+		}
+		normalized["oneOf"] = newOneOf
+	}
+
+	return normalized
 }
 
-// convertNestedSchema recursively converts nested schema structures
-func convertNestedSchema(schemaMap map[string]interface{}) map[string]interface{} {
-	// Convert type if present
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
+// buildJSONSchemaFromMap converts a schema map to ResponsesTextConfigFormatJSONSchema
+// with individual fields properly populated (not nested under Schema field)
+func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.ResponsesTextConfigFormatJSONSchema {
+	// Normalize types (OBJECT → object, STRING → string, etc.)
+	normalizedSchemaMap := normalizeSchemaTypes(schemaMap)
+
+	jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
+
+	// Extract type
+	if typeVal, ok := normalizedSchemaMap["type"].(string); ok {
+		jsonSchema.Type = schemas.Ptr(typeVal)
 	}
 
-	// Recursively convert properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
-		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				convertedProps[key] = convertNestedSchema(propMap)
-			} else {
-				convertedProps[key] = prop
+	// Extract properties
+	if properties, ok := normalizedSchemaMap["properties"].(map[string]interface{}); ok {
+		jsonSchema.Properties = &properties
+	}
+
+	// Extract required fields
+	if required, ok := normalizedSchemaMap["required"].([]interface{}); ok {
+		requiredStrs := make([]string, 0, len(required))
+		for _, r := range required {
+			if str, ok := r.(string); ok {
+				requiredStrs = append(requiredStrs, str)
 			}
 		}
-		schemaMap["properties"] = convertedProps
-	}
-
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
+		if len(requiredStrs) > 0 {
+			jsonSchema.Required = requiredStrs
 		}
+	} else if requiredStrs, ok := normalizedSchemaMap["required"].([]string); ok && len(requiredStrs) > 0 {
+		jsonSchema.Required = requiredStrs
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
-			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
-			}
-		}
-		schemaMap["anyOf"] = convertedAnyOf
+	// Extract description
+	if description, ok := normalizedSchemaMap["description"].(string); ok {
+		jsonSchema.Description = schemas.Ptr(description)
 	}
 
-	return schemaMap
-}
-
-// convertGeminiTypeToJSONSchemaType converts Gemini's uppercase type values to JSON Schema lowercase
-func convertGeminiTypeToJSONSchemaType(geminiType string) string {
-	switch geminiType {
-	case "STRING":
-		return "string"
-	case "NUMBER":
-		return "number"
-	case "INTEGER":
-		return "integer"
-	case "BOOLEAN":
-		return "boolean"
-	case "ARRAY":
-		return "array"
-	case "OBJECT":
-		return "object"
-	case "NULL":
-		return "null"
-	case "TYPE_UNSPECIFIED":
-		return "" // Empty string for unspecified
-	default:
-		// If already lowercase or unknown, return as-is
-		return geminiType
+	// Extract additionalProperties
+	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
+		jsonSchema.AdditionalProperties = schemas.Ptr(additionalProps)
 	}
+
+	// Extract name/title
+	if name, ok := normalizedSchemaMap["name"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(name)
+	} else if title, ok := normalizedSchemaMap["title"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(title)
+	}
+
+	return jsonSchema
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
-func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *interface{} {
-	var schema interface{}
+func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
+	var schemaMap map[string]interface{}
 	name := "response_schema"
 
 	// Prefer responseSchema over responseJsonSchema
 	if responseSchema != nil {
-		// Convert Gemini Schema to JSON Schema format
-		schema = convertGeminiSchemaToJSONSchema(responseSchema)
-		if responseSchema.Title != "" {
-			name = responseSchema.Title
-		}
-	} else if responseJsonSchema != nil {
-		if schemaMap, ok := responseJsonSchema.(map[string]interface{}); ok {
-			// Create a deep copy to avoid modifying the original
-			schemaBytes, err := sonic.Marshal(schemaMap)
-			if err == nil {
-				var copiedMap map[string]interface{}
-				if err := sonic.Unmarshal(schemaBytes, &copiedMap); err == nil {
-					// Recursively convert the schema to ensure all types are lowercase
-					schema = convertNestedSchema(copiedMap)
-					if title, ok := copiedMap["title"].(string); ok && title != "" {
-						name = title
-					}
-				} else {
-					schema = responseJsonSchema
+		// Convert Schema struct to map
+		schemaBytes, err := sonic.Marshal(responseSchema)
+		if err == nil {
+			if err := sonic.Unmarshal(schemaBytes, &schemaMap); err == nil {
+				if responseSchema.Title != "" {
+					name = responseSchema.Title
 				}
-			} else {
-				schema = responseJsonSchema
 			}
-		} else {
-			schema = responseJsonSchema
+			// If unmarshal failed, schemaMap remains nil - will try next option
 		}
-	} else {
-		// No schema provided - use older json_object mode
-		var format interface{} = map[string]interface{}{
-			"type": "json_object",
-		}
-		return &format
 	}
 
-	// Has schema - use json_schema mode (Structured Outputs)
-	var format interface{} = map[string]interface{}{
-		"type": "json_schema",
-		"json_schema": map[string]interface{}{
-			"name":   name,
-			"strict": false,
-			"schema": schema,
+	if schemaMap == nil && responseJsonSchema != nil {
+		// Use responseJsonSchema directly if it's a map
+		if m, ok := responseJsonSchema.(map[string]interface{}); ok {
+			schemaMap = m
+			if title, ok := m["title"].(string); ok && title != "" {
+				name = title
+			}
+		}
+	}
+
+	// No schema provided - use json_object mode
+	if schemaMap == nil {
+		return &schemas.ResponsesTextConfig{
+			Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_object",
+			},
+		}
+	}
+
+	// Build JSONSchema with individual fields spread out
+	jsonSchema := buildJSONSchemaFromMap(schemaMap)
+
+	return &schemas.ResponsesTextConfig{
+		Format: &schemas.ResponsesTextConfigFormat{
+			Type:       "json_schema",
+			Name:       schemas.Ptr(name),
+			Strict:     schemas.Ptr(false),
+			JSONSchema: jsonSchema,
 		},
 	}
-	return &format
 }
 
 // extractSchemaFromResponseFormat extracts Gemini Schema from OpenAI's response_format structure
@@ -857,4 +946,27 @@ func extractSchemaFromResponseFormat(responseFormat *interface{}) *Schema {
 	}
 
 	return schema
+}
+
+// extractFunctionResponseOutput extracts the output text from a FunctionResponse.
+// It first tries to extract the "output" field if present, otherwise marshals the entire response.
+// Returns an empty string if the response is nil or extraction fails.
+func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
+	if funcResp == nil || funcResp.Response == nil {
+		return ""
+	}
+
+	// Try to extract "output" field first
+	if outputVal, ok := funcResp.Response["output"]; ok {
+		if outputStr, ok := outputVal.(string); ok {
+			return outputStr
+		}
+	}
+
+	// If no "output" key, marshal the entire response
+	if jsonResponse, err := sonic.Marshal(funcResp.Response); err == nil {
+		return string(jsonResponse)
+	}
+
+	return ""
 }

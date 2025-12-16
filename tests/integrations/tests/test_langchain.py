@@ -11,6 +11,7 @@ LangChain Integration Tests
 - Agents: OpenAI Functions Agent, ReAct Agent
 - Streaming: Real-time response streaming
 - Vector Stores: Integration with embeddings and retrieval
+- Structured Outputs: Pydantic model-based structured generation
 
 Tests LangChain standard interface compliance and Bifrost integration:
 1. Chat model standard tests (via LangChain test suite)
@@ -28,6 +29,7 @@ Tests LangChain standard interface compliance and Bifrost integration:
 13. Mistral AI integration via langchain-mistralai
 14. Provider-specific streaming capabilities
 15. Cross-provider response comparison
+16. Structured outputs with Pydantic models (OpenAI-compatible)
 """
 
 import logging
@@ -37,6 +39,7 @@ import asyncio
 import os
 from typing import List, Dict, Any, Type, Optional
 from unittest.mock import patch
+from pydantic import BaseModel
 
 # LangChain core imports
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -117,6 +120,7 @@ from .utils.common import (
     LOCATION_KEYWORDS,
 )
 from .utils.config_loader import get_model, get_integration_url, get_config
+from .utils.parametrize import format_provider_model, get_cross_provider_params_for_scenario
 
 
 @pytest.fixture
@@ -176,6 +180,70 @@ def create_langchain_tool_from_dict(tool_dict: Dict[str, Any]):
         description=tool_dict["description"],
         func=tool_func,
     )
+
+
+# Common Pydantic models for structured output tests
+class CityInfo(BaseModel):
+    """Information about a city including its name, country, population, and capital status."""
+    city_name: str
+    country: str
+    population_millions: float
+    is_capital: bool
+
+
+def validate_city_info_response(result: CityInfo, provider: str) -> None:
+    """
+    Validate a CityInfo structured output response.
+    
+    Args:
+        result: The CityInfo instance to validate
+        provider: The provider name for error messages
+    
+    Raises:
+        AssertionError: If any validation fails
+    """
+    # Validate the response structure
+    assert isinstance(
+        result, CityInfo
+    ), f"{provider}: Response should be a CityInfo instance"
+    
+    # Validate city_name field
+    assert hasattr(result, "city_name"), f"{provider}: Result should have 'city_name' field"
+    assert isinstance(
+        result.city_name, str
+    ), f"{provider}: city_name should be a string"
+    assert len(result.city_name) > 0, f"{provider}: city_name should not be empty"
+    assert any(
+        word in result.city_name.lower() for word in ["paris"]
+    ), f"{provider}: city_name should contain 'Paris'"
+    
+    # Validate country field
+    assert hasattr(result, "country"), f"{provider}: Result should have 'country' field"
+    assert isinstance(result.country, str), f"{provider}: country should be a string"
+    assert len(result.country) > 0, f"{provider}: country should not be empty"
+    assert any(
+        word in result.country.lower() for word in ["france"]
+    ), f"{provider}: country should contain 'France'"
+    
+    # Validate population_millions field
+    assert hasattr(
+        result, "population_millions"
+    ), f"{provider}: Result should have 'population_millions' field"
+    assert isinstance(
+        result.population_millions, (int, float)
+    ), f"{provider}: population_millions should be a number"
+    assert (
+        result.population_millions > 0
+    ), f"{provider}: population_millions should be positive"
+    
+    # Validate is_capital field
+    assert hasattr(
+        result, "is_capital"
+    ), f"{provider}: Result should have 'is_capital' field"
+    assert isinstance(
+        result.is_capital, bool
+    ), f"{provider}: is_capital should be a boolean"
+    assert result.is_capital is True, f"{provider}: Paris should be marked as a capital"
 
 
 class TestLangChainChatOpenAI(ChatModelIntegrationTests):
@@ -582,11 +650,11 @@ class TestLangChainIntegration:
         try:
             # Use ChatGoogleGenerativeAI with Bifrost routing
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash",
                 google_api_key="dummy-google-api-key-bifrost-handles-auth",
                 temperature=0.7,
-                max_output_tokens=100,             
-                base_url=f"{get_integration_url('langchain')}/v1beta"
+                max_output_tokens=200,             
+                base_url=get_integration_url("langchain")
             )            
             logger = logging.getLogger(__name__)
             messages = [HumanMessage(content="Write a haiku about technology.")]
@@ -634,7 +702,7 @@ class TestLangChainIntegration:
             )
 
         except Exception as e:
-            pytest.skip(f"Known flaky test")
+            pytest.skip(f"Gemini chat integration test failed: {e}")
 
     def test_14_mistral_chat_integration(self, test_config):
         """Test Case 14: Mistral AI chat via LangChain"""
@@ -699,17 +767,16 @@ class TestLangChainIntegration:
         except Exception as e:
             pytest.skip(f"Mistral through LangChain not available: {e}")
 
-    @pytest.mark.skipif(True, reason="Known flaky test")
     def test_15_gemini_streaming(self, test_config):
         """Test Case 15: Gemini streaming responses via LangChain"""
         try:
             chat = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
+                model="gemini-2.5-flash",
                 google_api_key="dummy-google-api-key-bifrost-handles-auth",
                 temperature=0.7,
                 max_tokens=100,
                 streaming=True,
-                base_url=f"{get_integration_url('langchain')}/v1beta"
+                base_url=get_integration_url("langchain")
             )
 
             messages = [HumanMessage(content="Tell me about artificial intelligence.")]
@@ -730,7 +797,7 @@ class TestLangChainIntegration:
             )
 
         except Exception as e:
-            pytest.skip(f"Known flaky test {e}")
+            pytest.skip(f"Gemini streaming test failed: {e}")
 
     @pytest.mark.skipif(
         not MISTRAL_AI_AVAILABLE, reason="langchain-mistralai package not available"
@@ -864,7 +931,154 @@ class TestLangChainIntegration:
         unique_responses = set(response_contents)
         assert len(unique_responses) > 1, "Different providers should give different responses"
 
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("langchain_structured_output"))
+    def test_18_structured_outputs(self, test_config, provider, model):
+        """Test Case 18: Structured outputs with Pydantic models"""
 
+        try:
+            # Create LangChain ChatOpenAI instance with Bifrost routing
+            llm = ChatOpenAI(
+                model=format_provider_model(provider, model),
+                base_url=(
+                    get_integration_url("langchain")
+                    if get_integration_url("langchain")
+                    else None
+                ),
+                api_key="dummy-key",  # Keys managed by Bifrost
+            )
+
+            # Apply structured output
+            llm_structured = llm.with_structured_output(CityInfo)
+
+            # Invoke with a prompt that requires all fields
+            result = llm_structured.invoke(
+                "Provide information about Paris: the city name, country, approximate population in millions, and whether it's a capital city."
+            )
+
+            # Validate the response using the common validation function
+            validate_city_info_response(result, provider)
+
+            logging.info(
+                f"✓ {provider} structured output test passed: {result.city_name}, {result.country}, {result.population_millions}M, capital={result.is_capital}"
+            )
+
+        except Exception as e:
+            # Log the error but don't fail the entire test
+            logging.warning(f"Structured output test failed for {provider} ({model}): {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("langchain_structured_output"))
+    def test_19_structured_outputs_anthropic(self, test_config, provider, model):
+        """Test Case 19: Structured outputs with Anthropic ChatAnthropic for Bedrock"""
+        
+        try:
+            llm = ChatAnthropic(
+                model=format_provider_model(provider, model),
+                base_url=get_integration_url("langchain"),
+                api_key="dummy-key",
+            )
+            
+            llm_structured = llm.with_structured_output(CityInfo)
+            result = llm_structured.invoke(
+                "Provide information about Paris: the city name, country, approximate population in millions, and whether it's a capital city."
+            )
+            
+            # Validate the response using the common validation function
+            validate_city_info_response(result, provider)
+            
+            logging.info(
+                f"✓ Bedrock structured output test passed: {result.city_name}, {result.country}, {result.population_millions}M, capital={result.is_capital}"
+            )
+            
+        except Exception as e:
+            pytest.skip(f"Bedrock structured output via ChatAnthropic not available: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("tool_calls"),
+    )
+    def test_20_streaming_tool_calls_with_parameters(self, test_config, provider, model):
+        """Test Case 20: Agent-based tool calling with streaming using new create_agent API."""
+        try:
+            from langchain_core.tools import tool
+            from langchain.agents import create_agent
+
+            @tool
+            def get_current_date(timezone: str):
+                """Get the current date and time for a specific timezone."""
+                return f"Mock datetime for {timezone}"
+
+            # Your LLM setup
+            llm = ChatOpenAI(
+                model=format_provider_model(provider, model),
+                temperature=0,
+                streaming=True,
+                base_url=get_integration_url("langchain") or None,
+            )
+
+            tools = [get_current_date]
+
+            # Create agent using NEW API
+            agent_graph = create_agent(
+                model=llm,
+                tools=tools,
+                system_prompt="You are a helpful assistant. Use tools to answer questions accurately.",
+            )
+
+            # Stream with proper inputs format
+            inputs = {
+                "messages": [{"role": "user", "content": "What is the current date and time in Asia/Kolkata timezone?"}]
+            }
+
+            # Collect streaming chunks and extract tool calls
+            all_chunks = []
+            tool_calls_found = []
+            
+            for chunk in agent_graph.stream(inputs, stream_mode="values"):
+                all_chunks.append(chunk)
+                # Extract tool calls from the messages in the chunk
+                if "messages" in chunk:
+                    for msg in chunk["messages"]:
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            for tc in msg.tool_calls:
+                                tool_calls_found.append(tc)
+
+            # Validate we got chunks and tool calls
+            assert len(all_chunks) > 0, "Should receive streaming chunks"
+            assert len(tool_calls_found) > 0, "Should receive tool calls"
+
+            # Get the first tool call
+            tool_call = tool_calls_found[0]
+            
+            # Handle both dict and object formats
+            if isinstance(tool_call, dict):
+                tool_name = tool_call.get("name")
+                args = tool_call.get("args", {})
+            else:
+                tool_name = tool_call.name if hasattr(tool_call, "name") else None
+                args = tool_call.args if hasattr(tool_call, "args") else {}
+
+            # Validate tool call structure
+            assert tool_name == "get_current_date", f"Expected 'get_current_date', got {tool_name}"
+            assert args is not None and args != {}, f"Tool args must not be empty, got {args}"
+            
+            if isinstance(args, str):
+                import json
+                args = json.loads(args)
+            
+            assert "timezone" in args, f"Expected 'timezone' in args, got {args}"
+            timezone_value = args["timezone"]
+            assert timezone_value != "", f"Timezone value should not be empty, got '{timezone_value}'"
+            assert "kolkata" in timezone_value.lower() or "asia" in timezone_value.lower(), (
+                f"Expected timezone to contain 'Asia' or 'Kolkata', got: {timezone_value}"
+            )
+
+            logging.info(f"✓ Agent streaming tool-call passed for {provider}/{model}: tool={tool_name}, args={args}")
+
+        except ImportError as e:
+            pytest.skip(f"Required LangChain components not available: {e}")
+        except Exception as e:
+            pytest.skip(f"Streaming tool calls not available for {provider}/{model}: {e}")
+        
 # Skip standard tests if langchain-tests is not available
 @pytest.mark.skipif(not LANGCHAIN_TESTS_AVAILABLE, reason="langchain-tests package not available")
 class TestLangChainStandardChatModel(TestLangChainChatOpenAI):

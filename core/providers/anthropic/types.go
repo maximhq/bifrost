@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // Since Anthropic always needs to have a max_tokens parameter, we set a default value if not provided.
 const (
 	AnthropicDefaultMaxTokens = 4096
+	MinimumReasoningMaxTokens = 1024
+	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
+	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
 )
 
 // ==================== REQUEST TYPES ====================
@@ -31,8 +35,8 @@ type AnthropicTextRequest struct {
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (r *AnthropicTextRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
+func (req *AnthropicTextRequest) IsStreamingRequested() bool {
+	return req.Stream != nil && *req.Stream
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -51,7 +55,10 @@ type AnthropicMessageRequest struct {
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
-	OutputFormat  interface{}         `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
+	OutputFormat  interface{}          `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
+
+	// Extra params for advanced use cases
+	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
@@ -69,6 +76,69 @@ type AnthropicThinking struct {
 // IsStreamingRequested implements the StreamingRequest interface
 func (mr *AnthropicMessageRequest) IsStreamingRequested() bool {
 	return mr.Stream != nil && *mr.Stream
+}
+
+// Known fields for AnthropicMessageRequest
+var anthropicMessageRequestKnownFields = map[string]bool{
+	"model":          true,
+	"max_tokens":     true,
+	"messages":       true,
+	"metadata":       true,
+	"system":         true,
+	"temperature":    true,
+	"top_p":          true,
+	"top_k":          true,
+	"stop_sequences": true,
+	"stream":         true,
+	"tools":          true,
+	"tool_choice":    true,
+	"mcp_servers":    true,
+	"thinking":       true,
+	"output_format":  true,
+	"extra_params":   true,
+	"fallbacks":      true,
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
+// This captures all unregistered fields into ExtraParams.
+func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
+	// Create an alias type to avoid infinite recursion
+	type Alias AnthropicMessageRequest
+
+	// First, unmarshal into the alias to populate all known fields
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(mr),
+	}
+
+	if err := sonic.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Parse JSON to extract unknown fields
+	var rawData map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &rawData); err != nil {
+		return err
+	}
+
+	// Initialize ExtraParams if not already initialized
+	if mr.ExtraParams == nil {
+		mr.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract unknown fields
+	for key, value := range rawData {
+		if !anthropicMessageRequestKnownFields[key] {
+			var v interface{}
+			if err := sonic.Unmarshal(value, &v); err != nil {
+				continue // Skip fields that can't be unmarshaled
+			}
+			mr.ExtraParams[key] = v
+		}
+	}
+
+	return nil
 }
 
 type AnthropicMessageRole string
@@ -99,13 +169,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return json.Marshal(*mc.ContentStr)
+		return sonic.Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return json.Marshal(mc.ContentBlocks)
+		return sonic.Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return json.Marshal(nil)
+	return sonic.Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicContent.
@@ -113,14 +183,14 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := json.Unmarshal(data, &stringContent); err == nil {
+	if err := sonic.Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
-	if err := json.Unmarshal(data, &arrayContent); err == nil {
+	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = arrayContent
 		return nil
 	}
@@ -131,15 +201,16 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText            AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage           AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeToolUse         AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse   AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult      AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchResult AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse      AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult   AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking        AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeText             AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage            AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeToolUse          AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse    AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult       AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchResult  AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse       AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult    AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking         AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -148,6 +219,7 @@ type AnthropicContentBlock struct {
 	Text       *string                   `json:"text,omitempty"`        // For text content
 	Thinking   *string                   `json:"thinking,omitempty"`    // For thinking content
 	Signature  *string                   `json:"signature,omitempty"`   // For signature content
+	Data       *string                   `json:"data,omitempty"`        // For data content (encrypted data for redacted thinking, signature does not come with this)
 	ToolUseID  *string                   `json:"tool_use_id,omitempty"` // For tool_result content
 	ID         *string                   `json:"id,omitempty"`          // For tool_use content
 	Name       *string                   `json:"name,omitempty"`        // For tool_use content
@@ -294,11 +366,11 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int                          `json:"input_tokens"`
-	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int                          `json:"cache_read_input_tokens,omitempty"`
-	CacheCreation            *AnthropicUsageCacheCreation `json:"cache_creation,omitempty"`
-	OutputTokens             int                          `json:"output_tokens"`
+	InputTokens              int                         `json:"input_tokens"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
+	OutputTokens             int                         `json:"output_tokens"`
 }
 
 type AnthropicUsageCacheCreation struct {
@@ -344,13 +416,13 @@ const (
 
 // AnthropicStreamDelta represents incremental updates to content blocks during streaming (legacy)
 type AnthropicStreamDelta struct {
-	Type         AnthropicStreamDeltaType `json:"type"`
+	Type         AnthropicStreamDeltaType `json:"type,omitempty"`
 	Text         *string                  `json:"text,omitempty"`
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
-	StopSequence *string                  `json:"stop_sequence,omitempty"`
+	StopSequence *string                  `json:"stop_sequence"`
 }
 
 // ==================== MODEL TYPES ====================
@@ -386,14 +458,140 @@ type AnthropicMessageErrorStruct struct {
 // AnthropicError represents the error response structure from Anthropic's API (legacy)
 type AnthropicError struct {
 	Type  string `json:"type"` // always "error"
-	Error struct {
+	Error *struct {
 		Type    string `json:"type"`    // Error type
 		Message string `json:"message"` // Error message
-	} `json:"error"` // Error details
+	} `json:"error,omitempty"` // Error details
 }
 
 // AnthropicStreamError represents error events in the streaming response
 type AnthropicStreamError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// ==================== FILE TYPES ====================
+
+// AnthropicFileUploadRequest represents a request to upload a file.
+type AnthropicFileUploadRequest struct {
+	File     []byte `json:"-"`        // Raw file content (not serialized)
+	Filename string `json:"filename"` // Original filename
+	Purpose  string `json:"purpose"`  // Purpose of the file (e.g., "batch")
+}
+
+// AnthropicFileRetrieveRequest represents a request to retrieve a file.
+type AnthropicFileRetrieveRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileListRequest represents a request to list files.
+type AnthropicFileListRequest struct {
+	Limit int     `json:"limit"`
+	After *string `json:"after"`
+	Order *string `json:"order"`
+}
+
+// AnthropicFileDeleteRequest represents a request to delete a file.
+type AnthropicFileDeleteRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileContentRequest represents a request to get the content of a file.
+type AnthropicFileContentRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// AnthropicFileResponse represents an Anthropic file response.
+type AnthropicFileResponse struct {
+	ID           string `json:"id"`
+	Type         string `json:"type"`
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	CreatedAt    string `json:"created_at"`
+	Downloadable bool   `json:"downloadable"`
+}
+
+// AnthropicFileListResponse represents the response from listing files.
+type AnthropicFileListResponse struct {
+	Data    []AnthropicFileResponse `json:"data"`
+	HasMore bool                    `json:"has_more"`
+	FirstID *string                 `json:"first_id,omitempty"`
+	LastID  *string                 `json:"last_id,omitempty"`
+}
+
+// AnthropicFileDeleteResponse represents the response from deleting a file.
+type AnthropicFileDeleteResponse struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+// ToBifrostFileUploadResponse converts an Anthropic file response to Bifrost file upload response.
+func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
+	resp := &schemas.BifrostFileUploadResponse{
+		ID:             r.ID,
+		Object:         r.Type,
+		Bytes:          r.SizeBytes,
+		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
+		Filename:       r.Filename,
+		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageAPI,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileUploadRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		resp.ExtraFields.RawRequest = rawRequest
+	}
+
+	if sendBackRawResponse {
+		resp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return resp
+}
+
+// ToBifrostFileRetrieveResponse converts an Anthropic file response to Bifrost file retrieve response.
+func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
+	resp := &schemas.BifrostFileRetrieveResponse{
+		ID:             r.ID,
+		Object:         r.Type,
+		Bytes:          r.SizeBytes,
+		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
+		Filename:       r.Filename,
+		Purpose:        schemas.FilePurposeBatch,
+		Status:         schemas.FileStatusProcessed,
+		StorageBackend: schemas.FileStorageAPI,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileRetrieveRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	if sendBackRawRequest {
+		resp.ExtraFields.RawRequest = rawRequest
+	}
+
+	if sendBackRawResponse {
+		resp.ExtraFields.RawResponse = rawResponse
+	}
+
+	return resp
+}
+
+// parseAnthropicFileTimestamp converts Anthropic ISO timestamp to Unix timestamp.
+func parseAnthropicFileTimestamp(timestamp string) int64 {
+	if timestamp == "" {
+		return 0
+	}
+	t, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
 }

@@ -2,6 +2,7 @@ package parasail_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestParasail(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("PARASAIL_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("PARASAIL_API_KEY")) == "" {
 		t.Skip("Skipping Parasail tests because PARASAIL_API_KEY is not set")
 	}
 
@@ -23,7 +24,7 @@ func TestParasail(t *testing.T) {
 
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:       schemas.Parasail,
-		ChatModel:      "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+		ChatModel:      "parasail-llama-33-70b-fp8",
 		TextModel:      "", // Parasail doesn't support text completion
 		EmbeddingModel: "", // Parasail doesn't support embedding
 		Scenarios: testutil.TestScenarios{
@@ -33,7 +34,7 @@ func TestParasail(t *testing.T) {
 			MultiTurnConversation: true,
 			ToolCalls:             true,
 			ToolCallsStreaming:    true,
-			MultipleToolCalls:     true,
+			MultipleToolCalls:     false, // Not supported yet
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
 			ImageURL:              false, // Not supported yet

@@ -3,6 +3,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { RequestTypeLabels, RequestTypes, Statuses } from "@/lib/constants/logs";
 import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
@@ -225,6 +226,16 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					});
 				}}
 			/>
+			<div className="flex items-center gap-2 rounded-sm border px-3 py-1.5">
+				<Switch
+					id="missing-cost-toggle"
+					checked={!!filters.missing_cost_only}
+					onCheckedChange={(checked) => onFiltersChange({ ...filters, missing_cost_only: checked })}
+				/>
+				<label htmlFor="missing-cost-toggle" className="text-muted-foreground text-xs">
+					Show missing cost
+				</label>
+			</div>
 			<Popover open={open} onOpenChange={setOpen}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-9">

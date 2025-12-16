@@ -27,11 +27,17 @@ type TableModelPricing struct {
 	OutputCostPerTokenAbove128kTokens         *float64 `gorm:"default:null" json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	OutputCostPerCharacterAbove128kTokens     *float64 `gorm:"default:null" json:"output_cost_per_character_above_128k_tokens,omitempty"`
 
+	//Pricing above 200k tokens (for gemini and claude models)
+	InputCostPerTokenAbove200kTokens           *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens" json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens          *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens" json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_200k_tokens" json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens     *float64 `gorm:"default:null;column:cache_read_input_token_cost_above_200k_tokens" json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+
 	// Cache and batch pricing
-	CacheReadInputTokenCost     *float64 `gorm:"default:null" json:"cache_read_input_token_cost,omitempty"`
-	CacheCreationInputTokenCost *float64 `gorm:"default:null" json:"cache_creation_input_token_cost,omitempty"`
-	InputCostPerTokenBatches    *float64 `gorm:"default:null" json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches   *float64 `gorm:"default:null" json:"output_cost_per_token_batches,omitempty"`
+	CacheReadInputTokenCost     *float64 `gorm:"default:null;column:cache_read_input_token_cost" json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost *float64 `gorm:"default:null;column:cache_creation_input_token_cost" json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches    *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
 }
 
 // TableName sets the table name for each model

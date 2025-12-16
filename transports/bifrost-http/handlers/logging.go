@@ -46,6 +46,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bif
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
+	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
@@ -111,6 +112,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
 		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
 			filters.MaxCost = &val
+		}
+	}
+	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
+		if val, err := strconv.ParseBool(missingCost); err == nil {
+			filters.MissingCostOnly = val
 		}
 	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
@@ -268,6 +274,11 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 			filters.MaxCost = &val
 		}
 	}
+	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
+		if val, err := strconv.ParseBool(missingCost); err == nil {
+			filters.MissingCostOnly = val
+		}
+	}
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -375,6 +386,41 @@ func (h *LoggingHandler) deleteLogs(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// recalculateLogCosts handles POST /api/logs/recalculate-cost - recompute missing costs in batches
+func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
+	var payload recalculateCostRequest
+	body := ctx.PostBody()
+	if len(body) > 0 {
+		if err := sonic.Unmarshal(body, &payload); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
+			return
+		}
+	}
+
+	limit := 200
+	if payload.Limit != nil {
+		limit = *payload.Limit
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	filters := payload.Filters
+	filters.MissingCostOnly = true
+
+	result, err := h.logManager.RecalculateCosts(ctx, &filters, limit)
+	if err != nil {
+		logger.Error("failed to recalculate log costs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to recalculate costs: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
 // Helper functions
 
 func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schemas.Key {
@@ -451,4 +497,9 @@ func parseCommaSeparated(s string) []string {
 	}
 
 	return result
+}
+
+type recalculateCostRequest struct {
+	Filters logstore.SearchFilters `json:"filters"`
+	Limit   *int                   `json:"limit,omitempty"`
 }

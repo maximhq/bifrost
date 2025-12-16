@@ -1,10 +1,13 @@
 # Bifrost Local Kubernetes Values
-# PostgreSQL + Secrets + HTTPS configuration
+# Configurable Storage + Secrets + HTTPS configuration
 #
 # Usage:
-#   make deploy-local-k8s
-#   OR
-#   ./recipes/setup-local-k8s.sh
+#   make deploy-local-k8s         # Interactive prompts for storage options
+#   make deploy-local-k8s-helm    # Direct helm deployment with prompts
+#
+# Storage options are prompted at runtime:
+#   - Config Store: no / sqlite / postgres
+#   - Log Store: no / sqlite / postgres
 
 # Image configuration
 image:
@@ -36,23 +39,26 @@ ingress:
       hosts:
         - bifrost.local  # Override with --set ingress.tls[0].hosts[0]=your.host
 
-# Storage - PostgreSQL mode
+# Storage configuration (defaults to sqlite, can be overridden to postgres via --set flags)
 storage:
-  mode: postgres
+  mode: sqlite  # Override with --set storage.mode=postgres
+  persistence:
+    enabled: true
+    size: 5Gi
   configStore:
     enabled: true
   logsStore:
     enabled: true
 
-# PostgreSQL (deployed as part of chart)
+# PostgreSQL (deployed when storage.mode=postgres and postgresql.enabled=true)
 postgresql:
-  enabled: true
+  enabled: false  # Override with --set postgresql.enabled=true
   external:
     enabled: false
   auth:
     username: bifrost
     database: bifrost
-    # password: set via --set postgresql.auth.password=xxx
+    # password: set via --set postgresql.auth.password=xxx (persisted in bifrost-postgresql-password secret)
   primary:
     persistence:
       enabled: true
@@ -78,10 +84,10 @@ bifrost:
   logLevel: info
   logStyle: json
   
-  # Encryption key from secret
-  encryptionKeySecret:
-    name: "bifrost-encryption-key"
-    key: "encryption-key"
+  # Encryption key - optional, uncomment if you have the secret
+  # encryptionKeySecret:
+  #   name: "bifrost-encryption-key"
+  #   key: "encryption-key"
   
   client:
     dropExcessRequests: false
@@ -94,19 +100,23 @@ bifrost:
     allowDirectKeys: true
     maxRequestBodySizeMb: 100
   
-  # Provider config using env vars from secrets
-  providers:
-    openai:
-      keys:
-        - value: "env.OPENAI_API_KEY"
-          weight: 1
+  # Provider configuration - empty by default, configure via UI or uncomment below
+  # To use secrets, first create them:
+  #   kubectl create secret generic bifrost-provider-keys --from-literal=openai-api-key='sk-...' -n bifrost
+  # Then uncomment:
+  # providers:
+  #   openai:
+  #     keys:
+  #       - value: "env.OPENAI_API_KEY"
+  #         weight: 1
+  # providerSecrets:
+  #   openai:
+  #     existingSecret: "bifrost-provider-keys"
+  #     key: "openai-api-key"
+  #     envVar: "OPENAI_API_KEY"
   
-  # Provider secrets
-  providerSecrets:
-    openai:
-      existingSecret: "bifrost-provider-keys"
-      key: "openai-api-key"
-      envVar: "OPENAI_API_KEY"
+  providers: {}
+  providerSecrets: {}
   
   plugins:
     telemetry:

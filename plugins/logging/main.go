@@ -42,7 +42,16 @@ type UpdateLogData struct {
 	ErrorDetails        *schemas.BifrostError
 	SpeechOutput        *schemas.BifrostSpeechResponse        // For non-streaming speech responses
 	TranscriptionOutput *schemas.BifrostTranscriptionResponse // For non-streaming transcription responses
+	RawRequest          interface{}
 	RawResponse         interface{}
+}
+
+// RecalculateCostResult represents summary stats from a cost backfill operation
+type RecalculateCostResult struct {
+	TotalMatched int64 `json:"total_matched"`
+	Updated      int   `json:"updated"`
+	Skipped      int   `json:"skipped"`
+	Remaining    int64 `json:"remaining"`
 }
 
 // LogMessage represents a message in the logging queue
@@ -263,7 +272,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input
+			initialData.TranscriptionInput = req.TranscriptionRequest.Input		
 		}
 	}
 
@@ -496,6 +505,9 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				// Extract raw response
 				extraFields := result.GetExtraFields()
 				if p.disableContentLogging == nil || !*p.disableContentLogging {
+					if extraFields.RawRequest != nil {
+						updateData.RawRequest = extraFields.RawRequest
+					}
 					if extraFields.RawResponse != nil {
 						updateData.RawResponse = extraFields.RawResponse
 					}

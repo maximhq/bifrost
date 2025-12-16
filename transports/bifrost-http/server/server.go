@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -45,6 +46,10 @@ const (
 	DefaultLogOutputStyle = string(schemas.LoggerOutputTypeJSON)
 )
 
+var enterprisePlugins = []string{
+	"datadog",
+}
+
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
@@ -56,6 +61,8 @@ type ServerCallbacks interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
+	ForceReloadPricing(ctx context.Context) error
+	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -88,6 +95,7 @@ type BifrostHTTPServer struct {
 	LogLevel       string
 	LogOutputStyle string
 
+	PluginsMutex      sync.RWMutex
 	Plugins           []schemas.Plugin
 	pluginStatusMutex sync.RWMutex
 	pluginStatus      []schemas.PluginStatus
@@ -407,6 +415,9 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 		}
 		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config)
 		if err != nil {
+			if slices.Contains(enterprisePlugins, plugin.Name) {
+				continue
+			}
 			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
 				Name:   plugin.Name,
@@ -742,20 +753,13 @@ func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) []schemas.Plugi
 	return result
 }
 
-// ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
-// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
-func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
-	logger.Debug("reloading plugin %s", name)
-	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
-	if err != nil {
-		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
+// SyncLoadedPlugin syncs the loaded plugin to the Bifrost core.
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, plugin schemas.Plugin) error {
+	if err := s.Client.ReloadPlugin(plugin); err != nil {
+		s.UpdatePluginStatus(plugin.GetName(), schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", plugin.GetName(), err)})
 		return err
 	}
-	if err := s.Client.ReloadPlugin(newPlugin); err != nil {
-		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", name, err)})
-		return err
-	}
-	s.UpdatePluginStatus(name, schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", name)})
+	s.UpdatePluginStatus(plugin.GetName(), schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", plugin.GetName())})
 	// CAS retry loop (matching bifrost.go pattern)
 	for {
 		oldPlugins := s.Config.Plugins.Load()
@@ -770,23 +774,37 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 
 		found := false
 		for i, existing := range newPlugins {
-			if existing.GetName() == name {
-				newPlugins[i] = newPlugin
+			if existing.GetName() == plugin.GetName() {
+				newPlugins[i] = plugin
 				found = true
 				break
 			}
 		}
 		if !found {
-			newPlugins = append(newPlugins, newPlugin)
+			newPlugins = append(newPlugins, plugin)
 		}
 
 		// Atomic compare-and-swap
 		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			s.PluginsMutex.Lock()
+			defer s.PluginsMutex.Unlock()
 			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
 			return nil
 		}
 		// Retry on contention (extremely rare for plugin updates)
 	}
+}
+
+// ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
+// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
+func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
+	logger.Debug("reloading plugin %s", name)
+	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
+	if err != nil {
+		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
+		return err
+	}
+	return s.SyncLoadedPlugin(ctx, newPlugin)
 }
 
 // ReloadPricingManager reloads the pricing manager
@@ -798,6 +816,25 @@ func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
 		return fmt.Errorf("framework config not found")
 	}
 	return s.Config.PricingManager.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
+}
+
+// ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
+func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	return s.Config.PricingManager.ForceReloadPricing(ctx)
+}
+
+// ReloadProxyConfig reloads the proxy configuration
+func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	// Store the proxy config in memory for use by components that need it
+	s.Config.ProxyConfig = config
+	logger.Info("proxy configuration reloaded: enabled=%t, type=%s", config.Enabled, config.Type)
+	return nil
 }
 
 // RefetchModelsForProvider deletes existing models for a provider and re-fetches them from the provider
@@ -868,6 +905,8 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 
 		// Atomic compare-and-swap
 		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			s.PluginsMutex.Lock()
+			defer s.PluginsMutex.Unlock()
 			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
 			return nil
 		}
@@ -1028,6 +1067,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
 	s.pluginStatusMutex = sync.RWMutex{}
+	s.PluginsMutex = sync.RWMutex{}
 	// Ensure app directory exists
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)

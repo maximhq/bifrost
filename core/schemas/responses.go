@@ -64,7 +64,9 @@ type BifrostResponsesResponse struct {
 	Reasoning          *ResponsesParametersReasoning       `json:"reasoning,omitempty"`         // Configuration options for reasoning models
 	SafetyIdentifier   *string                             `json:"safety_identifier,omitempty"` // Safety identifier
 	ServiceTier        *string                             `json:"service_tier,omitempty"`
+	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
+	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
 	Store              *bool                               `json:"store,omitempty"`
 	Temperature        *float64                            `json:"temperature,omitempty"`
 	Text               *ResponsesTextConfig                `json:"text,omitempty"`
@@ -129,6 +131,10 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 type ResponsesTextConfigFormatJSONSchema struct {
+	Name                 *string         `json:"name,omitempty"`
+	Schema               *any            `json:"schema,omitempty"`
+	Description          *string         `json:"description,omitempty"`
+	Strict               *bool           `json:"strict,omitempty"`
 	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
 	Properties           *map[string]any `json:"properties,omitempty"`
 	Required             []string        `json:"required,omitempty"`
@@ -230,9 +236,10 @@ type ResponsesPrompt struct {
 }
 
 type ResponsesParametersReasoning struct {
-	Effort          *string `json:"effort,omitempty"`           // "minimal" | "low" | "medium" | "high"
+	Effort          *string `json:"effort,omitempty"`           // "none" | "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
 	Summary         *string `json:"summary,omitempty"`          // "auto" | "concise" | "detailed"
+	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
 
 type ResponsesResponseConversationStruct struct {
@@ -319,6 +326,7 @@ type ResponsesMessage struct {
 	*ResponsesToolMessage // For Tool calls and outputs
 
 	// Reasoning
+	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning
 }
 
@@ -393,9 +401,10 @@ const (
 // ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
 // Only one of the content type fields should be set
 type ResponsesMessageContentBlock struct {
-	Type   ResponsesMessageContentBlockType `json:"type"`
-	FileID *string                          `json:"file_id,omitempty"` // Reference to uploaded file
-	Text   *string                          `json:"text,omitempty"`
+	Type      ResponsesMessageContentBlockType `json:"type"`
+	FileID    *string                          `json:"file_id,omitempty"` // Reference to uploaded file
+	Text      *string                          `json:"text,omitempty"`
+	Signature *string                          `json:"signature,omitempty"` // Signature of the content (for reasoning)
 
 	*ResponsesInputMessageContentBlockImage
 	*ResponsesInputMessageContentBlockFile
@@ -724,7 +733,7 @@ func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 
 // ResponsesReasoning represents a reasoning output
 type ResponsesReasoning struct {
-	Summary          []ResponsesReasoningContent `json:"summary"`
+	Summary          []ResponsesReasoningSummary `json:"summary"`
 	EncryptedContent *string                     `json:"encrypted_content,omitempty"`
 }
 
@@ -736,8 +745,8 @@ const (
 	ResponsesReasoningContentBlockTypeSummaryText ResponsesReasoningContentBlockType = "summary_text"
 )
 
-// ResponsesReasoningContent represents a reasoning content block
-type ResponsesReasoningContent struct {
+// ResponsesReasoningSummary represents a reasoning content block
+type ResponsesReasoningSummary struct {
 	Type ResponsesReasoningContentBlockType `json:"type"`
 	Text string                             `json:"text"`
 }
@@ -1432,8 +1441,9 @@ type BifrostResponsesStreamResponse struct {
 	ItemID       *string                       `json:"item_id,omitempty"`
 	Part         *ResponsesMessageContentBlock `json:"part,omitempty"`
 
-	Delta    *string                                    `json:"delta,omitempty"`
-	LogProbs []ResponsesOutputMessageContentTextLogProb `json:"logprobs,omitempty"`
+	Delta     *string                                    `json:"delta,omitempty"`
+	Signature *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
+	LogProbs  []ResponsesOutputMessageContentTextLogProb `json:"logprobs,omitempty"`
 
 	Text *string `json:"text,omitempty"` // Full text of the output item, comes with event "response.output_text.done"
 

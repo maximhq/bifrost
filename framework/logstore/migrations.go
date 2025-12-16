@@ -40,6 +40,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationUpdateTimestampFormat(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -635,6 +638,39 @@ func migrationUpdateTimestampFormat(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running update timestamp for logs migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_raw_request_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "raw_request") {
+				if err := migrator.AddColumn(&Log{}, "raw_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "raw_request") {
+				if err := migrator.DropColumn(&Log{}, "raw_request"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding raw request column: %s", err.Error())
 	}
 	return nil
 }

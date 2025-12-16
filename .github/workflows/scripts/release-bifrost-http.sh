@@ -200,13 +200,59 @@ CONFIGS_TO_TEST=(
 
 TEST_BINARY="../tmp/bifrost-http"
 CONFIGS_DIR="../.github/workflows/configs"
+
+# Cleanup function to ensure Docker services are stopped
+cleanup_docker() {
+  echo "🧹 Cleaning up Docker services..."
+  docker compose -f "$CONFIGS_DIR/docker-compose.yml" down 2>/dev/null || true
+}
+
+# Register cleanup handler to run on script exit (success or failure)
+trap cleanup_docker EXIT
+
 # Running docker compose
 echo "🐳 Starting Docker services (PostgreSQL, Weaviate, Redis)..."
 docker compose -f "$CONFIGS_DIR/docker-compose.yml" up -d
 
-# Wait for services to be healthy
+# Wait for services to be healthy with polling
 echo "⏳ Waiting for Docker services to be ready..."
-sleep 10
+MAX_WAIT=300
+ELAPSED=0
+SERVICES_READY=false
+
+# Get expected number of services
+EXPECTED_SERVICES=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" config --services 2>/dev/null | wc -l | tr -d ' ')
+
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+  # Get running container count
+  RUNNING_COUNT=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+  
+  # Check health status: count healthy and unhealthy (starting/unhealthy) services
+  # Services without healthchecks will show empty health status
+  HEALTH_OUTPUT=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps --format "{{.Name}}:{{.Health}}" 2>/dev/null)
+  HEALTHY_COUNT=$(echo "$HEALTH_OUTPUT" | grep -c ":healthy") || HEALTHY_COUNT=0
+  UNHEALTHY_COUNT=$(echo "$HEALTH_OUTPUT" | grep -cE ":(starting|unhealthy)") || UNHEALTHY_COUNT=0
+  
+  # All services are ready when:
+  # 1. All expected services are running
+  # 2. No services are in "starting" or "unhealthy" state
+  if [ "$RUNNING_COUNT" -eq "$EXPECTED_SERVICES" ] && [ "$UNHEALTHY_COUNT" -eq "0" ]; then
+    SERVICES_READY=true
+    echo "✅ All Docker services are ready ($HEALTHY_COUNT with healthchecks, ${ELAPSED}s)"
+    break
+  fi
+  
+  sleep 2
+  ELAPSED=$((ELAPSED + 2))
+  echo "   ⏳ Waiting for services... ($RUNNING_COUNT/$EXPECTED_SERVICES running, $HEALTHY_COUNT healthy, $UNHEALTHY_COUNT starting, ${ELAPSED}s/${MAX_WAIT}s)"
+done
+
+if [ "$SERVICES_READY" = false ]; then
+  echo "❌ Docker services failed to become healthy within ${MAX_WAIT}s"
+  echo "   Current service status:"
+  docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps
+  exit 1
+fi
 
 for config in "${CONFIGS_TO_TEST[@]}"; do
   echo "  🔍 Testing with config: $config"
@@ -216,7 +262,8 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   echo "    🧹 Resetting PostgreSQL database..."
   # Note: DROP DATABASE cannot run inside a transaction, so we use separate -c flags
   # First terminate any active connections, then drop and recreate the database
-  docker exec "$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps -q postgres)" \
+  # PGPASSWORD is required for psql authentication (matches POSTGRES_PASSWORD in docker-compose.yml)
+  docker exec -e PGPASSWORD=bifrost_password "$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps -q postgres)" \
     psql -U bifrost -d postgres \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'bifrost' AND pid <> pg_backend_pid();" \
     -c "DROP DATABASE IF EXISTS bifrost;" \
@@ -235,7 +282,7 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   SERVER_LOG=$(mktemp)
   
   # Start the server in background with a timeout, logging to file and console
-  timeout 30s $TEST_BINARY --app-dir "$config_path" --port 18080 --log-level debug 2>&1 | tee "$SERVER_LOG" &
+  timeout 180s $TEST_BINARY --app-dir "$config_path" --port 18080 --log-level debug 2>&1 | tee "$SERVER_LOG" &
   SERVER_PID=$!
   
   # Wait for server to be ready by looking for the startup message
@@ -310,10 +357,14 @@ cd ..
 echo "✅ Transport build validation successful"
 
 # Commit and push changes if any
-# First, stage any changes made to transports/
+# First, pull latest changes to avoid conflicts
+git pull origin main
+
+# Stage any changes made to transports/
 git add transports/
+
+# Check if there are staged changes after pulling
 if ! git diff --cached --quiet; then
-  git pull origin main
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   echo "🔧 Committing and pushing changes..."

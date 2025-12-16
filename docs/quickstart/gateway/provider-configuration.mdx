@@ -574,6 +574,51 @@ curl --location 'http://localhost:8080/api/providers' \
 
 </Tabs>
 
+### Custom Headers Per Request
+
+Send custom headers with individual requests using the `x-bf-eh-*` prefix. Headers are automatically propagated to the provider and stored in the request context. This is useful for passing request-specific metadata, user identification, or custom tracking information.
+
+```bash
+ curl --location 'http://localhost:8080/v1/chat/completions' \
+    --header 'Content-Type: application/json' \
+    --header 'x-bf-eh-custom-data: example-value' \
+    --header 'x-bf-eh-tracking-id: trace-123' \
+    --data '{
+     "model": "openai/gpt-4o-mini",
+     "messages": [
+         {"role": "user", "content": "Hello!"}
+     ]
+    }'
+```
+
+
+Internally, Bifrost maintains a denylist of headers that are never forwarded to providers to prevent header-based overrides (authorization, host, content-length, etc.) and to block attempts to override API keys or virtual keys via `x-bf-eh-*` headers. For reference, the denylist looks like this:
+
+```go
+denylist := map[string]bool{
+    "authorization":       true,
+    "proxy-authorization": true,
+    "cookie":              true,
+    "host":                true,
+    "content-length":      true,
+    "connection":          true,
+    "transfer-encoding":   true,
+
+    // prevent auth/key overrides via x-bf-eh-*
+    "x-api-key":      true,
+    "x-goog-api-key": true,
+    "x-bf-api-key":   true,
+    "x-bf-vk":        true,
+}
+```
+
+This denylist is applied before propagating `x-bf-eh-*` headers to upstream providers.
+**Example use cases:**
+- User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
+- Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
+- Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
+- A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
 ### Setting Up a Proxy
 
 Route requests through proxies for compliance, security, or geographic requirements. This example shows both HTTP proxy for OpenAI and authenticated SOCKS5 proxy for Anthropic, useful for corporate environments or regional access.

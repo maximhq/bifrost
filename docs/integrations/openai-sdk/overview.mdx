@@ -1,7 +1,7 @@
 ---
-title: "OpenAI SDK"
+title: "Overview"
 description: "Use Bifrost as a drop-in replacement for OpenAI API with full compatibility and enhanced features."
-icon: "o"
+icon: "book"
 ---
 
 ## Overview
@@ -209,7 +209,7 @@ const response = await openai.chat.completions.create({
 
 Pass API keys directly in requests to bypass Bifrost's load balancing. You can pass any provider's API key (OpenAI, Anthropic, Mistral, etc.) since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
 
-> **Learn more:** See [Quickstart Configuration](../quickstart/README) for enabling direct API key usage.
+> **Learn more:** See [Quickstart Configuration](../../quickstart/README) for enabling direct API key usage.
 
 <Tabs group="openai-sdk">
 <Tab title="Python">
@@ -371,13 +371,15 @@ console.log(azureResponse.choices[0].message.content);
 
 ## Supported Features
 
-The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly. 😄
+The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.
 
 ---
 
 ## Next Steps
 
-- **[Anthropic SDK](./anthropic-sdk)** - Claude integration patterns
-- **[Google GenAI SDK](./genai-sdk)** - Gemini integration patterns
-- **[Configuration](../quickstart/README)** - Bifrost setup and configuration
-- **[Core Features](../features/)** - Advanced Bifrost capabilities
+- **[Files and Batch API](./files-and-batch)** - File uploads and batch processing
+- **[Anthropic SDK](../anthropic-sdk/overview)** - Claude integration patterns
+- **[Google GenAI SDK](../genai-sdk)** - Gemini integration patterns
+- **[Configuration](../../quickstart/README)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+

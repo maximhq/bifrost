@@ -20,6 +20,10 @@ type TablePlugin struct {
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
 
+	// Config hash is used to detect the changes synced from config.json file
+	// Every time we sync the config.json file, we will update the config hash
+	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Config any `gorm:"-" json:"config,omitempty"`
 }

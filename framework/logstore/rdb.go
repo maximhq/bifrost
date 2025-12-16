@@ -62,6 +62,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if filters.MaxCost != nil {
 		baseQuery = baseQuery.Where("cost <= ?", *filters.MaxCost)
 	}
+	if filters.MissingCostOnly {
+		baseQuery = baseQuery.Where("cost IS NULL OR cost <= 0")
+	}
 	if filters.ContentSearch != "" {
 		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
 	}
@@ -97,6 +100,22 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for id, cost := range updates {
+			costValue := cost
+			if err := tx.Model(&Log{}).Where("id = ?", id).Update("cost", costValue).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SearchLogs searches for logs in the database without calculating statistics.
@@ -257,7 +276,7 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		return false, err
-	}	
+	}
 	return true, nil
 }
 

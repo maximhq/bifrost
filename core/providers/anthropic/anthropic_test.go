@@ -2,6 +2,7 @@ package anthropic_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestAnthropic(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
 		t.Skip("Skipping Anthropic tests because ANTHROPIC_API_KEY is not set")
 	}
 
@@ -47,6 +48,17 @@ func TestAnthropic(t *testing.T) {
 			Embedding:             false,
 			Reasoning:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false,
+			FileBatchInput:        false, // Anthropic batch API only supports inline requests, not file-based input
 		},
 	}
 

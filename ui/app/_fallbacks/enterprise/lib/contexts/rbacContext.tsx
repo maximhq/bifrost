@@ -5,6 +5,8 @@ import { createContext, useContext } from "react";
 // RBAC Resource Names (must match backend definitions)
 export enum RbacResource {
 	GuardrailsConfig = "GuardrailsConfig",
+	GuardrailsProviders = "GuardrailsProviders",
+	GuardrailRules = "GuardrailRules",
 	UserProvisioning = "UserProvisioning",
 	Cluster = "Cluster",
 	Settings = "Settings",
@@ -17,6 +19,9 @@ export enum RbacResource {
 	MCPGateway = "MCPGateway",
 	AdaptiveRouter = "AdaptiveRouter",
 	AuditLogs = "AuditLogs",
+	Customers = "Customers",
+	Teams = "Teams",
+	RBAC = "RBAC",
 }
 
 // RBAC Operation Names (must match backend definitions)
@@ -26,6 +31,7 @@ export enum RbacOperation {
 	Create = "Create",
 	Update = "Update",
 	Delete = "Delete",
+	Download = "Download",
 }
 
 interface RbacContextType {

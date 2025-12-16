@@ -1,0 +1,85 @@
+services:
+  weaviate:
+      image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+      command:
+          - --host
+          - 0.0.0.0
+          - --port
+          - '8080'
+          - --scheme
+          - http
+      environment:
+          - CLUSTER_HOSTNAME=weaviate
+          - CLUSTER_ADVERTISE_ADDR=172.38.0.12
+          - CLUSTER_GOSSIP_BIND_PORT=7946
+          - CLUSTER_DATA_BIND_PORT=7947
+          - DISABLE_TELEMETRY=true
+          - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+          - DEFAULT_VECTORIZER_MODULE=none
+          - ENABLE_MODULES=
+          - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+          - LOG_LEVEL=info
+      ports:
+          - "9000:8080"
+      volumes:
+          - weaviate_data:/var/lib/weaviate
+      networks:
+          bifrost_network:
+              ipv4_address: 172.38.0.12
+
+  # Redis Stack instance for vector store tests
+  redis-stack:
+      image: redis/redis-stack:7.4.0-v6
+      command: redis-stack-server --protected-mode no
+      ports:
+          - "6379:6379"
+          - "8001:8001"  # RedisInsight web UI
+      volumes:
+          - redis_data:/data
+      networks:
+          bifrost_network:
+              ipv4_address: 172.38.0.13
+      healthcheck:
+          test: ["CMD", "redis-cli", "ping"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+
+  # Qdrant instance for vector store tests
+  qdrant:
+      image: qdrant/qdrant:v1.16.0
+      ports:
+          - "6334:6334"  # gRPC API
+      volumes:
+          - qdrant_data:/qdrant/storage
+      networks:
+          bifrost_network:
+              ipv4_address: 172.38.0.14
+
+
+  # mitmproxy - HTTP proxy with Web UI for debugging
+  # Web UI: http://localhost:8081
+  # Proxy: http://localhost:8082
+  mitmproxy:
+      image: mitmproxy/mitmproxy:latest
+      container_name: bifrost-mitmproxy
+      command: mitmweb --web-host 0.0.0.0 --web-port 8081 --listen-host 0.0.0.0 --listen-port 8082 --set proxyauth=bifrost:secret-token --set web_password=secret-token
+      ports:
+          - "8082:8082"   # Proxy port
+          - "8081:8081"   # Web UI
+      networks:
+          bifrost_network:
+              ipv4_address: 172.38.0.16
+
+networks:
+    bifrost_network:
+        driver: bridge
+        ipam:
+            config:
+                - subnet: 172.38.0.0/16
+                  gateway: 172.38.0.1
+
+volumes:
+    weaviate_data:
+    redis_data:
+    qdrant_data:

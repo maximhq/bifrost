@@ -43,6 +43,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
 	a.chatStreamChunkPool.Put(chunk)
 }
 
@@ -60,6 +61,7 @@ func (a *Accumulator) putAudioStreamChunk(chunk *AudioStreamChunk) {
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
 	a.audioStreamChunkPool.Put(chunk)
 }
 
@@ -77,6 +79,7 @@ func (a *Accumulator) putTranscriptionStreamChunk(chunk *TranscriptionStreamChun
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
 	a.transcriptionStreamChunkPool.Put(chunk)
 }
 
@@ -94,6 +97,7 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
 	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
 	a.responsesStreamChunkPool.Put(chunk)
 }
 

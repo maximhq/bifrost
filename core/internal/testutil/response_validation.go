@@ -740,6 +740,17 @@ func validateResponsesBasicStructure(response *schemas.BifrostResponsesResponse,
 				fmt.Sprintf("Expected %d choices, got %d", expectations.ExpectedChoiceCount, actualCount))
 		}
 	}
+
+	provider := response.ExtraFields.Provider
+	model := response.ExtraFields.ModelDeployment
+
+	// Verify top level status is present for OpenAI and Azure with  non-Claude models
+	if provider != "" && (provider == schemas.OpenAI || provider == schemas.Azure) && !strings.Contains(strings.ToLower(model), "claude") {
+		if response.Status == nil {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected status but not present")
+		}
+	}
 }
 
 // validateResponsesContent checks the content of the Responses API response

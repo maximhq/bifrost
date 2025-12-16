@@ -13,12 +13,12 @@ type LogStoreType string
 
 // LogStoreTypeSQLite is the type of log store for SQLite.
 const (
-	LogStoreTypeSQLite LogStoreType = "sqlite"
+	LogStoreTypeSQLite   LogStoreType = "sqlite"
 	LogStoreTypePostgres LogStoreType = "postgres"
 )
 
 // LogStore is the interface for the log store.
-type LogStore interface {	
+type LogStore interface {
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error
@@ -28,7 +28,8 @@ type LogStore interface {
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
 	Update(ctx context.Context, id string, entry any) error
-	Flush(ctx context.Context, since time.Time) error	
+	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
+	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
@@ -36,7 +37,7 @@ type LogStore interface {
 }
 
 // NewLogStore creates a new log store based on the configuration.
-func NewLogStore(ctx context.Context,config *Config, logger schemas.Logger) (LogStore, error) {	
+func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (LogStore, error) {
 	switch config.Type {
 	case LogStoreTypeSQLite:
 		if sqliteConfig, ok := config.Config.(*SQLiteConfig); ok {

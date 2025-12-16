@@ -49,6 +49,7 @@ help: ## Show this help message
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
 	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: testname)"
+	@echo "  PATTERN           Substring pattern to filter tests (alternative to TESTCASE)"
 
 cleanup-enterprise: ## Clean up enterprise directories if present
 	@echo "$(GREEN)Cleaning up enterprise...$(NC)"
@@ -334,9 +335,14 @@ test: install-gotestsum ## Run tests for bifrost-http
 		echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
 	fi
 
-test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo)
+test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=openai TESTCASE=TestName or PATTERN=substring)
 	@echo "$(GREEN)Running core tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
+		exit 1; \
+	fi
 	@TEST_FAILED=0; \
 	REPORT_FILE=""; \
 	if [ -n "$(PROVIDER)" ]; then \
@@ -365,6 +371,30 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=../../../$$REPORT_FILE \
 				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+			cd ../../..; \
+			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+				if which junit-viewer > /dev/null 2>&1; then \
+					echo "$(YELLOW)Generating HTML report...$(NC)"; \
+					junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+					echo ""; \
+					echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+					echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+				else \
+					echo ""; \
+					echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+				fi; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running tests matching '$(PATTERN)' for $${PROVIDER_TEST_NAME}...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$(PATTERN).xml"; \
+			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -413,11 +443,20 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 			echo "$(YELLOW)Usage: make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo$(NC)"; \
 			exit 1; \
 		fi; \
-		REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
-		cd core && GOWORK=off gotestsum \
-			--format=$(GOTESTSUM_FORMAT) \
-			--junitfile=../$$REPORT_FILE \
-			-- -v ./providers/... || TEST_FAILED=1; \
+		if [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running tests matching '$(PATTERN)' across all providers...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
+			cd core && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../$$REPORT_FILE \
+				-- -v -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+		else \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
+			cd core && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../$$REPORT_FILE \
+				-- -v ./providers/... || TEST_FAILED=1; \
+		fi; \
 		cd ..; \
 		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -569,10 +608,15 @@ test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TE
 	fi
 	@cd core && RUN_CHATBOT_TEST=1 go test -v -run TestChatbot
 
-test-integrations: ## Run Python integration tests (Usage: make test-integrations [INTEGRATION=openai] [TESTCASE=test_name] [VERBOSE=1])
+test-integrations: ## Run Python integration tests (Usage: make test-integrations [INTEGRATION=openai] [TESTCASE=test_name] [PATTERN=substring] [VERBOSE=1])
 	@echo "$(GREEN)Running Python integration tests...$(NC)"
 	@if [ ! -d "tests/integrations" ]; then \
 		echo "$(RED)Error: tests/integrations directory not found$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
 		exit 1; \
 	fi; \
 	if [ -n "$(TESTCASE)" ] && [ -z "$(INTEGRATION)" ]; then \
@@ -633,13 +677,21 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 			if [ -n "$(TESTCASE)" ]; then \
 				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
 				cd tests/integrations && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			elif [ -n "$(PATTERN)" ]; then \
+				echo "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
+				cd tests/integrations && pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
 				cd tests/integrations && pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
-			echo "$(CYAN)Running all integration tests...$(NC)"; \
-			cd tests/integrations && pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			if [ -n "$(PATTERN)" ]; then \
+				echo "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
+				cd tests/integrations && pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			else \
+				echo "$(CYAN)Running all integration tests...$(NC)"; \
+				cd tests/integrations && pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			fi; \
 		fi; \
 	else \
 		echo "$(CYAN)Using uv (fast mode)$(NC)"; \
@@ -652,13 +704,21 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 			if [ -n "$(TESTCASE)" ]; then \
 				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
 				uv run pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			elif [ -n "$(PATTERN)" ]; then \
+				echo "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
+				uv run pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
 				uv run pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
-			echo "$(CYAN)Running all integration tests...$(NC)"; \
-			uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			if [ -n "$(PATTERN)" ]; then \
+				echo "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
+				uv run pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			else \
+				echo "$(CYAN)Running all integration tests...$(NC)"; \
+				uv run pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+			fi; \
 		fi; \
 	fi; \
 	if [ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ]; then \

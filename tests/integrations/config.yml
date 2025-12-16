@@ -41,6 +41,17 @@ providers:
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
     streaming: "gpt-4o-mini"
+    thinking: "gpt-5.1"
+    batch_file_upload: "gpt-4o-mini"
+    batch_list: "gpt-4o"
+    batch_retrieve: "gpt-4o"
+    batch_cancel: "gpt-4o"
+    batch_inline: "gpt-4o"
+    file_upload: "gpt-4o-mini"
+    file_list: "gpt-4o-mini"
+    file_retrieve: "gpt-4o-mini"
+    file_delete: "gpt-4o-mini"
+    file_content: "gpt-4o-mini"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -48,11 +59,20 @@ providers:
       - "gpt-3.5-turbo"
     
   anthropic:
-    chat: "claude-sonnet-4-20250514"
+    chat: "claude-sonnet-4-5-20250929"
     vision: "claude-3-7-sonnet-20250219"
-    tools: "claude-sonnet-4-20250514"
-    streaming: "claude-sonnet-4-20250514"
-    thinking: "claude-sonnet-4-20250514"
+    tools: "claude-sonnet-4-5-20250929"
+    streaming: "claude-sonnet-4-5-20250929"
+    thinking: "claude-opus-4-5"
+    batch_file_upload: "claude-sonnet-4-20250514"
+    batch_inline: "claude-sonnet-4-20250514"
+    batch_list: "claude-sonnet-4-20250514"
+    batch_retrieve: "claude-sonnet-4-20250514"
+    batch_cancel: "claude-sonnet-4-20250514"
+    file_upload: "claude-sonnet-4-20250514"
+    file_list: "claude-sonnet-4-20250514"
+    file_delete: "claude-sonnet-4-20250514"
+    file_content: "claude-sonnet-4-20250514"
     alternatives:
       - "claude-3-sonnet-20240229"
       - "claude-3-opus-20240229"
@@ -60,13 +80,26 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.0-flash"
-    vision: "gemini-2.0-flash"
-    tools: "gemini-2.0-flash"
+    chat: "gemini-2.5-flash"
+    vision: "gemini-2.5-flash"
+    tools: "gemini-2.5-flash"
+    thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
-    streaming: "gemini-2.0-flash"
+    streaming: "gemini-2.5-flash"
+    batch_create: "gemini-2.5-flash"
+    batch_inline: "gemini-2.5-flash"
+    batch_file_upload: "gemini-2.5-flash"
+    batch_list: "gemini-2.5-flash"
+    batch_retrieve: "gemini-2.5-flash"
+    batch_cancel: "gemini-2.5-flash"
+    batch_s3: "gemini-2.5-flash"
+    file_upload: "gemini-2.0-flash"
+    file_list: "gemini-2.0-flash"
+    file_content: "gemini-2.0-flash"
+    file_download: "gemini-2.0-flash"
+    file_delete: "gemini-2.0-flash"
     alternatives:
       - "gemini-1.5-pro"
       - "gemini-1.5-flash"
@@ -78,9 +111,19 @@ providers:
     vision: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     tools: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     streaming: "anthropic.claude-3-5-sonnet-20240620-v1:0"
-    thinking: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "cohere.embed-v4:0"
+    batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_retrieve: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_cancel: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_file_upload: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_s3: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_upload: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_delete: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_content: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     alternatives:
       - "anthropic.claude-3-opus-20240229-v1:0"
     
@@ -120,13 +163,26 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: true  # PydanticAI structured output works reliably with OpenAI
+    langchain_structured_output: true
+    pydantic_structured_output: true  # PydanticAI structured output works reliably with OpenAI
     pydanticai_streaming: true  # PydanticAI streaming works with OpenAI
+    batch_file_upload: true
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # OpenAI supports inline requests for batch
+    batch_s3: false  # OpenAI does not use S3 for batch
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: true
     
   anthropic:
     simple_chat: true
@@ -149,8 +205,21 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: true  # PydanticAI structured output works with Anthropic
+    langchain_structured_output: false
+    pydantic_structured_output: true  # PydanticAI structured output works with Anthropic
     pydanticai_streaming: true  # PydanticAI streaming works with Anthropic
+    batch_file_upload: true  # Anthropic batch API uses inline requests, not files
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # Anthropic uses inline requests for batch
+    batch_s3: false  # Anthropic does not use S3 for batch
+    file_upload: true
+    file_list: false
+    file_retrieve: false
+    file_delete: true
+    file_content: false
     
   gemini:
     simple_chat: true
@@ -168,13 +237,26 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
-    thinking: false
+    thinking: true
     list_models: true
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
     pydanticai_streaming: false  # PydanticAI GoogleModel streaming has asyncio issues
+    batch_file_upload: true  # Gemini supports file upload via Files API
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # Gemini uses inline requests for batch (synchronous)
+    batch_s3: false  # Gemini does not use S3 for batch
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: false  # Gemini doesn't support direct file download
     
   bedrock:
     simple_chat: true
@@ -197,8 +279,21 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # Bedrock not supported in PydanticAI tests
+    langchain_structured_output: true
+    pydantic_structured_output: false  # Bedrock not supported in PydanticAI tests
     pydanticai_streaming: false  # Bedrock not supported in PydanticAI tests
+    batch_file_upload: true  # Bedrock uses S3 wrapper for file uploads
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: false  # Bedrock batch uses S3, not inline requests via API
+    batch_s3: true  # Bedrock uses S3 for batch input/output
+    file_upload: true  # Bedrock uses S3 wrapper for file storage
+    file_list: true  # Bedrock lists files in S3 bucket
+    file_retrieve: true  # Bedrock retrieves S3 object metadata
+    file_delete: true  # Bedrock deletes S3 objects
+    file_content: true  # Bedrock downloads S3 object content
     
   cohere:
     simple_chat: true
@@ -221,8 +316,21 @@ provider_scenarios:
     responses: true
     responses_image: true
     text_completion: false
-    structured_output: false  # PydanticAI CohereModel doesn't reliably support structured output
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI CohereModel doesn't reliably support structured output
     pydanticai_streaming: false  # PydanticAI CohereModel doesn't implement streaming
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # Cohere does not support batch API
+    batch_s3: false  # Cohere does not support batch API
+    file_upload: false  # Cohere does not support Files API
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types
@@ -247,8 +355,21 @@ scenario_capabilities:
   embeddings: "embeddings"
   thinking: "thinking"
   list_models: "chat"
-  structured_output: "chat"  # Structured output uses chat capability
+  langchain_structured_output: "chat"  # LangChain structured output uses chat capability
+  pydantic_structured_output: "chat"  # Structured output uses chat capability
   pydanticai_streaming: "streaming"  # PydanticAI streaming uses streaming capability
+  batch_file_upload: "batch_file_upload"  # Uses batch_file_upload model directly
+  batch_create: "batch_create"
+  batch_list: "batch_list"
+  batch_retrieve: "batch_retrieve"
+  batch_cancel: "batch_cancel"
+  batch_inline: "batch_inline"  # Uses batch_inline model directly
+  batch_s3: "batch_s3"  # Uses batch_s3 model directly
+  file_upload: "file_upload"  # Uses file_upload model directly
+  file_list: "file_list"  # Uses file_list model directly
+  file_retrieve: "file_retrieve"  # Uses file_retrieve model directly
+  file_delete: "file_delete"  # Uses file_delete model directly
+  file_content: "file_content"  # Uses file_content model directly
 
 # Model capabilities matrix
 model_capabilities:
@@ -523,6 +644,9 @@ integration_settings:
 
   bedrock:
     region: "${AWS_REGION:-us-west-2}"
+    s3_bucket: "${AWS_S3_BUCKET:-}"
+    batch_role_arn: "${AWS_BEDROCK_ROLE_ARN:-}"
+    output_s3_prefix: "${AWS_OUTPUT_S3_PREFIX:-bifrost-batch-output/}"
 
 # Environment-specific overrides
 environments:

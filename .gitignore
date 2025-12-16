@@ -50,3 +50,7 @@ test-reports
 **/.pytest_cache/
 **/.coverage/
 **/.pytest_cache/
+
+
+# Cursor specific
+.cursor/

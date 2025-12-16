@@ -627,7 +627,7 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 	}
 
 	errorCode := ""
-	if err.Error.Code != nil && *err.Error.Code != "" {
+	if err.Error != nil &&  err.Error.Code != nil && *err.Error.Code != "" {
 		errorCode = *err.Error.Code
 	}
 

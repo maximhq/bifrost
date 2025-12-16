@@ -36,9 +36,71 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Refusal == nil {
-				completeMessage.ChatAssistantMessage.Refusal = chunk.Delta.Refusal
+				completeMessage.ChatAssistantMessage.Refusal = bifrost.Ptr(*chunk.Delta.Refusal)
 			} else {
 				*completeMessage.ChatAssistantMessage.Refusal += *chunk.Delta.Refusal
+			}
+		}
+		// Handle reasoning
+		if chunk.Delta.Reasoning != nil && *chunk.Delta.Reasoning != "" {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			if completeMessage.ChatAssistantMessage.Reasoning == nil {
+				completeMessage.ChatAssistantMessage.Reasoning = bifrost.Ptr(*chunk.Delta.Reasoning)
+			} else {
+				*completeMessage.ChatAssistantMessage.Reasoning += *chunk.Delta.Reasoning
+			}
+		}
+		// Handle reasoning details
+		if len(chunk.Delta.ReasoningDetails) > 0 {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			// Check if the reasoning detail already exists on that index, if so, update it else add it to the list
+			for _, reasoningDetail := range chunk.Delta.ReasoningDetails {
+				found := false
+				for i := range completeMessage.ChatAssistantMessage.ReasoningDetails {
+					existingReasoningDetail := &completeMessage.ChatAssistantMessage.ReasoningDetails[i]
+					if existingReasoningDetail.Index == reasoningDetail.Index {
+						// Update text - accumulate if both exist
+						if reasoningDetail.Text != nil {
+							if existingReasoningDetail.Text == nil {
+								existingReasoningDetail.Text = reasoningDetail.Text
+							} else {
+								*existingReasoningDetail.Text += *reasoningDetail.Text
+							}
+						}
+						// Update signature - overwrite (signatures are typically final)
+						if reasoningDetail.Signature != nil {
+							existingReasoningDetail.Signature = reasoningDetail.Signature
+						}
+						// Update other fields if present
+						if reasoningDetail.Summary != nil {
+							if existingReasoningDetail.Summary == nil {
+								existingReasoningDetail.Summary = reasoningDetail.Summary
+							} else {
+								*existingReasoningDetail.Summary += *reasoningDetail.Summary
+							}
+						}
+						if reasoningDetail.Data != nil {
+							if existingReasoningDetail.Data == nil {
+								existingReasoningDetail.Data = reasoningDetail.Data
+							} else {
+								*existingReasoningDetail.Data += *reasoningDetail.Data
+							}
+						}
+						if reasoningDetail.Type != "" {
+							existingReasoningDetail.Type = reasoningDetail.Type
+						}
+						found = true
+						break
+					}
+				}
+				// If not found, add it to the list
+				if !found {
+					completeMessage.ChatAssistantMessage.ReasoningDetails = append(completeMessage.ChatAssistantMessage.ReasoningDetails, reasoningDetail)
+				}
 			}
 		}
 		// Accumulate tool calls
@@ -117,6 +179,22 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// Accumulate raw response
+	if len(accumulator.ChatStreamChunks) > 0 {
+		// Sort chunks by chunk index
+		sort.Slice(accumulator.ChatStreamChunks, func(i, j int) bool {
+			return accumulator.ChatStreamChunks[i].ChunkIndex < accumulator.ChatStreamChunks[j].ChunkIndex
+		})
+		for _, chunk := range accumulator.ChatStreamChunks {
+			if chunk.RawResponse != nil {
+				if data.RawResponse == nil {
+					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
+				} else {
+					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				}
+			}
+		}
+	}
 	return data, nil
 }
 
@@ -142,6 +220,31 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	chunk.ErrorDetails = bifrostErr
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
+	} else if result != nil && result.TextCompletionResponse != nil {
+		// Handle text completion response directly
+		if len(result.TextCompletionResponse.Choices) > 0 {
+			choice := result.TextCompletionResponse.Choices[0]
+
+			if choice.TextCompletionResponseChoice != nil {
+				deltaCopy := choice.TextCompletionResponseChoice.Text
+				chunk.Delta = &schemas.ChatStreamResponseChoiceDelta{
+					Content: deltaCopy,
+				}
+				chunk.FinishReason = choice.FinishReason
+			}
+		}
+		// Extract token usage
+		if result.TextCompletionResponse.Usage != nil && result.TextCompletionResponse.Usage.TotalTokens > 0 {
+			chunk.TokenUsage = result.TextCompletionResponse.Usage
+		}
+		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
+		if isFinalChunk {
+			if a.pricingManager != nil {
+				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				chunk.Cost = bifrost.Ptr(cost)
+			}
+			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
+		}
 	} else if result != nil && result.ChatResponse != nil {
 		// Extract delta and other information
 		if len(result.ChatResponse.Choices) > 0 {
@@ -152,19 +255,15 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				chunk.Delta = copied
 				chunk.FinishReason = choice.FinishReason
 			}
-			if choice.TextCompletionResponseChoice != nil {
-				deltaCopy := choice.TextCompletionResponseChoice.Text
-				chunk.Delta = &schemas.ChatStreamResponseChoiceDelta{
-					Content: deltaCopy,
-				}
-				chunk.FinishReason = choice.FinishReason
-			}
 		}
 		// Extract token usage
 		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.ChatResponse.Usage
 		}
 		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
+		if result.ChatResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
+		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
 				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
@@ -195,6 +294,10 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
 				return nil, processErr
 			}
+			var rawRequest interface{}
+			if result != nil && result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ChatResponse.ExtraFields.RawRequest
+			}
 			return &ProcessedStreamResponse{
 				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
@@ -202,6 +305,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				Provider:   provider,
 				Model:      model,
 				Data:       data,
+				RawRequest: &rawRequest,
 			}, nil
 		}
 		return nil, nil

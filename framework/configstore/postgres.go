@@ -23,13 +23,16 @@ type PostgresConfig struct {
 
 // newPostgresConfigStore creates a new Postgres config store.
 func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (ConfigStore, error) {
-	db, err := gorm.Open(postgres.Open(fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)), &gorm.Config{
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", config.Host, config.Port, config.User, config.Password, config.DBName, config.SSLMode)
+	db, err := gorm.Open(postgres.New(postgres.Config{
+		DSN: dsn,
+	}), &gorm.Config{
 		Logger: newGormLogger(logger),
 	})
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Configure connection pool
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -41,14 +44,14 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		maxIdleConns = 5
 	}
 	sqlDB.SetMaxIdleConns(maxIdleConns)
-	
+
 	// Set MaxOpenConns (default: 50)
 	maxOpenConns := config.MaxOpenConns
 	if maxOpenConns == 0 {
 		maxOpenConns = 50
 	}
 	sqlDB.SetMaxOpenConns(maxOpenConns)
-	
+
 	d := &RDBConfigStore{db: db, logger: logger}
 	// Run migrations
 	if err := triggerMigrations(ctx, db); err != nil {

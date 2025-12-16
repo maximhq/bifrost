@@ -1,22 +1,23 @@
-"use client";
+"use client"
 
-import FormFooter from "@/components/formFooter";
-import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import NumberAndSelect from "@/components/ui/numberAndSelect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { resetDurationOptions } from "@/lib/constants/governance";
-import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
-import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance";
-import { formatCurrency } from "@/lib/utils/governance";
-import { Validator } from "@/lib/utils/validation";
-import { formatDistanceToNow } from "date-fns";
-import isEqual from "lodash.isequal";
-import { Building } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
+import FormFooter from "@/components/formFooter"
+import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import NumberAndSelect from "@/components/ui/numberAndSelect"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { resetDurationOptions } from "@/lib/constants/governance"
+import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store"
+import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance"
+import { formatCurrency } from "@/lib/utils/governance"
+import { Validator } from "@/lib/utils/validation"
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
+import { formatDistanceToNow } from "date-fns"
+import isEqual from "lodash.isequal"
+import { Building } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 
 interface TeamDialogProps {
 	team?: Team | null;
@@ -46,17 +47,21 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 };
 
 export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDialogProps) {
-	const isEditing = !!team;
-	const [initialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team));
-	const [formData, setFormData] = useState<TeamFormData>({
-		...initialState,
-		isDirty: false,
-	});
+  const isEditing = !!team
+  const [initialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team))
+  const [formData, setFormData] = useState<TeamFormData>({
+    ...initialState,
+    isDirty: false,
+  })
 
-	// RTK Query hooks
-	const [createTeam, { isLoading: isCreating }] = useCreateTeamMutation();
-	const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation();
-	const loading = isCreating || isUpdating;
+  const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create)
+  const hasUpdateAccess = useRbac(RbacResource.Teams, RbacOperation.Update)
+  const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess
+
+  // RTK Query hooks
+  const [createTeam, { isLoading: isCreating }] = useCreateTeamMutation()
+  const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation()
+  const loading = isCreating || isUpdating
 
 	// Track isDirty state
 	useEffect(() => {
@@ -235,7 +240,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 						)}
 					</div>
 
-					<FormFooter validator={validator} label="Team" onCancel={onCancel} isLoading={loading} isEditing={isEditing} />
+					<FormFooter validator={validator} label="Team" onCancel={onCancel} isLoading={loading} isEditing={isEditing} hasPermission={hasPermission} />
 				</form>
 			</DialogContent>
 		</Dialog>

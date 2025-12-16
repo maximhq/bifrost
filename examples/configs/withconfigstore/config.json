@@ -4,7 +4,60 @@
     "enabled": true,
     "type": "sqlite",
     "config": {
-      "path": "../../tests/configs/withconfigstore/config.db"
+      "path": "../../examples/configs/withconfigstore/config.db"
     }
-  }  
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-gpt",
+        "value": "vk-gpt",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "azure",
+            "keys":[{
+              "key_id":"8c52039e-38c6-48b2-8016-0bd884b7befb",
+              "value":"abc",
+              "name":"azure-key-1",
+              "weight": 0.5,
+              "azure_key_config":{
+                "endpoint":"https://api.azure.com",
+                "api_version":"2024-09-01",
+                "deployments":{
+                  "gpt-4.1-2025-04-14":"gpt-4.1-2025-04-14",
+                  "gpt-4.1-mini-2025-04-14":"gpt-4.1-mini-2025-04-14",
+                  "gpt-4.1-nano-2025-04-14":"gpt-4.1-nano-2025-04-14"
+                }
+              }
+            }],
+            "allowed_models": [
+              "gpt-4.1-2025-04-14",
+              "gpt-4.1-mini-2025-04-14",
+              "gpt-4.1-nano-2025-04-14",
+              "gpt-4o-2024-08-06",
+              "gpt-4o-2024-11-20",
+              "gpt-4o-mini-2024-07-18",
+              "gpt-5-2025-08-07",
+              "gpt-5-mini-2025-08-07",
+              "gpt-5-nano-2025-08-07",
+              "gpt-5-pro-2025-10-06",
+              "gpt-5.1-2025-11-13",
+              "o1-2024-12-17",
+              "o3-2025-04-16",
+              "o3-mini-2025-01-31",
+              "o3-pro-2025-06-10",
+              "o4-mini-2025-04-16",
+              "text-embedding-3-large-1",
+              "text-embedding-3-small-1",
+              "text-embedding-ada-002",
+              "tts-hd-001",
+              "whisper-001"
+            ],
+            "weight": 0.5
+          }
+        ]
+      }
+    ]
+  }
 }

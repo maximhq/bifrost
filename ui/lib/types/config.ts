@@ -76,6 +76,7 @@ export interface ModelProviderKey {
 	value?: string;
 	models?: string[];
 	weight: number;
+	enabled?: boolean;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
@@ -88,6 +89,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	value: "",
 	models: [],
 	weight: 1.0,
+	enabled: true,
 };
 
 // NetworkConfig matching Go's schemas.NetworkConfig
@@ -131,7 +133,17 @@ export type RequestType =
 	| "speech"
 	| "speech_stream"
 	| "transcription"
-	| "transcription_stream";
+	| "transcription_stream"
+	| "batch_create"
+	| "batch_list"
+	| "batch_retrieve"
+	| "batch_cancel"
+	| "batch_results"
+	| "file_upload"
+	| "file_list"
+	| "file_retrieve"
+	| "file_delete"
+	| "file_content";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -163,6 +175,7 @@ export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -186,6 +199,7 @@ export interface AddProviderRequest {
 	network_config?: NetworkConfig;
 	concurrency_and_buffer_size?: ConcurrencyAndBufferSize;
 	proxy_config?: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -196,6 +210,7 @@ export interface UpdateProviderRequest {
 	network_config: NetworkConfig;
 	concurrency_and_buffer_size: ConcurrencyAndBufferSize;
 	proxy_config: ProxyConfig;
+	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 }
@@ -234,11 +249,45 @@ export interface AuthConfig {
 	disable_auth_on_inference?: boolean;
 }
 
+// Global proxy type (for global proxy configuration, not per-provider)
+export type GlobalProxyType = 'http' | 'socks5' | 'tcp'
+
+// Global proxy configuration matching Go's tables.GlobalProxyConfig
+export interface GlobalProxyConfig {
+	enabled: boolean;
+	type: GlobalProxyType;
+	url: string;
+	username?: string;
+	password?: string;
+	no_proxy?: string;
+	timeout?: number;
+	skip_tls_verify?: boolean;
+	enable_for_scim: boolean;
+	enable_for_inference: boolean;
+	enable_for_api: boolean;
+}
+
+// Default GlobalProxyConfig
+export const DefaultGlobalProxyConfig: GlobalProxyConfig = {
+	enabled: false,
+	type: 'http',
+	url: '',
+	username: '',
+	password: '',
+	no_proxy: '',
+	timeout: 30,
+	skip_tls_verify: false,
+	enable_for_scim: false,
+	enable_for_inference: false,
+	enable_for_api: false,
+}
+
 // Bifrost Config
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
 	auth_config?: AuthConfig;
+	proxy_config?: GlobalProxyConfig;
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;

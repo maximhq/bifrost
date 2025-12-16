@@ -28,21 +28,22 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers      []string   `json:"providers,omitempty"`
-	Models         []string   `json:"models,omitempty"`
-	Status         []string   `json:"status,omitempty"`
-	Objects        []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	SelectedKeyIDs []string   `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs  []string   `json:"virtual_key_ids,omitempty"`
-	StartTime      *time.Time `json:"start_time,omitempty"`
-	EndTime        *time.Time `json:"end_time,omitempty"`
-	MinLatency     *float64   `json:"min_latency,omitempty"`
-	MaxLatency     *float64   `json:"max_latency,omitempty"`
-	MinTokens      *int       `json:"min_tokens,omitempty"`
-	MaxTokens      *int       `json:"max_tokens,omitempty"`
-	MinCost        *float64   `json:"min_cost,omitempty"`
-	MaxCost        *float64   `json:"max_cost,omitempty"`
-	ContentSearch  string     `json:"content_search,omitempty"`
+	Providers       []string   `json:"providers,omitempty"`
+	Models          []string   `json:"models,omitempty"`
+	Status          []string   `json:"status,omitempty"`
+	Objects         []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	SelectedKeyIDs  []string   `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
+	StartTime       *time.Time `json:"start_time,omitempty"`
+	EndTime         *time.Time `json:"end_time,omitempty"`
+	MinLatency      *float64   `json:"min_latency,omitempty"`
+	MaxLatency      *float64   `json:"max_latency,omitempty"`
+	MinTokens       *int       `json:"min_tokens,omitempty"`
+	MaxTokens       *int       `json:"max_tokens,omitempty"`
+	MinCost         *float64   `json:"min_cost,omitempty"`
+	MaxCost         *float64   `json:"max_cost,omitempty"`
+	MissingCostOnly bool       `json:"missing_cost_only,omitempty"`
+	ContentSearch   string     `json:"content_search,omitempty"`
 }
 
 // PaginationOptions represents pagination parameters
@@ -103,8 +104,9 @@ type Log struct {
 	Status                string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
 	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary        string    `gorm:"type:text" json:"-"`                            // For content search
-	RawResponse           string    `gorm:"type:text" json:"raw_response"`                 // Populated when `send-back-raw-response` is on
+	ContentSummary        string    `gorm:"type:text" json:"-"`
+	RawRequest            string    `gorm:"type:text" json:"raw_request"`  // Populated when `send-back-raw-request` is on
+	RawResponse           string    `gorm:"type:text" json:"raw_response"` // Populated when `send-back-raw-response` is on
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`

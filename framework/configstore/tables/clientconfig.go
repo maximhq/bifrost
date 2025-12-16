@@ -24,6 +24,10 @@ type TableClientConfig struct {
 	// LiteLLM fallback flag
 	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`
 
+	// Config hash is used to detect the changes synced from config.json file
+	// Every time we sync the config.json file, we will update the config hash
+	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 

@@ -206,7 +206,7 @@ class ConfigLoader:
         """Get integration-specific settings"""
         return self._config["integration_settings"].get(integration, {})
 
-    def get_environment_config(self, environment: str = None) -> Dict[str, Any]:
+    def get_environment_config(self, environment: str | None = None) -> Dict[str, Any]:
         """Get environment-specific configuration
 
         Args:
@@ -226,7 +226,7 @@ class ConfigLoader:
         """List all configured integrations"""
         return list(INTEGRATION_TO_PROVIDER_MAP.keys())
 
-    def list_models(self, integration: str = None) -> Dict[str, Any]:
+    def list_models(self, integration: str | None = None) -> Dict[str, Any]:
         """List all models for an integration or all integrations"""
         if integration:
             # Map integration to provider

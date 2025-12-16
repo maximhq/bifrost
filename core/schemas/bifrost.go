@@ -48,6 +48,7 @@ const (
 	Gemini     ModelProvider = "gemini"
 	OpenRouter ModelProvider = "openrouter"
 	Elevenlabs ModelProvider = "elevenlabs"
+	Nebius     ModelProvider = "nebius"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -77,6 +78,7 @@ var StandardProviders = []ModelProvider{
 	Vertex,
 	OpenRouter,
 	Elevenlabs,
+	Nebius,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -95,6 +97,16 @@ const (
 	SpeechStreamRequest         RequestType = "speech_stream"
 	TranscriptionRequest        RequestType = "transcription"
 	TranscriptionStreamRequest  RequestType = "transcription_stream"
+	BatchCreateRequest          RequestType = "batch_create"
+	BatchListRequest            RequestType = "batch_list"
+	BatchRetrieveRequest        RequestType = "batch_retrieve"
+	BatchCancelRequest          RequestType = "batch_cancel"
+	BatchResultsRequest         RequestType = "batch_results"
+	FileUploadRequest           RequestType = "file_upload"
+	FileListRequest             RequestType = "file_list"
+	FileRetrieveRequest         RequestType = "file_retrieve"
+	FileDeleteRequest           RequestType = "file_delete"
+	FileContentRequest          RequestType = "file_content"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -102,21 +114,26 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                                          // string
-	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                                       // string
-	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"                              // string
-	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"                               // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                          // string (to store the selected key ID (set by bifrost))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"                        // string (to store the selected key name (set by bifrost))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"                        // int (to store the number of retries (set by bifrost))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                           // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"                     // bool (set by bifrost)
-	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"                       // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                            // map[string]string
-	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                           // string
-	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"                     // bool
+	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                      // string
+	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                 // string (explicit key name selection)
+	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
+	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
+	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost)
+	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"   // bool (will pass an empty key to the provider)
+	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string][]string
+	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"       // string
+	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
+	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost)
+	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
+	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -150,6 +167,16 @@ type BifrostRequest struct {
 	EmbeddingRequest      *BifrostEmbeddingRequest
 	SpeechRequest         *BifrostSpeechRequest
 	TranscriptionRequest  *BifrostTranscriptionRequest
+	FileUploadRequest     *BifrostFileUploadRequest
+	FileListRequest       *BifrostFileListRequest
+	FileRetrieveRequest   *BifrostFileRetrieveRequest
+	FileDeleteRequest     *BifrostFileDeleteRequest
+	FileContentRequest    *BifrostFileContentRequest
+	BatchCreateRequest    *BifrostBatchCreateRequest
+	BatchListRequest      *BifrostBatchListRequest
+	BatchRetrieveRequest  *BifrostBatchRetrieveRequest
+	BatchCancelRequest    *BifrostBatchCancelRequest
+	BatchResultsRequest   *BifrostBatchResultsRequest
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -166,7 +193,27 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 	case br.SpeechRequest != nil:
 		return br.SpeechRequest.Provider, br.SpeechRequest.Model, br.SpeechRequest.Fallbacks
 	case br.TranscriptionRequest != nil:
-		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks
+		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks		
+	case br.FileUploadRequest != nil:
+		return br.FileUploadRequest.Provider, br.FileUploadRequest.Model, nil
+	case br.FileListRequest != nil:
+		return br.FileListRequest.Provider, br.FileListRequest.Model, nil
+	case br.FileRetrieveRequest != nil:
+		return br.FileRetrieveRequest.Provider, br.FileRetrieveRequest.Model, nil
+	case br.FileDeleteRequest != nil:
+		return br.FileDeleteRequest.Provider, br.FileDeleteRequest.Model, nil
+	case br.FileContentRequest != nil:
+		return br.FileContentRequest.Provider, br.FileContentRequest.Model, nil
+	case br.BatchCreateRequest != nil:
+		return br.BatchCreateRequest.Provider, br.BatchCreateRequest.Model, nil
+	case br.BatchListRequest != nil:
+		return br.BatchListRequest.Provider, br.BatchListRequest.Model, nil
+	case br.BatchRetrieveRequest != nil:
+		return br.BatchRetrieveRequest.Provider, br.BatchRetrieveRequest.Model, nil
+	case br.BatchCancelRequest != nil:
+		return br.BatchCancelRequest.Provider, br.BatchCancelRequest.Model, nil
+	case br.BatchResultsRequest != nil:
+		return br.BatchResultsRequest.Provider, br.BatchResultsRequest.Model, nil
 	}
 
 	return "", "", nil
@@ -253,6 +300,16 @@ type BifrostResponse struct {
 	SpeechStreamResponse        *BifrostSpeechStreamResponse
 	TranscriptionResponse       *BifrostTranscriptionResponse
 	TranscriptionStreamResponse *BifrostTranscriptionStreamResponse
+	FileUploadResponse          *BifrostFileUploadResponse
+	FileListResponse            *BifrostFileListResponse
+	FileRetrieveResponse        *BifrostFileRetrieveResponse
+	FileDeleteResponse          *BifrostFileDeleteResponse
+	FileContentResponse         *BifrostFileContentResponse
+	BatchCreateResponse         *BifrostBatchCreateResponse
+	BatchListResponse           *BifrostBatchListResponse
+	BatchRetrieveResponse       *BifrostBatchRetrieveResponse
+	BatchCancelResponse         *BifrostBatchCancelResponse
+	BatchResultsResponse        *BifrostBatchResultsResponse
 }
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
@@ -275,6 +332,26 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.TranscriptionResponse.ExtraFields
 	case r.TranscriptionStreamResponse != nil:
 		return &r.TranscriptionStreamResponse.ExtraFields
+	case r.FileUploadResponse != nil:
+		return &r.FileUploadResponse.ExtraFields
+	case r.FileListResponse != nil:
+		return &r.FileListResponse.ExtraFields
+	case r.FileRetrieveResponse != nil:
+		return &r.FileRetrieveResponse.ExtraFields
+	case r.FileDeleteResponse != nil:
+		return &r.FileDeleteResponse.ExtraFields
+	case r.FileContentResponse != nil:
+		return &r.FileContentResponse.ExtraFields
+	case r.BatchCreateResponse != nil:
+		return &r.BatchCreateResponse.ExtraFields
+	case r.BatchListResponse != nil:
+		return &r.BatchListResponse.ExtraFields
+	case r.BatchRetrieveResponse != nil:
+		return &r.BatchRetrieveResponse.ExtraFields
+	case r.BatchCancelResponse != nil:
+		return &r.BatchCancelResponse.ExtraFields
+	case r.BatchResultsResponse != nil:
+		return &r.BatchResultsResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
@@ -288,8 +365,10 @@ type BifrostResponseExtraFields struct {
 	ModelDeployment string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
 	Latency         int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
 	ChunkIndex      int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest      interface{}        `json:"raw_request,omitempty"`
 	RawResponse     interface{}        `json:"raw_response,omitempty"`
 	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors     []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 }
 
 // BifrostCacheDebug represents debug information about the cache.

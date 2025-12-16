@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -263,7 +264,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
-		jsonBody, err := sonic.Marshal(convertedBody)
+		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 		}
@@ -316,9 +317,24 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // errorResp must be a pointer to the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
+	body := append([]byte(nil), resp.Body()...)
 
-	if err := sonic.Unmarshal(resp.Body(), errorResp); err != nil {
-		rawResponse := resp.Body()
+	// decode body
+	decodedBody, err := CheckAndDecodeBody(resp)
+	if err != nil {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+		}
+	}
+
+	body = decodedBody
+
+	if err := sonic.Unmarshal(body, errorResp); err != nil {
+		rawResponse := body
 		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
 		return &schemas.BifrostError{
 			IsBifrostError: false,
@@ -340,27 +356,45 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 // If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
-func HandleProviderResponse[T any](responseBody []byte, response *T, sendBackRawResponse bool) (interface{}, *schemas.BifrostError) {
-	var rawResponse interface{}
-
+func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	var wg sync.WaitGroup
-	var structuredErr, rawErr error
+	var structuredErr, rawRequestErr, rawResponseErr error
 
-	wg.Add(2)
+	// Skip raw request capture if requestBody is nil (e.g., for GET requests)
+	shouldCaptureRawRequest := sendBackRawRequest && requestBody != nil
+
+	// Count goroutines to spawn
+	numGoroutines := 1 // Always unmarshal structured response
+	if shouldCaptureRawRequest {
+		numGoroutines++
+	}
+	if sendBackRawResponse {
+		numGoroutines++
+	}
+
+	wg.Add(numGoroutines)
 	go func() {
 		defer wg.Done()
 		structuredErr = sonic.Unmarshal(responseBody, response)
 	}()
-	go func() {
-		defer wg.Done()
-		if sendBackRawResponse {
-			rawErr = sonic.Unmarshal(responseBody, &rawResponse)
-		}
-	}()
+
+	if shouldCaptureRawRequest {
+		go func() {
+			defer wg.Done()
+			rawRequestErr = sonic.Unmarshal(requestBody, &rawRequest)
+		}()
+	}
+
+	if sendBackRawResponse {
+		go func() {
+			defer wg.Done()
+			rawResponseErr = sonic.Unmarshal(responseBody, &rawResponse)
+		}()
+	}
 	wg.Wait()
 
 	if structuredErr != nil {
-		return nil, &schemas.BifrostError{
+		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseUnmarshal,
@@ -369,21 +403,51 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, sendBackRaw
 		}
 	}
 
-	if sendBackRawResponse {
-		if rawErr != nil {
-			return nil, &schemas.BifrostError{
+	if shouldCaptureRawRequest {
+		if rawRequestErr != nil {
+			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawErr,
+					Message: schemas.ErrProviderRawRequestUnmarshal,
+					Error:   rawRequestErr,
 				},
 			}
 		}
-
-		return rawResponse, nil
+		if sendBackRawResponse && rawResponseErr != nil {
+			return nil, nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderRawResponseUnmarshal,
+					Error:   rawResponseErr,
+				},
+			}
+		}
+		return rawRequest, rawResponse, nil
 	}
 
-	return nil, nil
+	if sendBackRawResponse {
+		if rawResponseErr != nil {
+			return nil, nil, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderRawResponseUnmarshal,
+					Error:   rawResponseErr,
+				},
+			}
+		}
+		return rawRequest, rawResponse, nil
+	}
+
+	return nil, nil, nil
+}
+
+func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
+	var rawRequest interface{}
+	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to parse raw request: %v", err))
+	} else {
+		extraFields.RawRequest = rawRequest
+	}
 }
 
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
@@ -393,6 +457,7 @@ func NewUnsupportedOperationError(requestType schemas.RequestType, providerName 
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
+			Code:    schemas.Ptr("unsupported_operation"),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
 			Provider:    providerName,
@@ -428,6 +493,56 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	default:
 		return resp.Body(), nil
 	}
+}
+
+// JSONLParseResult holds parsed items and any line-level errors encountered during parsing.
+type JSONLParseResult struct {
+	Errors []schemas.BatchError
+}
+
+// ParseJSONL parses JSONL data line by line, calling the provided callback for each line.
+// It collects parse errors with line numbers rather than silently skipping failed lines.
+// The callback receives the line bytes and returns an error if parsing fails.
+// This function operates directly on byte slices to avoid unnecessary string conversions.
+func ParseJSONL(data []byte, parseLine func(line []byte) error) JSONLParseResult {
+	result := JSONLParseResult{}
+
+	lineNum := 0
+	start := 0
+
+	for i := 0; i <= len(data); i++ {
+		// Check for newline or end of data
+		if i == len(data) || data[i] == '\n' {
+			lineNum++
+
+			// Extract the line (excluding the newline character)
+			end := i
+			if end > start {
+				line := data[start:end]
+
+				// Trim trailing carriage return for Windows-style line endings
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
+
+				// Skip empty lines
+				if len(line) > 0 {
+					if err := parseLine(line); err != nil {
+						lineNumCopy := lineNum
+						result.Errors = append(result.Errors, schemas.BatchError{
+							Code:    "parse_error",
+							Message: err.Error(),
+							Line:    &lineNumCopy,
+						})
+					}
+				}
+			}
+
+			start = i + 1
+		}
+	}
+
+	return result
 }
 
 // NewConfigurationError creates a standardized error for configuration errors.
@@ -476,6 +591,24 @@ func NewProviderAPIError(message string, err error, statusCode int, providerType
 			Provider: providerType,
 		},
 	}
+}
+
+// RequestMetadata contains metadata about a request for error reporting.
+// This struct is used to pass request context to parseError functions.
+type RequestMetadata struct {
+	Provider    schemas.ModelProvider
+	Model       string
+	RequestType schemas.RequestType
+}
+
+// ShouldSendBackRawRequest checks if the raw request should be sent back.
+// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
+// promote false→true and will not override a true config to false, avoiding accidental suppression.
+func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
+	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
+		return sendBackRawRequest
+	}
+	return defaultSendBackRawRequest
 }
 
 // ShouldSendBackRawResponse checks if the raw response should be sent back, and returns it if it exists.
@@ -944,4 +1077,101 @@ func HandleMultipleListModelsRequests(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	return response, nil
+}
+
+// GetRandomString generates a random alphanumeric string of the given length.
+func GetRandomString(length int) string {
+	if length <= 0 {
+		return ""
+	}
+	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
+	letters := []rune("abcdefghijklmnopqrstuvwxyz0123456789")
+	b := make([]rune, length)
+	for i := range b {
+		b[i] = letters[randomSource.Intn(len(letters))]
+	}
+	return string(b)
+}
+
+// GetReasoningEffortFromBudgetTokens maps a reasoning token budget to OpenAI reasoning effort.
+// Valid values: none, low, medium, high
+func GetReasoningEffortFromBudgetTokens(
+	budgetTokens int,
+	minBudgetTokens int,
+	maxTokens int,
+) string {
+	if budgetTokens <= 0 {
+		return "none"
+	}
+
+	// Defensive defaults
+	if maxTokens <= 0 {
+		return "medium"
+	}
+
+	// Normalize budget
+	if budgetTokens < minBudgetTokens {
+		budgetTokens = minBudgetTokens
+	}
+	if budgetTokens > maxTokens {
+		budgetTokens = maxTokens
+	}
+
+	// Avoid division by zero
+	if maxTokens <= minBudgetTokens {
+		return "high"
+	}
+
+	ratio := float64(budgetTokens-minBudgetTokens) / float64(maxTokens-minBudgetTokens)
+
+	switch {
+	case ratio <= 0.25:
+		return "low"
+	case ratio <= 0.60:
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+// GetBudgetTokensFromReasoningEffort converts OpenAI reasoning effort
+// into a reasoning token budget.
+// effort ∈ {"none", "minimal", "low", "medium", "high"}
+func GetBudgetTokensFromReasoningEffort(
+	effort string,
+	minBudgetTokens int,
+	maxTokens int,
+) (int, error) {
+	if effort == "none" {
+		return 0, nil
+	}
+
+	if minBudgetTokens > maxTokens {
+		return 0, fmt.Errorf("max_tokens must be greater than %d for reasoning", minBudgetTokens)
+	}
+
+	// Defensive defaults
+	if maxTokens <= minBudgetTokens {
+		return minBudgetTokens, nil
+	}
+
+	var ratio float64
+
+	switch effort {
+	case "minimal":
+		ratio = 0.025
+	case "low":
+		ratio = 0.15
+	case "medium":
+		ratio = 0.425
+	case "high":
+		ratio = 0.80
+	default:
+		// Unknown effort → safe default
+		ratio = 0.425
+	}
+
+	budget := minBudgetTokens + int(ratio*float64(maxTokens-minBudgetTokens))
+
+	return budget, nil
 }

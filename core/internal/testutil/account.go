@@ -41,6 +41,17 @@ type TestScenarios struct {
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
 	ListModels            bool // List available models functionality
+	BatchCreate           bool // Batch API create functionality
+	BatchList             bool // Batch API list functionality
+	BatchRetrieve         bool // Batch API retrieve functionality
+	BatchCancel           bool // Batch API cancel functionality
+	BatchResults          bool // Batch API results functionality
+	FileUpload            bool // File API upload functionality
+	FileList              bool // File API list functionality
+	FileRetrieve          bool // File API retrieve functionality
+	FileDelete            bool // File API delete functionality
+	FileContent           bool // File API content download functionality
+	FileBatchInput        bool // Whether batch create supports file-based input (InputFileID)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -61,6 +72,8 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback // for embedding tests
 	SkipReason               string             // Reason to skip certain tests
+	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
+	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -93,6 +106,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cerebras,
 		schemas.Gemini,
 		schemas.OpenRouter,
+		schemas.Nebius,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -136,13 +150,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
 					ARN:          bifrost.Ptr(os.Getenv("AWS_ARN")),
 					Deployments: map[string]string{
-						"claude-sonnet-4":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
 						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+						"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
+						"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+						"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 					},
 				},
 			},
 			{
-				Models: []string{"anthropic.claude-3-5-sonnet-20240620-v1:0", "cohere.embed-v4:0"},
+				Models: []string{"cohere.embed-v4:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
@@ -251,6 +267,14 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("OPENROUTER_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		}, nil
+	case schemas.Nebius:
+		return []schemas.Key{
+			{
+				Value:  os.Getenv("NEBIUS_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -500,6 +524,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Nebius:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -536,6 +573,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
 			ListModels:            true,
+			BatchCreate:           true, // OpenAI supports batch API
+			BatchList:             true, // OpenAI supports batch API
+			BatchRetrieve:         true, // OpenAI supports batch API
+			BatchCancel:           true, // OpenAI supports batch API
+			BatchResults:          true, // OpenAI supports batch API
+			FileUpload:            true, // OpenAI supports file API
+			FileList:              true, // OpenAI supports file API
+			FileRetrieve:          true, // OpenAI supports file API
+			FileDelete:            true, // OpenAI supports file API
+			FileContent:           true, // OpenAI supports file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -564,6 +611,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
 			ListModels:            true,
+			BatchCreate:           true, // Anthropic supports batch API
+			BatchList:             true, // Anthropic supports batch API
+			BatchRetrieve:         true, // Anthropic supports batch API
+			BatchCancel:           true, // Anthropic supports batch API
+			BatchResults:          true, // Anthropic supports batch API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -592,6 +644,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Bedrock supports batch via Model Invocation Jobs (requires S3 config)
+			BatchList:             true, // Bedrock supports listing batch jobs
+			BatchRetrieve:         true, // Bedrock supports retrieving batch jobs
+			BatchCancel:           true, // Bedrock supports stopping batch jobs
+			BatchResults:          true, // Bedrock batch results via S3
+			FileUpload:            true, // Bedrock file upload to S3 (requires S3 config)
+			FileList:              true, // Bedrock file list from S3 (requires S3 config)
+			FileRetrieve:          true, // Bedrock file retrieve from S3 (requires S3 config)
+			FileDelete:            true, // Bedrock file delete from S3 (requires S3 config)
+			FileContent:           true, // Bedrock file content from S3 (requires S3 config)
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -648,6 +710,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported yet
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Azure supports batch API
+			BatchList:             true, // Azure supports batch API
+			BatchRetrieve:         true, // Azure supports batch API
+			BatchCancel:           true, // Azure supports batch API
+			BatchResults:          true, // Azure supports batch API
+			FileUpload:            true, // Azure supports file API
+			FileList:              true, // Azure supports file API
+			FileRetrieve:          true, // Azure supports file API
+			FileDelete:            true, // Azure supports file API
+			FileContent:           true, // Azure supports file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -819,6 +891,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   true,
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false, // Gemini doesn't support direct content download
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},

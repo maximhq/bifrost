@@ -41,7 +41,6 @@ import {
 	SidebarMenuSubButton,
 	SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE, TRIAL_EXPIRY } from "@/lib/constants/config";
 import { useGetCoreConfigQuery, useGetLatestReleaseQuery, useGetVersionQuery, useLogoutMutation } from "@/lib/store";
@@ -164,13 +163,12 @@ const SidebarItemView = ({
 	onToggle?: () => void;
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
-	tooltipText?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive = hasSubItems && item.subItems?.some((subItem) => pathname.startsWith(subItem.url));
 
 	const handleClick = (e: React.MouseEvent) => {
-		if (hasSubItems && onToggle) {
+		if (hasSubItems && onToggle && item.hasAccess) {
 			e.preventDefault();
 			onToggle();
 		}
@@ -190,66 +188,62 @@ const SidebarItemView = ({
 	};
 
 	return (
-		<TooltipProvider>
-			<SidebarMenuItem key={item.title}>
-				<SidebarMenuButton
-					className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
-						isActive || isAnySubItemActive
-							? "bg-sidebar-accent text-primary border-primary/20"
-							: isAllowed && item.hasAccess
-								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-					} `}
-					onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
-				>
-					<div className="flex w-full items-center justify-between">
-						<div className="flex w-full items-center gap-2">
-							<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-							<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
-							{item.tag && (
-								<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
-									{item.tag}
-								</Badge>
-							)}
-						</div>
-						{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
-						{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
-							<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+		<SidebarMenuItem key={item.title}>
+			<SidebarMenuButton
+				className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
+					isActive || isAnySubItemActive
+						? "bg-sidebar-accent text-primary border-primary/20"
+						: isAllowed && item.hasAccess
+							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+				} `}
+				onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
+			>
+				<div className="flex w-full items-center justify-between">
+					<div className="flex w-full items-center gap-2">
+						<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+						<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
+						{item.tag && (
+							<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+								{item.tag}
+							</Badge>
 						)}
-						{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4" size={16} />}
 					</div>
-				</SidebarMenuButton>
-				{hasSubItems && isExpanded && (
-					<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
-						{item.subItems?.map((subItem: SidebarItem) => {
-							const isSubItemActive = pathname.startsWith(subItem.url);
-							const SubItemIcon = subItem.icon;
-							return (
-								<SidebarMenuSubItem key={subItem.title}>
-									<SidebarMenuSubButton
-										className={`h-7 cursor-pointer rounded-md px-2 transition-all duration-200 ${
-											isSubItemActive
-												? "bg-sidebar-accent text-primary font-medium"
-												: subItem.hasAccess == false
-													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-										}`}
-										onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem.url))}
-									>
-										<div className="flex items-center gap-2">
-											{SubItemIcon && (
-												<SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-											)}
-											<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
-										</div>
-									</SidebarMenuSubButton>
-								</SidebarMenuSubItem>
-							);
-						})}
-					</SidebarMenuSub>
-				)}
-			</SidebarMenuItem>
-		</TooltipProvider>
+					{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
+					{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
+						<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
+					)}
+					{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4" size={16} />}
+				</div>
+			</SidebarMenuButton>
+			{hasSubItems && isExpanded && (
+				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
+					{item.subItems?.map((subItem: SidebarItem) => {
+						const isSubItemActive = pathname.startsWith(subItem.url);
+						const SubItemIcon = subItem.icon;
+						return (
+							<SidebarMenuSubItem key={subItem.title}>
+								<SidebarMenuSubButton
+									className={`h-7 cursor-pointer rounded-md px-2 transition-all duration-200 ${
+										isSubItemActive
+											? "bg-sidebar-accent text-primary font-medium"
+											: subItem.hasAccess === false
+												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+									}`}
+									onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem.url))}
+								>
+									<div className="flex items-center gap-2">
+										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
+										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+									</div>
+								</SidebarMenuSubButton>
+							</SidebarMenuSubItem>
+						);
+					})}
+				</SidebarMenuSub>
+			)}
+		</SidebarMenuItem>
 	);
 };
 
@@ -310,7 +304,11 @@ export default function AppSidebar() {
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
+	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
+	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
+	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
@@ -337,7 +335,6 @@ export default function AppSidebar() {
 					icon: ChevronsLeftRightEllipsis,
 					description: "Log connectors",
 					hasAccess: hasObservabilityAccess,
-					tooltipText: hasObservabilityAccess ? undefined : "You don't have permission to configure log connectors",
 				},
 			],
 		},
@@ -375,7 +372,7 @@ export default function AppSidebar() {
 			url: "/workspace/governance",
 			icon: Landmark,
 			description: "Govern access",
-			hasAccess: true,
+			hasAccess: hasVirtualKeysAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
 			subItems: [
 				{
 					title: "Virtual Keys",
@@ -389,7 +386,7 @@ export default function AppSidebar() {
 					url: "/workspace/user-groups",
 					icon: Users,
 					description: "Manage users & groups",
-					hasAccess: hasUserProvisioningAccess,
+					hasAccess: hasCustomersAccess || hasTeamsAccess,
 				},
 				{
 					title: "User Provisioning",
@@ -403,7 +400,7 @@ export default function AppSidebar() {
 					url: "/workspace/rbac",
 					icon: UserRoundCheck,
 					description: "User roles and permissions",
-					hasAccess: hasUserProvisioningAccess,
+					hasAccess: hasRbacAccess,
 				},
 				{
 					title: "Audit Logs",
@@ -419,7 +416,7 @@ export default function AppSidebar() {
 			url: "/workspace/guardrails",
 			icon: Construction,
 			description: "Guardrails configuration",
-			hasAccess: true,
+			hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 			subItems: [
 				{
 					title: "Configuration",
@@ -433,7 +430,7 @@ export default function AppSidebar() {
 					url: "/workspace/guardrails/providers",
 					icon: Boxes,
 					description: "Guardrail providers configuration",
-					hasAccess: hasGuardrailsConfigAccess,
+					hasAccess: hasGuardrailsProvidersAccess,
 				},
 			],
 		},
@@ -482,6 +479,7 @@ export default function AppSidebar() {
 	}, []);
 
 	const showNewReleaseBanner = useMemo(() => {
+		if (IS_ENTERPRISE) return false;
 		if (latestRelease && version) {
 			return compareVersions(latestRelease.name, version) > 0;
 		}

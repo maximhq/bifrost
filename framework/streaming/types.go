@@ -43,6 +43,7 @@ type AccumulatedData struct {
 	AudioOutput         *schemas.BifrostSpeechResponse
 	TranscriptionOutput *schemas.BifrostTranscriptionResponse
 	FinishReason        *string
+	RawResponse         *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -55,6 +56,7 @@ type AudioStreamChunk struct {
 	Cost               *float64                             // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                // Error if any
 	ChunkIndex         int                                  // Index of the chunk in the stream
+	RawResponse        *string
 }
 
 // TranscriptionStreamChunk represents a single transcription streaming chunk
@@ -67,6 +69,7 @@ type TranscriptionStreamChunk struct {
 	Cost               *float64                                    // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                       // Error if any
 	ChunkIndex         int                                         // Index of the chunk in the stream
+	RawResponse        *string
 }
 
 // ChatStreamChunk represents a single streaming chunk
@@ -79,6 +82,7 @@ type ChatStreamChunk struct {
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
+	RawResponse        *string                                // Raw response if available
 }
 
 // ResponsesStreamChunk represents a single responses streaming chunk
@@ -91,6 +95,7 @@ type ResponsesStreamChunk struct {
 	Cost               *float64                                // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                   // Error if any
 	ChunkIndex         int                                     // Index of the chunk in the stream
+	RawResponse        *string
 }
 
 // StreamAccumulator manages accumulation of streaming chunks
@@ -115,6 +120,7 @@ type ProcessedStreamResponse struct {
 	Provider   schemas.ModelProvider
 	Model      string
 	Data       *AccumulatedData
+	RawRequest *interface{}
 }
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
@@ -149,6 +155,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
+		}
+		if p.RawRequest != nil {
+			resp.TextCompletionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
 	case StreamTypeChat:
 		chatResp := &schemas.BifrostChatResponse{
@@ -199,6 +208,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			resp.ChatResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
 
@@ -214,6 +226,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			responsesResp.ExtraFields.RawRequest = p.RawRequest
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -227,6 +242,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			resp.SpeechResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -238,6 +256,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
+		}
+		if p.RawRequest != nil {
+			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
 	}
 	return resp

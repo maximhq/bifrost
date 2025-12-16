@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 // logger is the logger for the OTEL plugin
@@ -27,6 +28,10 @@ const (
 	TraceIDKey ContextKey = "plugin-otel-trace-id"
 	SpanIDKey  ContextKey = "plugin-otel-span-id"
 )
+
+// OTELResponseAttributesEnvKey is the environment variable key for the OTEL resource attributes
+// We check if this is present in the environment variables and if so, we will use it to set the attributes for all spans at the resource level
+const OTELResponseAttributesEnvKey = "OTEL_RESOURCE_ATTRIBUTES"
 
 const PluginName = "otel"
 
@@ -73,6 +78,8 @@ type OtelPlugin struct {
 
 	bifrostVersion string
 
+	attributesFromEnvironment []*commonpb.KeyValue
+
 	ongoingSpans *TTLSyncMap
 
 	client OtelClient
@@ -108,17 +115,30 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if config.ServiceName == "" {
 		config.ServiceName = "bifrost"
 	}
+	// Loading attributes from environment
+	attributesFromEnvironment := make([]*commonpb.KeyValue, 0)
+	if attributes, ok := os.LookupEnv(OTELResponseAttributesEnvKey); ok {
+		// We will split the attributes by , and then split each attribute by =
+		for attribute := range strings.SplitSeq(attributes, ",") {
+			attributeParts := strings.Split(strings.TrimSpace(attribute), "=")
+			if len(attributeParts) == 2 {
+				attributesFromEnvironment = append(attributesFromEnvironment, kvStr(strings.TrimSpace(attributeParts[0]), strings.TrimSpace(attributeParts[1])))
+			}
+		}
+	}
+	// Preparing the plugin
 	p := &OtelPlugin{
-		serviceName:    config.ServiceName,
-		url:            config.CollectorURL,
-		traceType:      config.TraceType,
-		headers:        config.Headers,
-		ongoingSpans:   NewTTLSyncMap(20*time.Minute, 1*time.Minute),
-		protocol:       config.Protocol,
-		pricingManager: pricingManager,
-		accumulator:    streaming.NewAccumulator(pricingManager, logger),
-		emitWg:         sync.WaitGroup{},
-		bifrostVersion: bifrostVersion,
+		serviceName:               config.ServiceName,
+		url:                       config.CollectorURL,
+		traceType:                 config.TraceType,
+		headers:                   config.Headers,
+		ongoingSpans:              NewTTLSyncMap(20*time.Minute, 1*time.Minute),
+		protocol:                  config.Protocol,
+		pricingManager:            pricingManager,
+		accumulator:               streaming.NewAccumulator(pricingManager, logger),
+		emitWg:                    sync.WaitGroup{},
+		bifrostVersion:            bifrostVersion,
+		attributesFromEnvironment: attributesFromEnvironment,
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {

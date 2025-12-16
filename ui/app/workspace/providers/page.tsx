@@ -31,6 +31,7 @@ export default function Providers() {
 	const selectedProvider = useAppSelector((state) => state.provider.selectedProvider);
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
+	const hasProviderDeleteAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 
 	const [showRedirectionDialog, setShowRedirectionDialog] = useState(false);
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
@@ -70,6 +71,7 @@ export default function Providers() {
 							network_config: DefaultNetworkConfig,
 							custom_provider_config: undefined,
 							proxy_config: undefined,
+							send_back_raw_request: undefined,
 							send_back_raw_response: undefined,
 							status: "error",
 						}),
@@ -195,7 +197,7 @@ export default function Providers() {
 													<div className="text-sm">{p.name}</div>
 													<ProviderStatusBadge status={p.status} />
 												</div>
-												{selectedProvider?.name === p.name && (
+												{selectedProvider?.name === p.name && hasProviderDeleteAccess && (
 													<Trash
 														className="text-muted-foreground hover:text-destructive ml-auto hidden h-4 w-4 cursor-pointer group-hover:block"
 														onClick={(event) => {
@@ -220,7 +222,7 @@ export default function Providers() {
 										e.preventDefault();
 										e.stopPropagation();
 										setShowCustomProviderDialog(true);
-									}}									
+									}}
 								>
 									<PlusIcon className="h-4 w-4" />
 									<div className="text-xs">Add New Provider</div>

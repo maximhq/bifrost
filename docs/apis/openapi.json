@@ -55,6 +55,26 @@
     {
       "name": "Models",
       "description": "Endpoint for listing available models."
+    },
+    {
+      "name": "Batch",
+      "description": "Endpoints for batch processing operations."
+    },
+    {
+      "name": "Files",
+      "description": "Endpoints for file upload and management operations."
+    },
+    {
+      "name": "Configuration",
+      "description": "Endpoints for managing Bifrost configuration settings."
+    },
+    {
+      "name": "Session",
+      "description": "Endpoints for authentication and session management."
+    },
+    {
+      "name": "Cache",
+      "description": "Endpoints for managing semantic cache."
     }
   ],
   "paths": {
@@ -513,7 +533,7 @@
         }
       }
     },
-    "/api/mcp/client/{name}": {
+    "/api/mcp/client/{id}": {
       "put": {
         "tags": [
           "MCP"
@@ -522,13 +542,13 @@
         "description": "Edits the list of tools to be executed for a specific MCP client.",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "integer"
             },
-            "description": "The name of the MCP client to edit."
+            "description": "The ID of the MCP client to edit."
           }
         ],
         "requestBody": {
@@ -587,13 +607,13 @@
         "description": "Removes an MCP client configuration and disconnects it.",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "integer"
             },
-            "description": "The name of the MCP client to remove."
+            "description": "The ID of the MCP client to remove."
           }
         ],
         "responses": {
@@ -626,7 +646,7 @@
         }
       }
     },
-    "/api/mcp/client/{name}/reconnect": {
+    "/api/mcp/client/{id}/reconnect": {
       "post": {
         "tags": [
           "MCP"
@@ -635,13 +655,13 @@
         "description": "Attempts to reconnect a disconnected MCP client.",
         "parameters": [
           {
-            "name": "name",
+            "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "integer"
             },
-            "description": "The name of the MCP client to reconnect."
+            "description": "The ID of the MCP client to reconnect."
           }
         ],
         "responses": {
@@ -696,6 +716,154 @@
         }
       }
     },
+    "/api/config": {
+      "get": {
+        "summary": "Get Configuration",
+        "description": "Retrieves the current Bifrost configuration including client settings, framework config, and authentication settings.",
+        "operationId": "getConfig",
+        "tags": [
+          "Configuration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Configuration object containing client_config, framework_config, and auth_config"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Configuration",
+        "description": "Updates the Bifrost configuration. Supports hot-reloading of certain settings like drop_excess_requests.",
+        "operationId": "updateConfig",
+        "tags": [
+          "Configuration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Configuration updates to apply"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration"
+          },
+          "500": {
+            "description": "Failed to update configuration"
+          }
+        }
+      }
+    },
+    "/api/proxy-config": {
+      "get": {
+        "summary": "Get Proxy Configuration",
+        "description": "Retrieves the current global proxy configuration.",
+        "operationId": "getProxyConfig",
+        "tags": [
+          "Configuration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Current proxy configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalProxyConfig"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to get proxy configuration"
+          }
+        }
+      },
+      "put": {
+        "summary": "Update Proxy Configuration",
+        "description": "Updates the global proxy configuration for outgoing requests.",
+        "operationId": "updateProxyConfig",
+        "tags": [
+          "Configuration"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GlobalProxyConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Proxy configuration updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proxy configuration"
+          },
+          "500": {
+            "description": "Failed to update proxy configuration"
+          }
+        }
+      }
+    },
+    "/api/pricing/force-sync": {
+      "post": {
+        "summary": "Force Pricing Sync",
+        "description": "Triggers a forced synchronization of pricing data from the pricing service.",
+        "operationId": "forcePricingSync",
+        "tags": [
+          "Configuration"
+        ],
+        "responses": {
+          "200": {
+            "description": "Pricing sync triggered successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to trigger pricing sync"
+          }
+        }
+      }
+    },
     "/api/keys": {
       "get": {
         "summary": "List All Keys",
@@ -717,6 +885,49 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/models": {
+      "get": {
+        "summary": "List All Models",
+        "description": "Retrieves a list of all available models across all configured providers.",
+        "operationId": "listModels",
+        "tags": [
+          "Models"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "Filter models by provider name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_ids",
+            "in": "query",
+            "description": "Comma-separated list of key IDs to filter models by",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of available models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListModelsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to retrieve models"
           }
         }
       }
@@ -864,12 +1075,13 @@
         "tags": [
           "Providers"
         ],
+        "description": "Note: Removing a provider is only supported for custom providers. If you are trying to delete a provider that is not a custom provider, you can use Update Provider instead.",
         "parameters": [
           {
             "name": "provider",
             "in": "path",
             "required": true,
-            "description": "The name of the provider to delete",
+            "description": "The name of the custom provider to delete",
             "schema": {
               "type": "string"
             }
@@ -943,7 +1155,23 @@
         },
         "responses": {
           "201": {
-            "description": "Plugin created successfully"
+            "description": "Plugin created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Plugin created successfully"
+                    },
+                    "plugin": {
+                      "$ref": "#/components/schemas/Plugin"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1008,7 +1236,23 @@
         },
         "responses": {
           "200": {
-            "description": "Plugin updated successfully"
+            "description": "Plugin updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Plugin updated successfully"
+                    },
+                    "plugin": {
+                      "$ref": "#/components/schemas/Plugin"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1031,7 +1275,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Plugin deleted successfully"
+            "description": "Plugin deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1087,7 +1338,23 @@
         },
         "responses": {
           "201": {
-            "description": "Virtual key created successfully"
+            "description": "Virtual key created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Virtual key created successfully"
+                    },
+                    "virtual_key": {
+                      "$ref": "#/components/schemas/VirtualKey"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1152,7 +1419,23 @@
         },
         "responses": {
           "200": {
-            "description": "Virtual key updated successfully"
+            "description": "Virtual key updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Virtual key updated successfully"
+                    },
+                    "virtual_key": {
+                      "$ref": "#/components/schemas/VirtualKey"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1175,7 +1458,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Virtual key deleted successfully"
+            "description": "Virtual key deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1231,7 +1521,23 @@
         },
         "responses": {
           "201": {
-            "description": "Team created successfully"
+            "description": "Team created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Team created successfully"
+                    },
+                    "team": {
+                      "$ref": "#/components/schemas/Team"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1296,7 +1602,23 @@
         },
         "responses": {
           "200": {
-            "description": "Team updated successfully"
+            "description": "Team updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Team updated successfully"
+                    },
+                    "team": {
+                      "$ref": "#/components/schemas/Team"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1319,7 +1641,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Team deleted successfully"
+            "description": "Team deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1375,7 +1704,23 @@
         },
         "responses": {
           "201": {
-            "description": "Customer created successfully"
+            "description": "Customer created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Customer created successfully"
+                    },
+                    "customer": {
+                      "$ref": "#/components/schemas/Customer"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1440,7 +1785,23 @@
         },
         "responses": {
           "200": {
-            "description": "Customer updated successfully"
+            "description": "Customer updated successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Customer updated successfully"
+                    },
+                    "customer": {
+                      "$ref": "#/components/schemas/Customer"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -1463,7 +1824,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Customer deleted successfully"
+            "description": "Customer deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1637,6 +2005,22 @@
               ],
               "default": "desc"
             }
+          },
+          {
+            "name": "selected_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of API key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "virtual_key_ids",
+            "in": "query",
+            "description": "Comma-separated list of virtual key IDs to filter by",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1646,6 +2030,166 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchResult"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete logs",
+        "description": "Deletes logs by their IDs.",
+        "operationId": "deleteLogs",
+        "tags": [
+          "Logging"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["ids"],
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Array of log IDs to delete"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Logs deleted successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request - missing or empty IDs array"
+          },
+          "500": {
+            "description": "Failed to delete logs"
+          }
+        }
+      }
+    },
+    "/api/logs/stats": {
+      "get": {
+        "summary": "Get log statistics",
+        "description": "Retrieves aggregated statistics for logs matching the filter criteria.",
+        "operationId": "getLogsStats",
+        "tags": [
+          "Logging"
+        ],
+        "parameters": [
+          {
+            "name": "providers",
+            "in": "query",
+            "description": "Comma-separated list of providers to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "models",
+            "in": "query",
+            "description": "Comma-separated list of models to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Comma-separated list of statuses to filter by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time for the time range filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time for the time range filter (RFC3339 format)",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Log statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogStats"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to calculate statistics"
+          }
+        }
+      }
+    },
+    "/api/logs/filterdata": {
+      "get": {
+        "summary": "Get available filter data",
+        "description": "Retrieves all unique values available for filtering logs (models, keys, virtual keys).",
+        "operationId": "getLogsFilterData",
+        "tags": [
+          "Logging"
+        ],
+        "responses": {
+          "200": {
+            "description": "Available filter data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "models": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of unique model names"
+                    },
+                    "selected_keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Key"
+                      },
+                      "description": "List of available API keys"
+                    },
+                    "virtual_keys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/VirtualKey"
+                      },
+                      "description": "List of available virtual keys"
+                    }
+                  }
                 }
               }
             }
@@ -1676,6 +2220,195 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/session/is-auth-enabled": {
+      "get": {
+        "summary": "Check authentication status",
+        "description": "Checks if authentication is enabled and if the current session has a valid token.",
+        "operationId": "isAuthEnabled",
+        "tags": [
+          "Session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authentication status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "is_auth_enabled": {
+                      "type": "boolean",
+                      "description": "Whether authentication is enabled"
+                    },
+                    "has_valid_token": {
+                      "type": "boolean",
+                      "description": "Whether the current request has a valid authentication token"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to get auth config"
+          }
+        }
+      }
+    },
+    "/api/session/login": {
+      "post": {
+        "summary": "Login",
+        "description": "Authenticates with username and password and returns a session token.",
+        "operationId": "login",
+        "tags": [
+          "Session"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "password"],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Login successful"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "Session token"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing username or password"
+          },
+          "401": {
+            "description": "Invalid credentials"
+          },
+          "500": {
+            "description": "Failed to create session"
+          }
+        }
+      }
+    },
+    "/api/session/logout": {
+      "post": {
+        "summary": "Logout",
+        "description": "Invalidates the current session token.",
+        "operationId": "logout",
+        "tags": [
+          "Session"
+        ],
+        "responses": {
+          "200": {
+            "description": "Logout successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cache/clear/{requestId}": {
+      "delete": {
+        "summary": "Clear cache by request ID",
+        "description": "Clears the semantic cache entry associated with a specific request ID.",
+        "operationId": "clearCacheByRequestId",
+        "tags": [
+          "Cache"
+        ],
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The request ID whose cache entry should be cleared"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cache cleared successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to clear cache"
+          }
+        }
+      }
+    },
+    "/api/cache/clear-by-key/{cacheKey}": {
+      "delete": {
+        "summary": "Clear cache by cache key",
+        "description": "Clears the semantic cache entry associated with a specific cache key.",
+        "operationId": "clearCacheByKey",
+        "tags": [
+          "Cache"
+        ],
+        "parameters": [
+          {
+            "name": "cacheKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The cache key to clear"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cache cleared successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to clear cache"
           }
         }
       }
@@ -2855,6 +3588,448 @@
           }
         }
       }
+    },
+    "/v1/batches": {
+      "post": {
+        "summary": "Create Batch",
+        "description": "Creates a new batch job for processing multiple requests asynchronously.",
+        "operationId": "createBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Batch created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCreateResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Batches",
+        "description": "Lists all batch jobs for the authenticated user.",
+        "operationId": "listBatches",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider to use (e.g., openai, anthropic, azure, bedrock, gemini)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of batches to return"
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Cursor for pagination"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of batches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}": {
+      "get": {
+        "summary": "Retrieve Batch",
+        "description": "Retrieves details of a specific batch job.",
+        "operationId": "retrieveBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch to retrieve"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchRetrieveResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}/cancel": {
+      "post": {
+        "summary": "Cancel Batch",
+        "description": "Cancels a batch job that is in progress.",
+        "operationId": "cancelBatch",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch to cancel"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchCancelResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/batches/{batch_id}/results": {
+      "get": {
+        "summary": "Get Batch Results",
+        "description": "Retrieves the results of a completed batch job.",
+        "operationId": "getBatchResults",
+        "tags": [
+          "Bifrost Core",
+          "Batch"
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the batch"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Batch results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchResultsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files": {
+      "post": {
+        "summary": "Upload File",
+        "description": "Uploads a file for use with batch processing or other features.",
+        "operationId": "uploadFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "purpose",
+                  "provider"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The file to upload"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": ["batch", "fine-tune", "assistants", "vision"],
+                    "description": "The intended purpose of the file"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "description": "The model provider (e.g., openai, azure, bedrock, gemini)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File uploaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUploadResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List Files",
+        "description": "Lists all uploaded files for the authenticated user.",
+        "operationId": "listFiles",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          },
+          {
+            "name": "purpose",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Filter by file purpose"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            },
+            "description": "Maximum number of files to return"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}": {
+      "get": {
+        "summary": "Retrieve File",
+        "description": "Retrieves metadata for a specific file.",
+        "operationId": "retrieveFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file to retrieve"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileRetrieveResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete File",
+        "description": "Deletes a file.",
+        "operationId": "deleteFile",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file to delete"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDeleteResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/files/{file_id}/content": {
+      "get": {
+        "summary": "Get File Content",
+        "description": "Downloads the content of a file.",
+        "operationId": "getFileContent",
+        "tags": [
+          "Bifrost Core",
+          "Files"
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The ID of the file"
+          },
+          {
+            "name": "x-model-provider",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The model provider"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3253,7 +4428,8 @@
           "parasail",
           "elevenlabs",
           "perplexity",
-          "cerebras"
+          "cerebras",
+          "nebius"
         ],
         "description": "AI model provider",
         "example": "openai"
@@ -5682,15 +6858,52 @@
       "Plugin": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
           "enabled": {
             "type": "boolean"
           },
+          "path": {
+            "type": "string"
+          },
+          "isCustom": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer"
+          },
           "config": {
             "type": "object",
             "additionalProperties": true
+          },
+          "status": {
+            "$ref": "#/components/schemas/PluginStatus"
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PluginStatus": {
+        "type": "object",
+        "properties": {
+          "isLoaded": {
+            "type": "boolean"
+          },
+          "errorMessage": {
+            "type": "string"
           }
         }
       },
@@ -5742,6 +6955,12 @@
           "customer_id": {
             "type": "string"
           },
+          "budget_id": {
+            "type": "string"
+          },
+          "rate_limit_id": {
+            "type": "string"
+          },
           "is_active": {
             "type": "boolean"
           },
@@ -5757,11 +6976,34 @@
           "rate_limit": {
             "$ref": "#/components/schemas/RateLimit"
           },
+          "team": {
+            "$ref": "#/components/schemas/Team"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer"
+          },
           "provider_configs": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/VirtualKeyProviderConfig"
             }
+          },
+          "mcp_configs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VirtualKeyMCPConfig"
+            }
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -5826,8 +7068,43 @@
           "customer_id": {
             "type": "string"
           },
+          "budget_id": {
+            "type": "string"
+          },
+          "customer": {
+            "$ref": "#/components/schemas/Customer"
+          },
           "budget": {
             "$ref": "#/components/schemas/Budget"
+          },
+          "virtual_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VirtualKey"
+            }
+          },
+          "profile": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "claims": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -5840,8 +7117,34 @@
           "name": {
             "type": "string"
           },
+          "budget_id": {
+            "type": "string"
+          },
           "budget": {
             "$ref": "#/components/schemas/Budget"
+          },
+          "teams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Team"
+            }
+          },
+          "virtual_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VirtualKey"
+            }
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -5891,6 +7194,103 @@
           "request_last_reset": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "MessageResponse": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "LogStats": {
+        "type": "object",
+        "properties": {
+          "total_requests": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          },
+          "total_cost": {
+            "type": "number"
+          },
+          "average_latency": {
+            "type": "number"
+          },
+          "success_rate": {
+            "type": "number"
+          },
+          "requests_by_provider": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "requests_by_model": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "requests_by_status": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "GlobalProxyConfig": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the proxy is enabled"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["http", "socks5", "tcp"],
+            "default": "http",
+            "description": "Proxy type"
+          },
+          "url": {
+            "type": "string",
+            "description": "Proxy URL (e.g., http://proxy.example.com:8080)"
+          },
+          "username": {
+            "type": "string",
+            "description": "Optional authentication username"
+          },
+          "password": {
+            "type": "string",
+            "description": "Optional authentication password"
+          },
+          "no_proxy": {
+            "type": "string",
+            "description": "Comma-separated list of hosts to bypass proxy"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Connection timeout in seconds"
+          },
+          "skip_tls_verify": {
+            "type": "boolean",
+            "description": "Skip TLS certificate verification"
+          },
+          "enable_for_scim": {
+            "type": "boolean",
+            "description": "Enable proxy for SCIM requests (enterprise only)"
+          },
+          "enable_for_inference": {
+            "type": "boolean",
+            "description": "Enable proxy for inference requests"
+          },
+          "enable_for_api": {
+            "type": "boolean",
+            "description": "Enable proxy for API requests"
           }
         }
       },
@@ -6826,6 +8226,421 @@
       },
       "ModelDefaultParameters": {
         "type": "object"
+      },
+      "BatchCreateRequest": {
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "The model provider (e.g., openai, anthropic, azure, bedrock, gemini)"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model identifier for batch routing"
+          },
+          "input_file_id": {
+            "type": "string",
+            "description": "ID of the uploaded JSONL file containing batch requests (OpenAI/Azure style)"
+          },
+          "requests": {
+            "type": "array",
+            "description": "Array of inline request items (Anthropic style)",
+            "items": {
+              "$ref": "#/components/schemas/BatchRequestItem"
+            }
+          },
+          "endpoint": {
+            "type": "string",
+            "enum": ["/v1/chat/completions", "/v1/embeddings", "/v1/completions", "/v1/messages"],
+            "description": "Target endpoint for batch requests"
+          },
+          "completion_window": {
+            "type": "string",
+            "description": "Time window for completion (e.g., 24h)",
+            "default": "24h"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "User-provided metadata"
+          }
+        }
+      },
+      "BatchRequestItem": {
+        "type": "object",
+        "required": ["custom_id"],
+        "properties": {
+          "custom_id": {
+            "type": "string",
+            "description": "User-provided unique ID for this request"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP method (typically POST)"
+          },
+          "url": {
+            "type": "string",
+            "description": "Endpoint URL"
+          },
+          "body": {
+            "type": "object",
+            "description": "Request body parameters"
+          }
+        }
+      },
+      "BatchCreateResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique batch ID"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (batch)"
+          },
+          "endpoint": {
+            "type": "string",
+            "description": "Target endpoint"
+          },
+          "input_file_id": {
+            "type": "string",
+            "description": "Input file ID"
+          },
+          "completion_window": {
+            "type": "string",
+            "description": "Completion window"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["validating", "failed", "in_progress", "finalizing", "completed", "expired", "cancelling", "cancelled"],
+            "description": "Batch status"
+          },
+          "request_counts": {
+            "$ref": "#/components/schemas/BatchRequestCounts"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp of creation"
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Unix timestamp of expiration"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchListResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchRetrieveResponse"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "first_id": {
+            "type": "string"
+          },
+          "last_id": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchRetrieveResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "input_file_id": {
+            "type": "string"
+          },
+          "completion_window": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["validating", "failed", "in_progress", "finalizing", "completed", "expired", "cancelling", "cancelled"]
+          },
+          "request_counts": {
+            "$ref": "#/components/schemas/BatchRequestCounts"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "integer"
+          },
+          "in_progress_at": {
+            "type": "integer"
+          },
+          "completed_at": {
+            "type": "integer"
+          },
+          "failed_at": {
+            "type": "integer"
+          },
+          "output_file_id": {
+            "type": "string"
+          },
+          "error_file_id": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchCancelResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "cancelling_at": {
+            "type": "integer"
+          },
+          "cancelled_at": {
+            "type": "integer"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchResultsResponse": {
+        "type": "object",
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BatchResultItem"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "BatchRequestCounts": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          }
+        }
+      },
+      "BatchResultItem": {
+        "type": "object",
+        "properties": {
+          "custom_id": {
+            "type": "string"
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "status_code": {
+                "type": "integer"
+              },
+              "request_id": {
+                "type": "string"
+              },
+              "body": {
+                "type": "object"
+              }
+            }
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "FileUploadResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique file ID"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (file)"
+          },
+          "bytes": {
+            "type": "integer",
+            "description": "File size in bytes"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp of creation"
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original filename"
+          },
+          "purpose": {
+            "type": "string",
+            "description": "File purpose"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["uploaded", "processed", "processing", "error", "deleted"],
+            "description": "File processing status"
+          },
+          "storage_backend": {
+            "type": "string",
+            "enum": ["api", "s3", "gcs", "memory"],
+            "description": "Storage backend type"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileListResponse": {
+        "type": "object",
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileObject"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileRetrieveResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "storage_backend": {
+            "type": "string"
+          },
+          "storage_uri": {
+            "type": "string"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileDeleteResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "extra_fields": {
+            "$ref": "#/components/schemas/BifrostExtraFields"
+          }
+        }
+      },
+      "FileObject": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
       }
     },
     "responses": {

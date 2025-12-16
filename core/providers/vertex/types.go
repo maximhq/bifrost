@@ -74,7 +74,6 @@ type VertexAdvancedVoiceOptions struct {
 	LowLatencyJourneySynthesis bool `json:"lowLatencyJourneySynthesis,omitempty"`
 }
 
-
 // VertexEmbeddingInstance represents a single embedding instance in the request
 type VertexEmbeddingInstance struct {
 	Content  string  `json:"content"`             // The text to generate embeddings for

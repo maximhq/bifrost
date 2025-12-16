@@ -119,6 +119,10 @@ type ConfigStore interface {
 	GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 	UpdateAuthConfig(ctx context.Context, config *AuthConfig) error
 
+	// Proxy config CRUD
+	GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error)
+	UpdateProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
+
 	// Session CRUD
 	GetSession(ctx context.Context, token string) (*tables.SessionsTable, error)
 	CreateSession(ctx context.Context, session *tables.SessionsTable) error

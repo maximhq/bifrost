@@ -211,6 +211,59 @@ For cloud providers with deployment-based routing, Bifrost validates deployment 
 3. Exclude keys without proper deployment mapping
 4. Continue with standard weighted selection
 
+## Custom Key Usage (By Name)
+
+Bifrost also supports referencing a stored provider key by name instead of sending the raw secret. This can be useful when you want callers to reference logical key names (for example, `openai-key-1`) and let the gateway resolve the actual secret from configured provider keys.
+
+How to use:
+- Header: send `x-bf-api-key: <key-name>` on the request. The gateway will look up the named key and use its secret for the upstream provider call.
+- Context (server-side / Go): set the API key name in the Bifrost context so internal callers can request the named key. For example:
+
+From a client SDK call you can set the name directly on your request context:
+
+```go
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "openai-key-1")
+```
+
+Note: `x-bf-api-key` and the `BifrostContextKeyAPIKeyName` value reference a stored key name (not the raw secret). The gateway will resolve the named key against configured provider keys and apply model filtering, deployment mapping and weighted selection as usual.
+
+```bash
+# Example: request referencing a stored key name that doesn't exist
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-api-key: non_existant_key" \
+  -d '{
+    "model": "anthropic/claude-haiku-4-5",
+    "messages": [{"role": "user", "content": "Hello, Bifrost!"}]
+  }'
+```
+
+Response (example):
+
+```json
+{"is_bifrost_error":false,"error":{"error":"no key found with name \"non_existant_key\" for provider: anthropic","message":"no key found with name \"non_existant_key\" for provider: anthropic"},"extra_fields":{"provider":"anthropic","model_requested":"claude-haiku-4-5","request_type":"chat_completion"}}
+```
+
+# Example: request referencing a stored key name that exists but no configured keys support the requested model
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-api-key: key_with_model_disabled" \
+  -d '{
+    "model": "anthropic/claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "Hello, Bifrost!"}]
+  }'
+```
+
+Response (example):
+
+```json
+{"is_bifrost_error":false,"error":{"error":"no keys found that support model: claude-sonnet-4-5","message":"no keys found that support model: claude-sonnet-4-5"},"extra_fields":{"provider":"anthropic","model_requested":"claude-sonnet-4-5","request_type":"chat_completion"}}
+```
+
+Note: This is not a weighted selection, by providing a specific key name you are explicitly telling Bifrost which stored key to use, so weighted distribution is bypassed. The example above demonstrates the error returned when a referenced key name cannot be resolved.
+
 ## Direct Key Bypass
 
 For scenarios requiring explicit key control, Bifrost supports bypassing the entire key management system:

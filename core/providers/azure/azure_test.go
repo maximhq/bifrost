@@ -2,6 +2,7 @@ package azure_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -12,7 +13,7 @@ import (
 func TestAzure(t *testing.T) {
 	t.Parallel()
 
-	if os.Getenv("AZURE_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("AZURE_API_KEY")) == "" {
 		t.Skip("Skipping Azure tests because AZURE_API_KEY is not set")
 	}
 

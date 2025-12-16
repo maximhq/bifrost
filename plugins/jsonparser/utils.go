@@ -308,7 +308,7 @@ func (p *JsonParserPlugin) deepCopyChatStreamResponseChoiceDelta(original *schem
 
 	result := &schemas.ChatStreamResponseChoiceDelta{
 		Role:      original.Role,
-		Thought:   original.Thought,   // Shallow copy
+		Reasoning: original.Reasoning, // Shallow copy
 		Refusal:   original.Refusal,   // Shallow copy
 		ToolCalls: original.ToolCalls, // Shallow copy - we don't modify tool calls
 	}

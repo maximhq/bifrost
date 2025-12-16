@@ -223,12 +223,16 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		// Use audio-specific token pricing if available
 		audioTokens := float64(audioTokenDetails.AudioTokens)
 		textTokens := float64(audioTokenDetails.TextTokens)
+		isAbove200k := totalTokens > TokenTierAbove200K
 		isAbove128k := totalTokens > TokenTierAbove128K
 
 		// Determine the appropriate token pricing rates
 		var inputTokenRate, outputTokenRate float64
 
-		if isAbove128k {
+		if isAbove200k {
+			inputTokenRate = getSafeFloat64(pricing.InputCostPerTokenAbove200kTokens, pricing.InputCostPerToken)
+			outputTokenRate = getSafeFloat64(pricing.OutputCostPerTokenAbove200kTokens, pricing.OutputCostPerToken)
+		} else if isAbove128k {
 			inputTokenRate = getSafeFloat64(pricing.InputCostPerTokenAbove128kTokens, pricing.InputCostPerToken)
 			outputTokenRate = getSafeFloat64(pricing.OutputCostPerTokenAbove128kTokens, pricing.OutputCostPerToken)
 		} else {

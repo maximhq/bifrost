@@ -2,6 +2,7 @@ package openai_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestOpenAI(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("OPENAI_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
 		t.Skip("Skipping OpenAI tests because OPENAI_API_KEY is not set")
 	}
 
@@ -59,6 +60,17 @@ func TestOpenAI(t *testing.T) {
 			Embedding:             true,
 			Reasoning:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           true,
+			FileBatchInput:        true,
 		},
 	}
 

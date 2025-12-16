@@ -1,23 +1,19 @@
 package elevenlabs
 
 import (
-	"fmt"
 	"strings"
 
-	"github.com/bytedance/sonic"
 	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Response) *schemas.BifrostError {
-	body := append([]byte(nil), resp.Body()...)
-
-	var message string
-	// Try to parse as JSON first
+func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
 	var errorResp ElevenlabsError
-	if err := sonic.Unmarshal(body, &errorResp); err == nil {
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
+	if errorResp.Detail != nil {
+		var message string
 		// Handle validation errors (array format)
 		if len(errorResp.Detail.ValidationErrors) > 0 {
 			var messages []string
@@ -60,7 +56,7 @@ func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Res
 			}
 
 			if message != "" {
-				return &schemas.BifrostError{
+				result := &schemas.BifrostError{
 					IsBifrostError: false,
 					StatusCode:     schemas.Ptr(resp.StatusCode()),
 					Error: &schemas.ErrorField{
@@ -68,6 +64,14 @@ func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Res
 						Message: message,
 					},
 				}
+				if meta != nil {
+					result.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       meta.Provider,
+						ModelRequested: meta.Model,
+						RequestType:    meta.RequestType,
+					}
+				}
+				return result
 			}
 		}
 
@@ -82,21 +86,19 @@ func parseElevenlabsError(providerName schemas.ModelProvider, resp *fasthttp.Res
 		}
 
 		if message != "" {
-			return &schemas.BifrostError{
-				IsBifrostError: false,
-				StatusCode:     schemas.Ptr(resp.StatusCode()),
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(errorType),
-					Message: message,
-				},
+			if bifrostErr.Error == nil {
+				bifrostErr.Error = &schemas.ErrorField{}
 			}
+			bifrostErr.Error.Type = schemas.Ptr(errorType)
+			bifrostErr.Error.Message = message
 		}
 	}
-
-	var rawResponse map[string]interface{}
-	if err := sonic.Unmarshal(body, &rawResponse); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to parse Elevenlabs error response", err, providerName)
+	if meta != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       meta.Provider,
+			ModelRequested: meta.Model,
+			RequestType:    meta.RequestType,
+		}
 	}
-
-	return providerUtils.NewBifrostOperationError(fmt.Sprintf("Elevenlabs error: %v", rawResponse), fmt.Errorf("HTTP %d", resp.StatusCode()), providerName)
+	return bifrostErr
 }

@@ -1039,14 +1039,18 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	return copy
 }
 
-// IsAnthropicModel checks if the model is an Anthropic model in Vertex.
+// IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
-// IsMistralModel checks if the model is a Mistral or Codestral model in Vertex.
+// IsMistralModel checks if the model is a Mistral or Codestral model.
 func IsMistralModel(model string) bool {
 	return strings.Contains(model, "mistral") || strings.Contains(model, "codestral")
+}
+
+func IsGeminiModel(model string) bool {
+	return strings.Contains(model, "gemini")
 }
 
 // Precompiled regexes for different kinds of version suffixes.

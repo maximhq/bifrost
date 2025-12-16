@@ -11,8 +11,8 @@ from .config_loader import get_config
 
 def get_cross_provider_params_for_scenario(
     scenario: str,
-    include_providers: List[str] = None,
-    exclude_providers: List[str] = None,
+    include_providers: List[str] | None = None,
+    exclude_providers: List[str] | None = None,
 ) -> List[Tuple[str, str]]:
     config = get_config()
     

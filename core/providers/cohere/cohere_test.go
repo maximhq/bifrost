@@ -2,6 +2,7 @@ package cohere_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/testutil"
@@ -11,7 +12,7 @@ import (
 
 func TestCohere(t *testing.T) {
 	t.Parallel()
-	if os.Getenv("COHERE_API_KEY") == "" {
+	if strings.TrimSpace(os.Getenv("COHERE_API_KEY")) == "" {
 		t.Skip("Skipping Cohere tests because COHERE_API_KEY is not set")
 	}
 
@@ -27,6 +28,7 @@ func TestCohere(t *testing.T) {
 		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
 		TextModel:      "",                         // Cohere focuses on chat
 		EmbeddingModel: "embed-v4.0",
+		ReasoningModel: "command-a-reasoning-08-2025",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,

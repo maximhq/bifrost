@@ -50,6 +50,35 @@ Headers support environment variable substitution using the `env.` prefix:
 }
 ```
 
+### Resource Attributes
+
+The plugin supports the standard `OTEL_RESOURCE_ATTRIBUTES` environment variable. Any attributes defined in this variable will be automatically attached to every span emitted by the plugin.
+
+```bash
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment=production,service.version=1.2.3,team.name=platform"
+```
+
+These attributes appear as resource-level metadata on all traces:
+
+```json
+{
+  "resource": {
+    "attributes": {
+      "service.name": "bifrost",
+      "deployment.environment": "production",
+      "service.version": "1.2.3",
+      "team.name": "platform"
+    }
+  }
+}
+```
+
+This is useful for:
+- **Environment identification** - Distinguish between production, staging, and development traces
+- **Service versioning** - Track which version of your service generated the trace
+- **Team attribution** - Tag traces with team ownership for filtering and alerting
+- **Custom metadata** - Add any key-value pairs relevant to your observability needs
+
 ---
 
 ## Setup

@@ -16,17 +16,9 @@ import (
 
 // Default sync interval and config key
 const (
-	DefaultPricingSyncInterval = 24 * time.Hour
-	ConfigLastPricingSyncKey   = "LastModelPricingSync"
-	DefaultPricingURL          = "https://getbifrost.ai/datasheet"
-	TokenTierAbove128K         = 128000
+	TokenTierAbove128K = 128000
+	TokenTierAbove200K = 200000
 )
-
-// Config is the model pricing configuration.
-type Config struct {
-	PricingURL          *string        `json:"pricing_url,omitempty"`
-	PricingSyncInterval *time.Duration `json:"pricing_sync_interval,omitempty"`
-}
 
 type ModelCatalog struct {
 	configStore configstore.ConfigStore
@@ -73,6 +65,11 @@ type PricingEntry struct {
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+	//Pricing above 200k tokens
+	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
 	// Cache and batch pricing
 	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
 	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
@@ -90,6 +87,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	if config.PricingSyncInterval != nil {
 		pricingSyncInterval = *config.PricingSyncInterval
 	}
+
 	mc := &ModelCatalog{
 		pricingURL:          pricingURL,
 		pricingSyncInterval: pricingSyncInterval,
@@ -160,6 +158,28 @@ func (mc *ModelCatalog) ReloadPricing(ctx context.Context, config *Config) error
 	mc.pricingMu.Unlock()
 
 	// Perform immediate sync with new configuration
+	if err := mc.syncPricing(ctx); err != nil {
+		return fmt.Errorf("failed to sync pricing data: %w", err)
+	}
+
+	return nil
+}
+
+func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
+	mc.pricingMu.Lock()
+	// Reset the ticker so the next scheduled sync waits a full interval from now
+	if mc.syncTicker != nil {
+		mc.syncTicker.Reset(mc.pricingSyncInterval)
+	}
+	mc.pricingMu.Unlock()
+
+	timeout := DefaultPricingTimeout
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	if err := mc.syncPricing(ctx); err != nil {
 		return fmt.Errorf("failed to sync pricing data: %w", err)
 	}
@@ -365,9 +385,12 @@ func (mc *ModelCatalog) Cleanup() error {
 	if mc.syncCancel != nil {
 		mc.syncCancel()
 	}
+
+	mc.pricingMu.Lock()
 	if mc.syncTicker != nil {
 		mc.syncTicker.Stop()
 	}
+	mc.pricingMu.Unlock()
 
 	close(mc.done)
 	mc.wg.Wait()
