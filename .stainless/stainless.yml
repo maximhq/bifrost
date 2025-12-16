@@ -1,0 +1,222 @@
+# yaml-language-server: $schema=https://app.stainless.com/config.schema.json
+
+# The main edition for the config, see the [docs] for more information.
+#
+# [docs]: https://www.stainless.com/docs/reference/editions
+edition: 2025-10-10
+
+organization:
+  # Name of your organization or company, used to determine the name of the client
+  # and headings.
+  name: bifrost
+  # Link to your API documentation.
+  docs: https://github.com/maximhq/bifrost
+  # Contact email for bug reports, questions, and support requests.
+  contact: ''
+
+# `targets` define the output targets and their customization options, such as
+# whether to emit the Node SDK and what its package name should be.
+targets:
+  typescript:
+    # The edition for this target, see the [docs] for more information.
+    #
+    # [docs]: https://www.stainless.com/docs/reference/editions
+    edition: typescript.2025-10-10
+    package_name: bifrost
+    production_repo: null
+    publish:
+      npm: false
+  python:
+    edition: python.2025-11-20
+    package_name: bifrost
+    production_repo: null
+    publish:
+      pypi: false
+  go:
+    edition: go.2025-10-08
+    package_name: bifrost
+    production_repo: null
+    options:
+      enable_v2: true
+  kotlin:
+    edition: kotlin.2025-10-08
+    reverse_domain: com.bifrost.api
+    production_repo: null
+    publish:
+      maven: false
+  ruby:
+    edition: ruby.2025-10-08
+    gem_name: bifrost
+    production_repo: null
+    publish:
+      rubygems: false
+
+# `environments` are a map of the name of the environment (e.g. "sandbox",
+# "production") to the corresponding url to use.
+environments:
+  production: http://localhost:8080
+
+# `resources` define the structure and organization for your API, such as how
+# methods and models are grouped together and accessed. See the [configuration
+# guide] for more information.
+#
+# [configuration guide]: https://www.stainless.com/docs/guides/configure#resources
+resources:
+  chat:
+    # Subresources define resources that are nested within another for more powerful
+    # logical groupings, e.g. `cards.payments`.
+    subresources:
+      completions:
+        # Configure the methods defined in this resource. Each key in the object is the
+        # name of the method and the value is either an endpoint (for example, `get /foo`)
+        # or an object with more detail.
+        #
+        # [reference]: https://www.stainless.com/docs/reference/config#method
+        # Configure the models--named types--defined in the resource. Each key in the
+        # object is the name of the model and the value is either the name of a schema in
+        # `#/components/schemas` or an object with more detail.
+        #
+        # [reference]: https://www.stainless.com/docs/reference/config#model
+        models:
+          chat_completion_request: '#/components/schemas/ChatCompletionRequest'
+          bifrost_response: '#/components/schemas/BifrostResponse'
+          log_prob: '#/components/schemas/LogProb'
+        methods:
+          create: post /v1/chat/completions
+          create_litellm: post /chat/completions
+
+  text:
+    methods:
+      create_completion: post /v1/text/completions
+
+  mcp:
+    subresources:
+      tool:
+        models:
+          bifrost_message: '#/components/schemas/BifrostMessage'
+          tool_call: '#/components/schemas/ToolCall'
+        methods:
+          execute: post /v1/mcp/tool/execute
+
+  audio:
+    methods:
+      create_speech: post /v1/audio/speech
+      create_transcription: post /v1/audio/transcriptions
+
+  openai:
+    subresources:
+      v1:
+        subresources:
+          audio:
+            methods:
+              create_speech: post /openai/v1/audio/speech
+              create_transcription: post /openai/v1/audio/transcriptions
+      audio:
+        methods:
+          create_speech: post /openai/audio/speech
+          create_transcription: post /openai/audio/transcriptions
+      chat:
+        methods:
+          create_completion: post /openai/chat/completions
+
+  api:
+    subresources:
+      mcp:
+        methods:
+          list_clients: get /api/mcp/clients
+        subresources:
+          client:
+            models:
+              mcp_client_config: '#/components/schemas/MCPClientConfig'
+              success_response: '#/components/schemas/SuccessResponse'
+            methods:
+              create: post /api/mcp/client
+              update_tools: put /api/mcp/client/{name}
+              delete: delete /api/mcp/client/{name}
+              reconnect: post /api/mcp/client/{name}/reconnect
+      providers:
+        models:
+          model_provider: '#/components/schemas/ModelProvider'
+          provider_response: '#/components/schemas/ProviderResponse'
+          key: '#/components/schemas/Key'
+          network_config: '#/components/schemas/NetworkConfig'
+          concurrency_and_buffer_size: '#/components/schemas/ConcurrencyAndBufferSize'
+          proxy_config: '#/components/schemas/ProxyConfig'
+        methods:
+          list_providers: get /api/providers
+          create: post /api/providers
+          retrieve: get /api/providers/{provider}
+          update: put /api/providers/{provider}
+          delete: delete /api/providers/{provider}
+      config:
+        models:
+          client_config: '#/components/schemas/ClientConfig'
+        methods:
+          retrieve: get /api/config
+          update: put /api/config
+      logs:
+        methods:
+          retrieve: get /api/logs
+          list_dropped_requests: get /api/logs/dropped
+
+  ws:
+    methods:
+      stream_logs: get /ws/logs
+
+  anthropic:
+    subresources:
+      v1:
+        methods:
+          send_message: post /anthropic/v1/messages
+
+  genai:
+    subresources:
+      v1beta:
+        methods:
+          create_completion: post /genai/v1beta/models/{model}
+
+  metrics:
+    methods:
+      retrieve: get /metrics
+
+settings:
+  # All generated integration tests that hit the prism mock http server are marked
+  # as skipped. Removing this setting or setting it to false enables tests, but
+  # doing so may result in test failures due to bugs in the test server.
+  #
+  # [prism mock http server]: https://stoplight.io/open-source/prism
+  disable_mock_tests: true
+  license: MIT
+
+# `client_settings` define settings for the API client, such as extra constructor
+# arguments (used for authentication), retry behavior, idempotency, etc.
+client_settings:
+  opts:
+    api_key:
+      type: string
+      read_env: BIFROST_API_KEY
+      nullable: true
+      auth:
+        security_scheme: bearerAuth
+
+security_schemes:
+  bearerAuth:
+    type: http
+    scheme: bearer
+
+security:
+  - bearerAuth: []
+
+# `readme` is used to configure the code snippets that will be rendered in the
+# README.md of various SDKs. In particular, you can change the `headline`
+# snippet's endpoint and the arguments to call it with.
+readme:
+  example_requests:
+    default:
+      type: request
+      endpoint: post /v1/chat/completions
+      params: {}
+    headline:
+      type: request
+      endpoint: post /v1/chat/completions
+      params: {}
