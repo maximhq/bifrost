@@ -110,6 +110,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1826,4 +1829,46 @@ func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db 
 		return fmt.Errorf("error running use_for_batch_api migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddAzureClientIDAndClientSecretAndTenantIDColumns adds the azure_client_id, azure_client_secret, and azure_tenant_id columns to the key table
+func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_azure_client_id_and_client_secret_and_tenant_id_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "azure_client_id") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "azure_client_id"); err != nil {
+					return fmt.Errorf("failed to add azure_client_id column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "azure_client_secret") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "azure_client_secret"); err != nil {
+					return fmt.Errorf("failed to add azure_client_secret column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "azure_tenant_id") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "azure_tenant_id"); err != nil {
+					return fmt.Errorf("failed to add azure_tenant_id column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_id"); err != nil {
+				return fmt.Errorf("failed to drop azure_client_id column: %w", err)
+			}
+			if err := migrator.DropColumn(&tables.TableKey{}, "azure_client_secret"); err != nil {
+				return fmt.Errorf("failed to drop azure_client_secret column: %w", err)
+			}
+			if err := migrator.DropColumn(&tables.TableKey{}, "azure_tenant_id"); err != nil {
+				return fmt.Errorf("failed to drop azure_tenant_id column: %w", err)
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
 }

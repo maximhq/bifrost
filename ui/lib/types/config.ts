@@ -24,12 +24,18 @@ export interface AzureKeyConfig {
 	endpoint: string;
 	deployments?: Record<string, string> | string; // Allow string during editing
 	api_version?: string;
+	client_id?: string;
+	client_secret?: string;
+	tenant_id?: string;
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	endpoint: "",
 	deployments: {},
 	api_version: "2024-02-01",
+	client_id: "",
+	client_secret: "",
+	tenant_id: "",
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig

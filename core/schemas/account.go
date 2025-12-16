@@ -24,6 +24,10 @@ type AzureKeyConfig struct {
 	Endpoint    string            `json:"endpoint"`              // Azure service endpoint URL
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
 	APIVersion  *string           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+
+	ClientID     *string `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *string `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *string `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.

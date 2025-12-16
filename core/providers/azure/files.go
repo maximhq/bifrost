@@ -5,20 +5,54 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
-// setAzureAuth sets the Azure authentication header on the request.
-func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.Request, key schemas.Key) {
+// setAzureAuth sets the Azure authentication header on the request for OpenAI models.
+// It handles three authentication methods in order of priority:
+// 1. Service Principal (client ID/secret/tenant ID) - uses Bearer token
+// 2. Context token - uses Bearer token
+// 3. API key - uses api-key header
+func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
+	// Service Principal authentication
+	if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientID != nil &&
+		key.AzureKeyConfig.ClientSecret != nil && key.AzureKeyConfig.TenantID != nil {
+		cred, err := provider.getOrCreateAuth(*key.AzureKeyConfig.TenantID, *key.AzureKeyConfig.ClientID, *key.AzureKeyConfig.ClientSecret)
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("failed to get or create Azure authentication", err, schemas.Azure)
+		}
+
+		token, err := cred.GetToken(ctx, policy.TokenRequestOptions{
+			Scopes: []string{DefaultAzureScope},
+		})
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("failed to get Azure access token", err, schemas.Azure)
+		}
+
+		if token.Token == "" {
+			return providerUtils.NewBifrostOperationError("Azure access token is empty", fmt.Errorf("token is empty"), schemas.Azure)
+		}
+
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.Token))
+		req.Header.Del("api-key")
+		return nil
+	}
+
+	// Context token authentication
 	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok && authToken != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
 		req.Header.Del("api-key")
-	} else {
-		req.Header.Del("Authorization")
-		req.Header.Set("api-key", key.Value)
+		return nil
 	}
+
+	// API key authentication
+	req.Header.Del("Authorization")
+	req.Header.Set("api-key", key.Value)
+	return nil
 }
 
 // AzureFileResponse represents an Azure file response (same as OpenAI).

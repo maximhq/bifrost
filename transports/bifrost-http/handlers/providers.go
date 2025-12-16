@@ -764,6 +764,31 @@ func (h *ProviderHandler) mergeKeys(provider schemas.ModelProvider, oldRawKeys [
 						mergedKey.AzureKeyConfig.APIVersion = oldRawKey.AzureKeyConfig.APIVersion
 					}
 				}
+				// handle client id and secret and tenant id
+				if updateKey.AzureKeyConfig.ClientID != nil &&
+					oldRedactedKey.AzureKeyConfig.ClientID != nil &&
+					oldRawKey.AzureKeyConfig != nil {
+					if lib.IsRedacted(*updateKey.AzureKeyConfig.ClientID) &&
+						strings.EqualFold(*updateKey.AzureKeyConfig.ClientID, *oldRedactedKey.AzureKeyConfig.ClientID) {
+						mergedKey.AzureKeyConfig.ClientID = oldRawKey.AzureKeyConfig.ClientID
+					}
+				}
+				if updateKey.AzureKeyConfig.ClientSecret != nil &&
+					oldRedactedKey.AzureKeyConfig.ClientSecret != nil &&
+					oldRawKey.AzureKeyConfig != nil {
+					if lib.IsRedacted(*updateKey.AzureKeyConfig.ClientSecret) &&
+						strings.EqualFold(*updateKey.AzureKeyConfig.ClientSecret, *oldRedactedKey.AzureKeyConfig.ClientSecret) {
+						mergedKey.AzureKeyConfig.ClientSecret = oldRawKey.AzureKeyConfig.ClientSecret
+					}
+				}
+				if updateKey.AzureKeyConfig.TenantID != nil &&
+					oldRedactedKey.AzureKeyConfig.TenantID != nil &&
+					oldRawKey.AzureKeyConfig != nil {
+					if lib.IsRedacted(*updateKey.AzureKeyConfig.TenantID) &&
+						strings.EqualFold(*updateKey.AzureKeyConfig.TenantID, *oldRedactedKey.AzureKeyConfig.TenantID) {
+						mergedKey.AzureKeyConfig.TenantID = oldRawKey.AzureKeyConfig.TenantID
+					}
+				}
 			}
 
 			// Handle Vertex config redacted values

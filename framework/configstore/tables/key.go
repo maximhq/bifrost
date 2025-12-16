@@ -30,6 +30,9 @@ type TableKey struct {
 	AzureEndpoint        *string `gorm:"type:text" json:"azure_endpoint,omitempty"`
 	AzureAPIVersion      *string `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
 	AzureDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	AzureClientID        *string `gorm:"type:varchar(255)" json:"azure_client_id,omitempty"`
+	AzureClientSecret    *string `gorm:"type:text" json:"azure_client_secret,omitempty"`
+	AzureTenantID        *string `gorm:"type:varchar(255)" json:"azure_tenant_id,omitempty"`
 
 	// Vertex config fields (embedded)
 	VertexProjectID       *string `gorm:"type:varchar(255)" json:"vertex_project_id,omitempty"`
@@ -39,13 +42,13 @@ type TableKey struct {
 	VertexDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
-	BedrockAccessKey        *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
-	BedrockSecretKey        *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
-	BedrockSessionToken     *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
-	BedrockRegion           *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
-	BedrockARN              *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
-	BedrockDeploymentsJSON  *string `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]string
-	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"`                                  // JSON serialized schemas.BatchS3Config
+	BedrockAccessKey         *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
+	BedrockSecretKey         *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
+	BedrockSessionToken      *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
+	BedrockRegion            *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
+	BedrockARN               *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockDeploymentsJSON   *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
@@ -84,6 +87,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 			k.AzureEndpoint = nil
 		}
 		k.AzureAPIVersion = k.AzureKeyConfig.APIVersion
+		k.AzureClientID = k.AzureKeyConfig.ClientID
+		k.AzureClientSecret = k.AzureKeyConfig.ClientSecret
+		k.AzureTenantID = k.AzureKeyConfig.TenantID
 		if k.AzureKeyConfig.Deployments != nil {
 			data, err := json.Marshal(k.AzureKeyConfig.Deployments)
 			if err != nil {
@@ -98,6 +104,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.AzureEndpoint = nil
 		k.AzureAPIVersion = nil
 		k.AzureDeploymentsJSON = nil
+		k.AzureClientID = nil
+		k.AzureClientSecret = nil
+		k.AzureTenantID = nil
 	}
 
 	if k.VertexKeyConfig != nil {
@@ -202,8 +211,11 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	// Reconstruct Azure config if fields are present
 	if k.AzureEndpoint != nil {
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:   "",
-			APIVersion: k.AzureAPIVersion,
+			Endpoint:     "",
+			APIVersion:   k.AzureAPIVersion,
+			ClientID:     k.AzureClientID,
+			ClientSecret: k.AzureClientSecret,
+			TenantID:     k.AzureTenantID,
 		}
 
 		if k.AzureEndpoint != nil {

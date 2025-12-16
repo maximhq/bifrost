@@ -73,6 +73,9 @@ const AzureKeyConfigSchema = z.object({
 		.optional()
 		.refine((value) => !value || isValidDeployments(value), { message: "Valid Deployments (JSON object) are required for Azure keys" }),
 	api_version: z.string().optional(),
+	client_id: z.string().optional(),
+	client_secret: z.string().optional(),
+	tenant_id: z.string().optional(),
 });
 
 const VertexKeyConfigSchema = z.object({
