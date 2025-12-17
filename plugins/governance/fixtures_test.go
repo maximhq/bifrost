@@ -220,3 +220,43 @@ func requireError(t *testing.T, err error, msg string) {
 	t.Helper()
 	require.Error(t, err, msg)
 }
+
+func buildModelConfig(id, modelName string, provider *string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableModelConfig {
+	mc := &configstoreTables.TableModelConfig{
+		ID:        id,
+		ModelName: modelName,
+		Provider:  provider,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if budget != nil {
+		mc.Budget = budget
+		mc.BudgetID = &budget.ID
+	}
+	if rateLimit != nil {
+		mc.RateLimit = rateLimit
+		mc.RateLimitID = &rateLimit.ID
+	}
+	return mc
+}
+
+func buildProviderWithGovernance(name string, budget *configstoreTables.TableBudget, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableProvider {
+	provider := &configstoreTables.TableProvider{
+		Name:      name,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if budget != nil {
+		provider.Budget = budget
+		provider.BudgetID = &budget.ID
+	}
+	if rateLimit != nil {
+		provider.RateLimit = rateLimit
+		provider.RateLimitID = &rateLimit.ID
+	}
+	return provider
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
