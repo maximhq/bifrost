@@ -107,6 +107,7 @@ const (
 	FileRetrieveRequest         RequestType = "file_retrieve"
 	FileDeleteRequest           RequestType = "file_delete"
 	FileContentRequest          RequestType = "file_content"
+	UnknownRequest              RequestType = "unknown"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.

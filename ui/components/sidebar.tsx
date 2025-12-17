@@ -60,7 +60,8 @@ import moment from "moment";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
@@ -160,7 +161,6 @@ const SidebarItemView = ({
 	onToggle,
 	pathname,
 	router,
-	searchParams,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -171,16 +171,15 @@ const SidebarItemView = ({
 	onToggle?: () => void;
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
-	searchParams: ReturnType<typeof useSearchParams>;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
-	const currentTab = searchParams.get("tab");
+	const [currentConfigTab] = useQueryState("tab");
 	const isAnySubItemActive =
 		hasSubItems &&
 		item.subItems?.some((subItem) => {
 			// For query param based subitems, check if tab matches
 			if (subItem.queryParam) {
-				return pathname === subItem.url && currentTab === subItem.queryParam;
+				return pathname === subItem.url && currentConfigTab === subItem.queryParam;
 			}
 			// For path based subitems, check if pathname starts with url
 			return pathname.startsWith(subItem.url);
@@ -244,7 +243,7 @@ const SidebarItemView = ({
 					{item.subItems?.map((subItem: SidebarItem) => {
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam
-							? pathname === subItem.url && currentTab === subItem.queryParam
+							? pathname === subItem.url && currentConfigTab === subItem.queryParam
 							: pathname.startsWith(subItem.url);
 						const SubItemIcon = subItem.icon;
 						return (
@@ -316,7 +315,6 @@ const compareVersions = (v1: string, v2: string): number => {
 export default function AppSidebar() {
 	const pathname = usePathname();
 	const router = useRouter();
-	const searchParams = useSearchParams();
 	const [mounted, setMounted] = useState(false);
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
@@ -737,7 +735,6 @@ export default function AppSidebar() {
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
 										router={router}
-										searchParams={searchParams}
 									/>
 								);
 							})}
