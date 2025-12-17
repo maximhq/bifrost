@@ -17,11 +17,13 @@ import (
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
 	// Core data maps using sync.Map for lock-free reads
-	virtualKeys sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
-	teams       sync.Map // string -> *Team (Team ID -> Team)
-	customers   sync.Map // string -> *Customer (Customer ID -> Customer)
-	budgets     sync.Map // string -> *Budget (Budget ID -> Budget)
-	rateLimits  sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
+	virtualKeys  sync.Map // string -> *VirtualKey (VK value -> VirtualKey with preloaded relationships)
+	teams        sync.Map // string -> *Team (Team ID -> Team)
+	customers    sync.Map // string -> *Customer (Customer ID -> Customer)
+	budgets      sync.Map // string -> *Budget (Budget ID -> Budget)
+	rateLimits   sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
+	modelConfigs sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
+	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
 
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
@@ -50,16 +52,31 @@ type GovernanceData struct {
 type GovernanceStore interface {
 	GetGovernanceData() *GovernanceData
 	GetVirtualKey(vkValue string) (*configstoreTables.TableVirtualKey, bool)
+	// Provider-level governance checks
+	CheckProviderBudget(ctx context.Context, provider schemas.ModelProvider, baselines map[string]float64) error
+	CheckProviderRateLimit(ctx context.Context, provider schemas.ModelProvider, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (error, Decision)
+	// Model-level governance checks
+	CheckModelBudget(ctx context.Context, model string, provider *schemas.ModelProvider, baselines map[string]float64) error
+	CheckModelRateLimit(ctx context.Context, model string, provider *schemas.ModelProvider, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (error, Decision)
+	// VK-level governance checks
 	CheckBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest, baselines map[string]float64) error
 	CheckRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error)
-	UpdateBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error
-	UpdateRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
+	// In-memory usage updates (for VK-level)
+	UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error
+	UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
+	// In-memory reset checks (return items that need DB sync)
 	ResetExpiredRateLimitsInMemory(ctx context.Context) []*configstoreTables.TableRateLimit
 	ResetExpiredBudgetsInMemory(ctx context.Context) []*configstoreTables.TableBudget
+	// DB sync for expired items
 	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
+	// Provider and model-level usage updates (combined)
+	UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error
+	UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error
+	// Dump operations
 	DumpRateLimits(ctx context.Context, tokenBaselines map[string]int64, requestBaselines map[string]int64) error
 	DumpBudgets(ctx context.Context, baselines map[string]float64) error
+	// In-memory CRUD operations
 	CreateVirtualKeyInMemory(vk *configstoreTables.TableVirtualKey)
 	UpdateVirtualKeyInMemory(vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, rateLimitTokensBaselines map[string]int64, rateLimitRequestsBaselines map[string]int64)
 	DeleteVirtualKeyInMemory(vkID string)
@@ -69,6 +86,12 @@ type GovernanceStore interface {
 	CreateCustomerInMemory(customer *configstoreTables.TableCustomer)
 	UpdateCustomerInMemory(customer *configstoreTables.TableCustomer, budgetBaselines map[string]float64)
 	DeleteCustomerInMemory(customerID string)
+	// Model config in-memory operations
+	UpdateModelConfigInMemory(mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig
+	DeleteModelConfigInMemory(mcID string)
+	// Provider in-memory operations
+	UpdateProviderInMemory(provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
+	DeleteProviderInMemory(providerName string)
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
@@ -216,6 +239,370 @@ func (gs *LocalGovernanceStore) CheckBudget(ctx context.Context, vk *configstore
 	return nil
 }
 
+// CheckProviderBudget performs budget checking for provider-level configs (lock-free for high performance)
+func (gs *LocalGovernanceStore) CheckProviderBudget(ctx context.Context, provider schemas.ModelProvider, baselines map[string]float64) error {
+	// This is to prevent nil pointer dereference
+	if baselines == nil {
+		baselines = map[string]float64{}
+	}
+
+	// Get provider config
+	providerKey := string(provider)
+	value, exists := gs.providers.Load(providerKey)
+	if !exists || value == nil {
+		// No provider config found, allow request
+		return nil
+	}
+
+	providerTable, ok := value.(*configstoreTables.TableProvider)
+	if !ok || providerTable == nil || providerTable.BudgetID == nil {
+		// No budget configured for provider, allow request
+		return nil
+	}
+
+	// Read from budgets map to get the latest updated budget (same source as UpdateProviderBudgetUsage)
+	budgetValue, exists := gs.budgets.Load(*providerTable.BudgetID)
+	if !exists || budgetValue == nil {
+		// Budget not found in cache, allow request
+		return nil
+	}
+
+	budget, ok := budgetValue.(*configstoreTables.TableBudget)
+	if !ok || budget == nil {
+		// Invalid budget type, allow request
+		return nil
+	}
+
+	// Check if budget needs reset (in-memory check)
+	if budget.ResetDuration != "" {
+		if duration, err := configstoreTables.ParseDuration(budget.ResetDuration); err == nil {
+			if time.Since(budget.LastReset) >= duration {
+				// Budget expired but hasn't been reset yet - treat as reset
+				return nil // Skip budget check for expired budgets
+			}
+		}
+	}
+
+	baseline, exists := baselines[budget.ID]
+	if !exists {
+		baseline = 0
+	}
+
+	// Check if current usage (local + remote baseline) exceeds budget limit
+	if budget.CurrentUsage+baseline >= budget.MaxLimit {
+		return fmt.Errorf("%s budget exceeded: %.4f >= %.4f dollars",
+			providerKey, budget.CurrentUsage+baseline, budget.MaxLimit)
+	}
+
+	return nil
+}
+
+// CheckProviderRateLimit checks provider-level rate limits and returns evaluation result if violated
+func (gs *LocalGovernanceStore) CheckProviderRateLimit(ctx context.Context, provider schemas.ModelProvider, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (error, Decision) {
+	var violations []string
+
+	// This is to prevent nil pointer dereference
+	if tokensBaselines == nil {
+		tokensBaselines = map[string]int64{}
+	}
+	if requestsBaselines == nil {
+		requestsBaselines = map[string]int64{}
+	}
+
+	// Get provider config
+	providerKey := string(provider)
+	value, exists := gs.providers.Load(providerKey)
+	if !exists || value == nil {
+		// No provider config found, allow request
+		return nil, DecisionAllow
+	}
+
+	providerTable, ok := value.(*configstoreTables.TableProvider)
+	if !ok || providerTable == nil || providerTable.RateLimitID == nil {
+		// No rate limit configured for provider, allow request
+		return nil, DecisionAllow
+	}
+
+	// Read from rateLimits map to get the latest updated rate limit (same source as UpdateProviderRateLimitUsage)
+	rateLimitValue, exists := gs.rateLimits.Load(*providerTable.RateLimitID)
+	if !exists || rateLimitValue == nil {
+		// Rate limit not found in cache, allow request
+		return nil, DecisionAllow
+	}
+
+	rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit)
+	if !ok || rateLimit == nil {
+		// Invalid rate limit type, allow request
+		return nil, DecisionAllow
+	}
+
+	// Check if rate limit needs reset (in-memory check)
+	// Track which limits are expired so we can skip only those specific checks
+	tokenLimitExpired := false
+	if rateLimit.TokenResetDuration != nil {
+		if duration, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err == nil {
+			if time.Since(rateLimit.TokenLastReset) >= duration {
+				// Token rate limit expired but hasn't been reset yet - skip token check only
+				tokenLimitExpired = true
+			}
+		}
+	}
+	requestLimitExpired := false
+	if rateLimit.RequestResetDuration != nil {
+		if duration, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err == nil {
+			if time.Since(rateLimit.RequestLastReset) >= duration {
+				// Request rate limit expired but hasn't been reset yet - skip request check only
+				requestLimitExpired = true
+			}
+		}
+	}
+
+	tokensBaseline, exists := tokensBaselines[rateLimit.ID]
+	if !exists {
+		tokensBaseline = 0
+	}
+	requestsBaseline, exists := requestsBaselines[rateLimit.ID]
+	if !exists {
+		requestsBaseline = 0
+	}
+
+	// Token limits - check if total usage (local + remote baseline) exceeds limit
+	// Skip this check if token limit has expired
+	if !tokenLimitExpired && rateLimit.TokenMaxLimit != nil && rateLimit.TokenCurrentUsage+tokensBaseline >= *rateLimit.TokenMaxLimit {
+		duration := "unknown"
+		if rateLimit.TokenResetDuration != nil {
+			duration = *rateLimit.TokenResetDuration
+		}
+		violations = append(violations, fmt.Sprintf("token limit exceeded (%d/%d, resets every %s)",
+			rateLimit.TokenCurrentUsage+tokensBaseline, *rateLimit.TokenMaxLimit, duration))
+	}
+
+	// Request limits - check if total usage (local + remote baseline) exceeds limit
+	// Skip this check if request limit has expired
+	if !requestLimitExpired && rateLimit.RequestMaxLimit != nil && rateLimit.RequestCurrentUsage+requestsBaseline >= *rateLimit.RequestMaxLimit {
+		duration := "unknown"
+		if rateLimit.RequestResetDuration != nil {
+			duration = *rateLimit.RequestResetDuration
+		}
+		violations = append(violations, fmt.Sprintf("request limit exceeded (%d/%d, resets every %s)",
+			rateLimit.RequestCurrentUsage+requestsBaseline, *rateLimit.RequestMaxLimit, duration))
+	}
+
+	if len(violations) > 0 {
+		// Determine specific violation type
+		decision := DecisionRateLimited // Default to general rate limited decision
+		if len(violations) == 1 {
+			if strings.Contains(violations[0], "token") {
+				decision = DecisionTokenLimited // More specific violation type
+			} else if strings.Contains(violations[0], "request") {
+				decision = DecisionRequestLimited // More specific violation type
+			}
+		}
+		return fmt.Errorf("rate limit violated for %s: %s", providerKey, violations), decision
+	}
+
+	return nil, DecisionAllow // No rate limit violations
+}
+
+// CheckModelBudget performs budget checking for model-level configs (lock-free for high performance)
+func (gs *LocalGovernanceStore) CheckModelBudget(ctx context.Context, model string, provider *schemas.ModelProvider, baselines map[string]float64) error {
+	// This is to prevent nil pointer dereference
+	if baselines == nil {
+		baselines = map[string]float64{}
+	}
+
+	// Collect model configs to check: model+provider (if exists) AND model-only (if exists)
+	var modelConfigsToCheck []*configstoreTables.TableModelConfig
+	var budgetNames []string
+
+	// Check model+provider config first (more specific) - if provider is provided
+	if provider != nil {
+		key := fmt.Sprintf("%s:%s", model, string(*provider))
+		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.Budget != nil {
+				modelConfigsToCheck = append(modelConfigsToCheck, mc)
+				budgetNames = append(budgetNames, fmt.Sprintf("Model:%s:Provider:%s", model, string(*provider)))
+			}
+		}
+	}
+
+	// Always check model-only config (if exists) - regardless of whether model+provider config exists
+	key := model
+	if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.Budget != nil {
+			modelConfigsToCheck = append(modelConfigsToCheck, mc)
+			budgetNames = append(budgetNames, fmt.Sprintf("Model:%s", model))
+		}
+	}
+
+	// Check each model budget
+	for i, mc := range modelConfigsToCheck {
+		if mc.BudgetID == nil {
+			continue
+		}
+
+		// Read from budgets map to get the latest updated budget (same source as UpdateModelBudgetUsage)
+		budgetValue, exists := gs.budgets.Load(*mc.BudgetID)
+		if !exists || budgetValue == nil {
+			// Budget not found in cache, skip check
+			continue
+		}
+
+		budget, ok := budgetValue.(*configstoreTables.TableBudget)
+		if !ok || budget == nil {
+			// Invalid budget type, skip check
+			continue
+		}
+
+		// Check if budget needs reset (in-memory check)
+		if budget.ResetDuration != "" {
+			if duration, err := configstoreTables.ParseDuration(budget.ResetDuration); err == nil {
+				if time.Since(budget.LastReset) >= duration {
+					// Budget expired but hasn't been reset yet - treat as reset
+					continue // Skip budget check for expired budgets
+				}
+			}
+		}
+
+		baseline, exists := baselines[budget.ID]
+		if !exists {
+			baseline = 0
+		}
+
+		// Check if current usage (local + remote baseline) exceeds budget limit
+		if budget.CurrentUsage+baseline >= budget.MaxLimit {
+			return fmt.Errorf("%s budget exceeded: %.4f >= %.4f dollars",
+				budgetNames[i], budget.CurrentUsage+baseline, budget.MaxLimit)
+		}
+	}
+
+	return nil
+}
+
+// CheckModelRateLimit checks model-level rate limits and returns evaluation result if violated
+func (gs *LocalGovernanceStore) CheckModelRateLimit(ctx context.Context, model string, provider *schemas.ModelProvider, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (error, Decision) {
+	var violations []string
+
+	// This is to prevent nil pointer dereference
+	if tokensBaselines == nil {
+		tokensBaselines = map[string]int64{}
+	}
+	if requestsBaselines == nil {
+		requestsBaselines = map[string]int64{}
+	}
+
+	// Collect model configs to check: model+provider (if exists) AND model-only (if exists)
+	var modelConfigsToCheck []*configstoreTables.TableModelConfig
+	var rateLimitNames []string
+
+	// Check model+provider config first (more specific) - if provider is provided
+	if provider != nil {
+		key := fmt.Sprintf("%s:%s", model, string(*provider))
+		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+				modelConfigsToCheck = append(modelConfigsToCheck, mc)
+				rateLimitNames = append(rateLimitNames, fmt.Sprintf("Model:%s:Provider:%s", model, string(*provider)))
+			}
+		}
+	}
+
+	// Always check model-only config (if exists) - regardless of whether model+provider config exists
+	key := model
+	if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+			modelConfigsToCheck = append(modelConfigsToCheck, mc)
+			rateLimitNames = append(rateLimitNames, fmt.Sprintf("Model:%s", model))
+		}
+	}
+
+	// Check each model rate limit
+	for i, mc := range modelConfigsToCheck {
+		if mc.RateLimitID == nil {
+			continue
+		}
+
+		// Read from rateLimits map to get the latest updated rate limit (same source as UpdateModelRateLimitUsage)
+		rateLimitValue, exists := gs.rateLimits.Load(*mc.RateLimitID)
+		if !exists || rateLimitValue == nil {
+			// Rate limit not found in cache, skip check
+			continue
+		}
+
+		rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit)
+		if !ok || rateLimit == nil {
+			// Invalid rate limit type, skip check
+			continue
+		}
+
+		// Check if rate limit needs reset (in-memory check)
+		// Track which limits are expired so we can skip only those specific checks
+		tokenLimitExpired := false
+		if rateLimit.TokenResetDuration != nil {
+			if duration, err := configstoreTables.ParseDuration(*rateLimit.TokenResetDuration); err == nil {
+				if time.Since(rateLimit.TokenLastReset) >= duration {
+					// Token rate limit expired but hasn't been reset yet - skip token check only
+					tokenLimitExpired = true
+				}
+			}
+		}
+		requestLimitExpired := false
+		if rateLimit.RequestResetDuration != nil {
+			if duration, err := configstoreTables.ParseDuration(*rateLimit.RequestResetDuration); err == nil {
+				if time.Since(rateLimit.RequestLastReset) >= duration {
+					// Request rate limit expired but hasn't been reset yet - skip request check only
+					requestLimitExpired = true
+				}
+			}
+		}
+
+		tokensBaseline, exists := tokensBaselines[rateLimit.ID]
+		if !exists {
+			tokensBaseline = 0
+		}
+		requestsBaseline, exists := requestsBaselines[rateLimit.ID]
+		if !exists {
+			requestsBaseline = 0
+		}
+
+		// Token limits - check if total usage (local + remote baseline) exceeds limit
+		// Skip this check if token limit has expired
+		if !tokenLimitExpired && rateLimit.TokenMaxLimit != nil && rateLimit.TokenCurrentUsage+tokensBaseline >= *rateLimit.TokenMaxLimit {
+			duration := "unknown"
+			if rateLimit.TokenResetDuration != nil {
+				duration = *rateLimit.TokenResetDuration
+			}
+			violations = append(violations, fmt.Sprintf("token limit exceeded (%d/%d, resets every %s)",
+				rateLimit.TokenCurrentUsage+tokensBaseline, *rateLimit.TokenMaxLimit, duration))
+		}
+
+		// Request limits - check if total usage (local + remote baseline) exceeds limit
+		// Skip this check if request limit has expired
+		if !requestLimitExpired && rateLimit.RequestMaxLimit != nil && rateLimit.RequestCurrentUsage+requestsBaseline >= *rateLimit.RequestMaxLimit {
+			duration := "unknown"
+			if rateLimit.RequestResetDuration != nil {
+				duration = *rateLimit.RequestResetDuration
+			}
+			violations = append(violations, fmt.Sprintf("request limit exceeded (%d/%d, resets every %s)",
+				rateLimit.RequestCurrentUsage+requestsBaseline, *rateLimit.RequestMaxLimit, duration))
+		}
+
+		if len(violations) > 0 {
+			// Determine specific violation type
+			decision := DecisionRateLimited // Default to general rate limited decision
+			if len(violations) == 1 {
+				if strings.Contains(violations[0], "token") {
+					decision = DecisionTokenLimited // More specific violation type
+				} else if strings.Contains(violations[0], "request") {
+					decision = DecisionRequestLimited // More specific violation type
+				}
+			}
+			return fmt.Errorf("rate limit violated for %s: %s", rateLimitNames[i], violations), decision
+		}
+	}
+
+	return nil, DecisionAllow // No rate limit violations
+}
+
 // CheckRateLimit checks a single rate limit and returns evaluation result if violated (true if violated, false if not)
 func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string, requestID string, tokensBaselines map[string]int64, requestsBaselines map[string]int64) (Decision, error) {
 	var violations []string
@@ -307,8 +694,8 @@ func (gs *LocalGovernanceStore) CheckRateLimit(ctx context.Context, vk *configst
 	return DecisionAllow, nil // No rate limit violations
 }
 
-// UpdateBudgetUsageInMemory performs atomic budget updates across the hierarchy (both in memory and in database)
-func (gs *LocalGovernanceStore) UpdateBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
+// UpdateVirtualKeyBudgetUsageInMemory performs atomic budget updates across the hierarchy (both in memory and in database)
+func (gs *LocalGovernanceStore) UpdateVirtualKeyBudgetUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
 	if vk == nil {
 		return fmt.Errorf("virtual key cannot be nil")
 	}
@@ -330,7 +717,7 @@ func (gs *LocalGovernanceStore) UpdateBudgetUsageInMemory(ctx context.Context, v
 						if now.Sub(clone.LastReset) >= duration {
 							clone.CurrentUsage = 0
 							clone.LastReset = now
-							gs.logger.Debug("UpdateBudgetUsage: Budget %s was reset (expired, duration: %v)", budgetID, duration)
+							gs.logger.Debug("UpdateVirtualKeyBudgetUsageInMemory: Budget %s was reset (expired, duration: %v)", budgetID, duration)
 						}
 					}
 				}
@@ -338,18 +725,145 @@ func (gs *LocalGovernanceStore) UpdateBudgetUsageInMemory(ctx context.Context, v
 				// Update the clone
 				clone.CurrentUsage += cost
 				gs.budgets.Store(budgetID, &clone)
-				gs.logger.Debug("UpdateBudgetUsage: Updated budget %s: %.4f -> %.4f (added %.4f)",
+				gs.logger.Debug("UpdateVirtualKeyBudgetUsageInMemory: Updated budget %s: %.4f -> %.4f (added %.4f)",
 					budgetID, oldUsage, clone.CurrentUsage, cost)
 			}
 		} else {
-			gs.logger.Warn("UpdateBudgetUsage: Budget %s not found in local store", budgetID)
+			gs.logger.Warn("UpdateVirtualKeyBudgetUsageInMemory: Budget %s not found in local store", budgetID)
 		}
 	}
 	return nil
 }
 
-// UpdateRateLimitUsageInMemory updates rate limit counters for both provider-level and VK-level rate limits (lock-free)
-func (gs *LocalGovernanceStore) UpdateRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
+// UpdateProviderAndModelBudgetUsageInMemory performs atomic budget updates for both provider-level and model-level configs (in memory)
+func (gs *LocalGovernanceStore) UpdateProviderAndModelBudgetUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, cost float64) error {
+	now := time.Now()
+
+	// Helper function to update a budget by ID
+	updateBudget := func(budgetID string) {
+		if cachedBudgetValue, exists := gs.budgets.Load(budgetID); exists && cachedBudgetValue != nil {
+			if cachedBudget, ok := cachedBudgetValue.(*configstoreTables.TableBudget); ok && cachedBudget != nil {
+				// Clone FIRST to avoid race conditions
+				clone := *cachedBudget
+				// Check if budget needs reset (in-memory check) - operate on clone
+				if clone.ResetDuration != "" {
+					if duration, err := configstoreTables.ParseDuration(clone.ResetDuration); err == nil {
+						if now.Sub(clone.LastReset) >= duration {
+							clone.CurrentUsage = 0
+							clone.LastReset = now
+						}
+					}
+				}
+				// Update the clone
+				clone.CurrentUsage += cost
+				gs.budgets.Store(budgetID, &clone)
+			}
+		}
+	}
+
+	// 1. Update provider-level budget (if provider is set)
+	if provider != "" {
+		providerKey := string(provider)
+		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
+			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.BudgetID != nil {
+				updateBudget(*providerTable.BudgetID)
+			}
+		}
+	}
+
+	// 2. Update model-level budgets
+	// Check model+provider config first (more specific) - if provider is provided
+	if provider != "" {
+		key := fmt.Sprintf("%s:%s", model, string(provider))
+		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.BudgetID != nil {
+				updateBudget(*mc.BudgetID)
+			}
+		}
+	}
+
+	// Always check model-only config (if exists) - regardless of whether model+provider config exists
+	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
+		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.BudgetID != nil {
+			updateBudget(*mc.BudgetID)
+		}
+	}
+
+	return nil
+}
+
+// UpdateProviderAndModelRateLimitUsageInMemory updates rate limit counters for both provider-level and model-level rate limits (lock-free)
+func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx context.Context, model string, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
+	now := time.Now()
+
+	// Helper function to update a rate limit by ID
+	updateRateLimit := func(rateLimitID string) {
+		if cachedRateLimitValue, exists := gs.rateLimits.Load(rateLimitID); exists && cachedRateLimitValue != nil {
+			if cachedRateLimit, ok := cachedRateLimitValue.(*configstoreTables.TableRateLimit); ok && cachedRateLimit != nil {
+				// Clone FIRST to avoid race conditions
+				clone := *cachedRateLimit
+				// Check if rate limit needs reset (in-memory check) - operate on clone
+				if clone.TokenResetDuration != nil {
+					if duration, err := configstoreTables.ParseDuration(*clone.TokenResetDuration); err == nil {
+						if now.Sub(clone.TokenLastReset) >= duration {
+							clone.TokenCurrentUsage = 0
+							clone.TokenLastReset = now
+						}
+					}
+				}
+				if clone.RequestResetDuration != nil {
+					if duration, err := configstoreTables.ParseDuration(*clone.RequestResetDuration); err == nil {
+						if now.Sub(clone.RequestLastReset) >= duration {
+							clone.RequestCurrentUsage = 0
+							clone.RequestLastReset = now
+						}
+					}
+				}
+				// Update the clone
+				if shouldUpdateTokens {
+					clone.TokenCurrentUsage += tokensUsed
+				}
+				if shouldUpdateRequests {
+					clone.RequestCurrentUsage += 1
+				}
+				gs.rateLimits.Store(rateLimitID, &clone)
+			}
+		}
+	}
+
+	// 1. Update provider-level rate limit (if provider is set)
+	if provider != "" {
+		providerKey := string(provider)
+		if value, exists := gs.providers.Load(providerKey); exists && value != nil {
+			if providerTable, ok := value.(*configstoreTables.TableProvider); ok && providerTable != nil && providerTable.RateLimitID != nil {
+				updateRateLimit(*providerTable.RateLimitID)
+			}
+		}
+	}
+
+	// 2. Update model-level rate limits
+	// Check model+provider config first (more specific) - if provider is provided
+	if provider != "" {
+		key := fmt.Sprintf("%s:%s", model, string(provider))
+		if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
+			if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+				updateRateLimit(*mc.RateLimitID)
+			}
+		}
+	}
+
+	// Always check model-only config (if exists) - regardless of whether model+provider config exists
+	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
+		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
+			updateRateLimit(*mc.RateLimitID)
+		}
+	}
+
+	return nil
+}
+
+// UpdateVirtualKeyRateLimitUsageInMemory updates rate limit counters for VK-level rate limits (lock-free)
+func (gs *LocalGovernanceStore) UpdateVirtualKeyRateLimitUsageInMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, tokensUsed int64, shouldUpdateTokens bool, shouldUpdateRequests bool) error {
 	if vk == nil {
 		return fmt.Errorf("virtual key cannot be nil")
 	}
@@ -591,7 +1105,7 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		requestBaselines = map[string]int64{}
 	}
 
-	// Collect unique rate limit IDs from virtual keys
+	// Collect unique rate limit IDs from virtual keys, model configs, and providers
 	rateLimitIDs := make(map[string]bool)
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
 		vk, ok := value.(*configstoreTables.TableVirtualKey)
@@ -607,6 +1121,30 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 					rateLimitIDs[*pc.RateLimitID] = true
 				}
 			}
+		}
+		return true // continue
+	})
+
+	// Collect rate limit IDs from model configs
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true // continue
+		}
+		if mc.RateLimitID != nil {
+			rateLimitIDs[*mc.RateLimitID] = true
+		}
+		return true // continue
+	})
+
+	// Collect rate limit IDs from providers
+	gs.providers.Range(func(key, value interface{}) bool {
+		provider, ok := value.(*configstoreTables.TableProvider)
+		if !ok || provider == nil {
+			return true // continue
+		}
+		if provider.RateLimitID != nil {
+			rateLimitIDs[*provider.RateLimitID] = true
 		}
 		return true // continue
 	})
@@ -778,8 +1316,20 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 		return fmt.Errorf("failed to load rate limits: %w", err)
 	}
 
+	// Load model configs
+	modelConfigs, err := gs.configStore.GetModelConfigs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load model configs: %w", err)
+	}
+
+	// Load providers with governance relationships (similar to GetModelConfigs)
+	providers, err := gs.configStore.GetProviders(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load providers: %w", err)
+	}
+
 	// Rebuild in-memory structures (lock-free)
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 
 	return nil
 }
@@ -804,6 +1354,66 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 
 	// Load rate limits
 	rateLimits := config.RateLimits
+
+	// Load model configs
+	modelConfigs := config.ModelConfigs
+
+	// Load providers
+	providers := config.Providers
+
+	// Populate model configs with their relationships (Budget and RateLimit)
+	for i := range modelConfigs {
+		mc := &modelConfigs[i]
+
+		// Populate budget
+		if mc.BudgetID != nil {
+			for j := range budgets {
+				if budgets[j].ID == *mc.BudgetID {
+					mc.Budget = &budgets[j]
+					break
+				}
+			}
+		}
+
+		// Populate rate limit
+		if mc.RateLimitID != nil {
+			for j := range rateLimits {
+				if rateLimits[j].ID == *mc.RateLimitID {
+					mc.RateLimit = &rateLimits[j]
+					break
+				}
+			}
+		}
+
+		modelConfigs[i] = *mc
+	}
+
+	// Populate providers with their relationships (Budget and RateLimit)
+	for i := range providers {
+		provider := &providers[i]
+
+		// Populate budget
+		if provider.BudgetID != nil {
+			for j := range budgets {
+				if budgets[j].ID == *provider.BudgetID {
+					provider.Budget = &budgets[j]
+					break
+				}
+			}
+		}
+
+		// Populate rate limit
+		if provider.RateLimitID != nil {
+			for j := range rateLimits {
+				if rateLimits[j].ID == *provider.RateLimitID {
+					provider.RateLimit = &rateLimits[j]
+					break
+				}
+			}
+		}
+
+		providers[i] = *provider
+	}
 
 	// Populate virtual keys with their relationships
 	for i := range virtualKeys {
@@ -864,19 +1474,21 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	}
 
 	// Rebuild in-memory structures (lock-free)
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
 
 	return nil
 }
 
 // rebuildInMemoryStructures rebuilds all in-memory data structures (lock-free)
-func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit) {
+func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider) {
 	// Clear existing data by creating new sync.Maps
 	gs.virtualKeys = sync.Map{}
 	gs.teams = sync.Map{}
 	gs.customers = sync.Map{}
 	gs.budgets = sync.Map{}
 	gs.rateLimits = sync.Map{}
+	gs.modelConfigs = sync.Map{}
+	gs.providers = sync.Map{}
 
 	// Build customers map
 	for i := range customers {
@@ -906,6 +1518,28 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	for i := range virtualKeys {
 		vk := &virtualKeys[i]
 		gs.virtualKeys.Store(vk.Value, vk)
+	}
+
+	// Build model configs map
+	// Key format: "modelName" for global configs, "modelName:provider" for provider-specific configs
+	for i := range modelConfigs {
+		mc := &modelConfigs[i]
+		if mc.Provider != nil {
+			// Store under provider-specific key
+			key := fmt.Sprintf("%s:%s", mc.ModelName, *mc.Provider)
+			gs.modelConfigs.Store(key, mc)
+		} else {
+			// Global config (applies to all providers) - store under model name only
+			key := mc.ModelName
+			gs.modelConfigs.Store(key, mc)
+		}
+	}
+
+	// Build providers map
+	// Key format: provider name (e.g., "openai", "anthropic")
+	for i := range providers {
+		provider := &providers[i]
+		gs.providers.Store(provider.Name, provider)
 	}
 }
 
@@ -1357,6 +1991,144 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(customerID string) {
 	})
 
 	gs.customers.Delete(customerID)
+}
+
+// UpdateModelConfigInMemory adds or updates a model config in the in-memory store (lock-free)
+// Preserves existing usage values when updating budgets and rate limits
+// Returns the updated model config with potentially modified usage values
+func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(mc *configstoreTables.TableModelConfig) *configstoreTables.TableModelConfig {
+	if mc == nil {
+		return nil // Nothing to update
+	}
+
+	// Clone to avoid modifying the original
+	clone := *mc
+
+	// Store associated budget if exists, preserving existing in-memory usage
+	if clone.Budget != nil {
+		if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
+			if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
+				clone.Budget.CurrentUsage = eb.CurrentUsage
+			}
+		}
+		gs.budgets.Store(clone.Budget.ID, clone.Budget)
+	}
+
+	// Store associated rate limit if exists, preserving existing in-memory usage
+	if clone.RateLimit != nil {
+		if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
+			if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
+				clone.RateLimit.TokenCurrentUsage = erl.TokenCurrentUsage
+				clone.RateLimit.RequestCurrentUsage = erl.RequestCurrentUsage
+			}
+		}
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+	}
+
+	// Determine the key based on whether provider is specified
+	// Key format: "modelName" for global configs, "modelName:provider" for provider-specific configs
+	if clone.Provider != nil {
+		key := fmt.Sprintf("%s:%s", clone.ModelName, *clone.Provider)
+		gs.modelConfigs.Store(key, &clone)
+	} else {
+		key := clone.ModelName
+		gs.modelConfigs.Store(key, &clone)
+	}
+
+	return &clone
+}
+
+// DeleteModelConfigInMemory removes a model config from the in-memory store (lock-free)
+func (gs *LocalGovernanceStore) DeleteModelConfigInMemory(mcID string) {
+	if mcID == "" {
+		return // Nothing to delete
+	}
+
+	// Find and delete the model config by ID
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true // continue iteration
+		}
+
+		if mc.ID == mcID {
+			// Delete associated budget if exists
+			if mc.BudgetID != nil {
+				gs.budgets.Delete(*mc.BudgetID)
+			}
+
+			// Delete associated rate limit if exists
+			if mc.RateLimitID != nil {
+				gs.rateLimits.Delete(*mc.RateLimitID)
+			}
+
+			gs.modelConfigs.Delete(key)
+			return false // stop iteration
+		}
+		return true // continue iteration
+	})
+}
+
+// UpdateProviderInMemory adds or updates a provider in the in-memory store (lock-free)
+// Preserves existing usage values when updating budgets and rate limits
+// Returns the updated provider with potentially modified usage values
+func (gs *LocalGovernanceStore) UpdateProviderInMemory(provider *configstoreTables.TableProvider) *configstoreTables.TableProvider {
+	if provider == nil {
+		return nil // Nothing to update
+	}
+
+	// Clone to avoid modifying the original
+	clone := *provider
+
+	// Store associated budget if exists, preserving existing in-memory usage
+	if clone.Budget != nil {
+		if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
+			if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
+				clone.Budget.CurrentUsage = eb.CurrentUsage
+			}
+		}
+		gs.budgets.Store(clone.Budget.ID, clone.Budget)
+	}
+
+	// Store associated rate limit if exists, preserving existing in-memory usage
+	if clone.RateLimit != nil {
+		if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
+			if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
+				clone.RateLimit.TokenCurrentUsage = erl.TokenCurrentUsage
+				clone.RateLimit.RequestCurrentUsage = erl.RequestCurrentUsage
+			}
+		}
+		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+	}
+
+	// Store under provider name
+	gs.providers.Store(clone.Name, &clone)
+
+	return &clone
+}
+
+// DeleteProviderInMemory removes a provider from the in-memory store (lock-free)
+func (gs *LocalGovernanceStore) DeleteProviderInMemory(providerName string) {
+	if providerName == "" {
+		return // Nothing to delete
+	}
+
+	// Get provider to check for associated budget/rate limit
+	if providerValue, exists := gs.providers.Load(providerName); exists && providerValue != nil {
+		if provider, ok := providerValue.(*configstoreTables.TableProvider); ok && provider != nil {
+			// Delete associated budget if exists
+			if provider.BudgetID != nil {
+				gs.budgets.Delete(*provider.BudgetID)
+			}
+
+			// Delete associated rate limit if exists
+			if provider.RateLimitID != nil {
+				gs.rateLimits.Delete(*provider.RateLimitID)
+			}
+		}
+	}
+
+	gs.providers.Delete(providerName)
 }
 
 // Helper functions

@@ -77,10 +77,60 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 	}
 }
 
-// EvaluateRequest evaluates a request against the new hierarchical governance system
-func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) *EvaluationResult {
+// EvaluateModelAndProviderRequest evaluates provider-level and model-level rate limits and budgets
+// This applies even when virtual keys are disabled or not present
+func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
+	// 1. Check provider-level rate limits FIRST (before model-level checks)
+	if provider != "" {
+		if err, decision := r.store.CheckProviderRateLimit(ctx, provider, requestID, nil, nil); err != nil {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", err.Error()),
+			}
+		}
+
+		// 2. Check provider-level budgets FIRST (before model-level checks)
+		if err := r.store.CheckProviderBudget(ctx, provider, nil); err != nil {
+			return &EvaluationResult{
+				Decision: DecisionBudgetExceeded,
+				Reason:   fmt.Sprintf("Provider-level budget exceeded: %s", err.Error()),
+			}
+		}
+	}
+
+	// 3. Check model-level rate limits (after provider-level checks)
+	if model != "" {
+		var providerPtr *schemas.ModelProvider
+		if provider != "" {
+			providerPtr = &provider
+		}
+		if err, decision := r.store.CheckModelRateLimit(ctx, model, providerPtr, requestID, nil, nil); err != nil {
+			return &EvaluationResult{
+				Decision: decision,
+				Reason:   fmt.Sprintf("Model-level rate limit check failed: %s", err.Error()),
+			}
+		}
+
+		// 4. Check model-level budgets (after provider-level checks)
+		if err := r.store.CheckModelBudget(ctx, model, providerPtr, nil); err != nil {
+			return &EvaluationResult{
+				Decision: DecisionBudgetExceeded,
+				Reason:   fmt.Sprintf("Model-level budget exceeded: %s", err.Error()),
+			}
+		}
+	}
+
+	// All provider-level and model-level checks passed
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "Request allowed by governance policy (provider-level and model-level checks passed)",
+	}
+}
+
+// EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
+func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
-	vk, exists := r.store.GetVirtualKey(evaluationRequest.VirtualKey)
+	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
 	if !exists {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyNotFound,
@@ -112,25 +162,32 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 	}
 
 	// 2. Check provider filtering
-	if !r.isProviderAllowed(vk, evaluationRequest.Provider) {
+	if !r.isProviderAllowed(vk, provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
-			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", evaluationRequest.Provider),
+			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
 			VirtualKey: vk,
 		}
 	}
 
 	// 3. Check model filtering
-	if !r.isModelAllowed(vk, evaluationRequest.Provider, evaluationRequest.Model) {
+	if !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
-			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", evaluationRequest.Model),
+			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
 			VirtualKey: vk,
 		}
 	}
 
-	// 4. Check rate limits hierarchy (Provider level first, then VK level)
-	if rateLimitResult := r.checkRateLimitHierarchy(ctx, vk, string(evaluationRequest.Provider), evaluationRequest.Model, evaluationRequest.RequestID); rateLimitResult != nil {
+	evaluationRequest := &EvaluationRequest{
+		VirtualKey: virtualKeyValue,
+		Provider:   provider,
+		Model:      model,
+		RequestID:  requestID,
+	}
+
+	// 4. Check rate limits hierarchy (VK level)
+	if rateLimitResult := r.checkRateLimitHierarchy(ctx, vk, evaluationRequest); rateLimitResult != nil {
 		return rateLimitResult
 	}
 
@@ -141,7 +198,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 
 	// Find the provider config that matches the request's provider and get its allowed keys
 	for _, pc := range vk.ProviderConfigs {
-		if schemas.ModelProvider(pc.Provider) == evaluationRequest.Provider && len(pc.Keys) > 0 {
+		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
 			includeOnlyKeys := make([]string, 0, len(pc.Keys))
 			for _, dbKey := range pc.Keys {
 				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
@@ -202,12 +259,12 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 }
 
 // checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
-func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider string, model string, requestID string) *EvaluationResult {
-	if decision, err := r.store.CheckRateLimit(ctx, vk, schemas.ModelProvider(provider), model, requestID, nil, nil); err != nil {
+func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
+	if decision, err := r.store.CheckRateLimit(ctx, vk, schemas.ModelProvider(request.Provider), request.Model, request.RequestID, nil, nil); err != nil {
 		// Check provider-level first (matching check order), then VK-level
 		var rateLimitInfo *configstoreTables.TableRateLimit
 		for _, pc := range vk.ProviderConfigs {
-			if pc.Provider == provider && pc.RateLimit != nil {
+			if pc.Provider == string(request.Provider) && pc.RateLimit != nil {
 				rateLimitInfo = pc.RateLimit
 				break
 			}
