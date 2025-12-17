@@ -624,12 +624,28 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		return err
 	}
 
+	// Store the budget and rate limit IDs before deleting
+	budgetID := dbProvider.BudgetID
+	rateLimitID := dbProvider.RateLimitID
 	// Delete the provider first (keys will be deleted due to CASCADE constraint)
 	if err := txDB.WithContext(ctx).Delete(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrNotFound
 		}
 		return err
+	}
+
+	// Delete the budget if it exists
+	if budgetID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
+			return err
+		}
+	}
+	// Delete the rate limit if it exists
+	if rateLimitID != nil {
+		if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -747,6 +763,30 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		processedProviders[provider] = providerConfig
 	}
 	return processedProviders, nil
+}
+
+// GetProviders retrieves all providers from the database with their governance relationships.
+func (s *RDBConfigStore) GetProviders(ctx context.Context) ([]tables.TableProvider, error) {
+	var providers []tables.TableProvider
+	if err := s.db.WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&providers).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return providers, nil
+}
+
+// GetProviderByName retrieves a provider by name from the database with governance relationships.
+func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*tables.TableProvider, error) {
+	var provider tables.TableProvider
+	if err := s.db.WithContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", name).First(&provider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &provider, nil
 }
 
 // GetMCPConfig retrieves the MCP configuration from the database.
@@ -2130,6 +2170,160 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 	return nil
 }
 
+// UpdateBudgetUsage updates only the current_usage field of a budget.
+// Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
+func (s *RDBConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
+	result := s.db.WithContext(ctx).
+		Session(&gorm.Session{SkipHooks: true}).
+		Model(&tables.TableBudget{}).
+		Where("id = ?", id).
+		Update("current_usage", currentUsage)
+	if result.Error != nil {
+		return s.parseGormError(result.Error)
+	}
+	return nil
+}
+
+// UpdateRateLimitUsage updates only the usage fields of a rate limit.
+// Uses SkipHooks to avoid triggering BeforeSave validation since we're only updating usage.
+func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
+	result := s.db.WithContext(ctx).
+		Session(&gorm.Session{SkipHooks: true}).
+		Model(&tables.TableRateLimit{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"token_current_usage":   tokenCurrentUsage,
+			"request_current_usage": requestCurrentUsage,
+		})
+	if result.Error != nil {
+		return s.parseGormError(result.Error)
+	}
+	return nil
+}
+
+// GetModelConfigs retrieves all model configs from the database.
+func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	var modelConfigs []tables.TableModelConfig
+	if err := s.db.WithContext(ctx).Preload("Budget").Preload("RateLimit").Find(&modelConfigs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return modelConfigs, nil
+}
+
+// GetModelConfig retrieves a specific model config from the database by model name and optional provider.
+func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+	var modelConfig tables.TableModelConfig
+	query := s.db.WithContext(ctx).Where("model_name = ?", modelName)
+	if provider != nil {
+		query = query.Where("provider = ?", *provider)
+	} else {
+		query = query.Where("provider IS NULL")
+	}
+	if err := query.Preload("Budget").Preload("RateLimit").First(&modelConfig).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &modelConfig, nil
+}
+
+// GetModelConfigByID retrieves a specific model config from the database by ID.
+func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
+	var modelConfig tables.TableModelConfig
+	if err := s.db.WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &modelConfig, nil
+}
+
+// CreateModelConfig creates a new model config in the database.
+func (s *RDBConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Create(modelConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// UpdateModelConfig updates a model config in the database.
+func (s *RDBConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Save(modelConfig).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// UpdateModelConfigs updates multiple model configs in the database.
+func (s *RDBConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	for _, mc := range modelConfigs {
+		if err := txDB.WithContext(ctx).Save(mc).Error; err != nil {
+			return s.parseGormError(err)
+		}
+	}
+	return nil
+}
+
+// DeleteModelConfig deletes a model config from the database.
+func (s *RDBConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// First fetch the model config to get budget and rate limit IDs
+		var modelConfig tables.TableModelConfig
+		if err := tx.First(&modelConfig, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		// Store the budget and rate limit IDs before deleting
+		budgetID := modelConfig.BudgetID
+		rateLimitID := modelConfig.RateLimitID
+		// Delete the model config first
+		if err := tx.Delete(&tables.TableModelConfig{}, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return s.parseGormError(err)
+		}
+		// Delete the budget if it exists
+		if budgetID != nil {
+			if err := tx.Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
+				return err
+			}
+		}
+		// Delete the rate limit if it exists
+		if rateLimitID != nil {
+			if err := tx.Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // GetGovernanceConfig retrieves the governance configuration from the database.
 func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error) {
 	var virtualKeys []tables.TableVirtualKey
@@ -2137,6 +2331,8 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var customers []tables.TableCustomer
 	var budgets []tables.TableBudget
 	var rateLimits []tables.TableRateLimit
+	var modelConfigs []tables.TableModelConfig
+	var providers []tables.TableProvider
 	var governanceConfigs []tables.TableGovernanceConfig
 
 	if err := s.db.WithContext(ctx).
@@ -2159,12 +2355,18 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if err := s.db.WithContext(ctx).Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
+	if err := s.db.WithContext(ctx).Find(&modelConfigs).Error; err != nil {
+		return nil, err
+	}
+	if err := s.db.WithContext(ctx).Find(&providers).Error; err != nil {
+		return nil, err
+	}
 	// Fetching governance config for username and password
 	if err := s.db.WithContext(ctx).Find(&governanceConfigs).Error; err != nil {
 		return nil, err
 	}
 	// Check if any config is present
-	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(governanceConfigs) == 0 {
+	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(modelConfigs) == 0 && len(providers) == 0 && len(governanceConfigs) == 0 {
 		return nil, nil
 	}
 	var authConfig *AuthConfig
@@ -2192,12 +2394,14 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys: virtualKeys,
-		Teams:       teams,
-		Customers:   customers,
-		Budgets:     budgets,
-		RateLimits:  rateLimits,
-		AuthConfig:  authConfig,
+		VirtualKeys:  virtualKeys,
+		Teams:        teams,
+		Customers:    customers,
+		Budgets:      budgets,
+		RateLimits:   rateLimits,
+		ModelConfigs: modelConfigs,
+		Providers:    providers,
+		AuthConfig:   authConfig,
 	}, nil
 }
 
