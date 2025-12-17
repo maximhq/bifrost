@@ -38,6 +38,14 @@ type TableProvider struct {
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
 
+	// Governance fields - Budget and Rate Limit for provider-level governance
+	BudgetID    *string `gorm:"type:varchar(255);index:idx_provider_budget" json:"budget_id,omitempty"`
+	RateLimitID *string `gorm:"type:varchar(255);index:idx_provider_rate_limit" json:"rate_limit_id,omitempty"`
+
+	// Governance relationships
+	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
+	RateLimit *TableRateLimit `gorm:"foreignKey:RateLimitID;onDelete:CASCADE" json:"rate_limit,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -79,6 +87,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.CustomProviderConfigJSON = string(data)
 	}
+
+	// Validate governance fields
+	if p.BudgetID != nil && *p.BudgetID == "" {
+		return fmt.Errorf("budget_id cannot be an empty string")
+	}
+	if p.RateLimitID != nil && *p.RateLimitID == "" {
+		return fmt.Errorf("rate_limit_id cannot be an empty string")
+	}
+
 	return nil
 }
 
