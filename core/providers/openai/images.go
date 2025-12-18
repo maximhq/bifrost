@@ -32,21 +32,10 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		Prompt: bifrostReq.Input.Prompt,
 	}
 
-	mapImageParams(bifrostReq.Params, req)
-	return req
-}
-
-// This function maps Image generation parameters from a Bifrost Request to OpenAI format
-func mapImageParams(p *schemas.ImageGenerationParameters, req *OpenAIImageGenerationRequest) {
-	if p == nil {
-		return
+	if bifrostReq.Params != nil {
+		req.ImageGenerationParameters = *bifrostReq.Params
 	}
-	req.N = p.N
-	req.Size = p.Size
-	req.Quality = p.Quality
-	req.Style = p.Style
-	req.ResponseFormat = p.ResponseFormat
-	req.User = p.User
+	return req
 }
 
 // ToBifrostImageResponse converts an OpenAI Image Response to Bifrost format
@@ -83,5 +72,20 @@ func ToBifrostImageResponse(openaiResponse *OpenAIImageGenerationResponse, reque
 			Provider: schemas.OpenAI,
 			Latency:  latency.Milliseconds(),
 		},
+	}
+}
+
+// ToBifrostImageGenerationRequest converts an OpenAI image generation request to Bifrost format
+func (request *OpenAIImageGenerationRequest) ToBifrostImageGenerationRequest() *schemas.BifrostImageGenerationRequest {
+	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
+
+	return &schemas.BifrostImageGenerationRequest{
+		Provider: provider,
+		Model:    model,
+		Input: &schemas.ImageGenerationInput{
+			Prompt: request.Prompt,
+		},
+		Params:    &request.ImageGenerationParameters,
+		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 }

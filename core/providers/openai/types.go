@@ -292,15 +292,13 @@ type ImageGenerationEventType string
 
 // OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
 type OpenAIImageGenerationRequest struct {
-	Model          string  `json:"model"`
-	Prompt         string  `json:"prompt"`
-	N              *int    `json:"n,omitempty"`
-	Size           *string `json:"size,omitempty"`
-	Quality        *string `json:"quality,omitempty"`
-	Style          *string `json:"style,omitempty"`
-	Stream         *bool   `json:"stream,omitempty"`
-	ResponseFormat *string `json:"response_format,omitempty"`
-	User           *string `json:"user,omitempty"`
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+
+	schemas.ImageGenerationParameters
+
+	Stream    *bool    `json:"stream,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
 // OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.

@@ -232,3 +232,189 @@ func TestToBifrostImageResponse(t *testing.T) {
 		})
 	}
 }
+
+// TestToBifrostImageGenerationRequest tests OpenAI to Bifrost request conversion
+func TestToBifrostImageGenerationRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		request  *openai.OpenAIImageGenerationRequest
+		validate func(t *testing.T, req *schemas.BifrostImageGenerationRequest)
+	}{
+		{
+			name: "full request with all parameters converts correctly",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:  "openai/dall-e-3",
+				Prompt: "a beautiful sunset",
+				ImageGenerationParameters: schemas.ImageGenerationParameters{
+					N:              schemas.Ptr(2),
+					Size:           schemas.Ptr("1024x1792"),
+					Quality:        schemas.Ptr("hd"),
+					Style:          schemas.Ptr("vivid"),
+					ResponseFormat: schemas.Ptr("b64_json"),
+					User:           schemas.Ptr("user-123"),
+				},
+				Fallbacks: []string{"azure/dall-e-3", "openai/dall-e-2"},
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if req == nil {
+					t.Fatal("Expected non-nil request")
+				}
+				if req.Provider != schemas.OpenAI {
+					t.Errorf("Provider mismatch: expected %s, got %s", schemas.OpenAI, req.Provider)
+				}
+				if req.Model != "dall-e-3" {
+					t.Errorf("Model mismatch: expected dall-e-3, got %s", req.Model)
+				}
+				if req.Input == nil {
+					t.Fatal("Expected non-nil Input")
+				}
+				if req.Input.Prompt != "a beautiful sunset" {
+					t.Errorf("Prompt mismatch: expected 'a beautiful sunset', got %s", req.Input.Prompt)
+				}
+				if req.Params == nil {
+					t.Fatal("Expected non-nil Params")
+				}
+				if *req.Params.N != 2 {
+					t.Errorf("N mismatch: expected 2, got %d", *req.Params.N)
+				}
+				if *req.Params.Size != "1024x1792" {
+					t.Errorf("Size mismatch: expected 1024x1792, got %s", *req.Params.Size)
+				}
+				if *req.Params.Quality != "hd" {
+					t.Errorf("Quality mismatch: expected hd, got %s", *req.Params.Quality)
+				}
+				if *req.Params.Style != "vivid" {
+					t.Errorf("Style mismatch: expected vivid, got %s", *req.Params.Style)
+				}
+				if *req.Params.ResponseFormat != "b64_json" {
+					t.Errorf("ResponseFormat mismatch: expected b64_json, got %s", *req.Params.ResponseFormat)
+				}
+				if *req.Params.User != "user-123" {
+					t.Errorf("User mismatch: expected user-123, got %s", *req.Params.User)
+				}
+				if len(req.Fallbacks) != 2 {
+					t.Errorf("Expected 2 fallbacks, got %d", len(req.Fallbacks))
+				}
+				if req.Fallbacks[0].Provider != schemas.Azure || req.Fallbacks[0].Model != "dall-e-3" {
+					t.Errorf("First fallback mismatch: expected azure/dall-e-3, got %s/%s", req.Fallbacks[0].Provider, req.Fallbacks[0].Model)
+				}
+				if req.Fallbacks[1].Provider != schemas.OpenAI || req.Fallbacks[1].Model != "dall-e-2" {
+					t.Errorf("Second fallback mismatch: expected openai/dall-e-2, got %s/%s", req.Fallbacks[1].Provider, req.Fallbacks[1].Model)
+				}
+			},
+		},
+		{
+			name: "model without provider prefix defaults to OpenAI",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:  "dall-e-2",
+				Prompt: "minimal prompt",
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if req.Provider != schemas.OpenAI {
+					t.Errorf("Provider should default to OpenAI, got %s", req.Provider)
+				}
+				if req.Model != "dall-e-2" {
+					t.Errorf("Model mismatch: expected dall-e-2, got %s", req.Model)
+				}
+				if req.Input.Prompt != "minimal prompt" {
+					t.Errorf("Prompt mismatch")
+				}
+			},
+		},
+		{
+			name: "request with nil params still works",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:                     "gpt-image-1",
+				Prompt:                    "test prompt",
+				ImageGenerationParameters: schemas.ImageGenerationParameters{},
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if req.Params == nil {
+					t.Fatal("Expected non-nil Params even when empty")
+				}
+				if req.Params.N != nil {
+					t.Errorf("N should be nil when not set")
+				}
+				if req.Params.Size != nil {
+					t.Errorf("Size should be nil when not set")
+				}
+			},
+		},
+		{
+			name: "request with empty fallbacks",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:     "dall-e-3",
+				Prompt:    "test",
+				Fallbacks: []string{},
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if len(req.Fallbacks) != 0 {
+					t.Errorf("Expected empty fallbacks, got %d", len(req.Fallbacks))
+				}
+			},
+		},
+		{
+			name: "request with nil fallbacks",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:     "dall-e-3",
+				Prompt:    "test",
+				Fallbacks: nil,
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if len(req.Fallbacks) != 0 {
+					t.Errorf("Expected nil or empty fallbacks, got %d", len(req.Fallbacks))
+				}
+			},
+		},
+		{
+			name: "request with partial parameters",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:  "dall-e-3",
+				Prompt: "partial params",
+				ImageGenerationParameters: schemas.ImageGenerationParameters{
+					Size:    schemas.Ptr("1024x1024"),
+					Quality: schemas.Ptr("standard"),
+				},
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if req.Params.Size == nil || *req.Params.Size != "1024x1024" {
+					t.Errorf("Size should be preserved")
+				}
+				if req.Params.Quality == nil || *req.Params.Quality != "standard" {
+					t.Errorf("Quality should be preserved")
+				}
+				if req.Params.N != nil {
+					t.Errorf("N should be nil when not set")
+				}
+				if req.Params.Style != nil {
+					t.Errorf("Style should be nil when not set")
+				}
+			},
+		},
+		{
+			name: "azure provider prefix in model",
+			request: &openai.OpenAIImageGenerationRequest{
+				Model:  "azure/dall-e-3",
+				Prompt: "azure model",
+			},
+			validate: func(t *testing.T, req *schemas.BifrostImageGenerationRequest) {
+				if req.Provider != schemas.Azure {
+					t.Errorf("Provider should be Azure, got %s", req.Provider)
+				}
+				if req.Model != "dall-e-3" {
+					t.Errorf("Model should be dall-e-3, got %s", req.Model)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := tt.request.ToBifrostImageGenerationRequest()
+			tt.validate(t, req)
+		})
+	}
+}
