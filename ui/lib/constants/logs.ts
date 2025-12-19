@@ -117,8 +117,6 @@ export const RequestTypeLabels = {
 	file_retrieve: "File Retrieve",
 	file_delete: "File Delete",
 	file_content: "File Content",
-
-	
 } as const;
 
 export const RequestTypeColors = {
@@ -152,7 +150,7 @@ export const RequestTypeColors = {
 	batch_retrieve: "bg-red-100 text-red-800",
 	batch_cancel: "bg-yellow-100 text-yellow-800",
 	batch_results: "bg-purple-100 text-purple-800",
-	
+
 	file_upload: "bg-pink-100 text-pink-800",
 	file_list: "bg-lime-100 text-lime-800",
 	file_retrieve: "bg-orange-100 text-orange-800",

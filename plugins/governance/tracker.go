@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"gorm.io/gorm"
 )
 
 // UsageUpdate contains data for VK-level usage tracking
@@ -30,7 +31,7 @@ type UsageUpdate struct {
 
 // UsageTracker manages VK-level usage tracking and budget management
 type UsageTracker struct {
-	store       *GovernanceStore
+	store       GovernanceStore
 	resolver    *BudgetResolver
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
@@ -43,8 +44,12 @@ type UsageTracker struct {
 	wg            sync.WaitGroup
 }
 
+const (
+	workerInterval = 10 * time.Second
+)
+
 // NewUsageTracker creates a new usage tracker for the hierarchical budget system
-func NewUsageTracker(ctx context.Context, store *GovernanceStore, resolver *BudgetResolver, configStore configstore.ConfigStore, logger schemas.Logger) *UsageTracker {
+func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *BudgetResolver, configStore configstore.ConfigStore, logger schemas.Logger) *UsageTracker {
 	tracker := &UsageTracker{
 		store:       store,
 		resolver:    resolver,
@@ -63,16 +68,16 @@ func NewUsageTracker(ctx context.Context, store *GovernanceStore, resolver *Budg
 
 // UpdateUsage queues a usage update for async processing (main business entry point)
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
+	t.logger.Info("inside UpdateUsage")
 	// Get virtual key
 	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
 	if !exists {
-		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
 		return
 	}
 
 	// Only process successful requests for usage tracking
 	if !update.Success {
-		t.logger.Debug(fmt.Sprintf("Request was not successful, skipping usage update for VK: %s", vk.ID))
+		t.logger.Info(fmt.Sprintf("Request was not successful, skipping usage update for VK: %s", vk.ID))
 		return
 	}
 
@@ -83,29 +88,27 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// Update rate limit usage (both provider-level and VK-level) if applicable
 	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 {
-		if err := t.store.UpdateRateLimitUsage(ctx, update.VirtualKey, string(update.Provider), update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		if err := t.store.UpdateRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
 		}
 	}
 
+	t.logger.Info("shouldUpdateBudget: %t, update.Cost: %f", shouldUpdateBudget, update.Cost)
+
 	// Update budget usage in hierarchy (VK → Team → Customer) only if we have usage data
 	if shouldUpdateBudget && update.Cost > 0 {
-		t.updateBudgetHierarchy(ctx, vk, update)
-	}
-}
-
-// updateBudgetHierarchy updates budget usage atomically in the VK → Team → Customer hierarchy
-func (t *UsageTracker) updateBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, update *UsageUpdate) {
-	// Use atomic budget update to prevent race conditions and ensure consistency
-	if err := t.store.UpdateBudget(ctx, vk, update.Provider, update.Cost); err != nil {
-		t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
+		t.logger.Info("updating budget usage for VK %s", vk.ID)
+		// Use atomic budget update to prevent race conditions and ensure consistency
+		if err := t.store.UpdateBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
+			t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
+		}
 	}
 }
 
 // startWorkers starts all background workers for business logic
 func (t *UsageTracker) startWorkers(ctx context.Context) {
 	// Counter reset manager (business logic)
-	t.resetTicker = time.NewTicker(1 * time.Minute)
+	t.resetTicker = time.NewTicker(workerInterval)
 	t.wg.Add(1)
 	go t.resetWorker(ctx)
 }
@@ -128,13 +131,23 @@ func (t *UsageTracker) resetWorker(ctx context.Context) {
 // resetExpiredCounters manages periodic resets of usage counters AND budgets using flexible durations
 func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 	// ==== PART 1: Reset Rate Limits ====
-	if err := t.store.ResetExpiredRateLimits(ctx); err != nil {
+	resetRateLimits := t.store.ResetExpiredRateLimitsInMemory(ctx)
+	if err := t.store.ResetExpiredRateLimits(ctx, resetRateLimits); err != nil {
 		t.logger.Error("failed to reset expired rate limits: %v", err)
 	}
 
 	// ==== PART 2: Reset Budgets ====
-	if err := t.store.ResetExpiredBudgets(ctx); err != nil {
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
+	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		t.logger.Error("failed to reset expired budgets: %v", err)
+	}
+
+	// ==== PART 3: Dump all rate limits and budgets to database ====
+	if err := t.store.DumpRateLimits(ctx, nil, nil); err != nil {
+		t.logger.Error("failed to dump rate limits to database: %v", err)
+	}
+	if err := t.store.DumpBudgets(ctx, nil); err != nil {
+		t.logger.Error("failed to dump budgets to database: %v", err)
 	}
 }
 
@@ -210,16 +223,38 @@ func (t *UsageTracker) PerformStartupResets(ctx context.Context) error {
 	}
 
 	// DB reset is also handled by this function
-	if err := t.store.ResetExpiredBudgets(ctx); err != nil {
+	resetBudgets := t.store.ResetExpiredBudgetsInMemory(ctx)
+	if err := t.store.ResetExpiredBudgets(ctx, resetBudgets); err != nil {
 		errs = append(errs, fmt.Sprintf("failed to reset expired budgets: %s", err.Error()))
 	}
 
 	// ==== PERSIST RESETS TO DATABASE ====
-	if t.configStore != nil {
-		if len(resetRateLimits) > 0 {
-			if err := t.configStore.UpdateRateLimits(ctx, resetRateLimits); err != nil {
-				errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
+	// Use selective updates to avoid overwriting config fields (max_limit, reset_duration)
+	if t.configStore != nil && len(resetRateLimits) > 0 {
+		if err := t.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			for _, rateLimit := range resetRateLimits {
+				// Build update map with only the fields that were reset
+				updates := make(map[string]interface{})
+				updates["token_current_usage"] = rateLimit.TokenCurrentUsage
+				updates["token_last_reset"] = rateLimit.TokenLastReset
+				updates["request_current_usage"] = rateLimit.RequestCurrentUsage
+				updates["request_last_reset"] = rateLimit.RequestLastReset
+
+				// Direct UPDATE only resets usage and last_reset fields
+				// This prevents overwriting max_limit or reset_duration that may have been changed during startup
+				result := tx.WithContext(ctx).
+					Session(&gorm.Session{SkipHooks: true}).
+					Model(&configstoreTables.TableRateLimit{}).
+					Where("id = ?", rateLimit.ID).
+					Updates(updates)
+
+				if result.Error != nil {
+					return fmt.Errorf("failed to reset rate limit %s: %w", rateLimit.ID, result.Error)
+				}
 			}
+			return nil
+		}); err != nil {
+			errs = append(errs, fmt.Sprintf("failed to persist rate limit resets: %s", err.Error()))
 		}
 	}
 	if len(errs) > 0 {

@@ -37,6 +37,15 @@ type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
+type BaseGovernancePlugin interface {
+	GetName() string
+	TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	Cleanup() error
+	GetGovernanceStore() GovernanceStore
+}
+
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
 	ctx        context.Context
@@ -44,9 +53,9 @@ type GovernancePlugin struct {
 	wg         sync.WaitGroup // Track active goroutines
 
 	// Core components with clear separation of concerns
-	store    *GovernanceStore // Pure data access layer
-	resolver *BudgetResolver  // Pure decision engine for hierarchical governance
-	tracker  *UsageTracker    // Business logic owner (updates, resets, persistence)
+	store    GovernanceStore // Pure data access layer
+	resolver *BudgetResolver // Pure decision engine for hierarchical governance
+	tracker  *UsageTracker   // Business logic owner (updates, resets, persistence)
 
 	// Dependencies
 	configStore  configstore.ConfigStore
@@ -96,12 +105,12 @@ func Init(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
-	store configstore.ConfigStore,
+	configStore configstore.ConfigStore,
 	governanceConfig *configstore.GovernanceConfig,
 	modelCatalog *modelcatalog.ModelCatalog,
 	inMemoryStore InMemoryStore,
 ) (*GovernancePlugin, error) {
-	if store == nil {
+	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
 	}
 	if modelCatalog == nil {
@@ -114,7 +123,7 @@ func Init(
 		isVkMandatory = config.IsVkMandatory
 	}
 
-	governanceStore, err := NewGovernanceStore(ctx, logger, store, governanceConfig)
+	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
@@ -123,10 +132,10 @@ func Init(
 	resolver := NewBudgetResolver(governanceStore, logger)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
-	tracker := NewUsageTracker(ctx, governanceStore, resolver, store, logger)
+	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
 	// 4. Perform startup reset check for any expired limits from downtime
-	if store != nil {
+	if configStore != nil {
 		if err := tracker.PerformStartupResets(ctx); err != nil {
 			logger.Warn("startup reset failed: %v", err)
 			// Continue initialization even if startup reset fails (non-critical)
@@ -139,11 +148,71 @@ func Init(
 		store:         governanceStore,
 		resolver:      resolver,
 		tracker:       tracker,
-		configStore:   store,
+		configStore:   configStore,
 		modelCatalog:  modelCatalog,
 		logger:        logger,
 		isVkMandatory: isVkMandatory,
 		inMemoryStore: inMemoryStore,
+	}
+	return plugin, nil
+}
+
+// InitFromStore initializes and returns a governance plugin instance with a custom store.
+//
+// This constructor allows providing a custom GovernanceStore implementation instead of
+// creating a new LocalGovernanceStore. Use this when you need to:
+//   - Inject a custom store implementation for testing
+//   - Use a pre-configured store instance
+//   - Integrate with non-standard storage backends
+//
+// Parameters are the same as Init, except governanceConfig is replaced by governanceStore.
+// The governanceStore must not be nil, or an error is returned.
+//
+// See Init documentation for details on other parameters and behavior.
+func InitFromStore(
+	ctx context.Context,
+	config *Config,
+	logger schemas.Logger,
+	governanceStore GovernanceStore,
+	configStore configstore.ConfigStore,
+	modelCatalog *modelcatalog.ModelCatalog,
+	inMemoryStore InMemoryStore,
+) (*GovernancePlugin, error) {
+	if configStore == nil {
+		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
+	}
+	if modelCatalog == nil {
+		logger.Warn("governance plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+	}
+	if governanceStore == nil {
+		return nil, fmt.Errorf("governance store is nil")
+	}
+	// Handle nil config - use safe default for IsVkMandatory
+	var isVkMandatory *bool
+	if config != nil {
+		isVkMandatory = config.IsVkMandatory
+	}
+	resolver := NewBudgetResolver(governanceStore, logger)
+	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+	// Perform startup reset check for any expired limits from downtime
+	if configStore != nil {
+		if err := tracker.PerformStartupResets(ctx); err != nil {
+			logger.Warn("startup reset failed: %v", err)
+			// Continue initialization even if startup reset fails (non-critical)
+		}
+	}
+	ctx, cancelFunc := context.WithCancel(ctx)
+	plugin := &GovernancePlugin{
+		ctx:           ctx,
+		cancelFunc:    cancelFunc,
+		store:         governanceStore,
+		resolver:      resolver,
+		tracker:       tracker,
+		configStore:   configStore,
+		modelCatalog:  modelCatalog,
+		logger:        logger,
+		inMemoryStore: inMemoryStore,
+		isVkMandatory: isVkMandatory,
 	}
 	return plugin, nil
 }
@@ -544,15 +613,20 @@ func (p *GovernancePlugin) Cleanup() error {
 func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
+	p.logger.Info("postHookWorker worker started")
 
 	// Streaming detection
 	isStreaming := bifrost.IsStreamRequestType(requestType)
 
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
+		p.logger.Info("calculating cost")
+		p.logger.Info("modelCatalog present: %t", p.modelCatalog != nil)
+		p.logger.Info("result present: %t", result != nil)
 		if p.modelCatalog != nil && result != nil {
 			cost = p.modelCatalog.CalculateCostWithCacheDebug(result)
 		}
+		p.logger.Info("cost: %f", cost)
 		tokensUsed := 0
 		if result != nil {
 			switch {
@@ -596,6 +670,6 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 }
 
 // GetGovernanceStore returns the governance store
-func (p *GovernancePlugin) GetGovernanceStore() *GovernanceStore {
+func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }

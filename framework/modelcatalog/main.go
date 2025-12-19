@@ -29,6 +29,8 @@ type ModelCatalog struct {
 	pricingSyncInterval time.Duration
 	pricingMu           sync.RWMutex
 
+	shouldSyncPricingFunc ShouldSyncPricingFunc
+
 	// In-memory cache for fast access - direct map for O(1) lookups
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
@@ -76,8 +78,14 @@ type PricingEntry struct {
 	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
 }
 
+// ShouldSyncPricingFunc is a function that determines if pricing data should be synced
+// It returns a boolean indicating if syncing is needed
+// It is completely optional and can be nil if not needed
+// syncPricing function will be called if this function returns true
+type ShouldSyncPricingFunc func(ctx context.Context) bool
+
 // Init initializes the pricing manager
-func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, logger schemas.Logger) (*ModelCatalog, error) {
+func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, shouldSyncPricingFunc ShouldSyncPricingFunc, logger schemas.Logger) (*ModelCatalog, error) {
 	// Initialize pricing URL and sync interval
 	pricingURL := DefaultPricingURL
 	if config.PricingURL != nil {
@@ -89,13 +97,14 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}
 
 	mc := &ModelCatalog{
-		pricingURL:          pricingURL,
-		pricingSyncInterval: pricingSyncInterval,
-		configStore:         configStore,
-		logger:              logger,
-		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		modelPool:           make(map[schemas.ModelProvider][]string),
-		done:                make(chan struct{}),
+		pricingURL:            pricingURL,
+		pricingSyncInterval:   pricingSyncInterval,
+		configStore:           configStore,
+		logger:                logger,
+		pricingData:           make(map[string]configstoreTables.TableModelPricing),
+		modelPool:             make(map[schemas.ModelProvider][]string),
+		done:                  make(chan struct{}),
+		shouldSyncPricingFunc: shouldSyncPricingFunc,
 	}
 
 	logger.Info("initializing pricing manager...")
