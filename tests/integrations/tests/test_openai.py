@@ -855,11 +855,11 @@ class TestOpenAIIntegration:
         # At least MP3 should be supported
         assert "mp3" in format_results, "MP3 format should be supported"
 
-    @skip_if_no_api_key("openai")
-    def test_21_single_text_embedding(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("embeddings"))
+    def test_21_single_text_embedding(self, openai_client, test_config, provider, model):
         """Test Case 21: Single text embedding generation"""
         response = openai_client.embeddings.create(
-            model=get_model("openai", "embeddings"), input=EMBEDDINGS_SINGLE_TEXT
+            model=format_provider_model(provider, model), input=EMBEDDINGS_SINGLE_TEXT, dimensions=1536
         )
 
         assert_valid_embedding_response(response, expected_dimensions=1536)
@@ -871,13 +871,12 @@ class TestOpenAIIntegration:
 
         # Verify model in response
         assert response.model is not None, "Response should include model name"
-        assert "text-embedding" in response.model, "Model should be an embedding model"
 
-    @skip_if_no_api_key("openai")
-    def test_22_batch_text_embeddings(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("embeddings"))
+    def test_22_batch_text_embeddings(self, openai_client, test_config, provider, model):
         """Test Case 22: Batch text embedding generation"""
         response = openai_client.embeddings.create(
-            model=get_model("openai", "embeddings"), input=EMBEDDINGS_MULTIPLE_TEXTS
+            model=format_provider_model(provider, model), input=EMBEDDINGS_MULTIPLE_TEXTS, dimensions=1536
         )
 
         expected_count = len(EMBEDDINGS_MULTIPLE_TEXTS)
@@ -890,11 +889,11 @@ class TestOpenAIIntegration:
                 embedding_obj.object == "embedding"
             ), f"Embedding {i} should have object type 'embedding'"
 
-    @skip_if_no_api_key("openai")
-    def test_23_embedding_similarity_analysis(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("embeddings"))
+    def test_23_embedding_similarity_analysis(self, openai_client, test_config, provider, model):
         """Test Case 23: Embedding similarity analysis with similar texts"""
         response = openai_client.embeddings.create(
-            model=get_model("openai", "embeddings"), input=EMBEDDINGS_SIMILAR_TEXTS
+            model=format_provider_model(provider, model), input=EMBEDDINGS_SIMILAR_TEXTS, dimensions=1536
         )
 
         assert_valid_embeddings_batch_response(
@@ -919,11 +918,12 @@ class TestOpenAIIntegration:
             similarity_2_3 > 0.7
         ), f"Similar texts should have high similarity, got {similarity_2_3:.4f}"
 
-    @skip_if_no_api_key("openai")
-    def test_24_embedding_dissimilarity_analysis(self, openai_client, test_config):
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("embeddings"))
+    def test_24_embedding_dissimilarity_analysis(self, openai_client, test_config, provider, model):
         """Test Case 24: Embedding dissimilarity analysis with different texts"""
         response = openai_client.embeddings.create(
-            model=get_model("openai", "embeddings"), input=EMBEDDINGS_DIFFERENT_TEXTS
+            model=format_provider_model(provider, model), input=EMBEDDINGS_DIFFERENT_TEXTS, dimensions=1536
         )
 
         assert_valid_embeddings_batch_response(
@@ -984,18 +984,19 @@ class TestOpenAIIntegration:
             # If text-embedding-3-large is not available, just log it
             print(f"text-embedding-3-large not available: {e}")
 
-    @skip_if_no_api_key("openai")
-    def test_26_embedding_long_text(self, openai_client, test_config):
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("embeddings"))
+    def test_26_embedding_long_text(self, openai_client, test_config, provider, model):
         """Test Case 26: Embedding generation with longer text"""
         response = openai_client.embeddings.create(
-            model=get_model("openai", "embeddings"), input=EMBEDDINGS_LONG_TEXT
+            model=format_provider_model(provider, model), input=EMBEDDINGS_LONG_TEXT, dimensions=1536
         )
 
         assert_valid_embedding_response(response, expected_dimensions=1536)
 
         # Verify token usage is reported for longer text
-        assert response.usage is not None, "Usage should be reported for longer text"
-        assert response.usage.total_tokens > 20, "Longer text should consume more tokens"
+        if provider != "gemini": # gemini does not return usage data
+            assert response.usage is not None, "Usage should be reported for longer text"
+            assert response.usage.total_tokens > 20, "Longer text should consume more tokens"
 
     @skip_if_no_api_key("openai")
     def test_27_embedding_error_handling(self, openai_client, test_config):

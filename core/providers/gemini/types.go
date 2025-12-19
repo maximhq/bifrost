@@ -964,6 +964,10 @@ const (
 	ThinkingLevelHigh        ThinkingLevel = "HIGH"
 )
 
+type GeminiBatchEmbeddingRequest struct {
+	Requests []GeminiEmbeddingRequest `json:"requests,omitempty"`
+}
+
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content `json:"content,omitempty"`

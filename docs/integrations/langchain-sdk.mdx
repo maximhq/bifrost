@@ -545,6 +545,27 @@ doc_embeddings = embeddings.embed_documents([
 **This means `OpenAIEmbeddings` only works reliably with OpenAI embedding models.** Using it with other providers (e.g., `model="cohere/embed-v4.0"`) will fail because those providers cannot process int array inputs.
 </Warning>
 
+### Cross-Provider Embeddings
+
+For embedding models from other providers (Cohere, Bedrock, Gemini, etc.), you can use `GoogleGenerativeAIEmbeddings` from the `langchain_google_genai` package. This module sends text strings directly and works across multiple providers:
+
+```python
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+# Works with any provider's embedding models
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="cohere/cohere-embed-v4.0",  # or bedrock/..., gemini/..., etc.
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key"
+)
+
+query_embedding = embeddings.embed_query("What is machine learning?")
+doc_embeddings = embeddings.embed_documents([
+    "Machine learning is a subset of AI",
+    "Deep learning uses neural networks"
+])
+```
+
 ---
 
 ## Supported Features
