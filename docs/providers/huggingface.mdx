@@ -1,9 +1,8 @@
 ---
-title: "Hugging Face Provider Implementation Details"
+title: "Hugging Face"
 description: "Detailed guide on Hugging Face provider implementation specifics, including model aliases and unique request handling."
+icon: "face-smiling-hands"
 ---
-
-# HuggingFace Implementation
 
 The Hugging Face provider in Bifrost (`core/providers/huggingface`) implements a complex integration that supports multiple inference providers (like `hf-inference`, `fal-ai`, `cerebras`, `sambanova`, etc.) through a unified interface.
 
@@ -14,6 +13,35 @@ The Hugging Face provider implements custom logic for:
 - **Dynamic model aliasing**: Transforms model IDs based on provider-specific mappings
 - **Heterogeneous request formats**: Supports JSON, raw binary, and base64-encoded payloads
 - **Provider-specific constraints**: Handles varying payload limits and format restrictions
+
+## Supported Inference Providers
+
+The Hugging Face provider supports routing to 20+ inference backends. Below is the current list of supported providers and their capabilities (as of December 2025):
+
+| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) |
+|----------|------|-----------|--------------|---------------------|
+| `hf-inference` | ✅ | ✅ | ❌ | ✅ |
+| `cerebras` | ✅ | ❌ | ❌ | ❌ |
+| `cohere` | ✅ | ❌  | ❌ | ❌ |
+| `fal-ai` | ❌ | ❌ | ✅ | ✅ |
+| `featherless-ai` | ✅ | ❌ | ❌ | ❌ |
+| `fireworks` | ✅ | ❌ | ❌ | ❌ |
+| `groq` | ✅ | ❌ | ❌ | ❌ |
+| `hyperbolic` | ✅ | ❌ | ❌ | ❌ |
+| `nebius` | ✅ | ✅ | ❌  | ❌ |
+| `novita` | ✅ | ❌ | ❌ | ❌ |
+| `nscale` | ✅ | ❌ | ❌ | ❌ |
+| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ |
+| `public-ai` | ✅ | ❌ | ❌ | ❌ |
+| `replicate` | ❌ | ❌ | ✅ | ✅ |
+| `sambanova` | ✅ | ✅ | ❌ | ❌ |
+| `scaleway` | ✅ | ✅ | ❌ | ❌ |
+| `together` | ✅ | ❌ | ❌ | ❌ |
+| `z-ai` | ✅ | ❌ | ❌ | ❌ |
+
+<Note>Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself.</Note>
+
+<Info>All Chat-supported models automatically support Responses(`v1/responses`) as well via Bifrost's internal conversion logic.</Info>
 
 ## Model Aliases & Identification
 
@@ -168,33 +196,6 @@ This multi-mode approach allows the provider to support diverse API contracts wi
 4. **Performance optimizations** (raw bytes avoid JSON overhead for `hf-inference`)
 
 This flexibility allows the provider to support diverse API contracts within a single implementation structure.
-
-Supported Inference Providers
-
-The Hugging Face provider supports routing to 20+ inference backends. Below is the current list of supported providers and their capabilities (as of December 2025):
-
-| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) | Notes |
-|----------|------|-----------|--------------|---------------------|-------|
-| `hf-inference` | ✅ | ✅ | ❌ | ✅ | Standard HF inference |
-| `cerebras` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `cohere` | ✅ | ❌  | ❌ | ❌ | Chat only |
-| `fal-ai` | ❌ | ❌ | ✅ | ✅ | MP3 only for audio, base64 Data URI |
-| `featherless-ai` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `fireworks` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `groq` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `hyperbolic` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `nebius` | ✅ | ✅ | ❌  | ❌ | Chat and embedding |
-| `novita` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `nscale` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `public-ai` | ✅ | ❌ | ❌ | ❌ | Chat-only |
-| `replicate` | ❌ | ❌ | ✅ | ✅ | Currently we do not support Speech and Transcription on it| 
-| `sambanova` | ✅ | ✅ | ❌ | ❌ | Chat and embedding |
-| `scaleway` | ✅ | ✅ | ❌ | ❌ | Chat and embedding |
-| `together` | ✅ | ❌ | ❌ | ❌ | Chat only |
-| `z-ai` | ✅ | ❌ | ❌ | ❌ | Chat only |
-
-**Note**: Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself. The notes column clarifies Bifrost's current implementation status where there are gaps.
 
 ## Model Discovery & Caching
 

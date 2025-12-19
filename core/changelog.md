@@ -1,3 +1,7 @@
-- feat(providers): added HuggingFace provider using Inference Provider API, support for chat(with stream also), response(with stream also), TTS and speech synthesis
-- fix(mcp): ensure properties field is always set for tools - [@CryptoFewka](https://github.com/CryptoFewka)
-- fix(perplexity): correct search_domain_filter json tag - [@hnoguchigr](https://github.com/hnoguchigr)
+- fix: ensure properties field is always set for mcp tools - [@CryptoFewka](https://github.com/CryptoFewka)
+- fix: correct search_domain_filter json tag in perplexity provider - [@hnoguchigr](https://github.com/hnoguchigr)
+- feat: added HuggingFace provider
+- fix: bedrock empty ARN issue causing request to fail
+- fix: anthropic single context block in response converted to string instead for chat completions
+- fix: added auth support in HTTP proxies
+- feat: added custom CA certificate support in proxies

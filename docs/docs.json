@@ -71,7 +71,16 @@
             ]
           },
           {
-            "group": "Provider Integrations",
+            "group": "Providers",
+            "icon": "solar-system",
+            "pages": [
+              "providers/supported-providers",
+              "providers/huggingface",
+              "providers/custom-providers"
+            ]
+          },
+          {
+            "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
               "integrations/what-is-an-integration",
@@ -155,15 +164,6 @@
               },
               "features/telemetry",
               "features/semantic-caching",
-              {
-                "group": "Providers",
-                "icon": "toolbox",
-                "pages": [
-                  "features/providers/supported-providers",
-                  "features/providers/custom-providers",
-                  "features/providers/huggingface"
-                ]
-              },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",

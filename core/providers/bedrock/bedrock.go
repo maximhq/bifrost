@@ -2736,7 +2736,7 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	// Default: use model/deployment directly
 	path := fmt.Sprintf("%s/%s", deployment, basePath)
 	// If ARN is present, Bedrock expects the ARN-scoped identifier
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil {
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && *key.BedrockKeyConfig.ARN != "" {
 		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, deployment))
 		path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 	}

@@ -365,6 +365,11 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 		}
 	}
 
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
+	}
+
 	// Create a single choice with the collected content
 	// Create message content
 	messageContent := schemas.ChatMessageContent{

@@ -128,6 +128,11 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 	}
 
+	if len(contentBlocks) == 1 && contentBlocks[0].Type == schemas.ChatContentBlockTypeText {
+		contentStr = contentBlocks[0].Text
+		contentBlocks = nil
+	}
+
 	// Create the message content
 	messageContent := schemas.ChatMessageContent{
 		ContentStr:    contentStr,
