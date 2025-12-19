@@ -2006,11 +2006,11 @@ func HandleOpenAITranscriptionRequest(
 	if err := sonic.Unmarshal(copiedResponseBody, response); err != nil {
 		// Check if it's an HTML response
 		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
-			errorMessage := providerUtils.ExtractHTMLErrorMessage(copiedResponseBody)
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
-					Message: errorMessage,
+					Message: schemas.ErrProviderResponseHTML,
+					Error:   errors.New(string(copiedResponseBody)),
 				},
 			}
 		}

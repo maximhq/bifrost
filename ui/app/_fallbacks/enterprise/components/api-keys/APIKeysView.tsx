@@ -50,7 +50,7 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 			<Alert variant="default">
 				<InfoIcon className="text-muted h-4 w-4" />
 				<AlertDescription>
-					<p className="text-md text-gray-600">
+					<p className="text-md text-muted-foreground">
 						To generate API keys, you need to set up admin username and password first.{" "}
 						<Link href="/workspace/config/security" className="text-md text-primary underline">
 							Configure Security Settings
@@ -67,14 +67,15 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 	const isInferenceAuthDisabled = bifrostConfig?.auth_config?.disable_auth_on_inference ?? false;
 
 	return (
-		<div className="space-y-4 mx-auto w-full max-w-4xl">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<Alert variant="default">
 				<InfoIcon className="text-muted h-4 w-4" />
 				<AlertDescription>
-					<p className="text-md text-gray-600">
+					<p className="text-md text-muted-foreground">
 						{isInferenceAuthDisabled ? (
 							<>
-								Authentication is currently <strong>disabled for inference API calls</strong>. You can make inference requests without authentication. Dashboard and admin API calls still require Basic auth with your admin credentials encoded in the standard{" "}
+								Authentication is currently <strong>disabled for inference API calls</strong>. You can make inference requests without
+								authentication. Dashboard and admin API calls still require Basic auth with your admin credentials encoded in the standard{" "}
 								<code className="bg-muted rounded px-1 py-0.5 text-sm">username:password</code> format with base64 encoding.
 							</>
 						) : (
@@ -87,30 +88,23 @@ curl --location 'http://localhost:8080/v1/chat/completions'
 					{!isInferenceAuthDisabled && (
 						<>
 							<br />
-							<p className="text-md text-gray-600">
+							<p className="text-md text-muted-foreground">
 								<strong>Example:</strong>
 							</p>
 
 							<div className="relative mt-2 w-full min-w-0 overflow-x-auto">
-								<Button
-									variant="ghost"
-									size="sm"
-									onClick={() => copyToClipboard(curlExample)}
-									className="absolute right-2 top-2 h-8 z-10"
-								>
+								<Button variant="ghost" size="sm" onClick={() => copyToClipboard(curlExample)} className="absolute top-2 right-2 z-10 h-8">
 									<Copy className="h-4 w-4" />
 								</Button>
-								<pre className="bg-muted min-w-max rounded p-3 pr-12 font-mono text-sm whitespace-pre">
-									{curlExample}
-								</pre>
+								<pre className="bg-muted min-w-max rounded p-3 pr-12 font-mono text-sm whitespace-pre">{curlExample}</pre>
 							</div>
 						</>
 					)}
 				</AlertDescription>
 			</Alert>
-			
+
 			<ContactUsView
-				className=" mt-4 rounded-md border px-3 py-8"
+				className="mt-4 rounded-md border px-3 py-8"
 				icon={<KeyRound size={48} />}
 				title="Scope Based API Keys"
 				description="Need granular access control with scope-based API keys? Enterprise customers can create multiple API keys with specific permissions for different services, teams, or environments."

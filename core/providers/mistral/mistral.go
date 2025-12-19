@@ -321,11 +321,11 @@ func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.
 	var mistralResponse MistralTranscriptionResponse
 	if err := sonic.Unmarshal(copiedResponseBody, &mistralResponse); err != nil {
 		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
-			errorMessage := providerUtils.ExtractHTMLErrorMessage(copiedResponseBody)
 			return nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
-					Message: errorMessage,
+					Message: schemas.ErrProviderResponseHTML,
+					Error:   errors.New(string(copiedResponseBody)),
 				},
 			}
 		}

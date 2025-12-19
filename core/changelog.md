@@ -1,1 +1,2 @@
-fix(perplexity): correct search_domain_filter json tag
+- fix(mcp): ensure properties field is always set for tools - [@CryptoFewka](https://github.com/CryptoFewka)
+- fix(perplexity): correct search_domain_filter json tag - [@hnoguchigr](https://github.com/hnoguchigr)

@@ -357,12 +357,12 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 
 	// JSON parsing failed - now check if it's an HTML response (expensive operation)
 	if IsHTMLResponse(resp, decodedBody) {
-		errorMessage := ExtractHTMLErrorMessage(decodedBody)
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Message: errorMessage,
+				Message: schemas.ErrProviderResponseHTML,
+				Error:   errors.New(string(decodedBody)),
 			},
 		}
 	}
@@ -435,12 +435,11 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	if structuredErr != nil {
 		// JSON parsing failed - check if it's an HTML response (expensive operation)
 		if IsHTMLResponse(nil, responseBody) {
-			errorMessage := ExtractHTMLErrorMessage(responseBody)
 			return nil, nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderResponseHTML,
-					Error:   errors.New(errorMessage),
+					Error:   errors.New(string(responseBody)),
 				},
 			}
 		}
@@ -594,6 +593,7 @@ const maxBodySize = 32 * 1024 // 32KB
 
 // ExtractHTMLErrorMessage extracts meaningful error information from an HTML response.
 // It attempts to find error messages from title tags, headers, and visible text.
+// UNUSED for now but could be useful in the future
 func ExtractHTMLErrorMessage(body []byte) string {
 	if len(body) > maxBodySize {
 		body = body[:maxBodySize]

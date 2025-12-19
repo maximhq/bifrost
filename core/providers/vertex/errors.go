@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -53,12 +54,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 
 	// Check for HTML error response before attempting JSON parsing
 	if providerUtils.IsHTMLResponse(resp, decodedBody) {
-		errorMsg := providerUtils.ExtractHTMLErrorMessage(decodedBody)
 		bifrostErr := &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     schemas.Ptr(resp.StatusCode()),
 			Error: &schemas.ErrorField{
-				Message: errorMsg,
+				Message: schemas.ErrProviderResponseHTML,
+				Error:   errors.New(string(decodedBody)),
 			},
 		}
 		if meta != nil {
