@@ -256,6 +256,31 @@ export default function ProxyView() {
 									)}
 								/>
 
+								{/* CA Certificate */}
+								<FormField
+									control={form.control}
+									name="ca_cert_pem"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+											<FormControl>
+												<Textarea
+													placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+													className="font-mono text-xs"
+													rows={6}
+													disabled={!watchedEnabled}
+													{...field}
+													value={field.value || ""}
+												/>
+											</FormControl>
+											<FormDescription>
+												PEM-encoded CA certificate to trust for TLS connections through SSL-intercepting proxies.
+											</FormDescription>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+
 								{/* Skip TLS Verify */}
 								<div className="flex items-center justify-between">
 									<div className="space-y-0.5">

@@ -4,6 +4,8 @@ package utils
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -103,7 +105,6 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	var dialFunc fasthttp.DialFunc
-
 	// Create the appropriate proxy based on type
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
@@ -113,7 +114,18 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
-		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyConfig.URL)
+		proxyURL := proxyConfig.URL
+		if proxyConfig.Username != "" && proxyConfig.Password != "" {
+			parsedURL, err := url.Parse(proxyConfig.URL)
+			if err != nil {
+				logger.Warn("Invalid proxy configuration: invalid HTTP proxy URL")
+				return client
+			}
+			// Set user and password in the parsed URL
+			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+			proxyURL = parsedURL.String()
+		}
+		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL == "" {
 			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
@@ -144,7 +156,38 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		client.Dial = dialFunc
 	}
 
+	// Configure custom CA certificate if provided
+	if proxyConfig.CACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyConfig.CACertPEM)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Failed to configure custom CA certificate: %v", err))
+		} else {
+			client.TLSConfig = tlsConfig
+		}
+	}
+
 	return client
+}
+
+// createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
+// appended to the system root CA pool.
+func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
+	// Get the system root CA pool
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		// If we can't get system certs, create a new pool
+		rootCAs = x509.NewCertPool()
+	}
+
+	// Append the custom CA certificate
+	if !rootCAs.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("failed to parse CA certificate PEM")
+	}
+
+	return &tls.Config{
+		RootCAs:    rootCAs,
+		MinVersion: tls.VersionTLS12,
+	}, nil
 }
 
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies.

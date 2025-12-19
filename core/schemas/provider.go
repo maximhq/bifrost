@@ -155,10 +155,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type     ProxyType `json:"type"`     // Type of proxy to use
-	URL      string    `json:"url"`      // URL of the proxy server
-	Username string    `json:"username"` // Username for proxy authentication
-	Password string    `json:"password"` // Password for proxy authentication
+	Type      ProxyType `json:"type"`        // Type of proxy to use
+	URL       string    `json:"url"`         // URL of the proxy server
+	Username  string    `json:"username"`    // Username for proxy authentication
+	Password  string    `json:"password"`    // Password for proxy authentication
+	CACertPEM string    `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy
 }
 
 // AllowedRequests controls which operations are permitted.

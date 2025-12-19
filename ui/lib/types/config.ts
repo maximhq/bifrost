@@ -131,6 +131,7 @@ export interface ProxyConfig {
 	url?: string;
 	username?: string;
 	password?: string;
+	ca_cert_pem?: string;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -272,6 +273,7 @@ export interface GlobalProxyConfig {
 	url: string;
 	username?: string;
 	password?: string;
+	ca_cert_pem?: string;
 	no_proxy?: string;
 	timeout?: number;
 	skip_tls_verify?: boolean;

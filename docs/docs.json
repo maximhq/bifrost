@@ -5,6 +5,10 @@
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
   },
+  "banner": {
+    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
+    "dismissible": true
+  },
   "theme": "mint",
   "colors": {
     "primary": "#0C3B43",
@@ -21,19 +25,21 @@
     "name": "Dashboard",
     "url": "https://www.getbifrost.ai"
   },
-  "anchors": [
-    {
-      "name": "Community",
-      "icon": "discord",
-      "url": "https://getmax.im/bifrost-discord"
-    },
-    {
-      "name": "Blog",
-      "icon": "newspaper",
-      "url": "https://getmaxim.ai/blog"
-    }
-  ],
   "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Discord",
+          "icon": "discord",
+          "href": "https://getmax.im/bifrost-discord"
+        },
+        {
+          "anchor": "Try Enterprise",
+          "icon": "building",
+          "href": "https://www.getmaxim.ai/bifrost/enterprise"
+        }
+      ]
+    },
     "tabs": [
       {
         "tab": "Documentation",

@@ -255,6 +255,7 @@ export const proxyConfigSchema = z
 		url: z.url("Must be a valid URL"),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine((data) => !(data.type === "http" || data.type === "socks5") || (data.url && data.url.trim().length > 0), {
 		message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
@@ -282,6 +283,7 @@ export const proxyFormConfigSchema = z
 		url: z.string().optional(),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine(
 		(data) => {
@@ -629,6 +631,7 @@ export const globalProxyConfigSchema = z
 		url: z.string(),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 		no_proxy: z.string().optional(),
 		timeout: z.number().min(0).optional(),
 		skip_tls_verify: z.boolean().optional(),

@@ -1842,6 +1842,10 @@
         "password": {
           "type": "string",
           "description": "Password for proxy authentication"
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for TLS connections through the proxy (for SSL-intercepting proxies)"
         }
       },
       "required": [
