@@ -124,6 +124,7 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 			modelEntry.ID = string(schemas.Azure) + "/" + deploymentAlias
 			modelEntry.Deployment = schemas.Ptr(deploymentValue)
 		}
+
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
 	}
 	return bifrostResponse

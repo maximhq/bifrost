@@ -1117,9 +1117,7 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 		}
 	}
 
-	if len(responses) == 1 {
-		return responses[0]
-	}
+	// Always apply deduplication, even for single responses
 
 	// Use a map to track unique model IDs for efficient deduplication
 	seenIDs := make(map[string]struct{})
