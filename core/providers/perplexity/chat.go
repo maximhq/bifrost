@@ -46,7 +46,7 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 				perplexityReq.LanguagePreference = languagePreference
 			}
 
-			if searchDomainFilters, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["search_domain_filters"]); ok {
+			if searchDomainFilters, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["search_domain_filter"]); ok {
 				perplexityReq.SearchDomainFilters = searchDomainFilters
 			}
 
