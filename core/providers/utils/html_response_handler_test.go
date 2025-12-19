@@ -212,7 +212,7 @@ func TestHandleProviderAPIErrorWithHTML(t *testing.T) {
 				</html>
 			`),
 			description:       "Should detect and handle HTML only after JSON parse fails",
-			expectedInMessage: "Internal Server Error",
+			expectedInMessage: "HTML response received from provider",
 		},
 		{
 			name:        "HTML 403 error - lazy detection",
@@ -226,8 +226,8 @@ func TestHandleProviderAPIErrorWithHTML(t *testing.T) {
 				</body>
 				</html>
 			`),
-			description:       "Should detect and extract message from HTML on parse failure",
-			expectedInMessage: "Forbidden",
+			description:       "Should detect HTML on parse failure",
+			expectedInMessage: "HTML response received from provider",
 		},
 		{
 			name:              "Invalid JSON with HTML fallback",

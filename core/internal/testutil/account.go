@@ -327,9 +327,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 	case schemas.HuggingFace:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("HUGGING_FACE_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("HUGGING_FACE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Nebius:
