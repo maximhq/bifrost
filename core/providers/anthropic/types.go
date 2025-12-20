@@ -251,6 +251,7 @@ const (
 	AnthropicToolTypeCustom             AnthropicToolType = "custom"
 	AnthropicToolTypeBash20250124       AnthropicToolType = "bash_20250124"
 	AnthropicToolTypeComputer20250124   AnthropicToolType = "computer_20250124"
+	AnthropicToolTypeComputer20251124   AnthropicToolType = "computer_20251124" // for claude-opus-4.5
 	AnthropicToolTypeCodeExecution      AnthropicToolType = "code_execution_20250825"
 	AnthropicToolTypeTextEditor20250124 AnthropicToolType = "text_editor_20250124"
 	AnthropicToolTypeTextEditor20250429 AnthropicToolType = "text_editor_20250429"
@@ -268,9 +269,10 @@ const (
 )
 
 type AnthropicToolComputerUse struct {
-	DisplayWidthPx  *int `json:"display_width_px,omitempty"`
-	DisplayHeightPx *int `json:"display_height_px,omitempty"`
-	DisplayNumber   *int `json:"display_number,omitempty"`
+	DisplayWidthPx  *int  `json:"display_width_px,omitempty"`
+	DisplayHeightPx *int  `json:"display_height_px,omitempty"`
+	DisplayNumber   *int  `json:"display_number,omitempty"`
+	EnableZoom      *bool `json:"enable_zoom,omitempty"` // for computer tool computer_20251124 only
 }
 
 type AnthropicToolWebSearchUserLocation struct {

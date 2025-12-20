@@ -1328,7 +1328,7 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx context.Co
 	// Add trucation parameter if computer tool is being used
 	if provider == schemas.OpenAI && request.Tools != nil {
 		for _, tool := range request.Tools {
-			if tool.Type != nil && *tool.Type == AnthropicToolTypeComputer20250124 {
+			if tool.Type != nil && (*tool.Type == AnthropicToolTypeComputer20250124 || *tool.Type == AnthropicToolTypeComputer20251124) {
 				params.Truncation = schemas.Ptr("auto")
 				break
 			}
@@ -1468,7 +1468,7 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*
 					}
 					continue // Skip converting MCP tools to anthropicTools since they're handled separately
 				}
-				anthropicTool := convertBifrostToolToAnthropic(&tool)
+				anthropicTool := convertBifrostToolToAnthropic(bifrostReq.Model, &tool)
 				if anthropicTool != nil {
 					anthropicTools = append(anthropicTools, *anthropicTool)
 				}
@@ -3004,7 +3004,7 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 	// Handle special tool types first
 	if tool.Type != nil {
 		switch *tool.Type {
-		case AnthropicToolTypeComputer20250124:
+		case AnthropicToolTypeComputer20250124, AnthropicToolTypeComputer20251124:
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeComputerUsePreview,
 			}
@@ -3017,6 +3017,9 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 				}
 				if tool.AnthropicToolComputerUse.DisplayHeightPx != nil {
 					bifrostTool.ResponsesToolComputerUsePreview.DisplayHeight = *tool.AnthropicToolComputerUse.DisplayHeightPx
+				}
+				if tool.AnthropicToolComputerUse.EnableZoom != nil {
+					bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
 				}
 			}
 			return bifrostTool
@@ -3181,7 +3184,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 }
 
 // Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(tool *schemas.ResponsesTool) *AnthropicTool {
+func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
@@ -3189,13 +3192,18 @@ func convertBifrostToolToAnthropic(tool *schemas.ResponsesTool) *AnthropicTool {
 	switch tool.Type {
 	case schemas.ResponsesToolTypeComputerUsePreview:
 		if tool.ResponsesToolComputerUsePreview != nil {
+			computerToolType := AnthropicToolTypeComputer20250124
+			if strings.Contains(model, "claude") && strings.Contains(model, "opus") && (strings.Contains(model, "4.5") || strings.Contains(model, "4-5")) {
+				computerToolType = AnthropicToolTypeComputer20251124
+			}
 			return &AnthropicTool{
-				Type: schemas.Ptr(AnthropicToolTypeComputer20250124),
+				Type: schemas.Ptr(computerToolType),
 				Name: string(AnthropicToolNameComputer),
 				AnthropicToolComputerUse: &AnthropicToolComputerUse{
 					DisplayWidthPx:  schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayWidth),
 					DisplayHeightPx: schemas.Ptr(tool.ResponsesToolComputerUsePreview.DisplayHeight),
 					DisplayNumber:   schemas.Ptr(1),
+					EnableZoom:      tool.ResponsesToolComputerUsePreview.EnableZoom,
 				},
 			}
 		}
@@ -3559,6 +3567,13 @@ func convertResponsesToAnthropicComputerAction(action *schemas.ResponsesComputer
 		actionStr = "wait"
 		input["duration"] = 2
 
+	case "zoom":
+		actionStr = "zoom"
+		// Anthropic zoom action expects region as [x1, y1, x2, y2]
+		if len(action.Region) == 4 {
+			input["region"] = action.Region
+		}
+
 	default:
 		// Pass through any unknown action types
 		actionStr = action.Type
@@ -3661,6 +3676,20 @@ func convertAnthropicToResponsesComputerAction(inputMap map[string]interface{}) 
 
 	case "wait":
 		action.Type = "wait"
+
+	case "zoom":
+		action.Type = "zoom"
+		// Extract region [x1, y1, x2, y2] for zoom action
+		if region, ok := inputMap["region"].([]interface{}); ok && len(region) == 4 {
+			// JSON unmarshaling produces float64 for numbers, so convert them
+			x1, x1Ok := region[0].(float64)
+			y1, y1Ok := region[1].(float64)
+			x2, x2Ok := region[2].(float64)
+			y2, y2Ok := region[3].(float64)
+			if x1Ok && y1Ok && x2Ok && y2Ok {
+				action.Region = []int{int(x1), int(y1), int(x2), int(y2)}
+			}
+		}
 
 	default:
 		// Pass through any unknown action types

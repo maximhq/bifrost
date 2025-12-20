@@ -610,7 +610,7 @@ type ResponsesComputerToolCallPendingSafetyCheck struct {
 
 // ResponsesComputerToolCallAction represents the different types of computer actions
 type ResponsesComputerToolCallAction struct {
-	Type    string                                `json:"type"`             // "click" | "double_click" | "drag" | "keypress" | "move" | "screenshot" | "scroll" | "type" | "wait"
+	Type    string                                `json:"type"`             // "click" | "double_click" | "drag" | "keypress" | "move" | "screenshot" | "scroll" | "type" | "wait" | "zoom"
 	X       *int                                  `json:"x,omitempty"`      // Common X coordinate field (Click, DoubleClick, Move, Scroll)
 	Y       *int                                  `json:"y,omitempty"`      // Common Y coordinate field (Click, DoubleClick, Move, Scroll)
 	Button  *string                               `json:"button,omitempty"` // "left" | "right" | "wheel" | "back" | "forward"
@@ -619,6 +619,7 @@ type ResponsesComputerToolCallAction struct {
 	ScrollX *int                                  `json:"scroll_x,omitempty"`
 	ScrollY *int                                  `json:"scroll_y,omitempty"`
 	Text    *string                               `json:"text,omitempty"`
+	Region  []int                                 `json:"region,omitempty"` // [x1, y1, x2, y2] for zoom action (Anthropic Opus 4.5)
 }
 
 type ResponsesComputerToolCallActionPath struct {
@@ -1205,6 +1206,8 @@ type ResponsesToolComputerUsePreview struct {
 	DisplayHeight int    `json:"display_height"` // The height of the computer display
 	DisplayWidth  int    `json:"display_width"`  // The width of the computer display
 	Environment   string `json:"environment"`    // The type of computer environment to control
+
+	EnableZoom *bool `json:"enable_zoom,omitempty"` // for computer tool in anthropic only
 }
 
 // ResponsesToolWebSearch represents a tool web search

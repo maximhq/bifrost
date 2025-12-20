@@ -1,1 +1,2 @@
 - fix: gemini thought signature handling in multi-turn conversations
+- feat: support computer-use-2025-11-24 in anthropic for claude-opus-4-5

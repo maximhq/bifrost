@@ -42,6 +42,7 @@ func getRequestBodyForAnthropicResponses(ctx context.Context, request *schemas.B
 		}
 	} else {
 		// Convert request to Anthropic format
+		request.Model = deployment
 		reqBody, err := anthropic.ToAnthropicResponsesRequest(request)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
@@ -50,8 +51,6 @@ func getRequestBodyForAnthropicResponses(ctx context.Context, request *schemas.B
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
 		}
 
-		// Set deployment as model
-		reqBody.Model = deployment
 		if isStreaming {
 			reqBody.Stream = schemas.Ptr(true)
 		}

@@ -83,6 +83,28 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			} else {
 				messages = append(messages, message)
 			}
+		} else if message.ResponsesToolMessage != nil &&
+			message.ResponsesToolMessage.Action != nil &&
+			message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
+			action := message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
+			if action.Type == "zoom" || action.Region != nil {
+				// Copy action and modify
+				newAction := *action
+				newAction.Region = nil
+				if newAction.Type == "zoom" {
+					newAction.Type = "screenshot"
+				}
+
+				actionStructCopy := *message.ResponsesToolMessage.Action
+				actionStructCopy.ResponsesComputerToolCallAction = &newAction
+
+				toolMsgCopy := *message.ResponsesToolMessage
+				toolMsgCopy.Action = &actionStructCopy
+
+				message.ResponsesToolMessage = &toolMsgCopy
+			}
+
+			messages = append(messages, message)
 		} else {
 			messages = append(messages, message)
 		}
@@ -135,7 +157,15 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 	filteredTools := make([]schemas.ResponsesTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		if supportedTypes[tool.Type] {
-			filteredTools = append(filteredTools, tool)
+			// check for computer use preview
+			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
+				// create new tool and assign it to the filtered tools
+				newTool := tool
+				newTool.ResponsesToolComputerUsePreview.EnableZoom = nil
+				filteredTools = append(filteredTools, newTool)
+			} else {
+				filteredTools = append(filteredTools, tool)
+			}
 		}
 	}
 	req.Tools = filteredTools
