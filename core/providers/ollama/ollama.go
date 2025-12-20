@@ -18,7 +18,6 @@ package ollama
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -142,8 +141,7 @@ func (provider *OllamaProvider) completeRequest(ctx context.Context, jsonData []
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	// Set API key for Ollama Cloud or authenticated instances
-	// Supports both Authorization header and custom x-api-key header
+	// Uses Authorization: Bearer <key> for Ollama Cloud / authenticated instances.
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
@@ -209,7 +207,8 @@ func (provider *OllamaProvider) listModelsByKey(ctx context.Context, key schemas
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Build URL - Ollama uses GET /api/tags
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/api/tags")
+	// Use GetPathFromContext to support path overrides
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/api/tags"))
 	req.Header.SetMethod(http.MethodGet)
 
 	// Set API key if provided
@@ -228,9 +227,15 @@ func (provider *OllamaProvider) listModelsByKey(ctx context.Context, key schemas
 		return nil, parseOllamaError(resp, provider.GetProviderKey())
 	}
 
+	// Decode response body (handles gzip, etc.)
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+	}
+
 	// Parse response
 	var ollamaResponse OllamaListModelsResponse
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &ollamaResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &ollamaResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -364,24 +369,14 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 
 	req.SetBody(jsonData)
 
-	// Make the request
-	err := provider.client.Do(req, resp)
-	if err != nil {
+	// Make the request with context support
+	// NOTE: fasthttp does not natively support context cancellation for streaming requests.
+	// MakeRequestWithContext only cancels waiting for the initial request, not the ongoing stream.
+	// The scanner loop below includes context cancellation checks to exit early when ctx is cancelled.
+	_, bifrostErr = providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+		return nil, bifrostErr
 	}
 
 	// Check for HTTP errors
@@ -418,7 +413,32 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 		startTime := time.Now()
 		lastChunkTime := startTime
 
-		for scanner.Scan() {
+		for {
+			// Check for context cancellation before attempting to scan
+			select {
+			case <-ctx.Done():
+				// Context was cancelled - exit the goroutine
+				bifrostErr := &schemas.BifrostError{
+					IsBifrostError: true,
+					Error: &schemas.ErrorField{
+						Type:    schemas.Ptr(schemas.RequestCancelled),
+						Message: fmt.Sprintf("Stream cancelled or timed out by context: %v", ctx.Err()),
+						Error:   ctx.Err(),
+					},
+				}
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				return
+			default:
+				// Continue to scanner.Scan()
+			}
+
+			// Attempt to scan next line
+			if !scanner.Scan() {
+				// Scanner reached end of stream or encountered an error
+				break
+			}
+
 			line := scanner.Text()
 
 			// Skip empty lines
@@ -439,9 +459,10 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 				bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
 				bifrostResponse.ExtraFields.ModelRequested = request.Model
 				bifrostResponse.ExtraFields.ChunkIndex = chunkIndex
-				bifrostResponse.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				chunkLatencyMs := time.Since(lastChunkTime).Milliseconds()
+				bifrostResponse.ExtraFields.Latency = chunkLatencyMs
 
-				if provider.sendBackRawResponse {
+				if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 					bifrostResponse.ExtraFields.RawResponse = line
 				}
 
@@ -463,7 +484,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 						responsesResponse.ExtraFields.ModelRequested = request.Model
 						responsesResponse.ExtraFields.ChunkIndex = responsesResponse.SequenceNumber
 
-						if provider.sendBackRawResponse {
+						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 							responsesResponse.ExtraFields.RawResponse = line
 						}
 
@@ -475,7 +496,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx context.Context, postHo
 							return
 						}
 
-						responsesResponse.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+						responsesResponse.ExtraFields.Latency = chunkLatencyMs
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, responsesResponse, nil, nil), responseChan)
 					}
 				} else {

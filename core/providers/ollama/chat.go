@@ -3,10 +3,6 @@
 package ollama
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"strings"
-
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -126,6 +122,11 @@ func ToOllamaChatRequest(bifrostReq *schemas.BifrostChatRequest) *OllamaChatRequ
 			if keepAlive, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["keep_alive"]); ok {
 				ollamaReq.KeepAlive = keepAlive
 			}
+
+			// Enable thinking mode (for thinking-specific models)
+			if think, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["think"]); ok {
+				ollamaReq.Think = think
+			}
 		}
 
 		if hasOptions {
@@ -151,146 +152,6 @@ func ToOllamaChatRequest(bifrostReq *schemas.BifrostChatRequest) *OllamaChatRequ
 	}
 
 	return ollamaReq
-}
-
-// convertMessagesToOllama converts Bifrost messages to Ollama format.
-func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
-	var ollamaMessages []OllamaMessage
-
-	for _, msg := range messages {
-		ollamaMsg := OllamaMessage{
-			Role: string(msg.Role),
-		}
-
-		// Handle content
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
-				ollamaMsg.Content = *msg.Content.ContentStr
-			} else if msg.Content.ContentBlocks != nil {
-				var textParts []string
-				var images []string
-
-				for _, block := range msg.Content.ContentBlocks {
-					switch block.Type {
-					case schemas.ChatContentBlockTypeText:
-						if block.Text != nil {
-							textParts = append(textParts, *block.Text)
-						}
-					case schemas.ChatContentBlockTypeImage:
-						if block.ImageURLStruct != nil {
-							// Handle image URLs - extract base64 data
-							imageData := extractBase64Image(block.ImageURLStruct.URL)
-							if imageData != "" {
-								images = append(images, imageData)
-							}
-						}
-					}
-				}
-
-				ollamaMsg.Content = strings.Join(textParts, "\n")
-				if len(images) > 0 {
-					ollamaMsg.Images = images
-				}
-			}
-		}
-
-		// Handle tool calls for assistant messages
-		if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
-			for _, tc := range msg.ChatAssistantMessage.ToolCalls {
-				var args map[string]interface{}
-				if tc.Function.Arguments != "" {
-					_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-				}
-				if args == nil {
-					args = make(map[string]interface{})
-				}
-
-				name := ""
-				if tc.Function.Name != nil {
-					name = *tc.Function.Name
-				}
-
-				ollamaMsg.ToolCalls = append(ollamaMsg.ToolCalls, OllamaToolCall{
-					Function: OllamaToolCallFunction{
-						Name:      name,
-						Arguments: args,
-					},
-				})
-			}
-		}
-
-		// Handle tool response messages
-		if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
-			// In Ollama, tool responses are regular messages with role "tool"
-			// The content is the tool's response
-			if msg.Content != nil && msg.Content.ContentStr != nil {
-				ollamaMsg.Content = *msg.Content.ContentStr
-			}
-		}
-
-		ollamaMessages = append(ollamaMessages, ollamaMsg)
-	}
-
-	return ollamaMessages
-}
-
-// extractBase64Image extracts base64 data from a data URL or returns the URL as-is for base64.
-func extractBase64Image(url string) string {
-	// Handle data URLs: data:image/jpeg;base64,/9j/4AAQ...
-	if strings.HasPrefix(url, "data:") {
-		parts := strings.SplitN(url, ",", 2)
-		if len(parts) == 2 {
-			return parts[1] // Return just the base64 data
-		}
-	}
-
-	// If it's already base64 encoded (no prefix), return as-is
-	if isBase64(url) {
-		return url
-	}
-
-	// For regular URLs, Ollama doesn't support them directly
-	// The caller should handle URL-to-base64 conversion if needed
-	return ""
-}
-
-// isBase64 checks if a string is likely base64 encoded.
-func isBase64(s string) bool {
-	if len(s) < 4 {
-		return false
-	}
-	_, err := base64.StdEncoding.DecodeString(s)
-	return err == nil
-}
-
-// convertToolsToOllama converts Bifrost tools to Ollama format.
-func convertToolsToOllama(tools []schemas.ChatTool) []OllamaTool {
-	var ollamaTools []OllamaTool
-
-	for _, tool := range tools {
-		if tool.Function == nil {
-			continue
-		}
-
-		ollamaTool := OllamaTool{
-			Type: "function",
-			Function: OllamaToolFunction{
-				Name: tool.Function.Name,
-			},
-		}
-
-		if tool.Function.Description != nil {
-			ollamaTool.Function.Description = *tool.Function.Description
-		}
-
-		if tool.Function.Parameters != nil {
-			ollamaTool.Function.Parameters = tool.Function.Parameters
-		}
-
-		ollamaTools = append(ollamaTools, ollamaTool)
-	}
-
-	return ollamaTools
 }
 
 // ToBifrostChatRequest converts an Ollama chat request to Bifrost format.
@@ -359,89 +220,4 @@ func (r *OllamaChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
 	}
 
 	return bifrostReq
-}
-
-// convertMessagesFromOllama converts Ollama messages to Bifrost format.
-func convertMessagesFromOllama(messages []OllamaMessage) []schemas.ChatMessage {
-	var bifrostMessages []schemas.ChatMessage
-
-	for _, msg := range messages {
-		bifrostMsg := schemas.ChatMessage{
-			Role: schemas.ChatMessageRole(msg.Role),
-			Content: &schemas.ChatMessageContent{
-				ContentStr: &msg.Content,
-			},
-		}
-
-		// Handle tool calls
-		if len(msg.ToolCalls) > 0 {
-			var toolCalls []schemas.ChatAssistantMessageToolCall
-			for i, tc := range msg.ToolCalls {
-				args, _ := json.Marshal(tc.Function.Arguments)
-				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Index: uint16(i),
-					Type:  schemas.Ptr("function"),
-					ID:    schemas.Ptr(tc.Function.Name),
-					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &tc.Function.Name,
-						Arguments: string(args),
-					},
-				})
-			}
-			bifrostMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				ToolCalls: toolCalls,
-			}
-		}
-
-		// Handle images
-		if len(msg.Images) > 0 {
-			var contentBlocks []schemas.ChatContentBlock
-
-			// Add text content if present
-			if msg.Content != "" {
-				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-					Type: schemas.ChatContentBlockTypeText,
-					Text: &msg.Content,
-				})
-			}
-
-			// Add images
-			for _, img := range msg.Images {
-				dataURL := "data:image/jpeg;base64," + img
-				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-					Type: schemas.ChatContentBlockTypeImage,
-					ImageURLStruct: &schemas.ChatInputImage{
-						URL: dataURL,
-					},
-				})
-			}
-
-			bifrostMsg.Content = &schemas.ChatMessageContent{
-				ContentBlocks: contentBlocks,
-			}
-		}
-
-		bifrostMessages = append(bifrostMessages, bifrostMsg)
-	}
-
-	return bifrostMessages
-}
-
-// convertToolsFromOllama converts Ollama tools to Bifrost format.
-func convertToolsFromOllama(tools []OllamaTool) []schemas.ChatTool {
-	var bifrostTools []schemas.ChatTool
-
-	for _, tool := range tools {
-		bifrostTool := schemas.ChatTool{
-			Type: schemas.ChatToolTypeFunction,
-			Function: &schemas.ChatToolFunction{
-				Name:        tool.Function.Name,
-				Description: &tool.Function.Description,
-				Parameters:  tool.Function.Parameters,
-			},
-		}
-		bifrostTools = append(bifrostTools, bifrostTool)
-	}
-
-	return bifrostTools
 }

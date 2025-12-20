@@ -17,6 +17,7 @@ type OllamaChatRequest struct {
 	Model     string          `json:"model"`                // Required: Name of the model to use
 	Messages  []OllamaMessage `json:"messages"`             // Required: Messages for the chat
 	Tools     []OllamaTool    `json:"tools,omitempty"`      // Optional: List of tools the model may use
+	Think     *bool           `json:"think,omitempty"`      // Optional: Enable thinking (default: false)
 	Format    interface{}     `json:"format,omitempty"`     // Optional: Format of the response (e.g., "json" or JSON schema)
 	Options   *OllamaOptions  `json:"options,omitempty"`    // Optional: Model parameters
 	Stream    *bool           `json:"stream,omitempty"`     // Optional: Enable streaming (default: true)
@@ -27,8 +28,10 @@ type OllamaChatRequest struct {
 type OllamaMessage struct {
 	Role      string           `json:"role"`                 // "system", "user", "assistant", or "tool"
 	Content   string           `json:"content"`              // Message content
+	Thinking  *string          `json:"thinking,omitempty"`   // Optional: Thinking content
 	Images    []string         `json:"images,omitempty"`     // Optional: Base64 encoded images for multimodal models
 	ToolCalls []OllamaToolCall `json:"tool_calls,omitempty"` // Optional: Tool calls made by the assistant
+	ToolName  *string          `json:"tool_name,omitempty"`  // Optional: Tool name
 }
 
 // OllamaToolCall represents a tool call in Ollama format.
@@ -232,6 +235,41 @@ func (r *OllamaChatResponse) ToBifrostChatResponse(model string) *schemas.Bifros
 			}
 		}
 
+		// Handle thinking content for non-streaming responses
+		// Store thinking in tool call ExtraContent (similar to how we preserve it in message conversion)
+		if r.Message.Thinking != nil && *r.Message.Thinking != "" {
+			if assistantMessage == nil {
+				assistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			// If we have tool calls, store thinking in the first one's ExtraContent
+			// Otherwise, create a placeholder tool call to preserve thinking
+			if len(assistantMessage.ToolCalls) > 0 {
+				if assistantMessage.ToolCalls[0].ExtraContent == nil {
+					assistantMessage.ToolCalls[0].ExtraContent = make(map[string]interface{})
+				}
+				assistantMessage.ToolCalls[0].ExtraContent["ollama"] = map[string]interface{}{
+					"thinking": *r.Message.Thinking,
+				}
+			} else {
+				// Create placeholder tool call to preserve thinking
+				assistantMessage.ToolCalls = []schemas.ChatAssistantMessageToolCall{
+					{
+						Index: 0,
+						Type:  schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("_thinking_placeholder"),
+							Arguments: "{}",
+						},
+						ExtraContent: map[string]interface{}{
+							"ollama": map[string]interface{}{
+								"thinking": *r.Message.Thinking,
+							},
+						},
+					},
+				}
+			}
+		}
+
 		choice := schemas.BifrostResponseChoice{
 			Index: 0,
 			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
@@ -342,34 +380,44 @@ func (r *OllamaStreamResponse) ToBifrostStreamResponse(chunkIndex int) (*schemas
 			delta.Content = &r.Message.Content
 		}
 
+		// Handle thinking content (for thinking-specific models)
+		// Ollama may send thinking incrementally in streaming chunks, similar to content
+		if r.Message.Thinking != nil && *r.Message.Thinking != "" {
+			delta.Reasoning = r.Message.Thinking
+		}
+
 		if len(toolCalls) > 0 {
 			delta.ToolCalls = toolCalls
 		}
 
-		choice := schemas.BifrostResponseChoice{
-			Index: 0,
-			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-				Delta: delta,
-			},
-		}
+		// Always create a choice if we have any delta content (content, thinking, tool calls, or role)
+		hasDelta := delta.Role != nil || delta.Content != nil || delta.Reasoning != nil || len(delta.ToolCalls) > 0
+		if hasDelta {
+			choice := schemas.BifrostResponseChoice{
+				Index: 0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: delta,
+				},
+			}
 
-		// Set finish reason on final chunk
-		if r.Done {
-			if r.DoneReason != nil {
-				switch *r.DoneReason {
-				case "stop":
-					choice.FinishReason = schemas.Ptr("stop")
-				case "length":
-					choice.FinishReason = schemas.Ptr("length")
-				default:
+			// Set finish reason on final chunk
+			if r.Done {
+				if r.DoneReason != nil {
+					switch *r.DoneReason {
+					case "stop":
+						choice.FinishReason = schemas.Ptr("stop")
+					case "length":
+						choice.FinishReason = schemas.Ptr("length")
+					default:
+						choice.FinishReason = schemas.Ptr("stop")
+					}
+				} else {
 					choice.FinishReason = schemas.Ptr("stop")
 				}
-			} else {
-				choice.FinishReason = schemas.Ptr("stop")
 			}
-		}
 
-		response.Choices = []schemas.BifrostResponseChoice{choice}
+			response.Choices = []schemas.BifrostResponseChoice{choice}
+		}
 	}
 
 	// Add usage on final chunk
