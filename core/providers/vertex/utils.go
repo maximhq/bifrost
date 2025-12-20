@@ -84,3 +84,30 @@ func getRequestBodyForAnthropicResponses(ctx context.Context, request *schemas.B
 
 	return jsonBody, nil
 }
+
+// getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests
+// for custom/fine-tuned models, it uses the projectNumber
+// for gemini models, it uses the projectID
+func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, isStreaming bool) string {
+	var url string
+	method := ":generateContent"
+	if isStreaming {
+		method = ":streamGenerateContent"
+	}
+	if schemas.IsAllDigitsASCII(deployment) {
+		// Custom/fine-tuned models use projectNumber
+		if region == "global" {
+			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s%s", projectNumber, deployment, method)
+		} else {
+			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s%s", region, projectNumber, region, deployment, method)
+		}
+	} else {
+		// Gemini models use projectID
+		if region == "global" {
+			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s%s", projectID, deployment, method)
+		} else {
+			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s%s", region, projectID, region, deployment, method)
+		}
+	}
+	return url
+}

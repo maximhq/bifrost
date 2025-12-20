@@ -311,7 +311,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
 					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
 				}
-			} else if schemas.IsGeminiModel(deployment) {
+			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 				reqBody := gemini.ToGeminiChatCompletionRequest(request)
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
@@ -382,9 +382,9 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
 		}
 		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s/chat/completions", projectNumber, deployment)
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, deployment)
 		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s/chat/completions", region, projectNumber, region, deployment)
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s:generateContent", region, projectNumber, region, deployment)
 		}
 	} else if schemas.IsAnthropicModel(deployment) {
 		// Claude models use Anthropic publisher
@@ -502,7 +502,7 @@ func (provider *VertexProvider) ChatCompletion(ctx context.Context, key schemas.
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -675,7 +675,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 				RequestType: schemas.ChatCompletionStreamRequest,
 			},
 		)
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 		// Use Gemini-style streaming for Gemini models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -701,13 +701,14 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
 		}
 
-		// Construct the URL for Gemini streaming
-		var completeURL string
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:streamGenerateContent", projectID, deployment)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent", region, projectID, region, deployment)
+		// For custom/fine-tuned models, validate projectNumber is set
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
+
+		// Construct the URL for Gemini streaming
+		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, true)
 
 		// Add alt=sse parameter
 		if authQuery != "" {
@@ -757,21 +758,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx context.Context, postHo
 		authQuery := ""
 		// Determine the URL based on model type
 		var completeURL string
-		if schemas.IsAllDigitsASCII(deployment) {
-			// Custom Fine-tuned models use OpenAPI endpoint
-			projectNumber := key.VertexKeyConfig.ProjectNumber
-			if projectNumber == "" {
-				return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
-			}
-			if key.Value != "" {
-				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
-			}
-			if region == "global" {
-				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s/chat/completions", projectNumber, deployment)
-			} else {
-				completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s/chat/completions", region, projectNumber, region, deployment)
-			}
-		} else if schemas.IsMistralModel(deployment) {
+		if schemas.IsMistralModel(deployment) {
 			// Mistral models use mistralai publisher with streamRawPredict
 			if region == "global" {
 				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/mistralai/models/%s:streamRawPredict", projectID, deployment)
@@ -947,7 +934,7 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -981,12 +968,13 @@ func (provider *VertexProvider) Responses(ctx context.Context, key schemas.Key, 
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
 		}
 
-		var url string
-		if region == "global" {
-			url = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
-		} else {
-			url = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, deployment)
+		// For custom/fine-tuned models, validate projectNumber is set
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
+
+		url := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, false)
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1169,7 +1157,7 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 				RequestType: schemas.ResponsesStreamRequest,
 			},
 		)
-	} else if schemas.IsGeminiModel(deployment) {
+	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 		region := key.VertexKeyConfig.Region
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
@@ -1205,14 +1193,14 @@ func (provider *VertexProvider) ResponsesStream(ctx context.Context, postHookRun
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
 		}
 
-		// Construct the URL for Gemini streaming
-		var completeURL string
-		if region == "global" {
-			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:streamGenerateContent", projectID, deployment)
-		} else {
-			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent", region, projectID, region, deployment)
+		// For custom/fine-tuned models, validate projectNumber is set
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
 
+		// Construct the URL for Gemini streaming
+		completeURL := getCompleteURLForGeminiEndpoint(deployment, region, projectID, projectNumber, true)
 		// Add alt=sse parameter
 		if authQuery != "" {
 			completeURL = fmt.Sprintf("%s?alt=sse&%s", completeURL, authQuery)
