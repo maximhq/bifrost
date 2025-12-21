@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )

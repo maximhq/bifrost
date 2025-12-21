@@ -500,7 +500,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					if createReq.Provider == "" {
 						createReq.Provider = schemas.OpenAI
-					}										
+					}
 					// For Bedrock, extract extra params from raw body
 					// ExtraParams has json:"-" tag so it's not auto-populated
 					if createReq.Provider == schemas.Bedrock {
@@ -1202,7 +1202,7 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 	purposeValues := form.Value["purpose"]
 	if len(purposeValues) == 0 || purposeValues[0] == "" {
 		return errors.New("purpose field is required")
-	}	
+	}
 	uploadReq.Purpose = schemas.FilePurpose(purposeValues[0])
 
 	// Extract file (required)

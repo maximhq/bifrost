@@ -272,7 +272,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input		
+			initialData.TranscriptionInput = req.TranscriptionRequest.Input
 		}
 	}
 

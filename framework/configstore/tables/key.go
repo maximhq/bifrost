@@ -39,13 +39,13 @@ type TableKey struct {
 	VertexDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
-	BedrockAccessKey        *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
-	BedrockSecretKey        *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
-	BedrockSessionToken     *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
-	BedrockRegion           *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
-	BedrockARN              *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
-	BedrockDeploymentsJSON  *string `gorm:"type:text" json:"-"`                                   // JSON serialized map[string]string
-	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"`                                  // JSON serialized schemas.BatchS3Config
+	BedrockAccessKey         *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
+	BedrockSecretKey         *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
+	BedrockSessionToken      *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
+	BedrockRegion            *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
+	BedrockARN               *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockDeploymentsJSON   *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations

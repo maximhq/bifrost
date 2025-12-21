@@ -71,11 +71,11 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 
 	accumulator := accumulatorInterface.(*StreamAccumulator)
 	accumulator.mu.Lock()
-	
+
 	// Ensure unlock happens after cleanup
 	defer accumulator.mu.Unlock()
 	// Ensure cleanup happens
-	defer plugin.cleanupStreamAccumulator(requestID)	
+	defer plugin.cleanupStreamAccumulator(requestID)
 
 	// STEP 1: Check if any chunk in the entire stream had an error
 	if accumulator.HasError {

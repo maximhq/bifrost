@@ -297,7 +297,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	// Mark cache-hit once to avoid concurrent ctx writes
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
-	
+
 	// Create stream channel
 	streamChan := make(chan *schemas.BifrostStream)
 

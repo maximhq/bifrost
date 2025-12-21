@@ -530,12 +530,12 @@ func Test_extractBedrockJobArnFromPath(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: false}
 
 	tests := []struct {
-		name          string
-		jobArn        interface{}
-		provider      schemas.ModelProvider
-		wantErr       bool
-		wantJobArn    string
-		errContains   string
+		name        string
+		jobArn      interface{}
+		provider    schemas.ModelProvider
+		wantErr     bool
+		wantJobArn  string
+		errContains string
 	}{
 		{
 			name:       "valid job ARN for Bedrock",

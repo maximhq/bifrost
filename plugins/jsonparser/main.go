@@ -89,6 +89,7 @@ func (p *JsonParserPlugin) GetName() string {
 //   - url: The URL of the request
 //   - headers: The request headers
 //   - body: The request body
+//
 // Returns:
 //   - map[string]string: The updated request headers
 //   - map[string]any: The updated request body
@@ -101,6 +102,7 @@ func (p *JsonParserPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request
+//
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
@@ -114,6 +116,7 @@ func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
 //   - err: The Bifrost error to be processed
+//
 // Returns:
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error
