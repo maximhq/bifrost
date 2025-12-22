@@ -22,6 +22,7 @@ type ClientManager interface {
 type ToolsManager struct {
 	toolExecutionTimeout atomic.Value
 	maxAgentDepth        atomic.Int32
+	codeModeBindingLevel atomic.Value // Stores CodeModeBindingLevel
 	clientManager        ClientManager
 	logMu                sync.Mutex // Protects concurrent access to logs slice in codemode execution
 
@@ -54,6 +55,7 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 		config = &schemas.MCPToolManagerConfig{
 			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
 			MaxAgentDepth:        schemas.DefaultMaxAgentDepth,
+			CodeModeBindingLevel: schemas.CodeModeBindingLevelServer,
 		}
 	}
 	if config.MaxAgentDepth <= 0 {
@@ -62,6 +64,10 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 	if config.ToolExecutionTimeout <= 0 {
 		config.ToolExecutionTimeout = schemas.DefaultToolExecutionTimeout
 	}
+	// Default to server-level binding if not specified
+	if config.CodeModeBindingLevel == "" {
+		config.CodeModeBindingLevel = schemas.CodeModeBindingLevelServer
+	}
 	manager := &ToolsManager{
 		clientManager:         clientManager,
 		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
@@ -69,8 +75,9 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
+	manager.codeModeBindingLevel.Store(config.CodeModeBindingLevel)
 
-	logger.Info(fmt.Sprintf("%s tool manager initialized with tool execution timeout: %v and max agent depth: %d", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth))
+	logger.Info(fmt.Sprintf("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel))
 	return manager
 }
 
@@ -457,7 +464,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	)
 }
 
-// UpdateConfig updates both tool execution timeout and max agent depth atomically.
+// UpdateConfig updates tool manager configuration atomically.
 // This method is safe to call concurrently from multiple goroutines.
 func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	if config == nil {
@@ -469,6 +476,19 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	if config.MaxAgentDepth > 0 {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
+	if config.CodeModeBindingLevel != "" {
+		m.codeModeBindingLevel.Store(config.CodeModeBindingLevel)
+	}
 
-	logger.Info(fmt.Sprintf("%s tool manager configuration updated with tool execution timeout: %v and max agent depth: %d", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth))
+	logger.Info(fmt.Sprintf("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel))
+}
+
+// GetCodeModeBindingLevel returns the current code mode binding level.
+// This method is safe to call concurrently from multiple goroutines.
+func (m *ToolsManager) GetCodeModeBindingLevel() schemas.CodeModeBindingLevel {
+	val := m.codeModeBindingLevel.Load()
+	if val == nil {
+		return schemas.CodeModeBindingLevelServer
+	}
+	return val.(schemas.CodeModeBindingLevel)
 }

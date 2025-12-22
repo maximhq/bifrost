@@ -91,11 +91,11 @@ export const s3BucketConfigSchema = z.object({
 	bucket_name: z.string().min(1, "Bucket name is required"),
 	prefix: z.string().optional(),
 	is_default: z.boolean().optional(),
-})
+});
 
 export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
-})
+});
 
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
@@ -462,6 +462,7 @@ export const coreConfigSchema = z.object({
 	max_request_body_size_mb: z.number().min(1).default(100),
 	mcp_agent_depth: z.number().min(1).default(10),
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
+	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 });
 
 // Bifrost config schema
@@ -647,7 +648,7 @@ export const mcpClientUpdateSchema = z.object({
 });
 
 // Global proxy type schema
-export const globalProxyTypeSchema = z.enum(['http', 'socks5', 'tcp']);
+export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);
 
 // Global proxy configuration schema
 export const globalProxyConfigSchema = z
@@ -674,8 +675,8 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: 'Proxy URL is required when proxy is enabled',
-			path: ['url'],
+			message: "Proxy URL is required when proxy is enabled",
+			path: ["url"],
 		},
 	)
 	.refine(
@@ -692,8 +693,8 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: 'Must be a valid URL (e.g., http://proxy.example.com:8080)',
-			path: ['url'],
+			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			path: ["url"],
 		},
 	);
 

@@ -25,6 +25,7 @@ const defaultConfig: CoreConfig = {
 	enable_litellm_fallbacks: false,
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
+	mcp_code_mode_binding_level: "server",
 };
 
 export default function LoggingView() {

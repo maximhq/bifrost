@@ -23,13 +23,22 @@ type MCPConfig struct {
 }
 
 type MCPToolManagerConfig struct {
-	ToolExecutionTimeout time.Duration `json:"tool_execution_timeout"`
-	MaxAgentDepth        int           `json:"max_agent_depth"`
+	ToolExecutionTimeout     time.Duration        `json:"tool_execution_timeout"`
+	MaxAgentDepth            int                  `json:"max_agent_depth"`
+	CodeModeBindingLevel     CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
 }
 
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+)
+
+// CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
+type CodeModeBindingLevel string
+
+const (
+	CodeModeBindingLevelServer CodeModeBindingLevel = "server"
+	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
 
 // MCPClientConfig defines tool filtering for an MCP client.

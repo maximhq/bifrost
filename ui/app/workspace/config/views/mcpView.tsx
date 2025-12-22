@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -23,6 +24,7 @@ const defaultConfig: CoreConfig = {
 	log_retention_days: 365,
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
+	mcp_code_mode_binding_level: "server",
 };
 
 export default function MCPView() {
@@ -35,9 +37,11 @@ export default function MCPView() {
 	const [localValues, setLocalValues] = useState<{
 		mcp_agent_depth: string;
 		mcp_tool_execution_timeout: string;
+		mcp_code_mode_binding_level: string;
 	}>({
 		mcp_agent_depth: "10",
 		mcp_tool_execution_timeout: "30",
+		mcp_code_mode_binding_level: "server",
 	});
 
 	useEffect(() => {
@@ -46,6 +50,7 @@ export default function MCPView() {
 			setLocalValues({
 				mcp_agent_depth: config?.mcp_agent_depth?.toString() || "10",
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
+				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
 			});
 		}
 	}, [config, bifrostConfig]);
@@ -53,7 +58,9 @@ export default function MCPView() {
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
 		return (
-			localConfig.mcp_agent_depth !== config.mcp_agent_depth || localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout
+			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
+			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
+			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server")
 		);
 	}, [config, localConfig]);
 
@@ -70,6 +77,13 @@ export default function MCPView() {
 		const numValue = Number.parseInt(value);
 		if (!isNaN(numValue) && numValue > 0) {
 			setLocalConfig((prev) => ({ ...prev, mcp_tool_execution_timeout: numValue }));
+		}
+	}, []);
+
+	const handleCodeModeBindingLevelChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_code_mode_binding_level: value }));
+		if (value === "server" || value === "tool") {
+			setLocalConfig((prev) => ({ ...prev, mcp_code_mode_binding_level: value }));
 		}
 	}, []);
 
@@ -100,7 +114,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="space-y-4">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div className="flex items-center justify-between">
 				<div>
 					<h2 className="text-2xl font-semibold tracking-tight">MCP Settings</h2>
@@ -110,7 +124,6 @@ export default function MCPView() {
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>
-
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
@@ -146,6 +159,59 @@ export default function MCPView() {
 						onChange={(e) => handleToolExecutionTimeoutChange(e.target.value)}
 						min="1"
 					/>
+				</div>
+
+				{/* Code Mode Binding Level */}
+				<div className="space-y-4 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-binding-level" className="text-sm font-medium">
+							Code Mode Binding Level
+						</label>
+						<p className="text-muted-foreground text-sm">
+							How tools are exposed in the VFS: server-level (all tools per server) or tool-level (individual tools).
+						</p>
+					</div>
+					<Select value={localValues.mcp_code_mode_binding_level} onValueChange={handleCodeModeBindingLevelChange}>
+						<SelectTrigger id="mcp-binding-level" className="w-56">
+							<SelectValue placeholder="Select binding level" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="server">Server-Level</SelectItem>
+							<SelectItem value="tool">Tool-Level</SelectItem>
+						</SelectContent>
+					</Select>
+
+					{/* Visual Example */}
+					<div className="mt-6 space-y-2">
+						<p className="text-foreground text-xs font-semibold tracking-wide uppercase">VFS Structure:</p>
+
+						{localValues.mcp_code_mode_binding_level === "server" ? (
+							<div className="bg-muted border-border rounded-lg border p-4">
+								<div className="text-foreground space-y-1 font-mono text-xs">
+									<div>servers/</div>
+									<div className="pl-3">├─ calculator.d.ts</div>
+									<div className="pl-3">├─ youtube.d.ts</div>
+									<div className="pl-3">└─ weather.d.ts</div>
+								</div>
+								<p className="text-muted-foreground mt-3 text-xs">All tools per server in a single .d.ts file</p>
+							</div>
+						) : (
+							<div className="bg-muted border-border rounded-lg border p-4">
+								<div className="text-foreground space-y-1 font-mono text-xs">
+									<div>servers/</div>
+									<div className="pl-3">├─ calculator/</div>
+									<div className="pl-6">├─ add.d.ts</div>
+									<div className="pl-6">└─ subtract.d.ts</div>
+									<div className="pl-3">├─ youtube/</div>
+									<div className="pl-6">├─ GET_CHANNELS.d.ts</div>
+									<div className="pl-6">└─ SEARCH_VIDEOS.d.ts</div>
+									<div className="pl-3">└─ weather/</div>
+									<div className="pl-6">└─ get_forecast.d.ts</div>
+								</div>
+								<p className="text-muted-foreground mt-3 text-xs">Individual .d.ts file for each tool</p>
+							</div>
+						)}
+					</div>
 				</div>
 			</div>
 		</div>

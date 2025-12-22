@@ -487,6 +487,13 @@ export default function AppSidebar() {
 					hasAccess: hasSettingsAccess,
 				},
 				{
+					title: "MCP Gateway",
+					url: "/workspace/config/mcp-gateway",
+					icon: MCPIcon,
+					description: "MCP gateway configuration",
+					hasAccess: hasMCPGatewayAccess,
+				},
+				{
 					title: "Pricing Config",
 					url: "/workspace/config/pricing-config",
 					icon: CircleDollarSign,
@@ -715,7 +722,7 @@ export default function AppSidebar() {
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
-										router={router}										
+										router={router}
 									/>
 								);
 							})}

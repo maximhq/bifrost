@@ -49,6 +49,7 @@ type ClientConfig struct {
 	EnableLiteLLMFallbacks  bool     `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
 	MCPAgentDepth           int      `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout int      `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel string   `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
 	ConfigHash              string   `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
@@ -110,6 +111,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpToolExecutionTimeout:" + strconv.Itoa(c.MCPToolExecutionTimeout)))
 	} else {
 		hash.Write([]byte("mcpToolExecutionTimeout:0"))
+	}
+
+	if c.MCPCodeModeBindingLevel != "" {
+		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
+	} else {
+		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
 	}
 
 	// Hash integer fields

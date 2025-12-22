@@ -227,6 +227,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MaxRequestBodySizeMB:    100,
 	MCPAgentDepth:           10,
 	MCPToolExecutionTimeout: 30,
+	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
 	EnableLiteLLMFallbacks:  false,
 }
 
@@ -503,6 +504,9 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 			}
 			if config.ClientConfig.MCPToolExecutionTimeout == 0 && configData.Client.MCPToolExecutionTimeout != 0 {
 				config.ClientConfig.MCPToolExecutionTimeout = configData.Client.MCPToolExecutionTimeout
+			}
+			if config.ClientConfig.MCPCodeModeBindingLevel == "" && configData.Client.MCPCodeModeBindingLevel != "" {
+				config.ClientConfig.MCPCodeModeBindingLevel = configData.Client.MCPCodeModeBindingLevel
 			}
 			// Update store with merged config
 			if config.ConfigStore != nil {

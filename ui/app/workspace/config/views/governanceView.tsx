@@ -23,6 +23,7 @@ const defaultConfig: CoreConfig = {
 	enable_litellm_fallbacks: false,
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
+	mcp_code_mode_binding_level: "server",
 };
 
 export default function GovernanceView() {
@@ -63,7 +64,7 @@ export default function GovernanceView() {
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
 
 	return (
-		<div className="space-y-4 mx-auto w-full max-w-4xl">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div className="flex items-center justify-between">
 				<div>
 					<h2 className="text-2xl font-semibold tracking-tight">Governance</h2>

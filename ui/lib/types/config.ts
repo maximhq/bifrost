@@ -325,6 +325,7 @@ export interface CoreConfig {
 	enable_litellm_fallbacks: boolean;
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
+	mcp_code_mode_binding_level?: string;
 }
 
 // Semantic cache configuration types

@@ -8,6 +8,7 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
+	github.com/mark3labs/mcp-go v0.41.1
 	github.com/maximhq/bifrost/core v1.2.40
 	github.com/maximhq/bifrost/framework v1.1.50
 	github.com/maximhq/bifrost/plugins/governance v1.3.51

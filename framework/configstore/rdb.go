@@ -44,6 +44,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		EnableLiteLLMFallbacks:  config.EnableLiteLLMFallbacks,
 		MCPAgentDepth:           config.MCPAgentDepth,
 		MCPToolExecutionTimeout: config.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
 	}
 	// Delete existing client config and create new one in a transaction
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -199,6 +200,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		EnableLiteLLMFallbacks:  dbConfig.EnableLiteLLMFallbacks,
 		MCPAgentDepth:           dbConfig.MCPAgentDepth,
 		MCPToolExecutionTimeout: dbConfig.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
 	}, nil
 }
 
@@ -669,7 +671,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 					if processedARN, err := envutils.ProcessEnvValue(*bedrockConfig.ARN); err == nil {
 						bedrockConfigCopy.ARN = &processedARN
 					}
-				}				
+				}
 				bedrockConfig = &bedrockConfigCopy
 			}
 
@@ -767,6 +769,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	toolManagerConfig := schemas.MCPToolManagerConfig{
 		ToolExecutionTimeout: time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
 		MaxAgentDepth:        clientConfig.MCPAgentDepth,
+		CodeModeBindingLevel: schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 	}
 	return &schemas.MCPConfig{
 		ClientConfigs:     clientConfigs,

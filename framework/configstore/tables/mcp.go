@@ -80,12 +80,6 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 		c.HeadersJSON = "{}"
 	}
 
-	if c.IsCodeModeClient {
-		hash.Write([]byte("isCodeModeClient:true"))
-	} else {
-		hash.Write([]byte("isCodeModeClient:false"))
-	}
-
 	return nil
 }
 

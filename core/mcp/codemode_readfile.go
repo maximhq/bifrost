@@ -10,16 +10,45 @@ import (
 )
 
 // createReadToolFileTool creates the readToolFile tool definition for code mode.
-// This tool allows reading virtual .d.ts declaration files for specific MCP servers,
+// This tool allows reading virtual .d.ts declaration files for specific MCP servers/tools,
 // generating TypeScript type definitions from the server's tool schemas.
+// The description is dynamically generated based on the configured CodeModeBindingLevel.
 //
 // Returns:
 //   - schemas.ChatTool: The tool definition for reading tool files
 func (m *ToolsManager) createReadToolFileTool() schemas.ChatTool {
+	bindingLevel := m.GetCodeModeBindingLevel()
+
+	var fileNameDescription, toolDescription string
+
+	if bindingLevel == schemas.CodeModeBindingLevelServer {
+		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>.d.ts (e.g., 'calculator.d.ts')"
+		toolDescription = "Reads a virtual .d.ts declaration file for a specific MCP server, generating TypeScript type definitions " +
+			"for all tools available on that server. The fileName should be in format servers/<serverName>.d.ts as listed by listToolFiles. " +
+			"The function performs case-insensitive matching and removes the .d.ts extension. " +
+			"Optionally, you can specify startLine and endLine (1-based, inclusive) to read only a portion of the file. " +
+			"IMPORTANT: Line numbers are 1-based, not 0-based. The first line is line 1, not line 0. " +
+			"This generates TypeScript type definitions describing all tools in the server and their argument types, " +
+			"enabling code-mode execution. Each tool can be accessed in code via: await serverName.toolName({ args }). " +
+			"Always follow this workflow: first use listToolFiles to see available servers, then use readToolFile to understand " +
+			"all available tool definitions for a server, and finally use executeToolCode to execute your code."
+	} else {
+		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>/<toolName>.d.ts (e.g., 'calculator/add.d.ts')"
+		toolDescription = "Reads a virtual .d.ts declaration file for a specific tool, generating TypeScript type definitions " +
+			"for that individual tool. The fileName should be in format servers/<serverName>/<toolName>.d.ts as listed by listToolFiles. " +
+			"The function performs case-insensitive matching and removes the .d.ts extension. " +
+			"Optionally, you can specify startLine and endLine (1-based, inclusive) to read only a portion of the file. " +
+			"IMPORTANT: Line numbers are 1-based, not 0-based. The first line is line 1, not line 0. " +
+			"This generates TypeScript type definitions for a single tool, describing its parameters and usage, " +
+			"enabling focused code-mode execution. The tool can be accessed in code via: await serverName.toolName({ args }). " +
+			"Always follow this workflow: first use listToolFiles to see available tools, then use readToolFile to understand " +
+			"a specific tool's definition, and finally use executeToolCode to execute your code."
+	}
+
 	readToolFileProps := schemas.OrderedMap{
 		"fileName": map[string]interface{}{
 			"type":        "string",
-			"description": "The virtual filename (e.g., 'calculator-server.d.ts') from listToolFiles",
+			"description": fileNameDescription,
 		},
 		"startLine": map[string]interface{}{
 			"type":        "number",
@@ -34,18 +63,7 @@ func (m *ToolsManager) createReadToolFileTool() schemas.ChatTool {
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
 			Name: ToolTypeReadToolFile,
-			Description: schemas.Ptr(
-				"Reads a virtual .d.ts declaration file for a specific MCP server, generating TypeScript type definitions " +
-					"from the server's tool schemas. The fileName should match one of the virtual files listed by listToolFiles. " +
-					"The function removes the .d.ts extension and performs case-insensitive matching against both the server's " +
-					"display name and configuration key. Optionally, you can specify startLine and endLine (1-based, inclusive) " +
-					"to read only a portion of the file. IMPORTANT: Line numbers are 1-based, not 0-based. The first line is line 1, not line 0. " +
-					"This tool generates pseudo declaration files that describe the available " +
-					"tools and their argument types, enabling code-mode execution as described in the MCP code execution pattern. " +
-					"The generated file includes interfaces for each tool's arguments and corresponding function declarations. " +
-					"Always follow this workflow: first use listToolFiles to see available servers, then use readToolFile to understand " +
-					"the tool definitions, and finally use executeToolCode to execute your code.",
-			),
+			Description: schemas.Ptr(toolDescription),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
 				Properties: &readToolFileProps,
@@ -56,8 +74,9 @@ func (m *ToolsManager) createReadToolFileTool() schemas.ChatTool {
 }
 
 // handleReadToolFile handles the readToolFile tool call.
-// It reads a virtual .d.ts file for a specific MCP server, generates TypeScript type definitions,
+// It reads a virtual .d.ts file for a specific MCP server/tool, generates TypeScript type definitions,
 // and optionally returns a portion of the file based on line range parameters.
+// Supports both server-level files (e.g., "calculator.d.ts") and tool-level files (e.g., "calculator/add.d.ts").
 //
 // Parameters:
 //   - ctx: Context for accessing client tools
@@ -78,15 +97,17 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 		return nil, fmt.Errorf("fileName parameter is required and must be a string")
 	}
 
+	// Parse the file path to extract server name and optional tool name
+	serverName, toolName, isToolLevel := parseVFSFilePath(fileName)
+
 	// Get available tools per client
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
-
-	// Remove .d.ts extension and normalize to lowercase for matching
-	baseName := strings.ToLower(strings.TrimSuffix(fileName, ".d.ts"))
 
 	// Find matching client
 	var matchedClientName string
 	var matchedTools []schemas.ChatTool
+	matchCount := 0
+
 	for clientName, tools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
@@ -96,43 +117,90 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
 			continue
 		}
+
 		clientNameLower := strings.ToLower(clientName)
-		if clientNameLower == baseName {
-			if matchedClientName != "" {
+		serverNameLower := strings.ToLower(serverName)
+
+		if clientNameLower == serverNameLower {
+			matchCount++
+			if matchCount > 1 {
 				// Multiple matches found
-				availableFiles := make([]string, 0, len(availableToolsPerClient))
-				for name := range availableToolsPerClient {
-					availableFiles = append(availableFiles, fmt.Sprintf("%s.d.ts", name))
-				}
 				errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
 				for name := range availableToolsPerClient {
-					if strings.ToLower(name) == baseName {
+					if strings.ToLower(name) == serverNameLower {
 						errorMsg += fmt.Sprintf("  - %s\n", name)
 					}
 				}
 				errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
 				return createToolResponseMessage(toolCall, errorMsg), nil
 			}
+
 			matchedClientName = clientName
-			matchedTools = tools
+
+			if isToolLevel {
+				// Tool-level: filter to specific tool
+				var foundTool *schemas.ChatTool
+				toolNameLower := strings.ToLower(toolName)
+				for i, tool := range tools {
+					if tool.Function != nil && strings.ToLower(tool.Function.Name) == toolNameLower {
+						foundTool = &tools[i]
+						break
+					}
+				}
+
+				if foundTool == nil {
+					availableTools := make([]string, 0)
+					for _, tool := range tools {
+						if tool.Function != nil {
+							availableTools = append(availableTools, tool.Function.Name)
+						}
+					}
+					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
+					for _, t := range availableTools {
+						errorMsg += fmt.Sprintf("  - %s/%s.d.ts\n", clientName, t)
+					}
+					return createToolResponseMessage(toolCall, errorMsg), nil
+				}
+
+				matchedTools = []schemas.ChatTool{*foundTool}
+			} else {
+				// Server-level: use all tools
+				matchedTools = tools
+			}
 		}
 	}
 
 	if matchedClientName == "" {
-		availableFiles := make([]string, 0, len(availableToolsPerClient))
+		// Build helpful error message with available files
+		bindingLevel := m.GetCodeModeBindingLevel()
+		var availableFiles []string
+
 		for name := range availableToolsPerClient {
-			availableFiles = append(availableFiles, fmt.Sprintf("%s.d.ts", name))
+			if bindingLevel == schemas.CodeModeBindingLevelServer {
+				availableFiles = append(availableFiles, fmt.Sprintf("%s.d.ts", name))
+			} else {
+				client := m.clientManager.GetClientByName(name)
+				if client != nil && client.ExecutionConfig.IsCodeModeClient {
+					if tools, ok := availableToolsPerClient[name]; ok {
+						for _, tool := range tools {
+							if tool.Function != nil {
+								availableFiles = append(availableFiles, fmt.Sprintf("%s/%s.d.ts", name, tool.Function.Name))
+							}
+						}
+					}
+				}
+			}
 		}
-		errorMsg := fmt.Sprintf("No server found matching filename '%s'. Available virtual files are:\n", fileName)
+
+		errorMsg := fmt.Sprintf("No server found matching '%s'. Available virtual files are:\n", serverName)
 		for _, f := range availableFiles {
 			errorMsg += fmt.Sprintf("  - %s\n", f)
 		}
-		errorMsg += "\nPlease use one of the exact filenames listed above. The matching is case-insensitive and works with both display names and configuration keys."
 		return createToolResponseMessage(toolCall, errorMsg), nil
 	}
 
 	// Generate TypeScript definitions
-	fileContent := generateTypeDefinitions(matchedClientName, matchedTools)
+	fileContent := generateTypeDefinitions(matchedClientName, matchedTools, isToolLevel)
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -184,6 +252,34 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 
 // HELPER FUNCTIONS
 
+// parseVFSFilePath parses a VFS file path and extracts the server name and optional tool name.
+// For server-level paths (e.g., "calculator.d.ts"), returns (serverName="calculator", toolName="", isToolLevel=false)
+// For tool-level paths (e.g., "calculator/add.d.ts"), returns (serverName="calculator", toolName="add", isToolLevel=true)
+//
+// Parameters:
+//   - fileName: The virtual file path from listToolFiles
+//
+// Returns:
+//   - serverName: The name of the MCP server
+//   - toolName: The name of the tool (empty for server-level)
+//   - isToolLevel: Whether this is a tool-level path
+func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel bool) {
+	// Remove .d.ts extension
+	basePath := strings.TrimSuffix(fileName, ".d.ts")
+
+	// Remove "servers/" prefix if present
+	basePath = strings.TrimPrefix(basePath, "servers/")
+
+	// Check for path separator
+	parts := strings.Split(basePath, "/")
+	if len(parts) == 2 {
+		// Tool-level: "serverName/toolName"
+		return parts[0], parts[1], true
+	}
+	// Server-level: "serverName"
+	return basePath, "", false
+}
+
 // generateTypeDefinitions generates TypeScript type definitions from ChatTool schemas
 // with comprehensive comments to help LLMs understand how to use the tools.
 // It creates interfaces for tool inputs and responses, along with function declarations.
@@ -191,18 +287,29 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 // Parameters:
 //   - clientName: Name of the MCP client/server
 //   - tools: List of chat tools to generate definitions for
+//   - isToolLevel: Whether this is a tool-level definition (single tool) or server-level (all tools)
 //
 // Returns:
 //   - string: Complete TypeScript declaration file content
-func generateTypeDefinitions(clientName string, tools []schemas.ChatTool) string {
+func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool) string {
 	var sb strings.Builder
 
 	// Write comprehensive header comment
 	sb.WriteString("// ============================================================================\n")
-	sb.WriteString(fmt.Sprintf("// Type definitions for %s MCP server\n", clientName))
+	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
+		// Tool-level: show individual tool name
+		sb.WriteString(fmt.Sprintf("// Type definitions for %s.%s tool\n", clientName, tools[0].Function.Name))
+	} else {
+		// Server-level: show all tools in server
+		sb.WriteString(fmt.Sprintf("// Type definitions for %s MCP server\n", clientName))
+	}
 	sb.WriteString("// ============================================================================\n")
 	sb.WriteString("//\n")
-	sb.WriteString("// This file contains TypeScript type definitions for all tools available on this MCP server.\n")
+	if isToolLevel && len(tools) == 1 {
+		sb.WriteString("// This file contains TypeScript type definitions for a specific tool on this MCP server.\n")
+	} else {
+		sb.WriteString("// This file contains TypeScript type definitions for all tools available on this MCP server.\n")
+	}
 	sb.WriteString("// These definitions enable code-mode execution as described in the MCP code execution pattern.\n")
 	sb.WriteString("//\n")
 	sb.WriteString("// USAGE INSTRUCTIONS:\n")

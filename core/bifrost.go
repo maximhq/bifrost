@@ -1886,7 +1886,7 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int) error {
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error {
 	if bifrost.mcpManager == nil {
 		return fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}
@@ -1894,6 +1894,7 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 	bifrost.mcpManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
 		MaxAgentDepth:        maxAgentDepth,
 		ToolExecutionTimeout: time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		CodeModeBindingLevel: schemas.CodeModeBindingLevel(codeModeBindingLevel),
 	})
 	return nil
 }
