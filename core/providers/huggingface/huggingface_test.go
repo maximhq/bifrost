@@ -24,7 +24,7 @@ func TestHuggingface(t *testing.T) {
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:             schemas.HuggingFace,
 		ChatModel:            "sambanova/meta-llama/Llama-3.1-8B-Instruct",
-		VisionModel:          "novita/zai-org/GLM-4.6V-Flash",
+		VisionModel:          "cohere/CohereLabs/aya-vision-32b",
 		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
 		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
 		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
