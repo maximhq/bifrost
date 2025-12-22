@@ -338,12 +338,20 @@
               "changelogs/v1.3.25",
               "changelogs/v1.3.24",
               "changelogs/v1.3.23",
-              "changelogs/v1.3.22"
+              "changelogs/v1.3.22",
+              "changelogs/v1.3.21",
+              "changelogs/v1.3.20",
+              "changelogs/v1.3.19",
+              "changelogs/v1.3.18"
             ]
           },
           {
             "group": "October 2025",
             "pages": [
+              "changelogs/v1.3.17",
+              "changelogs/v1.3.16",
+              "changelogs/v1.3.15",
+              "changelogs/v1.3.14",
               "changelogs/v1.3.13",
               "changelogs/v1.3.12",
               "changelogs/v1.3.11",
@@ -357,6 +365,7 @@
               "changelogs/v1.3.3",
               "changelogs/v1.3.2",
               "changelogs/v1.3.1",
+              "changelogs/v1.3.0",
               "changelogs/v1.3.0-prerelease7",
               "changelogs/v1.3.0-prerelease6",
               "changelogs/v1.3.0-prerelease5",
@@ -371,7 +380,6 @@
           {
             "group": "September 2025",
             "pages": [
-              "changelogs/v1.3.0",
               "changelogs/v1.2.22",
               "changelogs/v1.2.21"
             ]
