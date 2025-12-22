@@ -206,6 +206,54 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
+
+					<Separator className="my-6" />
+					<Alert variant="default" className="-z-10">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Azure Entra ID Authentication</AlertTitle>
+						<AlertDescription>
+							To use Azure Entra ID authentication, fill in Client ID, Client Secret, and Tenant ID. Please leave API Key empty when using Entra ID authentication.
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.client_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Client ID (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.client_secret`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Client Secret (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.tenant_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Tenant ID (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 					<FormField
 						control={control}
 						name={`key.azure_key_config.deployments`}

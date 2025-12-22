@@ -346,7 +346,11 @@ Enterprise cloud providers require additional configuration beyond API keys. Con
 
 <Tab title="Azure">
 
-Azure requires endpoint URLs, deployment mappings, and API version configuration:
+Azure supports two authentication methods:
+
+**Azure Entra ID (Service Principal)**
+
+Production-ready authentication with automatic token management. When `ClientID`, `ClientSecret`, and `TenantID` are set, Bifrost handles token acquisition using the default scope `https://cognitiveservices.azure.com/.default`.
 
 ```go
 func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -354,16 +358,19 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     case schemas.Azure:
         return []schemas.Key{
             {
-                Value:  os.Getenv("AZURE_API_KEY"),
+                Value:  "", // Leave empty for Service Principal auth
                 Models: []string{"gpt-4o", "gpt-4o-mini"},
                 Weight: 1.0,
                 AzureKeyConfig: &schemas.AzureKeyConfig{
-                    Endpoint: os.Getenv("AZURE_ENDPOINT"), // e.g., "https://your-resource.openai.azure.com"
+                    Endpoint:     os.Getenv("AZURE_ENDPOINT"),
+                    ClientID:     bifrost.Ptr(os.Getenv("AZURE_CLIENT_ID")),
+                    ClientSecret: bifrost.Ptr(os.Getenv("AZURE_CLIENT_SECRET")),
+                    TenantID:     bifrost.Ptr(os.Getenv("AZURE_TENANT_ID")),
                     Deployments: map[string]string{
                         "gpt-4o":      "gpt-4o-deployment",
                         "gpt-4o-mini": "gpt-4o-mini-deployment",
                     },
-                    APIVersion: bifrost.Ptr("2024-08-01-preview"), // Azure API version
+                    APIVersion: bifrost.Ptr("2024-08-01-preview"),
                 },
             },
         }, nil
@@ -371,6 +378,38 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
     return nil, fmt.Errorf("provider %s not supported", provider)
 }
 ```
+
+**Direct Authentication**
+
+For simpler use cases, provide the authentication credential directly in the `Value` field:
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  os.Getenv("AZURE_OPENAI_KEY"),
+                Models: []string{"gpt-4o", "gpt-4o-mini"},
+                Weight: 1.0,
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint: os.Getenv("AZURE_ENDPOINT"),
+                    Deployments: map[string]string{
+                        "gpt-4o":      "gpt-4o-deployment",
+                        "gpt-4o-mini": "gpt-4o-mini-deployment",
+                    },
+                    APIVersion: bifrost.Ptr("2024-08-01-preview"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+<Note>
+If `ClientID`, `ClientSecret`, and `TenantID` are configured, Service Principal authentication is used. Otherwise, direct authentication with the `Value` field is used.
+</Note>
 
 </Tab>
 

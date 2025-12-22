@@ -11,8 +11,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -25,13 +29,88 @@ import (
 // AzureAuthorizationTokenKey is the context key for the Azure authentication token.
 const AzureAuthorizationTokenKey schemas.BifrostContextKey = "azure-authorization-token"
 
+// DefaultAzureScope is the default scope for Azure authentication.
+const DefaultAzureScope = "https://cognitiveservices.azure.com/.default"
+
 // AzureProvider implements the Provider interface for Azure's API.
 type AzureProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger        schemas.Logger        // Logger for provider operations
+	client        *fasthttp.Client      // HTTP client for API requests
+	networkConfig schemas.NetworkConfig // Network configuration including extra headers
+
+	credentials         sync.Map // map of tenant ID:client ID to azcore.TokenCredential
+	sendBackRawRequest  bool     // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool     // Whether to include raw response in BifrostResponse
+}
+
+func (p *AzureProvider) getOrCreateAuth(
+	tenantID, clientID, clientSecret string,
+) (azcore.TokenCredential, error) {
+	key := tenantID + ":" + clientID
+
+	// Fast path
+	if val, ok := p.credentials.Load(key); ok {
+		return val.(azcore.TokenCredential), nil
+	}
+
+	// Slow path - create new credential
+	cred, err := azidentity.NewClientSecretCredential(
+		tenantID,
+		clientID,
+		clientSecret,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	actual, _ := p.credentials.LoadOrStore(key, cred)
+	return actual.(azcore.TokenCredential), nil
+}
+
+// getAzureAuthHeaders returns authentication headers based on priority:
+// 1. Service Principal (client ID/secret/tenant ID) - Bearer token
+// 2. Context token - Bearer token
+// 3. API key - api-key or x-api-key header
+func (provider *AzureProvider) getAzureAuthHeaders(ctx context.Context, key schemas.Key, isAnthropicModel bool) (map[string]string, *schemas.BifrostError) {
+	authHeader := make(map[string]string)
+
+	// Service Principal authentication
+	if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientID != nil &&
+		key.AzureKeyConfig.ClientSecret != nil && key.AzureKeyConfig.TenantID != nil {
+		cred, err := provider.getOrCreateAuth(*key.AzureKeyConfig.TenantID, *key.AzureKeyConfig.ClientID, *key.AzureKeyConfig.ClientSecret)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to get or create Azure authentication", err, schemas.Azure)
+		}
+
+		token, err := cred.GetToken(ctx, policy.TokenRequestOptions{
+			Scopes: []string{DefaultAzureScope},
+		})
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to get Azure access token", err, schemas.Azure)
+		}
+
+		if token.Token == "" {
+			return nil, providerUtils.NewBifrostOperationError("Azure access token is empty", errors.New("token is empty"), schemas.Azure)
+		}
+
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", token.Token)
+		return authHeader, nil
+	}
+
+	// Context token authentication
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok && authToken != "" {
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
+		return authHeader, nil
+	}
+
+	// API key authentication
+	if isAnthropicModel {
+		authHeader["x-api-key"] = key.Value
+	} else {
+		authHeader["api-key"] = key.Value
+	}
+	return authHeader, nil
 }
 
 // NewAzureProvider creates a new Azure provider instance.
@@ -89,19 +168,23 @@ func (provider *AzureProvider) completeRequest(
 	req.Header.SetContentType("application/json")
 
 	var url string
-	if schemas.IsAnthropicModel(deployment) {
-		req.Header.Set("x-api-key", key.Value)
+	isAnthropicModel := schemas.IsAnthropicModel(deployment)
+
+	// Get authentication headers
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, isAnthropicModel)
+	if bifrostErr != nil {
+		return nil, deployment, 0, bifrostErr
+	}
+
+	// Apply headers to request
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	if isAnthropicModel {
 		req.Header.Set("anthropic-version", AzureAnthropicAPIVersionDefault)
 		url = fmt.Sprintf("%s/%s", key.AzureKeyConfig.Endpoint, path)
 	} else {
-		if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-			// TODO: Shift this to key.Value like in bedrock and vertex
-			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
-			// Ensure api-key is not accidentally present (from extra headers, etc.)
-			req.Header.Del("api-key")
-		} else {
-			req.Header.Set("api-key", key.Value)
-		}
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
 			apiVersion = schemas.Ptr(AzureAPIVersionDefault)
@@ -170,13 +253,13 @@ func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	// Set Azure authentication - either Bearer token or api-key
-	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
-		// Ensure api-key is not accidentally present (from extra headers, etc.)
-		req.Header.Del("api-key")
-	} else {
-		req.Header.Set("api-key", key.Value)
+	// Set Azure authentication
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
 	}
 
 	// Send the request and measure latency
@@ -322,14 +405,10 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 
 	url := fmt.Sprintf("%s/openai/deployments/%s/completions?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
 
-	// Prepare Azure-specific headers
-	authHeader := make(map[string]string)
-
-	// Set Azure authentication - either Bearer token or api-key
-	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
-	} else {
-		authHeader["api-key"] = key.Value
+	// Get Azure authentication headers
+	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+	if err != nil {
+		return nil, err
 	}
 
 	customPostResponseConverter := func(response *schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse {
@@ -465,10 +544,12 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 		return response
 	}
 
-	authHeader := make(map[string]string)
 	var url string
 	if schemas.IsAnthropicModel(deployment) {
-		authHeader["x-api-key"] = key.Value
+		authHeader, err := provider.getAzureAuthHeaders(ctx, key, true)
+		if err != nil {
+			return nil, err
+		}
 		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
 		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint)
 
@@ -512,11 +593,9 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 			},
 		)
 	} else {
-		// Set Azure authentication - either Bearer token or api-key
-		if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-			authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
-		} else {
-			authHeader["api-key"] = key.Value
+		authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+		if err != nil {
+			return nil, err
 		}
 		apiVersion := key.AzureKeyConfig.APIVersion
 		if apiVersion == nil {
@@ -652,10 +731,12 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 		return response
 	}
 
-	authHeader := make(map[string]string)
 	var url string
 	if schemas.IsAnthropicModel(deployment) {
-		authHeader["x-api-key"] = key.Value
+		authHeader, err := provider.getAzureAuthHeaders(ctx, key, true)
+		if err != nil {
+			return nil, err
+		}
 		authHeader["anthropic-version"] = AzureAnthropicAPIVersionDefault
 		url = fmt.Sprintf("%s/anthropic/v1/messages", key.AzureKeyConfig.Endpoint)
 
@@ -685,11 +766,9 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 			},
 		)
 	} else {
-		// Set Azure authentication - either Bearer token or api-key
-		if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-			authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
-		} else {
-			authHeader["api-key"] = key.Value
+		authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+		if err != nil {
+			return nil, err
 		}
 		url = fmt.Sprintf("%s/openai/v1/responses?api-version=preview", key.AzureKeyConfig.Endpoint)
 
@@ -832,19 +911,17 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 		return nil, err
 	}
 
-	authHeader := make(map[string]string)
-	var url string
-	// Set Azure authentication - either Bearer token or api-key
-	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
-	} else {
-		authHeader["api-key"] = key.Value
+	// Get Azure authentication headers
+	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+	if err != nil {
+		return nil, err
 	}
+
 	apiVersion := key.AzureKeyConfig.APIVersion
 	if apiVersion == nil {
 		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
 	}
-	url = fmt.Sprintf("%s/openai/deployments/%s/audio/speech?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
+	url := fmt.Sprintf("%s/openai/deployments/%s/audio/speech?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -1228,7 +1305,9 @@ func (provider *AzureProvider) FileUpload(ctx context.Context, key schemas.Key, 
 	req.Header.SetContentType(writer.FormDataContentType())
 
 	// Set Azure authentication
-	provider.setAzureAuth(ctx, req, key)
+	if err := provider.setAzureAuth(ctx, req, key); err != nil {
+		return nil, err
+	}
 
 	req.SetBody(buf.Bytes())
 
@@ -1333,7 +1412,9 @@ func (provider *AzureProvider) FileList(ctx context.Context, keys []schemas.Key,
 	req.Header.SetContentType("application/json")
 
 	// Set Azure authentication
-	provider.setAzureAuth(ctx, req, key)
+	if err := provider.setAzureAuth(ctx, req, key); err != nil {
+		return nil, err
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1437,7 +1518,12 @@ func (provider *AzureProvider) FileRetrieve(ctx context.Context, keys []schemas.
 		req.Header.SetContentType("application/json")
 
 		// Set Azure authentication
-		provider.setAzureAuth(ctx, req, key)
+		if authErr := provider.setAzureAuth(ctx, req, key); authErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = authErr
+			continue
+		}
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1528,7 +1614,12 @@ func (provider *AzureProvider) FileDelete(ctx context.Context, keys []schemas.Ke
 		req.Header.SetContentType("application/json")
 
 		// Set Azure authentication
-		provider.setAzureAuth(ctx, req, key)
+		if authErr := provider.setAzureAuth(ctx, req, key); authErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = authErr
+			continue
+		}
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1650,7 +1741,12 @@ func (provider *AzureProvider) FileContent(ctx context.Context, keys []schemas.K
 		req.Header.SetMethod(http.MethodGet)
 
 		// Set Azure authentication
-		provider.setAzureAuth(ctx, req, key)
+		if authErr := provider.setAzureAuth(ctx, req, key); authErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = authErr
+			continue
+		}
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1766,7 +1862,9 @@ func (provider *AzureProvider) BatchCreate(ctx context.Context, key schemas.Key,
 	req.Header.SetContentType("application/json")
 
 	// Set Azure authentication
-	provider.setAzureAuth(ctx, req, key)
+	if err := provider.setAzureAuth(ctx, req, key); err != nil {
+		return nil, err
+	}
 
 	// Build request body
 	openAIReq := &openai.OpenAIBatchRequest{
@@ -1885,7 +1983,9 @@ func (provider *AzureProvider) BatchList(ctx context.Context, keys []schemas.Key
 	req.Header.SetContentType("application/json")
 
 	// Set Azure authentication
-	provider.setAzureAuth(ctx, req, key)
+	if err := provider.setAzureAuth(ctx, req, key); err != nil {
+		return nil, err
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1984,7 +2084,12 @@ func (provider *AzureProvider) BatchRetrieve(ctx context.Context, keys []schemas
 		req.Header.SetContentType("application/json")
 
 		// Set Azure authentication
-		provider.setAzureAuth(ctx, req, key)
+		if authErr := provider.setAzureAuth(ctx, req, key); authErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = authErr
+			continue
+		}
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -2077,7 +2182,12 @@ func (provider *AzureProvider) BatchCancel(ctx context.Context, keys []schemas.K
 		req.Header.SetContentType("application/json")
 
 		// Set Azure authentication
-		provider.setAzureAuth(ctx, req, key)
+		if authErr := provider.setAzureAuth(ctx, req, key); authErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = authErr
+			continue
+		}
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

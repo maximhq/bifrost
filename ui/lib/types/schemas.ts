@@ -18,6 +18,9 @@ export const azureKeyConfigSchema = z
 		endpoint: z.url("Must be a valid URL"),
 		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 		api_version: z.string().optional(),
+		client_id: z.string().optional(),
+		client_secret: z.string().optional(),
+		tenant_id: z.string().optional(),
 	})
 	.refine(
 		(data) => {

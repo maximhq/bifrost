@@ -2166,7 +2166,34 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 					azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
 				}
 			}
+			// Redact ClientID if present
+			if key.AzureKeyConfig.ClientID != nil {
+				path = fmt.Sprintf("providers.%s.keys[%s].azure_key_config.client_id", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					azureConfig.ClientID = bifrost.Ptr("env." + envVar)
+				} else {
+					azureConfig.ClientID = bifrost.Ptr(RedactKey(*key.AzureKeyConfig.ClientID))
+				}
+			}
+			// Redact ClientSecret if present
+			if key.AzureKeyConfig.ClientSecret != nil {
+				path = fmt.Sprintf("providers.%s.keys[%s].azure_key_config.client_secret", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					azureConfig.ClientSecret = bifrost.Ptr("env." + envVar)
+				} else if !strings.HasPrefix(*key.AzureKeyConfig.ClientSecret, "env.") {
+					azureConfig.ClientSecret = bifrost.Ptr(RedactKey(*key.AzureKeyConfig.ClientSecret))
+				}
+			}
 
+			// Redact TenantID if present
+			if key.AzureKeyConfig.TenantID != nil {
+				path = fmt.Sprintf("providers.%s.keys[%s].azure_key_config.tenant_id", provider, key.ID)
+				if envVar, ok := envVarsByPath[path]; ok {
+					azureConfig.TenantID = bifrost.Ptr("env." + envVar)
+				} else {
+					azureConfig.TenantID = bifrost.Ptr(RedactKey(*key.AzureKeyConfig.TenantID))
+				}
+			}
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
 
@@ -3264,6 +3291,18 @@ func (c *Config) getFieldValue(key schemas.Key, fieldName string) string {
 		if key.AzureKeyConfig != nil && key.AzureKeyConfig.APIVersion != nil {
 			return *key.AzureKeyConfig.APIVersion
 		}
+	case "client_id":
+		if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientID != nil {
+			return *key.AzureKeyConfig.ClientID
+		}
+	case "client_secret":
+		if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientSecret != nil {
+			return *key.AzureKeyConfig.ClientSecret
+		}
+	case "tenant_id":
+		if key.AzureKeyConfig != nil && key.AzureKeyConfig.TenantID != nil {
+			return *key.AzureKeyConfig.TenantID
+		}
 	case "access_key":
 		if key.BedrockKeyConfig != nil {
 			return key.BedrockKeyConfig.AccessKey
@@ -3397,6 +3436,63 @@ func (c *Config) processAzureKeyConfigEnvVars(key *schemas.Key, provider schemas
 		azureConfig.APIVersion = &processedAPIVersion
 	}
 
+	// Process ClientID if present
+	if azureConfig.ClientID != nil {
+		processedClientID, envVar, err := c.processEnvValue(*azureConfig.ClientID)
+		if err != nil {
+			return err
+		}
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   provider,
+				KeyType:    "azure_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].azure_key_config.client_id", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		azureConfig.ClientID = &processedClientID
+	}
+
+	// Process ClientSecret if present
+	if azureConfig.ClientSecret != nil {
+		processedClientSecret, envVar, err := c.processEnvValue(*azureConfig.ClientSecret)
+		if err != nil {
+			return err
+		}
+		azureConfig.ClientSecret = &processedClientSecret
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   provider,
+				KeyType:    "azure_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].azure_key_config.client_secret", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		azureConfig.ClientSecret = &processedClientSecret
+	}
+
+	// Process TenantID if present
+	if azureConfig.TenantID != nil {
+		processedTenantID, envVar, err := c.processEnvValue(*azureConfig.TenantID)
+		if err != nil {
+			return err
+		}
+		if envVar != "" {
+			newEnvKeys[envVar] = struct{}{}
+			c.EnvKeys[envVar] = append(c.EnvKeys[envVar], configstore.EnvKeyInfo{
+				EnvVar:     envVar,
+				Provider:   provider,
+				KeyType:    "azure_config",
+				ConfigPath: fmt.Sprintf("providers.%s.keys[%s].azure_key_config.tenant_id", provider, key.ID),
+				KeyID:      key.ID,
+			})
+		}
+		azureConfig.TenantID = &processedTenantID
+	}
 	return nil
 }
 
