@@ -1,2 +1,5 @@
 - fix: gemini thought signature handling in multi-turn conversations
 - feat: support computer-use-2025-11-24 in anthropic for claude-opus-4-5
+- refactor: use gemini native embedding endpoint for gemini embeddings
+- refactor: for fine-tuned or custom models in vertex use gemini native endpoint instead of openai compatible chat completions endpoint
+- fix: append bedrock and cohere routes in langchain and litellm integration

@@ -179,8 +179,8 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 	}
 }
 
-// createBedrockRouteConfigs creates route configurations for Bedrock endpoints
-func createBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+// CreateBedrockRouteConfigs creates route configurations for Bedrock endpoints
+func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
 		createBedrockConverseRouteConfig(pathPrefix, handlerStore),
 		createBedrockConverseStreamRouteConfig(pathPrefix, handlerStore),
@@ -570,7 +570,7 @@ func extractBedrockJobArnFromPath(handlerStore lib.HandlerStore) PreRequestCallb
 
 // NewBedrockRouter creates a new BedrockRouter with the given bifrost client
 func NewBedrockRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *BedrockRouter {
-	routes := createBedrockRouteConfigs("/bedrock", handlerStore)
+	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 	routes = append(routes, createBedrockBatchRouteConfigs("/bedrock", handlerStore)...)
 	routes = append(routes, createBedrockFilesRouteConfigs("/bedrock/files", handlerStore)...)
 

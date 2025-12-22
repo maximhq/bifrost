@@ -78,7 +78,7 @@ func Test_parseS3URI(t *testing.T) {
 
 func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
-	routes := createBedrockRouteConfigs("/bedrock", handlerStore)
+	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
 	assert.Len(t, routes, 4, "should have 4 bedrock routes")
 
@@ -530,12 +530,12 @@ func Test_extractBedrockJobArnFromPath(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: false}
 
 	tests := []struct {
-		name          string
-		jobArn        interface{}
-		provider      schemas.ModelProvider
-		wantErr       bool
-		wantJobArn    string
-		errContains   string
+		name        string
+		jobArn      interface{}
+		provider    schemas.ModelProvider
+		wantErr     bool
+		wantJobArn  string
+		errContains string
 	}{
 		{
 			name:       "valid job ARN for Bedrock",

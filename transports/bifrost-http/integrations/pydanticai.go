@@ -31,7 +31,7 @@ func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore,
 	routes = append(routes, CreateCohereRouteConfigs("/pydanticai")...)
 	// Add Bedrock routes to Pydantic AI for AWS Bedrock API compatibility
 	// Supports: converse, converse-stream, invoke, invoke-with-response-stream
-	routes = append(routes, createBedrockRouteConfigs("/pydanticai", handlerStore)...)
+	routes = append(routes, CreateBedrockRouteConfigs("/pydanticai", handlerStore)...)
 	return &PydanticAIRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
 	}

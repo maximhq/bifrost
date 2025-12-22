@@ -27,6 +27,12 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	// Add GenAI routes to LangChain for Vertex AI compatibility
 	routes = append(routes, CreateGenAIRouteConfigs("/langchain")...)
 
+	// Add Bedrock routes to LangChain for AWS Bedrock API compatibility
+	routes = append(routes, CreateBedrockRouteConfigs("/langchain", handlerStore)...)
+
+	// Add Cohere routes to LangChain for Cohere API compatibility
+	routes = append(routes, CreateCohereRouteConfigs("/langchain")...)
+
 	return &LangChainRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
 	}
