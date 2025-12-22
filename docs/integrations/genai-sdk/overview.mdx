@@ -280,6 +280,29 @@ const gptResponse = await gptModel.generateContent("Hello GPT!");
 
 ---
 
+## Dynamic Thinking Budget
+
+When `thinkingConfig.thinkingBudget` is set to `-1`, Bifrost handles it differently per provider:
+
+- **Gemini**: Preserves `-1` for native dynamic thinking support
+- **Anthropic**, **Bedrock**, **Cohere**: Converts to minimum reasoning budget value (1024)
+- **OpenAI**: Converts to medium reasoning effort
+
+```python
+response = client.models.glenerate_content(
+    model="gemini-2.5-flash",
+    contents="Complex reasoning task",
+    config={
+        "thinking_config": {
+            "include_thoughts": true,
+            "thinking_budget": -1  # Dynamic thinking
+        }
+    }
+)
+```
+
+---
+
 ## Supported Features
 
 The Google GenAI integration supports all features that are available in both the Google GenAI SDK and Bifrost core functionality. If the Google GenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.

@@ -37,13 +37,19 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
 		}
 		if bifrostReq.Params.Reasoning.MaxTokens != nil {
+			tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
+			if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+				// bedrock does not support dynamic reasoning budget like gemini
+				// setting it to default max tokens
+				tokenBudget = anthropic.MinimumReasoningMaxTokens
+			}
 			if schemas.IsAnthropicModel(bifrostReq.Model) {
-				if *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 					return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 				}
 				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
 					"type":          "enabled",
-					"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+					"budget_tokens": tokenBudget,
 				}
 			} else if schemas.IsNovaModel(bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
@@ -58,7 +64,7 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 					}
 				}
 
-				maxReasoningEffort := providerUtils.GetReasoningEffortFromBudgetTokens(*bifrostReq.Params.Reasoning.MaxTokens, minBudgetTokens, defaultMaxTokens)
+				maxReasoningEffort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, minBudgetTokens, defaultMaxTokens)
 				typeStr := "enabled"
 				switch maxReasoningEffort {
 				case "high":
@@ -84,7 +90,7 @@ func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChat
 			} else {
 				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
 					"type":          "enabled",
-					"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
+					"budget_tokens": tokenBudget,
 				}
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {

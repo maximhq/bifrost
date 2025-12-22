@@ -2027,7 +2027,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.ThinkingConfig.IncludeThoughts = false
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
 			case -1: // dynamic thinking budget
-				config.ThinkingConfig.ThinkingBudget = nil
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(-1))
 			default: // constrained thinking budget
 				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
 			}

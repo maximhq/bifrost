@@ -3,3 +3,4 @@
 - refactor: use gemini native embedding endpoint for gemini embeddings
 - refactor: for fine-tuned or custom models in vertex use gemini native endpoint instead of openai compatible chat completions endpoint
 - fix: append bedrock and cohere routes in langchain and litellm integration
+- fix: handle dynamic thinking budget (-1) in gemini and other providers

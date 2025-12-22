@@ -2,3 +2,4 @@
 - feat: support computer-use-2025-11-24 in anthropic for claude-opus-4-5
 - refactor: use gemini native embedding endpoint for gemini embeddings
 - refactor: for fine-tuned or custom models in vertex use gemini native endpoint instead of openai compatible chat completions endpoint
+- fix: handle dynamic thinking budget (-1) in gemini and other providers

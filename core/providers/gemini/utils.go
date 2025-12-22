@@ -50,7 +50,8 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 				params.Reasoning.Effort = schemas.Ptr("none")
 			case -1:
 				// dynamic thinking budget
-				params.Reasoning.MaxTokens = nil
+				params.Reasoning.Effort = schemas.Ptr("medium")
+				params.Reasoning.MaxTokens = schemas.Ptr(-1)
 			}
 		}
 	}

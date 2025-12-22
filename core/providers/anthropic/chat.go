@@ -104,12 +104,18 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if *bifrostReq.Params.Reasoning.MaxTokens < MinimumReasoningMaxTokens {
+				budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
+				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+					// anthropic does not support dynamic reasoning budget like gemini
+					// setting it to default max tokens
+					budgetTokens = MinimumReasoningMaxTokens
+				}
+				if budgetTokens < MinimumReasoningMaxTokens {
 					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
 				}
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type:         "enabled",
-					BudgetTokens: bifrostReq.Params.Reasoning.MaxTokens,
+					BudgetTokens: schemas.Ptr(budgetTokens),
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
