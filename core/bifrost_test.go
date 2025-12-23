@@ -56,7 +56,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test immediate success
 	t.Run("ImmediateSuccess", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(attempts int) (string, *schemas.BifrostError) {
 			callCount++
 			return "success", nil
 		}
@@ -84,7 +84,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	// Test success after retries
 	t.Run("SuccessAfterRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(attempts int) (string, *schemas.BifrostError) {
 			callCount++
 			if callCount <= 2 {
 				// First two calls fail with retryable error
@@ -121,7 +121,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	ctx := context.Background()
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
-		handler := func() (string, *schemas.BifrostError) {
+		handler := func(attempts int) (string, *schemas.BifrostError) {
 			callCount++
 			// Always fail with retryable error
 			return "", createBifrostError("rate limit exceeded", Ptr(429), nil, false)
@@ -184,7 +184,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(attempts int) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -256,7 +256,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
-			handler := func() (string, *schemas.BifrostError) {
+			handler := func(attempts int) (string, *schemas.BifrostError) {
 				callCount++
 				return "", tc.error
 			}
@@ -477,7 +477,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	var attemptCounts []int
 	callCount := 0
 
-	handler := func() (string, *schemas.BifrostError) {
+	handler := func(attempts int) (string, *schemas.BifrostError) {
 		callCount++
 		attemptCounts = append(attemptCounts, callCount)
 

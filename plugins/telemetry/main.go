@@ -6,6 +6,7 @@ package telemetry
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -97,6 +98,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"virtual_key_name",
 		"selected_key_id",
 		"selected_key_name",
+		"tried_key_ids",
+		"tried_key_names",
 		"number_of_retries",
 		"fallback_index",
 		"team_id",
@@ -301,19 +304,21 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 		return result, bifrostErr, nil
 	}
 
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
 
-	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	triedKeyIDs := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyIDs)
+	triedKeyNames := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyNames)
 
-	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
-	teamID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-id"))
-	teamName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-name"))
-	customerID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
-	customerName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-id"))
+	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-name"))
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
+	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
 
 	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
 	go func() {
@@ -325,6 +330,8 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 			"virtual_key_name":  virtualKeyName,
 			"selected_key_id":   selectedKeyID,
 			"selected_key_name": selectedKeyName,
+			"tried_key_ids":     strings.Join(triedKeyIDs, ","),
+			"tried_key_names":   strings.Join(triedKeyNames, ","),
 			"number_of_retries": strconv.Itoa(numberOfRetries),
 			"fallback_index":    strconv.Itoa(fallbackIndex),
 			"team_id":           teamID,

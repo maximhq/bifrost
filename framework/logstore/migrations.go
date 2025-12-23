@@ -43,6 +43,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddTriedKeyIDsAndTriedKeyNamesColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -671,6 +674,49 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding raw request column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddTriedKeyIDsAndTriedKeyNamesColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_tried_key_ids_and_tried_key_names_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "tried_key_ids") {
+				if err := migrator.AddColumn(&Log{}, "tried_key_ids"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "tried_key_names") {
+				if err := migrator.AddColumn(&Log{}, "tried_key_names"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "tried_key_ids") {
+				if err := migrator.DropColumn(&Log{}, "tried_key_ids"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "tried_key_names") {
+				if err := migrator.DropColumn(&Log{}, "tried_key_names"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding tried key ids and tried key names columns: %s", err.Error())
 	}
 	return nil
 }

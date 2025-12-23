@@ -299,6 +299,16 @@ func GetStringFromContext(ctx context.Context, key any) string {
 	return ""
 }
 
+// GetStringSliceFromContext safely extracts a slice of strings from context
+func GetStringSliceFromContext(ctx context.Context, key any) []string {
+	if value := ctx.Value(key); value != nil {
+		if strs, ok := value.([]string); ok {
+			return strs
+		}
+	}
+	return []string{}
+}
+
 // GetIntFromContext safely extracts an int value from context
 func GetIntFromContext(ctx context.Context, key any) int {
 	if value := ctx.Value(key); value != nil {
@@ -395,4 +405,14 @@ func isPrivateIP(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }

@@ -13,7 +13,20 @@ const (
 	DefaultInitialPoolSize = 5000
 )
 
-type KeySelector func(ctx *context.Context, keys []Key, providerKey ModelProvider, model string) (Key, error)
+// KeySorterFunc is a function that takes in all the available for the provider and model and returns the keys to use in sorted order.
+// How to sort the keys is up to the implementation of the function.
+// Example:
+// - Sort by weight (default)
+// The sorted keys are then used to select the key to use for the request.
+// If one fails, the next key is used until all keys are tried (or max retries is reached) by the retrying logic.
+type KeySorterFunc func(ctx *context.Context, keys []Key, providerKey ModelProvider, model string) ([]Key, error)
+
+type KeySorter string
+
+const (
+	KeySorterWeightedRandom KeySorter = "weighted_random"
+	KeySorterCustom         KeySorter = "custom"
+)
 
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
@@ -22,10 +35,11 @@ type BifrostConfig struct {
 	Account            Account
 	Plugins            []Plugin
 	Logger             Logger
-	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig  // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector // Custom key selector function
+	InitialPoolSize    int           // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests bool          // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig          *MCPConfig    // MCP (Model Context Protocol) configuration for tool integration
+	KeySorterAlgorithm KeySorter     // Name of the key sorter algorithm to use
+	CustomKeySorter    KeySorterFunc // Custom key sorter function to use
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -125,6 +139,8 @@ const (
 	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyTriedKeyIDs                         BifrostContextKey = "bifrost-tried-key-ids"        // []string (to store the IDs of the keys that have been tried in order (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyTriedKeyNames                       BifrostContextKey = "bifrost-tried-key-names"      // []string (to store the names of the keys that have been tried in order (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost - DO NOT SET THIS MANUALLY))

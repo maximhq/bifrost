@@ -249,6 +249,9 @@ func (p *OtelPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.Bifrost
 	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
 
+	triedKeyIDs := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyIDs)
+	triedKeyNames := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyNames)
+
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
@@ -286,6 +289,8 @@ func (p *OtelPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.Bifrost
 						virtualKeyName,
 						selectedKeyID,
 						selectedKeyName,
+						triedKeyIDs,
+						triedKeyNames,
 						numberOfRetries,
 						fallbackIndex,
 						teamID,
@@ -309,6 +314,8 @@ func (p *OtelPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.Bifrost
 				virtualKeyName,
 				selectedKeyID,
 				selectedKeyName,
+				triedKeyIDs,
+				triedKeyNames,
 				numberOfRetries,
 				fallbackIndex,
 				teamID,
