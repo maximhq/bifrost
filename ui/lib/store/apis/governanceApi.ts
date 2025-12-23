@@ -1,22 +1,29 @@
 import {
 	Budget,
 	CreateCustomerRequest,
+	CreateModelConfigRequest,
 	CreateTeamRequest,
 	CreateVirtualKeyRequest,
 	Customer,
 	DebugStatsResponse,
 	GetBudgetsResponse,
 	GetCustomersResponse,
+	GetModelConfigsResponse,
+	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
 	GetTeamsResponse,
 	GetUsageStatsResponse,
 	GetVirtualKeysResponse,
 	HealthCheckResponse,
+	ModelConfig,
+	ProviderGovernance,
 	RateLimit,
 	ResetUsageRequest,
 	Team,
 	UpdateBudgetRequest,
 	UpdateCustomerRequest,
+	UpdateModelConfigRequest,
+	UpdateProviderGovernanceRequest,
 	UpdateRateLimitRequest,
 	UpdateTeamRequest,
 	UpdateVirtualKeyRequest,
@@ -224,6 +231,69 @@ export const governanceApi = baseApi.injectEndpoints({
 			query: () => "/governance/debug/health",
 			providesTags: ["HealthCheck"],
 		}),
+
+		// Model Configs
+		getModelConfigs: builder.query<GetModelConfigsResponse, void>({
+			query: () => "/governance/model-configs",
+			providesTags: ["ModelConfigs"],
+		}),
+
+		getModelConfig: builder.query<{ model_config: ModelConfig }, string>({
+			query: (id) => `/governance/model-configs/${id}`,
+			providesTags: (result, error, id) => [{ type: "ModelConfigs", id }],
+		}),
+
+		createModelConfig: builder.mutation<{ message: string; model_config: ModelConfig }, CreateModelConfigRequest>({
+			query: (data) => ({
+				url: "/governance/model-configs",
+				method: "POST",
+				body: data,
+			}),
+			invalidatesTags: ["ModelConfigs"],
+		}),
+
+		updateModelConfig: builder.mutation<{ message: string; model_config: ModelConfig }, { id: string; data: UpdateModelConfigRequest }>({
+			query: ({ id, data }) => ({
+				url: `/governance/model-configs/${id}`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: (result, error, { id }) => ["ModelConfigs", { type: "ModelConfigs", id }],
+		}),
+
+		deleteModelConfig: builder.mutation<{ message: string }, string>({
+			query: (id) => ({
+				url: `/governance/model-configs/${id}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["ModelConfigs"],
+		}),
+
+		// Provider Governance
+		getProviderGovernance: builder.query<GetProviderGovernanceResponse, void>({
+			query: () => "/governance/providers",
+			providesTags: ["ProviderGovernance"],
+		}),
+
+		updateProviderGovernance: builder.mutation<
+			{ message: string; provider: ProviderGovernance },
+			{ provider: string; data: UpdateProviderGovernanceRequest }
+		>({
+			query: ({ provider, data }) => ({
+				url: `/governance/providers/${encodeURIComponent(provider)}`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: ["ProviderGovernance"],
+		}),
+
+		deleteProviderGovernance: builder.mutation<{ message: string }, string>({
+			query: (provider) => ({
+				url: `/governance/providers/${encodeURIComponent(provider)}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["ProviderGovernance"],
+		}),
 	}),
 });
 
@@ -269,6 +339,18 @@ export const {
 	useGetGovernanceDebugStatsQuery,
 	useGetGovernanceHealthQuery,
 
+	// Model Configs
+	useGetModelConfigsQuery,
+	useGetModelConfigQuery,
+	useCreateModelConfigMutation,
+	useUpdateModelConfigMutation,
+	useDeleteModelConfigMutation,
+
+	// Provider Governance
+	useGetProviderGovernanceQuery,
+	useUpdateProviderGovernanceMutation,
+	useDeleteProviderGovernanceMutation,
+
 	// Lazy queries
 	useLazyGetVirtualKeysQuery,
 	useLazyGetVirtualKeyQuery,
@@ -283,4 +365,6 @@ export const {
 	useLazyGetUsageStatsQuery,
 	useLazyGetGovernanceDebugStatsQuery,
 	useLazyGetGovernanceHealthQuery,
+	useLazyGetModelConfigsQuery,
+	useLazyGetProviderGovernanceQuery,
 } = governanceApi;

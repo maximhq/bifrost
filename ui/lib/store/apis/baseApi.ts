@@ -155,6 +155,8 @@ export const baseApi = createApi({
 		"HealthCheck",
 		"DBKeys",
 		"Models",
+		"ModelConfigs",
+		"ProviderGovernance",
 		"Plugins",
 		"SCIMProviders",
 		"User",
@@ -172,7 +174,7 @@ export const baseApi = createApi({
 
 // Helper function to extract error message from RTK Query error
 export const getErrorMessage = (error: unknown): string => {
-	if(error === undefined || error === null) {
+	if (error === undefined || error === null) {
 		return "An unexpected error occurred";
 	}
 	if (error instanceof Error) {
