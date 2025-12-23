@@ -193,7 +193,8 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	// Aux struct adds reasoning_effort for decoding
 	var aux struct {
 		*Alias
-		ReasoningEffort *string `json:"reasoning_effort"` // only for input
+		ReasoningEffort    *string `json:"reasoning_effort"` // only for input
+		ReasoningMaxTokens *int    `json:"reasoning_max_tokens"`
 	}
 
 	aux.Alias = (*Alias)(cp)
@@ -205,18 +206,26 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 
 	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled
 
-	// If both are non-nil, they were both set in JSON
-	if aux.Alias != nil && aux.Alias.Reasoning != nil && aux.ReasoningEffort != nil {
-		return fmt.Errorf("both reasoning_effort and reasoning fields cannot be present at the same time")
+	// Validate that specific fields don't conflict
+	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil {
+		return fmt.Errorf("both reasoning_effort and reasoning.effort cannot be present at the same time")
+	}
+	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil {
+		return fmt.Errorf("both reasoning_max_tokens and reasoning.max_tokens cannot be present at the same time")
 	}
 
-	// If reasoning_effort is set, convert it into Reasoning
-	if aux.ReasoningEffort != nil {
-		cp.Reasoning = &ChatReasoning{
-			Effort: aux.ReasoningEffort,
+	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil {
+		if cp.Reasoning == nil {
+			cp.Reasoning = &ChatReasoning{}
+		}
+		// Merge top-level fields into the reasoning object
+		if aux.ReasoningEffort != nil {
+			cp.Reasoning.Effort = aux.ReasoningEffort
+		}
+		if aux.ReasoningMaxTokens != nil {
+			cp.Reasoning.MaxTokens = aux.ReasoningMaxTokens
 		}
 	}
-
 	// ExtraParams etc. are already handled by the alias
 	return nil
 }
