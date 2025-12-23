@@ -348,6 +348,7 @@ export default function AppSidebar() {
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
+	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
@@ -412,7 +413,8 @@ export default function AppSidebar() {
 			url: "/workspace/governance",
 			icon: Landmark,
 			description: "Govern access",
-			hasAccess: hasVirtualKeysAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
+			hasAccess:
+				hasVirtualKeysAccess || hasGovernanceAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
 			subItems: [
 				{
 					title: "Virtual Keys",
@@ -420,6 +422,13 @@ export default function AppSidebar() {
 					icon: KeyRound,
 					description: "Manage virtual keys & access",
 					hasAccess: hasVirtualKeysAccess,
+				},
+				{
+					title: "Model Limits",
+					url: "/workspace/model-limits",
+					icon: Gauge,
+					description: "Model-level budgets & rate limits",
+					hasAccess: hasGovernanceAccess,
 				},
 				{
 					title: "Users & Groups",
