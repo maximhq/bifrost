@@ -492,9 +492,14 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 	return nil
 }
 
-// ExecuteTool executes an MCP tool call and returns the result
-func (s *BifrostHTTPServer) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
-	return s.Client.ExecuteMCPTool(ctx, toolCall)
+// ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
+func (s *BifrostHTTPServer) ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	return s.Client.ExecuteChatMCPTool(ctx, toolCall)
+}
+
+// ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
+func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	return s.Client.ExecuteResponsesMCPTool(ctx, toolCall)
 }
 
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {

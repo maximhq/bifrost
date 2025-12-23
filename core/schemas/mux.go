@@ -113,6 +113,99 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	return ct
 }
 
+// ToChatAssistantMessageToolCall converts a ResponsesToolMessage to ChatAssistantMessageToolCall format.
+// This is useful for executing Responses API tool calls using the Chat API tool executor.
+//
+// Returns:
+//   - *ChatAssistantMessageToolCall: The converted tool call in Chat API format
+//
+// Example:
+//
+//	responsesToolMsg := &ResponsesToolMessage{
+//	    CallID:    Ptr("call-123"),
+//	    Name:      Ptr("calculate"),
+//	    Arguments: Ptr("{\"x\": 10, \"y\": 20}"),
+//	}
+//	chatToolCall := responsesToolMsg.ToChatAssistantMessageToolCall()
+func (rtm *ResponsesToolMessage) ToChatAssistantMessageToolCall() *ChatAssistantMessageToolCall {
+	if rtm == nil {
+		return nil
+	}
+
+	toolCall := &ChatAssistantMessageToolCall{
+		ID:   rtm.CallID,
+		Type: Ptr("function"),
+		Function: ChatAssistantMessageToolCallFunction{
+			Name:      rtm.Name,
+			Arguments: "",
+		},
+	}
+
+	// Extract arguments string
+	if rtm.Arguments != nil {
+		toolCall.Function.Arguments = *rtm.Arguments
+	}
+
+	return toolCall
+}
+
+// ToResponsesToolMessage converts a ChatToolMessage (tool execution result) to ResponsesToolMessage format.
+// This creates a function_call_output message suitable for the Responses API.
+//
+// Returns:
+//   - *ResponsesMessage: A ResponsesMessage with type=function_call_output containing the tool result
+//
+// Example:
+//
+//	chatToolMsg := &ChatMessage{
+//	    Role: ChatMessageRoleTool,
+//	    ChatToolMessage: &ChatToolMessage{
+//	        ToolCallID: Ptr("call-123"),
+//	    },
+//	    Content: &ChatMessageContent{
+//	        ContentStr: Ptr("Result: 30"),
+//	    },
+//	}
+//	responsesMsg := chatToolMsg.ToResponsesToolMessage()
+func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
+	if cm == nil || cm.ChatToolMessage == nil {
+		return nil
+	}
+
+	msgType := ResponsesMessageTypeFunctionCallOutput
+
+	respMsg := &ResponsesMessage{
+		Type: &msgType,
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: cm.ChatToolMessage.ToolCallID,
+		},
+	}
+
+	// Extract output from content
+	if cm.Content != nil {
+		if cm.Content.ContentStr != nil {
+			output := *cm.Content.ContentStr
+			respMsg.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+				ResponsesToolCallOutputStr: &output,
+			}
+		} else if len(cm.Content.ContentBlocks) > 0 {
+			// For structured content blocks, convert to ResponsesMessageContentBlock
+			respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
+			for i, block := range cm.Content.ContentBlocks {
+				respBlocks[i] = ResponsesMessageContentBlock{
+					Type: ResponsesMessageContentBlockType(block.Type),
+					Text: block.Text,
+				}
+			}
+			respMsg.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+				ResponsesFunctionToolCallOutputBlocks: respBlocks,
+			}
+		}
+	}
+
+	return respMsg
+}
+
 // =============================================================================
 // TOOL CHOICE CONVERSION METHODS
 // =============================================================================

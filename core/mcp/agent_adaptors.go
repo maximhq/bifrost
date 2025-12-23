@@ -8,7 +8,20 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// agentAPIAdapter defines the interface for API-specific operations
+// agentAPIAdapter defines the interface for API-specific operations in agent mode.
+// This adapter pattern allows the agent execution logic to work with both Chat Completions
+// and Responses APIs without requiring API-specific code in the agent loop.
+//
+// The adapter handles format conversions at the boundaries:
+//   - Responses API requests/responses are converted to/from Chat API format
+//   - Tool calls are extracted in Chat format for uniform processing
+//   - Results are converted back to the original API format for the response
+//
+// This design ensures that:
+//   1. Tool execution logic is format-agnostic
+//   2. Both APIs have feature parity
+//   3. Conversions are localized to adapters
+//   4. The agent loop remains API-neutral
 type agentAPIAdapter interface {
 	// Extract conversation history from the original request
 	getConversationHistory() []interface{}
@@ -22,13 +35,17 @@ type agentAPIAdapter interface {
 	// Check if response has tool calls
 	hasToolCalls(response interface{}) bool
 
-	// Extract tool calls from response
+	// Extract tool calls from response.
+	// For Chat API: Returns tool calls directly from the response.
+	// For Responses API: Converts ResponsesMessage tool calls to ChatAssistantMessageToolCall for processing.
 	extractToolCalls(response interface{}) []schemas.ChatAssistantMessageToolCall
 
 	// Add assistant message with tool calls to conversation
 	addAssistantMessage(conversation []interface{}, response interface{}) []interface{}
 
-	// Add tool results to conversation
+	// Add tool results to conversation.
+	// For Chat API: Adds ChatMessage results directly.
+	// For Responses API: Converts ChatMessage results to ResponsesMessage via ToResponsesToolMessage().
 	addToolResults(conversation []interface{}, toolResults []*schemas.ChatMessage) []interface{}
 
 	// Create new request with updated conversation
@@ -53,7 +70,20 @@ type chatAPIAdapter struct {
 	makeReq         func(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError)
 }
 
-// responsesAPIAdapter implements agentAPIAdapter for Responses API
+// responsesAPIAdapter implements agentAPIAdapter for Responses API.
+// It enables the agent mode execution loop to work with Responses API requests and responses
+// by handling format conversions transparently.
+//
+// Key conversions performed:
+//   - extractToolCalls(): Converts ResponsesMessage tool calls to ChatAssistantMessageToolCall
+//     via BifrostResponsesResponse.ToBifrostChatResponse() and existing extraction logic
+//   - addToolResults(): Converts ChatMessage tool results back to ResponsesMessage
+//     via ChatMessage.ToResponsesMessages() and ToResponsesToolMessage()
+//   - createNewRequest(): Builds a new BifrostResponsesRequest from converted conversation
+//   - createResponseWithExecutedTools(): Creates a Responses response with results and pending tools
+//
+// This adapter enables full feature parity between Chat Completions and Responses APIs
+// for tool execution in agent mode.
 type responsesAPIAdapter struct {
 	originalReq     *schemas.BifrostResponsesRequest
 	initialResponse *schemas.BifrostResponsesResponse

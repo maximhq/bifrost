@@ -306,16 +306,21 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 // TOOL REGISTRATION AND DISCOVERY
 // ============================================================================
 
-// executeTool executes a tool call and returns the result as a tool message.
+// ExecuteChatTool executes a tool call in Chat Completions API format and returns the result as a chat tool message.
+// This is the primary tool executor that works with both Chat Completions and Responses APIs.
+//
+// For Responses API users, use ExecuteResponsesTool() for a more type-safe interface.
+// However, internally this method is format-agnostic - it executes the tool and returns
+// a ChatMessage which can then be converted to ResponsesMessage via ToResponsesToolMessage().
 //
 // Parameters:
 //   - ctx: Execution context
 //   - toolCall: The tool call to execute (from assistant message)
 //
 // Returns:
-//   - schemas.ChatMessage: Tool message with execution result
+//   - *schemas.ChatMessage: Tool message with execution result
 //   - error: Any execution error
-func (m *ToolsManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+func (m *ToolsManager) ExecuteChatTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
 	if toolCall.Function.Name == nil {
 		return nil, fmt.Errorf("tool call missing function name")
 	}
@@ -402,6 +407,64 @@ func (m *ToolsManager) ExecuteTool(ctx context.Context, toolCall schemas.ChatAss
 	}
 }
 
+// ExecuteToolForResponses executes a tool call from a Responses API tool message and returns
+// the result in Responses API format. This is a type-safe wrapper around ExecuteTool that
+// handles the conversion between Responses and Chat API formats.
+//
+// This method:
+// 1. Converts the Responses tool message to Chat API format
+// 2. Executes the tool using the standard tool executor
+// 3. Converts the result back to Responses API format
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolMessage: The Responses API tool message to execute
+//   - callID: The original call ID from the Responses API
+//
+// Returns:
+//   - *schemas.ResponsesMessage: Tool result message in Responses API format
+//   - error: Any execution error
+//
+// Example:
+//
+//	responsesToolMsg := &schemas.ResponsesToolMessage{
+//	    Name:      Ptr("calculate"),
+//	    Arguments: Ptr("{\"x\": 10, \"y\": 20}"),
+//	}
+//	resultMsg, err := toolsManager.ExecuteResponsesTool(ctx, responsesToolMsg, "call-123")
+//	// resultMsg is a ResponsesMessage with type=function_call_output
+func (m *ToolsManager) ExecuteResponsesTool(
+	ctx context.Context,
+	toolMessage *schemas.ResponsesToolMessage,
+) (*schemas.ResponsesMessage, error) {
+	if toolMessage == nil {
+		return nil, fmt.Errorf("tool message is nil")
+	}
+	if toolMessage.Name == nil {
+		return nil, fmt.Errorf("tool call missing function name")
+	}
+
+	// Convert Responses format to Chat format for execution
+	chatToolCall := toolMessage.ToChatAssistantMessageToolCall()
+	if chatToolCall == nil {
+		return nil, fmt.Errorf("failed to convert Responses tool message to Chat format")
+	}
+
+	// Execute the tool using the standard executor
+	chatResult, err := m.ExecuteChatTool(ctx, *chatToolCall)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert the result back to Responses format
+	responsesMessage := chatResult.ToResponsesToolMessage()
+	if responsesMessage == nil {
+		return nil, fmt.Errorf("failed to convert tool result to Responses format")
+	}
+
+	return responsesMessage, nil
+}
+
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
 // iterative tool calls up to the configured maximum depth. It delegates to the
 // shared agent execution logic with the manager's configuration and dependencies.
@@ -428,7 +491,7 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteTool,
+		m.ExecuteChatTool,
 		m.clientManager,
 	)
 }
@@ -459,7 +522,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteTool,
+		m.ExecuteChatTool,
 		m.clientManager,
 	)
 }

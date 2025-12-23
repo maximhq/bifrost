@@ -1693,7 +1693,7 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 	return bifrost.mcpManager.RegisterTool(name, description, handler, toolSchema)
 }
 
-// ExecuteMCPTool executes an MCP tool call and returns the result as a tool message.
+// ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
 // This is the main public API for manual MCP tool execution.
 //
 // Parameters:
@@ -1703,7 +1703,7 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 // Returns:
 //   - schemas.ChatMessage: Tool message with execution result
 //   - schemas.BifrostError: Any execution error
-func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+func (bifrost *Bifrost) ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if bifrost.mcpManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1716,7 +1716,7 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 		}
 	}
 
-	result, err := bifrost.mcpManager.ExecuteTool(ctx, toolCall)
+	result, err := bifrost.mcpManager.ExecuteChatTool(ctx, toolCall)
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1725,6 +1725,44 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: schemas.ChatCompletionRequest, // MCP tools are used with chat completions
+			},
+		}
+	}
+
+	return result, nil
+}
+
+// ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
+
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - schemas.ResponsesMessage: Tool message with execution result
+//   - schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	if bifrost.mcpManager == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP is not configured in this Bifrost instance",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest, // MCP tools are used with responses requests
+			},
+		}
+	}
+
+	result, err := bifrost.mcpManager.ExecuteResponsesTool(ctx, toolCall)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest, // MCP tools are used with responses requests
 			},
 		}
 	}
