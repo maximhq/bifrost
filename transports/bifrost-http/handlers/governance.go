@@ -30,6 +30,10 @@ type GovernanceManager interface {
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error)
 	RemoveCustomer(ctx context.Context, id string) error
+	ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error)
+	RemoveModelConfig(ctx context.Context, id string) error
+	ReloadProvider(ctx context.Context, name string) (*configstoreTables.TableProvider, error)
+	RemoveProvider(ctx context.Context, name string) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -154,6 +158,28 @@ type UpdateCustomerRequest struct {
 	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
 }
 
+// CreateModelConfigRequest represents the request body for creating a model config
+type CreateModelConfigRequest struct {
+	ModelName string                  `json:"model_name" validate:"required"`
+	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means all providers
+	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// UpdateModelConfigRequest represents the request body for updating a model config
+type UpdateModelConfigRequest struct {
+	ModelName *string                 `json:"model_name,omitempty"`
+	Provider  *string                 `json:"provider,omitempty"` // Optional provider, nil means no change
+	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
+// UpdateProviderGovernanceRequest represents the request body for updating provider governance
+type UpdateProviderGovernanceRequest struct {
+	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
+}
+
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
 func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Virtual Key CRUD operations
@@ -180,6 +206,18 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	// Budget and Rate Limit GET operations
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
+
+	// Model Config CRUD operations
+	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
+	r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
+	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
+	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
+	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
+
+	// Provider Governance operations
+	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
+	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
+	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -1535,4 +1573,624 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 		return fmt.Errorf("invalid budget reset duration format: %s", budget.ResetDuration)
 	}
 	return nil
+}
+
+// Model Config CRUD Operations
+
+// getModelConfigs handles GET /api/governance/model-configs - Get all model configs
+func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
+	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve model configs: %v", err)
+		SendError(ctx, 500, "Failed to retrieve model configs")
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"model_configs": modelConfigs,
+		"count":         len(modelConfigs),
+	})
+}
+
+// getModelConfig handles GET /api/governance/model-configs/{mc_id} - Get a specific model config
+func (h *GovernanceHandler) getModelConfig(ctx *fasthttp.RequestCtx) {
+	mcID := ctx.UserValue("mc_id").(string)
+	mc, err := h.configStore.GetModelConfigByID(ctx, mcID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Model config not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve model config")
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"model_config": mc,
+	})
+}
+
+// createModelConfig handles POST /api/governance/model-configs - Create a new model config
+func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
+	var req CreateModelConfigRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	// Validate required fields
+	if req.ModelName == "" {
+		SendError(ctx, 400, "Model name is required")
+		return
+	}
+	// Check if model config with same (model_name, provider) already exists
+	existing, err := h.configStore.GetModelConfig(ctx, req.ModelName, req.Provider)
+	if err != nil && err != configstore.ErrNotFound {
+		logger.Error("failed to check existing model config: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to check existing model config: %v", err))
+		return
+	}
+	if existing != nil {
+		if req.Provider != nil {
+			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' with provider '%s' already exists", req.ModelName, *req.Provider))
+		} else {
+			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' (global) already exists", req.ModelName))
+		}
+		return
+	}
+	// Validate budget if provided
+	if req.Budget != nil {
+		if req.Budget.MaxLimit < 0 {
+			SendError(ctx, 400, fmt.Sprintf("Budget max_limit cannot be negative: %.2f", req.Budget.MaxLimit))
+			return
+		}
+		if _, err := configstoreTables.ParseDuration(req.Budget.ResetDuration); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid reset duration format: %s", req.Budget.ResetDuration))
+			return
+		}
+	}
+	var mc configstoreTables.TableModelConfig
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		mc = configstoreTables.TableModelConfig{
+			ID:        uuid.NewString(),
+			ModelName: req.ModelName,
+			Provider:  req.Provider,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		// Create budget if provided
+		if req.Budget != nil {
+			budget := configstoreTables.TableBudget{
+				ID:            uuid.NewString(),
+				MaxLimit:      req.Budget.MaxLimit,
+				ResetDuration: req.Budget.ResetDuration,
+				LastReset:     time.Now(),
+				CurrentUsage:  0,
+			}
+			if err := validateBudget(&budget); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+				return err
+			}
+			mc.BudgetID = &budget.ID
+			mc.Budget = &budget
+		}
+		// Create rate limit if provided
+		if req.RateLimit != nil {
+			rateLimit := configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+				TokenResetDuration:   req.RateLimit.TokenResetDuration,
+				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+				RequestResetDuration: req.RateLimit.RequestResetDuration,
+				TokenLastReset:       time.Now(),
+				RequestLastReset:     time.Now(),
+			}
+			if err := validateRateLimit(&rateLimit); err != nil {
+				return err
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return err
+			}
+			mc.RateLimitID = &rateLimit.ID
+			mc.RateLimit = &rateLimit
+		}
+		if err := h.configStore.CreateModelConfig(ctx, &mc, tx); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
+		logger.Error("failed to create model config: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to create model config: %v", err))
+		return
+	}
+	// Reload model config in memory
+	preloadedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
+	if err != nil {
+		logger.Error("failed to reload model config in memory: %v", err)
+		preloadedMC = &mc
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message":      "Model config created successfully",
+		"model_config": preloadedMC,
+	})
+}
+
+// updateModelConfig handles PUT /api/governance/model-configs/{mc_id} - Update a model config
+func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
+	mcID := ctx.UserValue("mc_id").(string)
+	var req UpdateModelConfigRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	mc, err := h.configStore.GetModelConfigByID(ctx, mcID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Model config not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve model config")
+		return
+	}
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the model config (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
+		// Update fields if provided
+		if req.ModelName != nil {
+			mc.ModelName = *req.ModelName
+		}
+		// Update provider if provided in request
+		if req.Provider != nil {
+			mc.Provider = req.Provider
+		}
+		// Handle budget updates
+		if req.Budget != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if mc.BudgetID != nil {
+					budgetIDToDelete = *mc.BudgetID
+					mc.BudgetID = nil
+					mc.Budget = nil
+				}
+			} else if mc.BudgetID != nil {
+				// Update existing budget
+				// Validate that both fields are present before dereferencing
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
+					return err
+				}
+				// Set all fields from request
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.Budget = &budget
+			} else {
+				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     time.Now(),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				mc.BudgetID = &budget.ID
+				mc.Budget = &budget
+			}
+		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if mc.RateLimitID != nil {
+					rateLimitIDToDelete = *mc.RateLimitID
+					mc.RateLimitID = nil
+					mc.RateLimit = nil
+				}
+			} else if mc.RateLimitID != nil {
+				// Update existing rate limit - set ALL fields from request (nil means clear)
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *mc.RateLimitID).Error; err != nil {
+					return err
+				}
+				// Set all fields from request - nil values will clear the field
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				mc.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				mc.RateLimitID = &rateLimit.ID
+				mc.RateLimit = &rateLimit
+			}
+		}
+		mc.UpdatedAt = time.Now()
+		if err := h.configStore.UpdateModelConfig(ctx, mc, tx); err != nil {
+			return err
+		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		logger.Error("failed to update model config: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to update model config: %v", err))
+		return
+	}
+	// Reload model config in memory (also reloads from DB to get full relationships)
+	updatedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
+	if err != nil {
+		logger.Error("failed to reload model config in memory: %v", err)
+		updatedMC = mc
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message":      "Model config updated successfully",
+		"model_config": updatedMC,
+	})
+}
+
+// deleteModelConfig handles DELETE /api/governance/model-configs/{mc_id} - Delete a model config
+func (h *GovernanceHandler) deleteModelConfig(ctx *fasthttp.RequestCtx) {
+	mcID := ctx.UserValue("mc_id").(string)
+	// Check if model config exists
+	_, err := h.configStore.GetModelConfigByID(ctx, mcID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Model config not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve model config")
+		return
+	}
+	// Delete the model config
+	if err := h.configStore.DeleteModelConfig(ctx, mcID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Model config not found")
+			return
+		}
+		logger.Error("failed to delete model config: %v", err)
+		SendError(ctx, 500, "Failed to delete model config")
+		return
+	}
+	// Remove model config from in-memory store
+	if err := h.governanceManager.RemoveModelConfig(ctx, mcID); err != nil {
+		logger.Error("failed to remove model config from memory: %v", err)
+		// Continue anyway, the config is deleted from DB
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Model config deleted successfully",
+	})
+}
+
+// Provider Governance Operations
+
+// ProviderGovernanceResponse represents a provider with its governance settings
+type ProviderGovernanceResponse struct {
+	Provider  string                            `json:"provider"`
+	Budget    *configstoreTables.TableBudget    `json:"budget,omitempty"`
+	RateLimit *configstoreTables.TableRateLimit `json:"rate_limit,omitempty"`
+}
+
+// getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
+func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
+	providers, err := h.configStore.GetProviders(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve providers: %v", err)
+		SendError(ctx, 500, "Failed to retrieve providers")
+		return
+	}
+	// Transform to governance response format
+	var result []ProviderGovernanceResponse
+	for _, p := range providers {
+		if p.Budget != nil || p.RateLimit != nil {
+			result = append(result, ProviderGovernanceResponse{
+				Provider:  p.Name,
+				Budget:    p.Budget,
+				RateLimit: p.RateLimit,
+			})
+		}
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"providers": result,
+		"count":     len(result),
+	})
+}
+
+// updateProviderGovernance handles PUT /api/governance/providers/{provider_name} - Update provider governance
+func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
+	providerName := ctx.UserValue("provider_name").(string)
+	var req UpdateProviderGovernanceRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	// Get all providers and find the one we need
+	providers, err := h.configStore.GetProviders(ctx)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve providers")
+		return
+	}
+	var provider *configstoreTables.TableProvider
+	for i := range providers {
+		if providers[i].Name == providerName {
+			provider = &providers[i]
+			break
+		}
+	}
+	if provider == nil {
+		SendError(ctx, 404, "Provider not found")
+		return
+	}
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the provider (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
+		// Handle budget updates
+		if req.Budget != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if provider.BudgetID != nil {
+					budgetIDToDelete = *provider.BudgetID
+					provider.BudgetID = nil
+					provider.Budget = nil
+				}
+			} else if provider.BudgetID != nil {
+				// Update existing budget
+				// Validate that both fields are present before dereferencing
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
+					return err
+				}
+				// Set all fields from request
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.Budget = &budget
+			} else {
+				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				budget := configstoreTables.TableBudget{
+					ID:            uuid.NewString(),
+					MaxLimit:      *req.Budget.MaxLimit,
+					ResetDuration: *req.Budget.ResetDuration,
+					LastReset:     time.Now(),
+					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				provider.BudgetID = &budget.ID
+				provider.Budget = &budget
+			}
+		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if provider.RateLimitID != nil {
+					rateLimitIDToDelete = *provider.RateLimitID
+					provider.RateLimitID = nil
+					provider.RateLimit = nil
+				}
+			} else if provider.RateLimitID != nil {
+				// Update existing rate limit - set ALL fields from request (nil means clear)
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *provider.RateLimitID).Error; err != nil {
+					return err
+				}
+				// Set all fields from request - nil values will clear the field
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				provider.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				provider.RateLimitID = &rateLimit.ID
+				provider.RateLimit = &rateLimit
+			}
+		}
+		// Update the provider first to remove FK references
+		if err := tx.Save(provider).Error; err != nil {
+			return err
+		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		logger.Error("failed to update provider governance: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to update provider governance: %v", err))
+		return
+	}
+	// Reload provider in memory
+	updatedProvider, err := h.governanceManager.ReloadProvider(ctx, providerName)
+	if err != nil {
+		logger.Error("failed to reload provider in memory: %v", err)
+		// Use the local provider object if reload fails
+	} else {
+		provider = updatedProvider
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Provider governance updated successfully",
+		"provider": ProviderGovernanceResponse{
+			Provider:  provider.Name,
+			Budget:    provider.Budget,
+			RateLimit: provider.RateLimit,
+		},
+	})
+}
+
+// deleteProviderGovernance handles DELETE /api/governance/providers/{provider_name} - Remove governance from provider
+func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
+	providerName := ctx.UserValue("provider_name").(string)
+	// Get all providers and find the one we need
+	providers, err := h.configStore.GetProviders(ctx)
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve providers")
+		return
+	}
+	var provider *configstoreTables.TableProvider
+	for i := range providers {
+		if providers[i].Name == providerName {
+			provider = &providers[i]
+			break
+		}
+	}
+	if provider == nil {
+		SendError(ctx, 404, "Provider not found")
+		return
+	}
+	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Store IDs to delete after removing FK references
+		var budgetIDToDelete, rateLimitIDToDelete string
+
+		if provider.BudgetID != nil {
+			budgetIDToDelete = *provider.BudgetID
+			provider.BudgetID = nil
+			provider.Budget = nil
+		}
+		if provider.RateLimitID != nil {
+			rateLimitIDToDelete = *provider.RateLimitID
+			provider.RateLimitID = nil
+			provider.RateLimit = nil
+		}
+
+		// Update the provider first to remove FK references
+		if err := tx.Save(provider).Error; err != nil {
+			return err
+		}
+
+		// Now delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		logger.Error("failed to delete provider governance: %v", err)
+		SendError(ctx, 500, "Failed to delete provider governance")
+		return
+	}
+	// Reload provider in memory (to clear the budget/rate limit)
+	if _, err := h.governanceManager.ReloadProvider(ctx, providerName); err != nil {
+		logger.Error("failed to reload provider in memory: %v", err)
+		// Continue anyway, the governance is deleted from DB
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Provider governance deleted successfully",
+	})
 }
