@@ -17,6 +17,8 @@ var reservedKeys = []any{
 	BifrostContextKeyDirectKey,
 	BifrostContextKeySelectedKeyID,
 	BifrostContextKeySelectedKeyName,
+	BifrostContextKeyTriedKeyIDs,
+	BifrostContextKeyTriedKeyNames,
 	BifrostContextKeyNumberOfRetries,
 	BifrostContextKeyFallbackIndex,
 	BifrostContextKeyStreamEndIndicator,

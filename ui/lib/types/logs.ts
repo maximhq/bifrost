@@ -264,6 +264,8 @@ export interface LogEntry {
 	number_of_retries: number;
 	fallback_index: number;
 	selected_key_id: string;
+	tried_key_ids?: string[];
+	tried_key_names?: string[];
 	virtual_key_id?: string;
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;

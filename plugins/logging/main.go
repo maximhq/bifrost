@@ -63,6 +63,8 @@ type LogMessage struct {
 	FallbackIndex      int                                // Fallback index
 	SelectedKeyID      string                             // Selected key ID
 	SelectedKeyName    string                             // Selected key name
+	TriedKeyIDs        []string                           // Tried key IDs
+	TriedKeyNames      []string                           // Tried key names
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
 	Timestamp          time.Time                          // Of the preHook/postHook call
@@ -273,7 +275,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input		
+			initialData.TranscriptionInput = req.TranscriptionRequest.Input
 		}
 	}
 
@@ -290,7 +292,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		logMsg.RequestID = requestID
 	}
 
-	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
@@ -362,11 +364,14 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
-	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	triedKeyIDs := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyIDs)
+	triedKeyNames := bifrost.GetStringSliceFromContext(ctx, schemas.BifrostContextKeyTriedKeyNames)
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
 	go func() {
 		requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
@@ -376,6 +381,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 		logMsg.SelectedKeyID = selectedKeyID
 		logMsg.VirtualKeyID = virtualKeyID
 		logMsg.SelectedKeyName = selectedKeyName
+		logMsg.TriedKeyIDs = triedKeyIDs
+		logMsg.TriedKeyNames = triedKeyNames
 		logMsg.VirtualKeyName = virtualKeyName
 		logMsg.NumberOfRetries = numberOfRetries
 		defer p.putLogMessage(logMsg) // Return to pool when done
@@ -403,6 +410,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.RequestID,
 					logMsg.SelectedKeyID,
 					logMsg.SelectedKeyName,
+					logMsg.TriedKeyIDs,
+					logMsg.TriedKeyNames,
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
@@ -443,6 +452,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 						logMsg.RequestID,
 						logMsg.SelectedKeyID,
 						logMsg.SelectedKeyName,
+						logMsg.TriedKeyIDs,
+						logMsg.TriedKeyNames,
 						logMsg.VirtualKeyID,
 						logMsg.VirtualKeyName,
 						logMsg.NumberOfRetries,
@@ -572,6 +583,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.RequestID,
 					logMsg.SelectedKeyID,
 					logMsg.SelectedKeyName,
+					logMsg.TriedKeyIDs,
+					logMsg.TriedKeyNames,
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,

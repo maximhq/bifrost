@@ -204,23 +204,3 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }
-
-// getStringFromContext safely extracts a string value from context
-func getStringFromContext(ctx context.Context, key any) string {
-	if value := ctx.Value(key); value != nil {
-		if str, ok := value.(string); ok {
-			return str
-		}
-	}
-	return ""
-}
-
-// getIntFromContext safely extracts an int value from context
-func getIntFromContext(ctx context.Context, key any) int {
-	if value := ctx.Value(key); value != nil {
-		if intVal, ok := value.(int); ok {
-			return intVal
-		}
-	}
-	return 0
-}

@@ -14,8 +14,19 @@ func (p *LoggerPlugin) putLogMessage(msg *LogMessage) {
 	// Reset the message fields to avoid memory leaks
 	msg.Operation = ""
 	msg.RequestID = ""
+	msg.ParentRequestID = ""
+	msg.NumberOfRetries = 0
+	msg.FallbackIndex = 0
+	msg.SelectedKeyID = ""
+	msg.SelectedKeyName = ""
+	msg.TriedKeyIDs = nil
+	msg.TriedKeyNames = nil
+	msg.VirtualKeyID = ""
+	msg.VirtualKeyName = ""
 	msg.Timestamp = time.Time{}
 	msg.InitialData = nil
+	msg.TriedKeyIDs = nil
+	msg.TriedKeyNames = nil
 
 	// Don't reset UpdateData and StreamResponse here since they're returned
 	// to their own pools in the defer function - just clear the pointers

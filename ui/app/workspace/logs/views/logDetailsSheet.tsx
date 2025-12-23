@@ -269,6 +269,12 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								}
 							/>
 							{log.selected_key && <LogEntryDetailsView className="w-full" label="Selected Key" value={log.selected_key.name} />}
+							{log.tried_key_ids && log.tried_key_ids.length > 0 && (
+								<LogEntryDetailsView className="w-full" label="Tried Keys" value={log.tried_key_ids.join(", ")} />
+							)}
+							{log.tried_key_names && log.tried_key_names.length > 0 && (
+								<LogEntryDetailsView className="w-full" label="Tried Key Names" value={log.tried_key_names.join(", ")} />
+							)}
 							{log.number_of_retries > 0 && (
 								<LogEntryDetailsView className="w-full" label="Number of Retries" value={log.number_of_retries} />
 							)}

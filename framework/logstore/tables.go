@@ -1,10 +1,10 @@
 package logstore
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
@@ -83,6 +83,8 @@ type Log struct {
 	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
 	SelectedKeyID         string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
 	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	TriedKeyIDs           string    `gorm:"type:text" json:"-"` // JSON serialized []string
+	TriedKeyNames         string    `gorm:"type:text" json:"-"` // JSON serialized []string
 	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
 	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
@@ -131,6 +133,8 @@ type Log struct {
 	SpeechOutputParsed          *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
+	TriedKeyIDsParsed           []string                               `gorm:"-" json:"tried_key_ids,omitempty"`
+	TriedKeyNamesParsed         []string                               `gorm:"-" json:"tried_key_names,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -163,7 +167,7 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
 	if l.InputHistoryParsed != nil {
-		if data, err := json.Marshal(l.InputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.InputHistoryParsed); err != nil {
 			return err
 		} else {
 			l.InputHistory = string(data)
@@ -171,7 +175,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ResponsesInputHistoryParsed != nil {
-		if data, err := json.Marshal(l.ResponsesInputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesInputHistoryParsed); err != nil {
 			return err
 		} else {
 			l.ResponsesInputHistory = string(data)
@@ -179,7 +183,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.OutputMessageParsed != nil {
-		if data, err := json.Marshal(l.OutputMessageParsed); err != nil {
+		if data, err := sonic.Marshal(l.OutputMessageParsed); err != nil {
 			return err
 		} else {
 			l.OutputMessage = string(data)
@@ -187,7 +191,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ResponsesOutputParsed != nil {
-		if data, err := json.Marshal(l.ResponsesOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesOutputParsed); err != nil {
 			return err
 		} else {
 			l.ResponsesOutput = string(data)
@@ -195,7 +199,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.EmbeddingOutputParsed != nil {
-		if data, err := json.Marshal(l.EmbeddingOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.EmbeddingOutputParsed); err != nil {
 			return err
 		} else {
 			l.EmbeddingOutput = string(data)
@@ -203,7 +207,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.SpeechInputParsed != nil {
-		if data, err := json.Marshal(l.SpeechInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechInputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechInput = string(data)
@@ -211,7 +215,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionInputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionInputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionInput = string(data)
@@ -219,7 +223,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.SpeechOutputParsed != nil {
-		if data, err := json.Marshal(l.SpeechOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechOutputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechOutput = string(data)
@@ -227,7 +231,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionOutputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionOutputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionOutput = string(data)
@@ -235,7 +239,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ParamsParsed != nil {
-		if data, err := json.Marshal(l.ParamsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ParamsParsed); err != nil {
 			return err
 		} else {
 			l.Params = string(data)
@@ -243,7 +247,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolsParsed != nil {
-		if data, err := json.Marshal(l.ToolsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolsParsed); err != nil {
 			return err
 		} else {
 			l.Tools = string(data)
@@ -251,7 +255,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolCallsParsed != nil {
-		if data, err := json.Marshal(l.ToolCallsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolCallsParsed); err != nil {
 			return err
 		} else {
 			l.ToolCalls = string(data)
@@ -259,7 +263,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := json.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -271,7 +275,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {
 			l.ErrorDetails = string(data)
@@ -279,10 +283,26 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.CacheDebugParsed != nil {
-		if data, err := json.Marshal(l.CacheDebugParsed); err != nil {
+		if data, err := sonic.Marshal(l.CacheDebugParsed); err != nil {
 			return err
 		} else {
 			l.CacheDebug = string(data)
+		}
+	}
+
+	if l.TriedKeyIDsParsed != nil {
+		if data, err := sonic.Marshal(l.TriedKeyIDsParsed); err != nil {
+			return err
+		} else {
+			l.TriedKeyIDs = string(data)
+		}
+	}
+
+	if l.TriedKeyNamesParsed != nil {
+		if data, err := sonic.Marshal(l.TriedKeyNamesParsed); err != nil {
+			return err
+		} else {
+			l.TriedKeyNames = string(data)
 		}
 	}
 
@@ -295,70 +315,70 @@ func (l *Log) SerializeFields() error {
 // DeserializeFields converts JSON strings back to Go structs
 func (l *Log) DeserializeFields() error {
 	if l.InputHistory != "" {
-		if err := json.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.InputHistoryParsed = []schemas.ChatMessage{}
 		}
 	}
 
 	if l.ResponsesInputHistory != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.ResponsesInputHistoryParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.OutputMessage != "" {
-		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.OutputMessageParsed = nil
 		}
 	}
 
 	if l.ResponsesOutput != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.EmbeddingOutput != "" {
-		if err := json.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.EmbeddingOutputParsed = nil
 		}
 	}
 
 	if l.Params != "" {
-		if err := json.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ParamsParsed = nil
 		}
 	}
 
 	if l.Tools != "" {
-		if err := json.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolsParsed = nil
 		}
 	}
 
 	if l.ToolCalls != "" {
-		if err := json.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolCallsParsed = nil
 		}
 	}
 
 	if l.TokenUsage != "" {
-		if err := json.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
 		}
 	}
 
 	if l.ErrorDetails != "" {
-		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ErrorDetailsParsed = nil
 		}
@@ -366,37 +386,51 @@ func (l *Log) DeserializeFields() error {
 
 	// Deserialize speech and transcription fields
 	if l.SpeechInput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechInputParsed = nil
 		}
 	}
 
 	if l.TranscriptionInput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionInputParsed = nil
 		}
 	}
 
 	if l.SpeechOutput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechOutputParsed = nil
 		}
 	}
 
 	if l.TranscriptionOutput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionOutputParsed = nil
 		}
 	}
 
 	if l.CacheDebug != "" {
-		if err := json.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
+		}
+	}
+
+	if l.TriedKeyIDs != "" {
+		if err := sonic.Unmarshal([]byte(l.TriedKeyIDs), &l.TriedKeyIDsParsed); err != nil {
+			// Log error but don't fail the operation - initialize as empty slice
+			l.TriedKeyIDsParsed = []string{}
+		}
+	}
+
+	if l.TriedKeyNames != "" {
+		if err := sonic.Unmarshal([]byte(l.TriedKeyNames), &l.TriedKeyNamesParsed); err != nil {
+			// Log error but don't fail the operation - initialize as empty slice
+			l.TriedKeyNamesParsed = []string{}
 		}
 	}
 

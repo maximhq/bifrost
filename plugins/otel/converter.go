@@ -647,6 +647,8 @@ func completeResourceSpan(
 	virtualKeyName string,
 	selectedKeyID string,
 	selectedKeyName string,
+	triedKeyIDs []string,
+	triedKeyNames []string,
 	numberOfRetries int,
 	fallbackIndex int,
 	teamID string,
@@ -1063,6 +1065,12 @@ func completeResourceSpan(
 		params = append(params, kvStr("gen_ai.selected_key_id", selectedKeyID))
 		params = append(params, kvStr("gen_ai.selected_key_name", selectedKeyName))
 	}
+	if len(triedKeyIDs) > 0 {
+		params = append(params, kvStr("gen_ai.tried_key_ids", strings.Join(triedKeyIDs, ",")))
+	}
+	if len(triedKeyNames) > 0 {
+		params = append(params, kvStr("gen_ai.tried_key_names", strings.Join(triedKeyNames, ",")))
+	}
 	if teamID != "" {
 		params = append(params, kvStr("gen_ai.team_id", teamID))
 		params = append(params, kvStr("gen_ai.team_name", teamName))
@@ -1085,6 +1093,12 @@ func completeResourceSpan(
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("team_name", teamName))
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_id", customerID))
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("customer_name", customerName))
+	if len(triedKeyIDs) > 0 {
+		span.Resource.Attributes = append(span.Resource.Attributes, kvStr("tried_key_ids", strings.Join(triedKeyIDs, ",")))
+	}
+	if len(triedKeyNames) > 0 {
+		span.Resource.Attributes = append(span.Resource.Attributes, kvStr("tried_key_names", strings.Join(triedKeyNames, ",")))
+	}
 	span.Resource.Attributes = append(span.Resource.Attributes, kvInt("number_of_retries", int64(numberOfRetries)))
 	span.Resource.Attributes = append(span.Resource.Attributes, kvInt("fallback_index", int64(fallbackIndex)))
 	return span

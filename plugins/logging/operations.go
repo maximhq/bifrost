@@ -51,6 +51,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	requestID string,
 	selectedKeyID string,
 	selectedKeyName string,
+	triedKeyIDs []string,
+	triedKeyNames []string,
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
@@ -61,6 +63,24 @@ func (p *LoggerPlugin) updateLogEntry(
 	updates := make(map[string]interface{})
 	updates["selected_key_id"] = selectedKeyID
 	updates["selected_key_name"] = selectedKeyName
+	if len(triedKeyIDs) > 0 {
+		tempEntry := &logstore.Log{}
+		tempEntry.TriedKeyIDsParsed = triedKeyIDs
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize tried key IDs: %v", err)
+		} else {
+			updates["tried_key_ids"] = tempEntry.TriedKeyIDs
+		}
+	}
+	if len(triedKeyNames) > 0 {
+		tempEntry := &logstore.Log{}
+		tempEntry.TriedKeyNamesParsed = triedKeyNames
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize tried key names: %v", err)
+		} else {
+			updates["tried_key_names"] = tempEntry.TriedKeyNames
+		}
+	}
 	if latency != 0 {
 		updates["latency"] = float64(latency)
 	}
@@ -187,6 +207,8 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	requestID string,
 	selectedKeyID string,
 	selectedKeyName string,
+	triedKeyIDs []string,
+	triedKeyNames []string,
 	virtualKeyID string,
 	virtualKeyName string,
 	numberOfRetries int,
@@ -198,6 +220,24 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	updates := make(map[string]interface{})
 	updates["selected_key_id"] = selectedKeyID
 	updates["selected_key_name"] = selectedKeyName
+	if len(triedKeyIDs) > 0 {
+		tempEntry := &logstore.Log{}
+		tempEntry.TriedKeyIDsParsed = triedKeyIDs
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize tried key IDs: %v", err)
+		} else {
+			updates["tried_key_ids"] = tempEntry.TriedKeyIDs
+		}
+	}
+	if len(triedKeyNames) > 0 {
+		tempEntry := &logstore.Log{}
+		tempEntry.TriedKeyNamesParsed = triedKeyNames
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize tried key names: %v", err)
+		} else {
+			updates["tried_key_names"] = tempEntry.TriedKeyNames
+		}
+	}
 	if virtualKeyID != "" {
 		updates["virtual_key_id"] = virtualKeyID
 	}
