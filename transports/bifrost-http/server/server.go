@@ -75,6 +75,10 @@ type ServerCallbacks interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
+	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
+	RemoveModelConfig(ctx context.Context, id string) error
+	ReloadProvider(ctx context.Context, name string) (*tables.TableProvider, error)
+	RemoveProvider(ctx context.Context, name string) error
 	GetGovernanceData() *governance.GovernanceData
 	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -655,6 +659,104 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 	return nil
 }
 
+// ReloadModelConfig reloads a model config from the database into in-memory store
+// If usage was modified (e.g., reset due to config change), syncs it back to DB
+func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error) {
+	preloadedMC, err := s.Config.ConfigStore.GetModelConfigByID(ctx, id)
+	if err != nil {
+		logger.Error("failed to load model config: %v", err)
+		return nil, err
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, err
+	}
+	// Update in memory and get back the potentially modified model config
+	updatedMC := governancePlugin.GetGovernanceStore().UpdateModelConfigInMemory(preloadedMC)
+	if updatedMC == nil {
+		return preloadedMC, nil
+	}
+
+	// Sync updated usage values back to database if they changed
+	if updatedMC.Budget != nil && preloadedMC.Budget != nil {
+		if updatedMC.Budget.CurrentUsage != preloadedMC.Budget.CurrentUsage {
+			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedMC.Budget.ID, updatedMC.Budget.CurrentUsage); err != nil {
+				logger.Error("failed to sync budget usage to database: %v", err)
+			}
+		}
+	}
+	if updatedMC.RateLimit != nil && preloadedMC.RateLimit != nil {
+		tokenUsageChanged := updatedMC.RateLimit.TokenCurrentUsage != preloadedMC.RateLimit.TokenCurrentUsage
+		requestUsageChanged := updatedMC.RateLimit.RequestCurrentUsage != preloadedMC.RateLimit.RequestCurrentUsage
+		if tokenUsageChanged || requestUsageChanged {
+			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedMC.RateLimit.ID, updatedMC.RateLimit.TokenCurrentUsage, updatedMC.RateLimit.RequestCurrentUsage); err != nil {
+				logger.Error("failed to sync rate limit usage to database: %v", err)
+			}
+		}
+	}
+
+	return updatedMC, nil
+}
+
+// RemoveModelConfig removes a model config from the in-memory store
+func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	governancePlugin.GetGovernanceStore().DeleteModelConfigInMemory(id)
+	return nil
+}
+
+// ReloadProvider reloads a provider from the database into in-memory store
+// If usage was modified (e.g., reset due to config change), syncs it back to DB
+func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, name string) (*tables.TableProvider, error) {
+	preloadedProvider, err := s.Config.ConfigStore.GetProviderByName(ctx, name)
+	if err != nil {
+		logger.Error("failed to load provider: %v", err)
+		return nil, err
+	}
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return nil, err
+	}
+	// Update in memory and get back the potentially modified provider
+	updatedProvider := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(preloadedProvider)
+	if updatedProvider == nil {
+		return preloadedProvider, nil
+	}
+
+	// Sync updated usage values back to database if they changed
+	if updatedProvider.Budget != nil && preloadedProvider.Budget != nil {
+		if updatedProvider.Budget.CurrentUsage != preloadedProvider.Budget.CurrentUsage {
+			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
+				logger.Error("failed to sync budget usage to database: %v", err)
+			}
+		}
+	}
+	if updatedProvider.RateLimit != nil && preloadedProvider.RateLimit != nil {
+		tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != preloadedProvider.RateLimit.TokenCurrentUsage
+		requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != preloadedProvider.RateLimit.RequestCurrentUsage
+		if tokenUsageChanged || requestUsageChanged {
+			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
+				logger.Error("failed to sync rate limit usage to database: %v", err)
+			}
+		}
+	}
+
+	return updatedProvider, nil
+}
+
+// RemoveProvider removes a provider from the in-memory store
+func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, name string) error {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return err
+	}
+	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(name)
+	return nil
+}
+
 // GetGovernanceData returns the governance data
 func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
 	s.PluginsMutex.RLock()
@@ -1133,7 +1235,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.pluginStatusMutex = sync.RWMutex{}
 	s.PluginsMutex = sync.RWMutex{}
 	// Ensure app directory exists
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
@@ -1293,7 +1395,7 @@ func (s *BifrostHTTPServer) Start() error {
 	for _, pluginStatus := range s.pluginStatus {
 		logger.Info("plugin status: %s - %s", pluginStatus.Name, pluginStatus.Status)
 	}
-	s.pluginStatusMutex.RUnlock()	
+	s.pluginStatusMutex.RUnlock()
 	// Create channels for signal and error handling
 	sigChan := make(chan os.Signal, 1)
 	errChan := make(chan error, 1)
