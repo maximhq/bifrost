@@ -2156,7 +2156,6 @@ func convertSingleAnthropicMessageToBifrostMessagesGrouped(msg *AnthropicMessage
 // Helper function to convert Anthropic content blocks to Bifrost ResponsesMessages, grouping text and tool_use blocks
 func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []AnthropicContentBlock, role *schemas.ResponsesMessageRoleType, isOutputMessage bool) []schemas.ResponsesMessage {
 	var bifrostMessages []schemas.ResponsesMessage
-	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
 	var accumulatedTextContent []schemas.ResponsesMessageContentBlock
 	var pendingToolUseBlocks []*AnthropicContentBlock // Accumulate tool_use blocks
 
@@ -2208,12 +2207,21 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
-				// Collect reasoning blocks without flushing accumulated text/tool blocks
-				reasoningContentBlocks = append(reasoningContentBlocks, schemas.ResponsesMessageContentBlock{
-					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text:      block.Thinking,
-					Signature: block.Signature,
-				})
+				bifrostMsg := schemas.ResponsesMessage{
+					ID:   schemas.Ptr("rs_" + utils.GetRandomString(50)),
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
+								Text:      block.Thinking,
+								Signature: block.Signature,
+							},
+						},
+					},
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 
 		case AnthropicContentBlockTypeRedactedThinking:
@@ -2294,20 +2302,6 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			// Handle MCP tool results directly without flushing other blocks
 			// MCP results will be emitted as separate messages
 		}
-	}
-
-	// For Bedrock compatibility: reasoning blocks must come before text/tool blocks
-	// If we have reasoning + text/tools, emit reasoning first, then text/tools
-	// Otherwise emit them separately as before
-	if len(reasoningContentBlocks) > 0 {
-		bifrostMsg := schemas.ResponsesMessage{
-			ID:   schemas.Ptr("rs_" + utils.GetRandomString(50)),
-			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: reasoningContentBlocks,
-			},
-		}
-		bifrostMessages = append(bifrostMessages, bifrostMsg)
 	}
 
 	// Flush any remaining pending blocks
@@ -3362,8 +3356,9 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
-				Type:     AnthropicContentBlockTypeThinking,
-				Thinking: block.Text,
+				Type:      AnthropicContentBlockTypeThinking,
+				Thinking:  block.Text,
+				Signature: block.Signature,
 			}
 		}
 	}
