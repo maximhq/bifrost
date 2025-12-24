@@ -22,6 +22,7 @@ export enum RbacResource {
 	Customers = "Customers",
 	Teams = "Teams",
 	RBAC = "RBAC",
+	Governance = "Governance",
 }
 
 // RBAC Operation Names (must match backend definitions)
