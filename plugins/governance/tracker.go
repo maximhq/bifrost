@@ -67,15 +67,9 @@ func NewUsageTracker(ctx context.Context, store GovernanceStore, resolver *Budge
 
 // UpdateUsage queues a usage update for async processing (main business entry point)
 func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
-	// Get virtual key
-	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
-	if !exists {
-		return
-	}
-
 	// Only process successful requests for usage tracking
 	if !update.Success {
-		t.logger.Debug(fmt.Sprintf("Request was not successful, skipping usage update for VK: %s", vk.ID))
+		t.logger.Debug("Request was not successful, skipping usage update")
 		return
 	}
 
@@ -84,9 +78,36 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	shouldUpdateRequests := !update.IsStreaming || (update.IsStreaming && update.IsFinalChunk)
 	shouldUpdateBudget := !update.IsStreaming || (update.IsStreaming && update.HasUsageData)
 
+	// 1. Update rate limit usage for both provider-level and model-level
+	// This applies even when virtual keys are disabled or not present
+	if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+	}
+
+	// 2. Update budget usage for both provider-level and model-level
+	// This applies even when virtual keys are disabled or not present
+	if shouldUpdateBudget && update.Cost > 0 {
+		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
+			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+		}
+	}
+
+	// 3. Now handle virtual key-level updates (if virtual key exists)
+	if update.VirtualKey == "" {
+		// No virtual key, provider-level and model-level updates already done above
+		return
+	}
+
+	// Get virtual key
+	vk, exists := t.store.GetVirtualKey(update.VirtualKey)
+	if !exists {
+		t.logger.Debug(fmt.Sprintf("Virtual key not found: %s", update.VirtualKey))
+		return
+	}
+
 	// Update rate limit usage (both provider-level and VK-level) if applicable
 	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 {
-		if err := t.store.UpdateRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+		if err := t.store.UpdateVirtualKeyRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
 		}
 	}
@@ -95,7 +116,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 	if shouldUpdateBudget && update.Cost > 0 {
 		t.logger.Debug("updating budget usage for VK %s", vk.ID)
 		// Use atomic budget update to prevent race conditions and ensure consistency
-		if err := t.store.UpdateBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
+		if err := t.store.UpdateVirtualKeyBudgetUsageInMemory(ctx, vk, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
 		}
 	}
