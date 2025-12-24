@@ -91,6 +91,49 @@ mistral_invoke_response = client.invoke_model(
 
 ---
 
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.) using boto3's event system:
+
+<Tabs group="bedrock-sdk">
+<Tab title="Python">
+
+```python
+import boto3
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom Bifrost headers to the request before signing."""
+    request.headers.add_header("x-bf-vk", "vk_12345")  # Virtual key for governance
+    request.headers.add_header("x-bf-env", "production")  # Environment tag
+
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
+)
+
+# Register the header injection for all Bedrock API calls
+client.meta.events.register_first(
+    "before-sign.bedrock-runtime.*",
+    add_bifrost_headers,
+)
+
+# Now make requests with custom headers
+response = client.converse(
+    modelId="bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[{"role": "user", "content": [{"text": "Hello with custom headers!"}]}]
+)
+```
+
+> **Note:** Use `register_first` to ensure headers are added before request signing. The event name format is `before-sign.<service-name>.<operation-name>`. You need to register for each API operation you plan to use (Converse, ConverseStream, InvokeModel, etc.).
+
+</Tab>
+</Tabs>
+
+---
+
 ## Streaming Examples
 
 ### Converse Stream
