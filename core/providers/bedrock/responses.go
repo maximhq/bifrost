@@ -2,8 +2,10 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -2461,6 +2463,22 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 		// (they cannot exist alone in Bedrock without violating the constraint)
 	}
 
+	// Merge consecutive messages with the same role
+	// This ensures document blocks are in the same message as text blocks (Bedrock requirement)
+	mergedMessages := []BedrockMessage{}
+	for i := 0; i < len(bedrockMessages); i++ {
+		currentMsg := bedrockMessages[i]
+
+		// Merge any consecutive messages with the same role
+		for i+1 < len(bedrockMessages) && bedrockMessages[i+1].Role == currentMsg.Role {
+			i++
+			currentMsg.Content = append(currentMsg.Content, bedrockMessages[i].Content...)
+		}
+
+		mergedMessages = append(mergedMessages, currentMsg)
+	}
+	bedrockMessages = mergedMessages
+
 	return bedrockMessages, systemMessages, nil
 }
 
@@ -2695,6 +2713,58 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *Bed
 				outputMessages = append(outputMessages, toolMsg)
 			}
 
+		} else if block.Document != nil {
+			// Document content
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+
+			// Convert document to file block
+			fileBlock := schemas.ResponsesMessageContentBlock{
+				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+			}
+
+			// Set filename from document name
+			if block.Document.Name != "" {
+				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
+			}
+
+			// Set file type based on format
+			if block.Document.Format != "" {
+				var fileType string
+				switch block.Document.Format {
+				case "pdf":
+					fileType = "application/pdf"
+				case "txt", "md", "html", "csv":
+					fileType = "text/plain"
+				default:
+					fileType = "application/pdf" // Default to PDF
+				}
+				fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
+			}
+
+			// Convert document source data
+			if block.Document.Source != nil {
+				if block.Document.Source.Text != nil {
+					// Plain text content
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
+				} else if block.Document.Source.Bytes != nil {
+					// Base64 encoded bytes (PDF)
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Bytes
+				}
+			}
+
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{fileBlock},
+				},
+			}
+			if isOutputMessage {
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+			}
+			outputMessages = append(outputMessages, bifrostMsg)
+
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
 			// Prefer JSON payloads without unmarshalling; fallback to text
@@ -2855,6 +2925,63 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 							Signature: block.Signature,
 						},
 					}
+				}
+			case schemas.ResponsesInputMessageContentBlockTypeFile:
+				if block.ResponsesInputMessageContentBlockFile != nil {
+					doc := &BedrockDocumentSource{
+						Name:   "document", // Default
+						Format: "pdf",      // Default
+						Source: &BedrockDocumentSourceData{},
+					}
+
+					// Set filename
+					if block.ResponsesInputMessageContentBlockFile.Filename != nil {
+						doc.Name = *block.ResponsesInputMessageContentBlockFile.Filename
+					}
+
+					// Determine format: text or PDF based on FileType
+					isTextFile := false
+					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
+						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
+						// Check if it's a text type
+						if strings.HasPrefix(fileType, "text/") ||
+							fileType == "txt" || fileType == "md" ||
+							fileType == "html" {
+							doc.Format = "txt"
+							isTextFile = true
+						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
+							doc.Format = "pdf"
+						}
+					}
+
+					// Handle file data
+					if block.ResponsesInputMessageContentBlockFile.FileData != nil {
+						fileData := *block.ResponsesInputMessageContentBlockFile.FileData
+
+						// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
+						if strings.HasPrefix(fileData, "data:") {
+							urlInfo := schemas.ExtractURLTypeInfo(fileData)
+							if urlInfo.DataURLWithoutPrefix != nil {
+								// PDF or other binary - keep as base64
+								doc.Source.Bytes = urlInfo.DataURLWithoutPrefix
+								bedrockBlock.Document = doc
+								break
+							}
+						}
+
+						// Not a data URL - use as-is
+						if isTextFile {
+							// bytes is necessary for bedrock
+							// base64 string of the text
+							doc.Source.Text = &fileData
+							encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
+							doc.Source.Bytes = &encoded
+						} else {
+							doc.Source.Bytes = &fileData
+						}
+					}
+
+					bedrockBlock.Document = doc
 				}
 			default:
 				// Don't add anything for unknown types

@@ -426,9 +426,10 @@ type ResponsesInputMessageContentBlockImage struct {
 }
 
 type ResponsesInputMessageContentBlockFile struct {
-	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data
+	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data or plain text
 	FileURL  *string `json:"file_url,omitempty"`  // Direct URL to file
 	Filename *string `json:"filename,omitempty"`  // Name of the file
+	FileType *string `json:"file_type,omitempty"` // MIME type (e.g., "application/pdf", "text/plain")
 }
 
 type ResponsesInputMessageContentBlockAudio struct {

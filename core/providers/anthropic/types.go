@@ -203,6 +203,7 @@ type AnthropicContentBlockType string
 const (
 	AnthropicContentBlockTypeText             AnthropicContentBlockType = "text"
 	AnthropicContentBlockTypeImage            AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument         AnthropicContentBlockType = "document"
 	AnthropicContentBlockTypeToolUse          AnthropicContentBlockType = "tool_use"
 	AnthropicContentBlockTypeServerToolUse    AnthropicContentBlockType = "server_tool_use"
 	AnthropicContentBlockTypeToolResult       AnthropicContentBlockType = "tool_result"
@@ -215,7 +216,7 @@ const (
 
 // AnthropicContentBlock represents content in Anthropic message format
 type AnthropicContentBlock struct {
-	Type         AnthropicContentBlockType `json:"type"`                    // "text", "image", "tool_use", "tool_result", "thinking"
+	Type         AnthropicContentBlockType `json:"type"`                    // "text", "image", "document", "tool_use", "tool_result", "thinking"
 	Text         *string                   `json:"text,omitempty"`          // For text content
 	Thinking     *string                   `json:"thinking,omitempty"`      // For thinking content
 	Signature    *string                   `json:"signature,omitempty"`     // For signature content
@@ -226,16 +227,24 @@ type AnthropicContentBlock struct {
 	Input        any                       `json:"input,omitempty"`         // For tool_use content
 	ServerName   *string                   `json:"server_name,omitempty"`   // For mcp_tool_use content
 	Content      *AnthropicContent         `json:"content,omitempty"`       // For tool_result content
-	Source       *AnthropicImageSource     `json:"source,omitempty"`        // For image content
+	Source       *AnthropicSource          `json:"source,omitempty"`        // For image/document content
 	CacheControl *schemas.CacheControl     `json:"cache_control,omitempty"` // For cache control content
+	Citations    *AnthropicCitationsConfig `json:"citations,omitempty"`     // For document content
+	Context      *string                   `json:"context,omitempty"`       // For document content
+	Title        *string                   `json:"title,omitempty"`         // For document content
 }
 
-// AnthropicImageSource represents image source in Anthropic format
-type AnthropicImageSource struct {
-	Type      string  `json:"type"`                 // "base64" or "url"
-	MediaType *string `json:"media_type,omitempty"` // "image/jpeg", "image/png", etc.
-	Data      *string `json:"data,omitempty"`       // Base64-encoded image data
-	URL       *string `json:"url,omitempty"`        // URL of the image
+// AnthropicSource represents image or document source in Anthropic format
+type AnthropicSource struct {
+	Type      string  `json:"type"`                 // "base64", "url", "text", "content_block"
+	MediaType *string `json:"media_type,omitempty"` // "image/jpeg", "image/png", "application/pdf", etc.
+	Data      *string `json:"data,omitempty"`       // Base64-encoded data (for base64 type)
+	URL       *string `json:"url,omitempty"`        // URL (for url type)
+}
+
+// AnthropicCitationsConfig represents citations configuration for documents
+type AnthropicCitationsConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 // AnthropicImageContent represents image content in Anthropic format

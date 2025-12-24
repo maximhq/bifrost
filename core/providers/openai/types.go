@@ -89,7 +89,7 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	// First pass: check if we need to modify any messages
 	needsCopy := false
 	for _, msg := range r.Messages {
-		if hasCacheControlInChatMessage(msg) {
+		if hasFieldsToStripInChatMessage(msg) {
 			needsCopy = true
 			break
 		}
@@ -100,7 +100,7 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	if needsCopy {
 		processedMessages = make([]OpenAIMessage, len(r.Messages))
 		for i, msg := range r.Messages {
-			if !hasCacheControlInChatMessage(msg) {
+			if !hasFieldsToStripInChatMessage(msg) {
 				// No modification needed, use original
 				processedMessages[i] = msg
 				continue
@@ -109,14 +109,21 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
-			// Strip CacheControl from content blocks if needed
+			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
-					if block.CacheControl != nil {
+					needsBlockCopy := block.CacheControl != nil || (block.File != nil && block.File.FileType != nil)
+					if needsBlockCopy {
 						blockCopy := block
 						blockCopy.CacheControl = nil
+						// Strip FileType from file block
+						if blockCopy.File != nil && blockCopy.File.FileType != nil {
+							fileCopy := *blockCopy.File
+							fileCopy.FileType = nil
+							blockCopy.File = &fileCopy
+						}
 						contentCopy.ContentBlocks[j] = blockCopy
 					} else {
 						contentCopy.ContentBlocks[j] = block
@@ -258,7 +265,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 		// First pass: check if we need to modify anything
 		needsCopy := false
 		for _, msg := range r.OpenAIResponsesRequestInputArray {
-			if hasCacheControl(msg) {
+			if hasFieldsToStripInResponsesMessage(msg) {
 				needsCopy = true
 				break
 			}
@@ -272,7 +279,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 		// Only copy messages that have CacheControl
 		messagesCopy := make([]schemas.ResponsesMessage, len(r.OpenAIResponsesRequestInputArray))
 		for i, msg := range r.OpenAIResponsesRequestInputArray {
-			if !hasCacheControl(msg) {
+			if !hasFieldsToStripInResponsesMessage(msg) {
 				// No modification needed, use original
 				messagesCopy[i] = msg
 				continue
@@ -281,45 +288,59 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 			// Copy only this message
 			messagesCopy[i] = msg
 
-			// Strip CacheControl from content blocks if needed
+			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
-				hasContentCache := false
+				hasContentModification := false
 				for j, block := range msg.Content.ContentBlocks {
-					if block.CacheControl != nil {
-						hasContentCache = true
+					needsBlockCopy := block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+					if needsBlockCopy {
+						hasContentModification = true
 						blockCopy := block
 						blockCopy.CacheControl = nil
+						// Strip FileType from file block
+						if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+							fileCopy.FileType = nil
+							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
+						}
 						contentCopy.ContentBlocks[j] = blockCopy
 					} else {
 						contentCopy.ContentBlocks[j] = block
 					}
 				}
-				if hasContentCache {
+				if hasContentModification {
 					messagesCopy[i].Content = &contentCopy
 				}
 			}
 
-			// Strip CacheControl from tool message output blocks if needed
+			// Strip CacheControl and FileType from tool message output blocks if needed
 			if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil {
 				if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-					hasToolCache := false
+					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-						if block.CacheControl != nil {
-							hasToolCache = true
+						if block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+							hasToolModification = true
 							break
 						}
 					}
 
-					if hasToolCache {
+					if hasToolModification {
 						toolMsgCopy := *msg.ResponsesToolMessage
 						outputCopy := *msg.ResponsesToolMessage.Output
 						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
 						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							if block.CacheControl != nil {
+							needsBlockCopy := block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
+								// Strip FileType from file block
+								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+									fileCopy.FileType = nil
+									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
+								}
 								outputCopy.ResponsesFunctionToolCallOutputBlocks[j] = blockCopy
 							} else {
 								outputCopy.ResponsesFunctionToolCallOutputBlocks[j] = block
@@ -336,11 +357,14 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(nil)
 }
 
-// Helper function to check if a chat message has any CacheControl fields
-func hasCacheControlInChatMessage(msg OpenAIMessage) bool {
+// Helper function to check if a chat message has any CacheControl fields or FileType in file blocks
+func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.CacheControl != nil {
+				return true
+			}
+			if block.File != nil && block.File.FileType != nil {
 				return true
 			}
 		}
@@ -348,11 +372,14 @@ func hasCacheControlInChatMessage(msg OpenAIMessage) bool {
 	return false
 }
 
-// Helper function to check if a responses message has any CacheControl fields
-func hasCacheControl(msg schemas.ResponsesMessage) bool {
+// Helper function to check if a responses message has any CacheControl fields or FileType in file blocks
+func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 	if msg.Content != nil && msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
 			if block.CacheControl != nil {
+				return true
+			}
+			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
 				return true
 			}
 		}
@@ -361,6 +388,9 @@ func hasCacheControl(msg schemas.ResponsesMessage) bool {
 		if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 				if block.CacheControl != nil {
+					return true
+				}
+				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
 					return true
 				}
 			}

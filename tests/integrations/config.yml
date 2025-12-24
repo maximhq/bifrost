@@ -34,8 +34,9 @@ api:
 # Integrations (openai, anthropic, google, litellm, langchain) map to these providers
 providers:
   openai:
-    chat: "gpt-4o-mini"
+    chat: "gpt-4o"
     vision: "gpt-4o"
+    file: "gpt-5"
     tools: "gpt-4o-mini"
     speech: "tts-1"
     transcription: "whisper-1"
@@ -62,6 +63,7 @@ providers:
   anthropic:
     chat: "claude-sonnet-4-5-20250929"
     vision: "claude-3-7-sonnet-20250219"
+    file: "claude-sonnet-4-5-20250929"
     tools: "claude-sonnet-4-5-20250929"
     streaming: "claude-sonnet-4-5-20250929"
     thinking: "claude-opus-4-5"
@@ -85,6 +87,7 @@ providers:
     chat: "gemini-2.5-flash"
     vision: "gemini-2.5-flash"
     tools: "gemini-2.5-flash"
+    file: "gemini-2.5-flash"
     thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
@@ -112,6 +115,7 @@ providers:
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    file: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     tools: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     streaming: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
@@ -161,6 +165,7 @@ provider_scenarios:
     automatic_function_calling: true
     image_url: true
     image_base64: true
+    file_input: true
     multiple_images: true
     speech_synthesis: true
     speech_synthesis_streaming: true
@@ -200,6 +205,8 @@ provider_scenarios:
     automatic_function_calling: true
     image_url: true
     image_base64: true
+    file_input: true
+    file_input_text: true
     multiple_images: true
     speech_synthesis: false
     speech_synthesis_streaming: false
@@ -239,6 +246,7 @@ provider_scenarios:
     automatic_function_calling: true
     image_url: false  # Gemini requires base64 or file upload
     image_base64: true
+    file_input: true
     multiple_images: false
     speech_synthesis: true
     speech_synthesis_streaming: true
@@ -278,6 +286,8 @@ provider_scenarios:
     automatic_function_calling: true
     image_url: false
     image_base64: true
+    file_input: true
+    file_input_text: true
     multiple_images: false
     speech_synthesis: false
     speech_synthesis_streaming: false
@@ -360,6 +370,8 @@ scenario_capabilities:
   automatic_function_calling: "tools"
   image_url: "vision"
   image_base64: "vision"
+  file_input: "file"
+  file_input_text: "file"
   multiple_images: "vision"
   speech_synthesis: "speech"
   speech_synthesis_streaming: "speech"

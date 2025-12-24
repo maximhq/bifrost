@@ -125,6 +125,44 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				})
 				reasoningText += contentBlock.ReasoningContent.ReasoningText.Text + "\n"
 			}
+
+			// Handle document content
+			if contentBlock.Document != nil {
+				fileBlock := schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{},
+				}
+
+				// Set filename from document name
+				if contentBlock.Document.Name != "" {
+					fileBlock.File.Filename = &contentBlock.Document.Name
+				}
+
+				// Set file type based on format
+				if contentBlock.Document.Format != "" {
+					var fileType string
+					switch contentBlock.Document.Format {
+					case "pdf":
+						fileType = "application/pdf"
+					case "txt", "md", "html", "csv":
+						fileType = "text/plain"
+					default:
+						fileType = "application/pdf"
+					}
+					fileBlock.File.FileType = &fileType
+				}
+
+				// Convert document source data
+				if contentBlock.Document.Source != nil {
+					if contentBlock.Document.Source.Bytes != nil {
+						fileBlock.File.FileData = contentBlock.Document.Source.Bytes
+					} else if contentBlock.Document.Source.Text != nil {
+						fileBlock.File.FileData = contentBlock.Document.Source.Text
+					}
+				}
+
+				contentBlocks = append(contentBlocks, fileBlock)
+			}
 		}
 	}
 

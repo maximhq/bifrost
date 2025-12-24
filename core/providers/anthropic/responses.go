@@ -2205,6 +2205,22 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
 
+		case AnthropicContentBlockTypeDocument:
+			// Handle document blocks similar to images
+			if block.Source != nil {
+				bifrostMsg := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{block.toBifrostResponsesDocumentBlock()},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+
 		case AnthropicContentBlockTypeThinking:
 			if block.Thinking != nil {
 				bifrostMsg := schemas.ResponsesMessage{
@@ -2410,6 +2426,20 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 				}
 				if isOutputMessage {
 					bifrostMsg.ID = schemas.Ptr("msg_" + providerUtils.GetRandomString(50))
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+		case AnthropicContentBlockTypeDocument:
+			if block.Source != nil {
+				bifrostMsg := schemas.ResponsesMessage{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role: role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{block.toBifrostResponsesDocumentBlock()},
+					},
+				}
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + utils.GetRandomString(50))
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -3353,6 +3383,15 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			anthropicBlock := ConvertToAnthropicImageBlock(chatBlock)
 			return &anthropicBlock
 		}
+	case schemas.ResponsesInputMessageContentBlockTypeFile:
+		if block.ResponsesInputMessageContentBlockFile != nil {
+			// Direct conversion without intermediate ChatContentBlock
+			anthropicBlock := ConvertResponsesFileBlockToAnthropic(
+				block.ResponsesInputMessageContentBlockFile,
+				block.CacheControl,
+			)
+			return &anthropicBlock
+		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
 		if block.Text != nil {
 			return &AnthropicContentBlock{
@@ -3390,6 +3429,51 @@ func (block AnthropicContentBlock) toBifrostResponsesImageBlock() schemas.Respon
 		},
 		CacheControl: block.CacheControl,
 	}
+}
+
+func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.ResponsesMessageContentBlock {
+	resultBlock := schemas.ResponsesMessageContentBlock{
+		Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+		CacheControl:                          block.CacheControl,
+		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+	}
+
+	// Set filename from title if available
+	if block.Title != nil {
+		resultBlock.ResponsesInputMessageContentBlockFile.Filename = block.Title
+	}
+
+	if block.Source == nil {
+		return resultBlock
+	}
+
+	// Handle different source types
+	switch block.Source.Type {
+	case "url":
+		// URL source
+		if block.Source.URL != nil {
+			resultBlock.ResponsesInputMessageContentBlockFile.FileURL = block.Source.URL
+		}
+	case "base64":
+		// Base64 encoded data
+		if block.Source.Data != nil {
+			// Construct data URL with media type
+			mediaType := "application/pdf"
+			if block.Source.MediaType != nil {
+				mediaType = *block.Source.MediaType
+			}
+			dataURL := "data:" + mediaType + ";base64," + *block.Source.Data
+			resultBlock.ResponsesInputMessageContentBlockFile.FileData = &dataURL
+		}
+	case "text":
+		// Plain text source
+		if block.Source.Data != nil {
+			resultBlock.ResponsesInputMessageContentBlockFile.FileType = schemas.Ptr("text/plain")
+			resultBlock.ResponsesInputMessageContentBlockFile.FileData = block.Source.Data
+		}
+	}
+
+	return resultBlock
 }
 
 // Helper functions for MCP tool/server conversion

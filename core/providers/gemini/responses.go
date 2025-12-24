@@ -1588,7 +1588,12 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 		Type: schemas.ResponsesInputMessageContentBlockTypeFile,
 		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
 			FileData: &encodedData,
-			Filename: &blob.DisplayName,
+			FileType: func() *string {
+				if blob.MIMEType != "" {
+					return &blob.MIMEType
+				}
+				return nil
+			}(),
 		},
 	}
 }
@@ -1601,7 +1606,7 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 
 	mimeType := fileData.MIMEType
 	if mimeType == "" {
-		mimeType = "application/octet-stream"
+		mimeType = "application/pdf"
 	}
 
 	// Handle images
@@ -1615,12 +1620,17 @@ func convertGeminiFileDataToContentBlock(fileData *FileData) *schemas.ResponsesM
 	}
 
 	// Handle other files
-	return &schemas.ResponsesMessageContentBlock{
+	block := &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesInputMessageContentBlockTypeFile,
 		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
 			FileURL: &fileData.FileURI,
 		},
 	}
+
+	// Set FileType if available
+	block.ResponsesInputMessageContentBlockFile.FileType = &mimeType
+
+	return block
 }
 
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
@@ -2483,26 +2493,52 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
 		if block.ResponsesInputMessageContentBlockFile != nil {
-			if block.ResponsesInputMessageContentBlockFile.FileURL != nil {
-				return &Part{
-					FileData: &FileData{
-						MIMEType: "application/octet-stream", // default
-						FileURI:  *block.ResponsesInputMessageContentBlockFile.FileURL,
-					},
-				}, nil
-			} else if block.ResponsesInputMessageContentBlockFile.FileData != nil {
-				raw := *block.ResponsesInputMessageContentBlockFile.FileData
-				data := []byte(raw)
-				// FileData is base64-encoded
-				if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-					data = decoded
+			fileBlock := block.ResponsesInputMessageContentBlockFile
+
+			// Handle FileURL (URI-based file)
+			if fileBlock.FileURL != nil {
+				mimeType := "application/pdf"
+				if fileBlock.FileType != nil {
+					mimeType = *fileBlock.FileType
 				}
-				return &Part{
-					InlineData: &Blob{
-						MIMEType: "application/octet-stream", // default
-						Data:     data,
+
+				part := &Part{
+					FileData: &FileData{
+						MIMEType: mimeType,
+						FileURI:  *fileBlock.FileURL,
 					},
-				}, nil
+				}
+
+				if fileBlock.Filename != nil {
+					part.FileData.DisplayName = *fileBlock.Filename
+				}
+
+				return part, nil
+			}
+
+			// Handle FileData (inline file data)
+			if fileBlock.FileData != nil {
+				mimeType := "application/pdf"
+				if fileBlock.FileType != nil {
+					mimeType = *fileBlock.FileType
+				}
+
+				// Convert file data to bytes using the helper function
+				dataBytes, extractedMimeType := convertFileDataToBytes(*fileBlock.FileData)
+				if extractedMimeType != "" {
+					mimeType = extractedMimeType
+				}
+
+				if len(dataBytes) > 0 {
+					part := &Part{
+						InlineData: &Blob{
+							MIMEType: mimeType,
+							Data:     dataBytes,
+						},
+					}
+
+					return part, nil
+				}
 			}
 		}
 	}
