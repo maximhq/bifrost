@@ -138,21 +138,134 @@ const googleResponse = await googleLlm.invoke("Hello Gemini!");
 
 ## Adding Custom Headers
 
-Add Bifrost-specific headers for governance and tracking:
+Add Bifrost-specific headers for governance and tracking. Different LangChain provider classes support different methods for adding custom headers:
 
 <Tabs group="langchain-sdk">
 <Tab title="Python">
+
+### ChatOpenAI
+
+Use `default_headers` parameter for OpenAI models:
 
 ```python
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
-# Add custom headers for Bifrost features
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     openai_api_base="http://localhost:8080/langchain",
     default_headers={
-        "x-bf-vk": "your-virtual-key",          # Virtual key for governance
+        "x-bf-vk": "your-virtual-key",
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+### ChatAnthropic
+
+Use `default_headers` parameter for Anthropic models:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+
+llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url="http://localhost:8080/langchain",
+    default_headers={
+        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+### ChatBedrockConverse
+
+For Bedrock models, there are two approaches:
+
+**Method 1: Using the client's event system (after initialization)**
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    region_name="us-west-2",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key",
+    max_tokens=2000
+)
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom headers to Bedrock requests"""
+    request.headers.add_header("x-bf-vk", "your-virtual-key")
+
+# Register header injection for all Bedrock operations
+llm.client.meta.events.register_first(
+    "before-sign.bedrock-runtime.*",
+    add_bifrost_headers
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+**Method 2: Pre-configuring a boto3 client (recommended)**
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+import boto3
+
+# Create and configure boto3 client
+bedrock_client = boto3.client(
+    service_name="bedrock-runtime",
+    region_name="us-west-2",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key"
+)
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom headers to Bedrock requests"""
+    request.headers["x-bf-vk"] = "your-virtual-key"
+
+# Register header injection before creating LLM
+bedrock_client.meta.events.register(
+    "before-send.bedrock-runtime.*",
+    add_bifrost_headers
+)
+
+# Pass the configured client to ChatBedrockConverse
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    client=bedrock_client,
+    max_tokens=2000
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+### ChatGoogleGenerativeAI
+
+Use `additional_headers` parameter for Google/Gemini models:
+
+```python
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_base="http://localhost:8080/langchain",
+    additional_headers={
+        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
     }
 )
 
@@ -163,17 +276,60 @@ print(response.content)
 </Tab>
 <Tab title="JavaScript">
 
+### ChatOpenAI
+
+Use `defaultHeaders` in configuration for OpenAI models:
+
 ```javascript
 import { ChatOpenAI } from "@langchain/openai";
 
-// Add custom headers for Bifrost features
 const llm = new ChatOpenAI({
   model: "gpt-4o-mini",
   configuration: {
     baseURL: "http://localhost:8080/langchain",
     defaultHeaders: {
-      "x-bf-vk": "your-virtual-key",          // Virtual key for governance
+      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
     }
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+### ChatAnthropic
+
+Use `defaultHeaders` in clientOptions for Anthropic models:
+
+```javascript
+import { ChatAnthropic } from "@langchain/anthropic";
+
+const llm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+    }
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+### ChatGoogleGenerativeAI
+
+Use `additionalHeaders` for Google/Gemini models:
+
+```javascript
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+
+const llm = new ChatGoogleGenerativeAI({
+  model: "gemini-2.5-flash",
+  baseURL: "http://localhost:8080/langchain",
+  additionalHeaders: {
+    "x-bf-vk": "your-virtual-key",  // Virtual key for governance
   }
 });
 
