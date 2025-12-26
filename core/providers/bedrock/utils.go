@@ -271,7 +271,8 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
 
-	for _, msg := range bifrostMessages {
+	for i := 0; i < len(bifrostMessages); i++ {
+		msg := bifrostMessages[i]
 		switch msg.Role {
 		case schemas.ChatMessageRoleSystem:
 			// Convert system message
@@ -290,10 +291,20 @@ func convertMessages(bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, [
 			messages = append(messages, bedrockMsg)
 
 		case schemas.ChatMessageRoleTool:
-			// Convert tool message - this should be part of the conversation
-			bedrockMsg, err := convertToolMessage(msg)
+			// Collect all consecutive tool messages and group them into a single user message
+			var toolMessages []schemas.ChatMessage
+			toolMessages = append(toolMessages, msg)
+
+			// Look ahead for more consecutive tool messages
+			for j := i + 1; j < len(bifrostMessages) && bifrostMessages[j].Role == schemas.ChatMessageRoleTool; j++ {
+				toolMessages = append(toolMessages, bifrostMessages[j])
+				i = j
+			}
+
+			// Convert all collected tool messages into a single Bedrock message
+			bedrockMsg, err := convertToolMessages(toolMessages)
 			if err != nil {
-				return nil, nil, fmt.Errorf("failed to convert tool message: %w", err)
+				return nil, nil, fmt.Errorf("failed to convert tool messages: %w", err)
 			}
 			messages = append(messages, bedrockMsg)
 
@@ -362,83 +373,95 @@ func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 	return bedrockMsg, nil
 }
 
-// convertToolMessage converts a Bifrost tool message to Bedrock format
-func convertToolMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
+// convertToolMessages converts multiple consecutive Bifrost tool messages to a single Bedrock message
+func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
+	if len(msgs) == 0 {
+		return BedrockMessage{}, fmt.Errorf("no tool messages provided")
+	}
+
 	bedrockMsg := BedrockMessage{
-		Role: "user", // Tool messages are typically treated as user messages in Bedrock
+		Role: "user",
 	}
 
-	// Tool messages should have a tool_call_id
-	if msg.ChatToolMessage == nil || msg.ChatToolMessage.ToolCallID == nil {
-		return BedrockMessage{}, fmt.Errorf("tool message missing tool_call_id")
-	}
+	var contentBlocks []BedrockContentBlock
 
-	// Convert content to tool result
-	var toolResultContent []BedrockContentBlock
-	if msg.Content.ContentStr != nil {
-		// Bedrock expects JSON to be a parsed object, not a string
-		// Try to unmarshal the string content as JSON
-		var parsedOutput interface{}
-		if err := json.Unmarshal([]byte(*msg.Content.ContentStr), &parsedOutput); err != nil {
-			// If it's not valid JSON, wrap it as a text block instead
-			toolResultContent = append(toolResultContent, BedrockContentBlock{
-				Text: msg.Content.ContentStr,
-			})
-		} else {
-			// Use the parsed JSON object
-			toolResultContent = append(toolResultContent, BedrockContentBlock{
-				JSON: parsedOutput,
-			})
-		}
-	} else if msg.Content.ContentBlocks != nil {
-		for _, block := range msg.Content.ContentBlocks {
-			switch block.Type {
-			case schemas.ChatContentBlockTypeText:
-				if block.Text != nil {
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						Text: block.Text,
-					})
-					// Cache point must be in a separate block
-					if block.CacheControl != nil {
+	for _, msg := range msgs {
+		var toolResultContent []BedrockContentBlock
+		if msg.Content.ContentStr != nil {
+			// Bedrock expects JSON to be a parsed object, not a string
+			// Try to unmarshal the string content as JSON
+			var parsedOutput interface{}
+			if err := json.Unmarshal([]byte(*msg.Content.ContentStr), &parsedOutput); err != nil {
+				// If it's not valid JSON, wrap it as a text block instead
+				toolResultContent = append(toolResultContent, BedrockContentBlock{
+					Text: msg.Content.ContentStr,
+				})
+			} else {
+				// Use the parsed JSON object
+				toolResultContent = append(toolResultContent, BedrockContentBlock{
+					JSON: parsedOutput,
+				})
+			}
+		} else if msg.Content.ContentBlocks != nil {
+			for _, block := range msg.Content.ContentBlocks {
+				switch block.Type {
+				case schemas.ChatContentBlockTypeText:
+					if block.Text != nil {
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							CachePoint: &BedrockCachePoint{
-								Type: BedrockCachePointTypeDefault,
-							},
+							Text: block.Text,
 						})
+						// Cache point must be in a separate block
+						if block.CacheControl != nil {
+							toolResultContent = append(toolResultContent, BedrockContentBlock{
+								CachePoint: &BedrockCachePoint{
+									Type: BedrockCachePointTypeDefault,
+								},
+							})
+						}
 					}
-				}
-			case schemas.ChatContentBlockTypeImage:
-				if block.ImageURLStruct != nil {
-					imageSource, err := convertImageToBedrockSource(block.ImageURLStruct.URL)
-					if err != nil {
-						return BedrockMessage{}, fmt.Errorf("failed to convert image in tool result: %w", err)
-					}
-					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						Image: imageSource,
-					})
-					// Cache point must be in a separate block
-					if block.CacheControl != nil {
+				case schemas.ChatContentBlockTypeImage:
+					if block.ImageURLStruct != nil {
+						imageSource, err := convertImageToBedrockSource(block.ImageURLStruct.URL)
+						if err != nil {
+							return BedrockMessage{}, fmt.Errorf("failed to convert image in tool result: %w", err)
+						}
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							CachePoint: &BedrockCachePoint{
-								Type: BedrockCachePointTypeDefault,
-							},
+							Image: imageSource,
 						})
+						// Cache point must be in a separate block
+						if block.CacheControl != nil {
+							toolResultContent = append(toolResultContent, BedrockContentBlock{
+								CachePoint: &BedrockCachePoint{
+									Type: BedrockCachePointTypeDefault,
+								},
+							})
+						}
 					}
 				}
 			}
 		}
+
+		if msg.ChatToolMessage == nil {
+			return BedrockMessage{}, fmt.Errorf("tool message missing required ChatToolMessage")
+		}
+
+		if msg.ChatToolMessage.ToolCallID == nil {
+			return BedrockMessage{}, fmt.Errorf("tool message missing required ToolCallID")
+		}
+
+		// Create tool result content block for this tool message
+		toolResultBlock := BedrockContentBlock{
+			ToolResult: &BedrockToolResult{
+				ToolUseID: *msg.ChatToolMessage.ToolCallID,
+				Content:   toolResultContent,
+				Status:    schemas.Ptr("success"), // Default to success
+			},
+		}
+
+		contentBlocks = append(contentBlocks, toolResultBlock)
 	}
 
-	// Create tool result content block
-	toolResultBlock := BedrockContentBlock{
-		ToolResult: &BedrockToolResult{
-			ToolUseID: *msg.ChatToolMessage.ToolCallID,
-			Content:   toolResultContent,
-			Status:    schemas.Ptr("success"), // Default to success
-		},
-	}
-
-	bedrockMsg.Content = []BedrockContentBlock{toolResultBlock}
+	bedrockMsg.Content = contentBlocks
 	return bedrockMsg, nil
 }
 
