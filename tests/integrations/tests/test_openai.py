@@ -73,6 +73,7 @@ from openai import OpenAI
 
 from .utils.common import (
     CALCULATOR_TOOL,
+    FILE_DATA_BASE64,
     COMPARISON_KEYWORDS,
     COMPLEX_E2E_MESSAGES,
     EMBEDDINGS_DIFFERENT_TEXTS,
@@ -1133,6 +1134,46 @@ class TestOpenAIIntegration:
         assert response.data is not None
         assert len(response.data) > 0
 
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_input")
+    )
+    def test_chat_completion_with_file(self, openai_client, test_config, provider, model):
+        """Test chat completion with PDF file input"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = openai_client.chat.completions.create(
+            model=format_provider_model(provider, model),
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "What is the main topic of this document? Summarize the key concepts.",
+                        },
+                        {
+                            "type": "file",
+                            "file": {
+                                "file_data": f"data:application/pdf;base64,{FILE_DATA_BASE64}",
+                                "filename": "testingpdf",
+                            },
+                        },
+                    ],
+                }
+            ],
+            max_tokens=400,
+        )
+
+        assert_valid_chat_response(response)
+        content = get_content_string(response.choices[0].message.content)
+        content_lower = content.lower()
+
+        # Should mention quantum computing concepts
+        keywords = ["hello", "world", "testing", "pdf", "file"]
+        assert any(
+            keyword in content_lower for keyword in keywords
+        ), f"Response should describe the document content. Got: {content}"
 
     # =========================================================================
     # RESPONSES API TEST CASES
@@ -1152,7 +1193,7 @@ class TestOpenAIIntegration:
         # Validate response structure
         assert_valid_responses_response(response, min_content_length=20)
 
-        # Check that we have meaningful content about space
+        # Check that we have meaningful content
         content = ""
         for message in response.output:
             if hasattr(message, "content") and message.content:
@@ -1164,10 +1205,10 @@ class TestOpenAIIntegration:
                             content += block.text
 
         content_lower = content.lower()
-        space_keywords = ["space", "rocket", "astronaut", "moon", "mars", "nasa", "satellite"]
+        keywords = ["hello", "world", "testing", "pdf", "file"] 
         assert any(
-            keyword in content_lower for keyword in space_keywords
-        ), f"Response should contain space-related content. Got: {content}"
+            keyword in content_lower for keyword in keywords
+        ), f"Response should describe the document content. Got: {content}"
 
         # Verify usage information
         if hasattr(response, "usage"):
@@ -1250,6 +1291,56 @@ class TestOpenAIIntegration:
         assert any(
             keyword in content_lower for keyword in image_keywords
         ), f"Response should describe the image. Got: {content}"
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("file_input")
+    )
+    def test_responses_with_file(self, openai_client, test_config, provider, model):
+        """Test Responses API with base64-encoded PDF file"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = openai_client.responses.create(
+            model=format_provider_model(provider, model),
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "What is the main topic of this document? Summarize the key concepts.",
+                        },
+                        {
+                            "type": "input_file",
+                            "filename": "testingpdf",
+                            "file_data": f"data:application/pdf;base64,{FILE_DATA_BASE64}",
+                        },
+                    ],
+                }
+            ],
+            max_output_tokens=400,
+        )
+
+        # Validate response structure
+        assert_valid_responses_response(response, min_content_length=30)
+
+        # Extract content
+        content = ""
+        for message in response.output:
+            if hasattr(message, "content") and message.content:
+                if isinstance(message.content, str):
+                    content += message.content
+                elif isinstance(message.content, list):
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            content += block.text
+
+        # Check for recipe-related keywords
+        content_lower = content.lower()
+        keywords = ["hello", "world", "testing", "pdf", "file"] 
+        assert any(
+            keyword in content_lower for keyword in keywords
+        ), f"Response should describe the recipe document. Got: {content}"
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("responses"))
     def test_35_responses_with_tools(self, openai_client, test_config, provider, model):

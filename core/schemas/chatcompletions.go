@@ -600,7 +600,7 @@ const (
 	ChatContentBlockTypeText       ChatContentBlockType = "text"
 	ChatContentBlockTypeImage      ChatContentBlockType = "image_url"
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
-	ChatContentBlockTypeFile       ChatContentBlockType = "input_file"
+	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
 )
 
@@ -647,6 +647,7 @@ type ChatInputFile struct {
 	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data
 	FileID   *string `json:"file_id,omitempty"`   // Reference to uploaded file
 	Filename *string `json:"filename,omitempty"`  // Name of the file
+	FileType *string `json:"file_type,omitempty"` // Type of the file
 }
 
 // ChatToolMessage represents a tool message in a chat conversation.

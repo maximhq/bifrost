@@ -56,6 +56,7 @@ from .utils.common import (
     CALCULATOR_TOOL,
     COMPARISON_KEYWORDS,
     IMAGE_URL,
+    FILE_DATA_BASE64,
     INPUT_TOKENS_LONG_TEXT,
     INPUT_TOKENS_SIMPLE_TEXT,
     INPUT_TOKENS_WITH_SYSTEM,
@@ -1670,6 +1671,103 @@ class TestAnthropicIntegration:
         assert response.input_tokens > 100, (
             f"Long text should have >100 tokens, got {response.input_tokens}"
         )
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_input"))
+    def test_31_document_pdf_input(self, anthropic_client, test_config, provider, model):
+        """Test Case 31: PDF document input"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for document_input scenario")
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What is the main content of this PDF document? Summarize it."
+                    },
+                    {
+                        "type": "document",
+                        "title": "testing",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": FILE_DATA_BASE64
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        assert response.content[0].type == "text"
+        content = response.content[0].text.lower()
+        
+        # Should mention "hello world" from the PDF
+        assert any(word in content for word in ["hello", "world"]), \
+            f"Response should reference document content. Got: {content}"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_input_text"))
+    def test_32_document_text_input(self, anthropic_client, test_config, provider, model):
+        """Test Case 32: Text document input"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for document_input scenario")
+        
+        # Plain text document content
+        text_content = """This is a test text document for document input testing.
+
+It contains multiple paragraphs to ensure the model can properly process text documents.
+
+Key features of this document:
+1. Multiple lines and structure
+2. Clear formatting
+3. Numbered list
+
+This document is used to verify that the AI can read and understand text document inputs."""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What are the key features mentioned in this document?"
+                    },
+                    {
+                        "type": "document",
+                        "title": "testing",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": text_content
+                        }
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        assert response.content[0].type == "text"
+        content = response.content[0].text.lower()
+        
+        # Should reference the document features
+        document_keywords = ["feature", "line", "format", "list", "document"]
+        assert any(word in content for word in document_keywords), \
+            f"Response should reference document features. Got: {content}"
 
 
 # Additional helper functions specific to Anthropic

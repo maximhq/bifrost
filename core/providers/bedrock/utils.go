@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -508,6 +509,66 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 		}
 		return blocks, nil
 
+	case schemas.ChatContentBlockTypeFile:
+		if block.File == nil {
+			return nil, fmt.Errorf("file block missing file field")
+		}
+
+		documentSource := &BedrockDocumentSource{
+			Name:   "document",
+			Format: "pdf",
+			Source: &BedrockDocumentSourceData{},
+		}
+
+		// Set filename
+		if block.File.Filename != nil {
+			documentSource.Name = *block.File.Filename
+		}
+
+		// Convert MIME type to Bedrock format (pdf or txt)
+		isText := false
+		if block.File.FileType != nil {
+			fileType := *block.File.FileType
+			if fileType == "text/plain" || fileType == "txt" {
+				documentSource.Format = "txt"
+				isText = true
+			} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
+				documentSource.Format = "pdf"
+			}
+		}
+
+		// Handle file data - strip data URL prefix if present
+		if block.File.FileData != nil {
+			fileData := *block.File.FileData
+
+			// Check if it's a data URL and extract raw base64
+			if strings.HasPrefix(fileData, "data:") {
+				urlInfo := schemas.ExtractURLTypeInfo(fileData)
+				if urlInfo.DataURLWithoutPrefix != nil {
+					documentSource.Source.Bytes = urlInfo.DataURLWithoutPrefix
+					return []BedrockContentBlock{
+						{
+							Document: documentSource,
+						},
+					}, nil
+				}
+			}
+
+			// Set text or bytes based on file type
+			if isText {
+				documentSource.Source.Text = &fileData // Plain text
+				encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
+				documentSource.Source.Bytes = &encoded // Also sets Bytes
+			} else {
+				documentSource.Source.Bytes = &fileData
+			}
+		}
+
+		return []BedrockContentBlock{
+			{
+				Document: documentSource,
+			},
+		}, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")

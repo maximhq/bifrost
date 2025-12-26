@@ -251,6 +251,8 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 							})
 						} else if block.ImageURLStruct != nil {
 							content = append(content, ConvertToAnthropicImageBlock(block))
+						} else if block.File != nil {
+							content = append(content, ConvertToAnthropicDocumentBlock(block))
 						}
 					}
 				}

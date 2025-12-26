@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -97,7 +98,7 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	imageBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeImage,
 		CacheControl: block.CacheControl,
-		Source:       &AnthropicImageSource{},
+		Source:       &AnthropicSource{},
 	}
 
 	if block.ImageURLStruct == nil {
@@ -146,6 +147,149 @@ func ConvertToAnthropicImageBlock(block schemas.ChatContentBlock) AnthropicConte
 	}
 
 	return imageBlock
+}
+
+// ConvertToAnthropicDocumentBlock converts a Bifrost file block to Anthropic document format
+func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicContentBlock {
+	documentBlock := AnthropicContentBlock{
+		Type:         AnthropicContentBlockTypeDocument,
+		CacheControl: block.CacheControl,
+		Source:       &AnthropicSource{},
+	}
+
+	if block.File == nil {
+		return documentBlock
+	}
+
+	file := block.File
+
+	// Set title if provided
+	if file.Filename != nil {
+		documentBlock.Title = file.Filename
+	}
+
+	// Handle file_data (base64 encoded data)
+	if file.FileData != nil && *file.FileData != "" {
+		fileData := *file.FileData
+
+		// Check if it's plain text based on file type
+		if file.FileType != nil && (*file.FileType == "text/plain" || *file.FileType == "txt") {
+			documentBlock.Source.Type = "text"
+			documentBlock.Source.Data = &fileData
+			return documentBlock
+		}
+
+		if strings.HasPrefix(fileData, "data:") {
+			urlTypeInfo := schemas.ExtractURLTypeInfo(fileData)
+
+			if urlTypeInfo.DataURLWithoutPrefix != nil {
+				// It's a data URL, extract the base64 content
+				documentBlock.Source.Type = "base64"
+				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+
+				// Set media type from data URL or file type
+				if urlTypeInfo.MediaType != nil {
+					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+				} else if file.FileType != nil {
+					documentBlock.Source.MediaType = file.FileType
+				}
+				return documentBlock
+			}
+		}
+
+		// Default to base64 for binary files
+		documentBlock.Source.Type = "base64"
+		documentBlock.Source.Data = &fileData
+
+		// Set media type
+		if file.FileType != nil {
+			documentBlock.Source.MediaType = file.FileType
+		} else {
+			// Default to PDF if not specified
+			mediaType := "application/pdf"
+			documentBlock.Source.MediaType = &mediaType
+		}
+		return documentBlock
+	}
+
+	return documentBlock
+}
+
+// ConvertResponsesFileBlockToAnthropic converts a Responses file block directly to Anthropic document format
+func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, cacheControl *schemas.CacheControl) AnthropicContentBlock {
+	documentBlock := AnthropicContentBlock{
+		Type:         AnthropicContentBlockTypeDocument,
+		CacheControl: cacheControl,
+		Source:       &AnthropicSource{},
+	}
+
+	if fileBlock == nil {
+		return documentBlock
+	}
+
+	// Set title if provided
+	if fileBlock.Filename != nil {
+		documentBlock.Title = fileBlock.Filename
+	}
+
+	// Handle file_data (base64 encoded data or plain text)
+	if fileBlock.FileData != nil && *fileBlock.FileData != "" {
+		fileData := *fileBlock.FileData
+
+		// Check if it's plain text based on file type
+		if fileBlock.FileType != nil && (*fileBlock.FileType == "text/plain" || *fileBlock.FileType == "txt") {
+			documentBlock.Source.Type = "text"
+			documentBlock.Source.Data = &fileData
+			documentBlock.Source.MediaType = schemas.Ptr("text/plain")
+			return documentBlock
+		}
+
+		// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
+		if strings.HasPrefix(fileData, "data:") {
+			urlTypeInfo := schemas.ExtractURLTypeInfo(fileData)
+
+			if urlTypeInfo.DataURLWithoutPrefix != nil {
+				// It's a data URL, extract the base64 content
+				documentBlock.Source.Type = "base64"
+				documentBlock.Source.Data = urlTypeInfo.DataURLWithoutPrefix
+
+				// Set media type from data URL or file type
+				if urlTypeInfo.MediaType != nil {
+					documentBlock.Source.MediaType = urlTypeInfo.MediaType
+				} else if fileBlock.FileType != nil {
+					documentBlock.Source.MediaType = fileBlock.FileType
+				}
+				return documentBlock
+			}
+		}
+
+		// Default to base64 for binary files (raw base64 without prefix)
+		documentBlock.Source.Type = "base64"
+		documentBlock.Source.Data = &fileData
+
+		// Set media type
+		if fileBlock.FileType != nil {
+			documentBlock.Source.MediaType = fileBlock.FileType
+		} else {
+			// Default to PDF if not specified
+			mediaType := "application/pdf"
+			documentBlock.Source.MediaType = &mediaType
+		}
+		return documentBlock
+	}
+
+	// Handle file URL
+	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
+		documentBlock.Source.Type = "url"
+		documentBlock.Source.URL = fileBlock.FileURL
+
+		if fileBlock.FileType != nil {
+			documentBlock.Source.MediaType = fileBlock.FileType
+		}
+		return documentBlock
+	}
+
+	return documentBlock
 }
 
 func (block AnthropicContentBlock) ToBifrostContentImageBlock() schemas.ChatContentBlock {

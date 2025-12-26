@@ -213,14 +213,15 @@ type BedrockImageSourceData struct {
 
 // BedrockDocumentSource represents document content
 type BedrockDocumentSource struct {
-	Format string                    `json:"format"` // Required: Document format (pdf, csv, doc, docx, xls, xlsx, html, txt, md)
-	Name   string                    `json:"name"`   // Required: Document name
-	Source BedrockDocumentSourceData `json:"source"` // Required: Document source data
+	Format string                     `json:"format"` // Required: Document format (pdf, csv, doc, docx, xls, xlsx, html, txt, md)
+	Name   string                     `json:"name"`   // Required: Document name
+	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
 }
 
 // BedrockDocumentSourceData represents the source of document data
 type BedrockDocumentSourceData struct {
 	Bytes *string `json:"bytes,omitempty"` // Base64-encoded document bytes
+	Text  *string `json:"text,omitempty"`  // Plain text content
 }
 
 // BedrockToolUse represents a tool use request

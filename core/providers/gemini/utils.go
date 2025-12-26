@@ -216,6 +216,40 @@ func isImageMimeType(mimeType string) bool {
 	return false
 }
 
+// convertFileDataToBytes converts file data (data URL or base64) to raw bytes for Gemini API.
+// Returns the bytes and an extracted mime type (if found in data URL).
+func convertFileDataToBytes(fileData string) ([]byte, string) {
+	var dataBytes []byte
+	var mimeType string
+
+	// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
+	if strings.HasPrefix(fileData, "data:") {
+		urlInfo := schemas.ExtractURLTypeInfo(fileData)
+
+		if urlInfo.DataURLWithoutPrefix != nil {
+			// Decode the base64 content
+			decoded, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
+			if err == nil {
+				dataBytes = decoded
+				if urlInfo.MediaType != nil {
+					mimeType = *urlInfo.MediaType
+				}
+			}
+		}
+	} else {
+		// Try to decode as plain base64
+		decoded, err := base64.StdEncoding.DecodeString(fileData)
+		if err == nil {
+			dataBytes = decoded
+		} else {
+			// Not base64 - treat as plain text
+			dataBytes = []byte(fileData)
+		}
+	}
+
+	return dataBytes, mimeType
+}
+
 var (
 	// Maps Gemini finish reasons to Bifrost format
 	geminiFinishReasonToBifrost = map[FinishReason]string{
@@ -577,6 +611,42 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 						parts = append(parts, &Part{
 							Text: *block.Text,
 						})
+					} else if block.File != nil {
+						// Handle file blocks - use FileID if available (uploaded file)
+						if block.File.FileID != nil && *block.File.FileID != "" {
+							mimeType := "application/pdf"
+							if block.File.FileType != nil {
+								mimeType = *block.File.FileType
+							}
+							parts = append(parts, &Part{
+								FileData: &FileData{
+									FileURI:  *block.File.FileID,
+									MIMEType: mimeType,
+								},
+							})
+						} else if block.File.FileData != nil {
+							// Inline file data - convert to InlineData (Blob)
+							fileData := *block.File.FileData
+							mimeType := "application/pdf"
+							if block.File.FileType != nil {
+								mimeType = *block.File.FileType
+							}
+
+							// Convert file data to bytes for Gemini Blob
+							dataBytes, extractedMimeType := convertFileDataToBytes(fileData)
+							if extractedMimeType != "" {
+								mimeType = extractedMimeType
+							}
+
+							if len(dataBytes) > 0 {
+								parts = append(parts, &Part{
+									InlineData: &Blob{
+										MIMEType: mimeType,
+										Data:     dataBytes,
+									},
+								})
+							}
+						}
 					}
 					// Handle other content block types as needed
 				}

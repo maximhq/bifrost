@@ -1,0 +1,1 @@
+- feat: add document/file support for Anthropic, Bedrock, and Gemini

@@ -575,7 +575,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					case ResponsesInputMessageContentBlockTypeImage:
 						chatBlockType = ChatContentBlockTypeImage // "input_image" -> "image_url"
 					case ResponsesInputMessageContentBlockTypeFile:
-						chatBlockType = ChatContentBlockTypeFile // "input_file" -> "input_file" (same)
+						chatBlockType = ChatContentBlockTypeFile // "input_file" -> "file"
 					case ResponsesInputMessageContentBlockTypeAudio:
 						chatBlockType = ChatContentBlockTypeInputAudio // "input_audio" -> "input_audio" (same)
 					default:
