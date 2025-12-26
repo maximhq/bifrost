@@ -1,0 +1,22 @@
+{
+  "project": "bifrost",
+  "openapi_spec": "../docs/apis/openapi.json",
+  "stainless_config": "stainless.yml",
+  "targets": {
+    "go": {
+      "output_path": "../sdks/go"
+    },
+    "kotlin": {
+      "output_path": "../sdks/kotlin"
+    },
+    "python": {
+      "output_path": "../sdks/python"
+    },
+    "ruby": {
+      "output_path": "../sdks/ruby"
+    },
+    "typescript": {
+      "output_path": "../sdks/typescript"
+    }
+  }
+}
