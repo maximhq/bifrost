@@ -89,7 +89,7 @@ export default function PricingConfigView() {
 					</div>
 					<div className="flex items-center gap-2">
 						<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess}>
-							{isForceSyncing ? "Forcing..." : "Force Sync Now"}
+							{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 						</Button>
 						<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 							{isLoading ? "Saving..." : "Save Changes"}

@@ -1,7 +1,9 @@
 import React from "react";
 import { Switch } from "./switch";
+import { cn } from "./utils";
 
 interface Props {
+	className?: string;
 	label?: string;
 	val: boolean;
 	setVal: React.Dispatch<React.SetStateAction<boolean>> | ((val: boolean) => void);
@@ -10,11 +12,14 @@ interface Props {
 	caption?: string;
 }
 
-const Toggle = ({ label, val, setVal, required = false, disabled = false, caption }: Props) => {
+const Toggle = ({ className, label, val, setVal, required = false, disabled = false, caption }: Props) => {
 	return (
 		<div className="w-full">
 			<label
-				className={`dark:bg-input/30 flex w-full items-center justify-between gap-2 rounded-lg border px-2 py-2 text-sm select-none ${disabled ? "cursor-default" : "cursor-pointer"}`}
+				className={cn(
+					`dark:bg-input/30 flex w-full items-center justify-between gap-2 py-2 text-sm select-none ${disabled ? "cursor-default" : "cursor-pointer"}`,
+					className,
+				)}
 			>
 				{label && (
 					<div className="">

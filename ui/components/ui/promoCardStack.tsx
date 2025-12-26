@@ -10,6 +10,7 @@ interface PromoCardItem {
 	title: string | React.ReactElement;
 	description: string | React.ReactElement;
 	dismissible?: boolean;
+	variant?: "default" | "warning";
 }
 
 interface PromoCardStackProps {
@@ -20,10 +21,12 @@ interface PromoCardStackProps {
 
 export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCardStackProps) {
 	const [items, setItems] = useState(() => {
+		// Sort so non-dismissible cards appear at the top
 		return [...cards].sort((a, b) => {
 			const aDismissible = a.dismissible !== false;
 			const bDismissible = b.dismissible !== false;
-			return bDismissible === aDismissible ? 0 : aDismissible ? -1 : 1;
+			if (aDismissible === bDismissible) return 0;
+			return aDismissible ? 1 : -1; // Non-dismissible first
 		});
 	});
 	const [removingId, setRemovingId] = useState<string | null>(null);
@@ -31,10 +34,12 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCar
 	const prevLenRef = React.useRef(items.length);
 
 	useEffect(() => {
+		// Sort so non-dismissible cards appear at the top
 		const sortedCards = [...cards].sort((a, b) => {
 			const aDismissible = a.dismissible !== false;
 			const bDismissible = b.dismissible !== false;
-			return bDismissible === aDismissible ? 0 : aDismissible ? -1 : 1;
+			if (aDismissible === bDismissible) return 0;
+			return aDismissible ? 1 : -1; // Non-dismissible first
 		});
 		setItems(sortedCards);
 	}, [cards]);
@@ -93,9 +98,13 @@ export function PromoCardStack({ cards, className = "", onCardsEmpty }: PromoCar
 							className={cn(
 								"flex h-full w-full flex-col gap-0 rounded-lg px-2.5 py-2",
 								visibleCards.length < 2 ? "shadow-none" : "shadow-md",
+								card.variant === "warning" && "border-amber-500/50 bg-amber-50 dark:border-amber-500/70 dark:bg-amber-950/20",
 							)}
 						>
-							<CardHeader className="text-muted-foreground flex-shrink-0 p-1 text-sm font-medium">
+							<CardHeader className={cn(
+								"flex-shrink-0 p-1 text-sm font-medium",
+								card.variant === "warning" ? "text-amber-800 dark:text-amber-400" : "text-muted-foreground",
+							)}>
 								<div className="flex items-start justify-between">
 									<div className="min-w-0 flex-1">{typeof card.title === "string" ? card.title : card.title}</div>
 									{card.dismissible !== false && isTopCard && (

@@ -8,7 +8,15 @@ const (
 	ConfigIsAuthEnabledKey          = "is_auth_enabled"
 	ConfigDisableAuthOnInferenceKey = "disable_auth_on_inference"
 	ConfigProxyKey                  = "proxy_config"
+	ConfigRestartRequiredKey        = "restart_required"
 )
+
+// RestartRequiredConfig represents the restart required configuration
+// This is set when a config change requires a server restart to take effect
+type RestartRequiredConfig struct {
+	Required bool   `json:"required"`
+	Reason   string `json:"reason,omitempty"`
+}
 
 
 

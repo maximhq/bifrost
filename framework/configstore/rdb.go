@@ -1949,6 +1949,45 @@ func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.G
 	}).Error
 }
 
+// GetRestartRequiredConfig retrieves the restart required configuration from the database.
+func (s *RDBConfigStore) GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error) {
+	var configEntry tables.TableGovernanceConfig
+	if err := s.db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigRestartRequiredKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry.Value == "" {
+		return nil, nil
+	}
+	var restartConfig tables.RestartRequiredConfig
+	if err := json.Unmarshal([]byte(configEntry.Value), &restartConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal restart required config: %w", err)
+	}
+	return &restartConfig, nil
+}
+
+// SetRestartRequiredConfig sets the restart required configuration in the database.
+func (s *RDBConfigStore) SetRestartRequiredConfig(ctx context.Context, config *tables.RestartRequiredConfig) error {
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal restart required config: %w", err)
+	}
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigRestartRequiredKey,
+		Value: string(configJSON),
+	}).Error
+}
+
+// ClearRestartRequiredConfig clears the restart required configuration in the database.
+func (s *RDBConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigRestartRequiredKey,
+		Value: `{"required":false,"reason":""}`,
+	}).Error
+}
+
 // GetSession retrieves a session from the database.
 func (s *RDBConfigStore) GetSession(ctx context.Context, token string) (*tables.SessionsTable, error) {
 	var session tables.SessionsTable

@@ -238,7 +238,7 @@ export default function SecurityView() {
 										onChange={(e) => handleAuthFieldChange("admin_password", e.target.value)}
 									/>
 								</div>
-								<div className="flex items-center justify-between rounded-lg border p-4">
+								<div className="flex items-center justify-between">
 									<div className="space-y-0.5">
 										<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
 											Disable authentication on inference calls

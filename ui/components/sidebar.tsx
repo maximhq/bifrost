@@ -628,6 +628,20 @@ export default function AppSidebar() {
 	// Memoize promo cards array to prevent duplicates and unnecessary re-renders
 	const promoCards = useMemo(() => {
 		const cards = [];
+		// Restart required card - non-dismissible, shown first
+		if (coreConfig?.restart_required?.required) {
+			cards.push({
+				id: "restart-required",
+				title: "Restart Required",
+				description: (
+					<div className="text-xs text-amber-700 dark:text-amber-300/80">
+						{coreConfig.restart_required.reason || "Configuration changes require a server restart to take effect."}
+					</div>
+				),
+				dismissible: false,
+				variant: "warning" as const,
+			});
+		}
 		if (showNewReleaseBanner && latestRelease) {
 			cards.push({
 				id: "new-release",
@@ -651,7 +665,7 @@ export default function AppSidebar() {
 			cards.push(productionSetupHelpCard);
 		}
 		return cards;
-	}, [showNewReleaseBanner, latestRelease, newReleaseImage]);
+	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage]);
 
 	// Reset areCardsEmpty when promoCards changes
 	useEffect(() => {
