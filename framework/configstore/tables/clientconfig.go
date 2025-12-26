@@ -15,8 +15,8 @@ type TableClientConfig struct {
 	AllowedOriginsJSON      string `gorm:"type:text" json:"-"` // JSON serialized []string
 	InitialPoolSize         int    `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging           bool   `gorm:"" json:"enable_logging"`
-	DisableContentLogging   bool   `gorm:"default:false" json:"disable_content_logging"`                // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
-	LogRetentionDays        int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"`      // Number of days to retain logs (minimum 1 day)
+	DisableContentLogging   bool   `gorm:"default:false" json:"disable_content_logging"`           // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
+	LogRetentionDays        int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
 	EnableGovernance        bool   `gorm:"" json:"enable_governance"`
 	EnforceGovernanceHeader bool   `gorm:"" json:"enforce_governance_header"`
 	AllowDirectKeys         bool   `gorm:"" json:"allow_direct_keys"`
@@ -33,7 +33,7 @@ type TableClientConfig struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	PrometheusLabels []string `gorm:"-" json:"prometheus_labels"`
-	AllowedOrigins   []string `gorm:"-" json:"allowed_origins,omitempty"`	
+	AllowedOrigins   []string `gorm:"-" json:"allowed_origins,omitempty"`
 }
 
 // TableName sets the table name for each model

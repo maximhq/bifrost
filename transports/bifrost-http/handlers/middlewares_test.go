@@ -12,12 +12,12 @@ import (
 // mockLogger is a mock implementation of schemas.Logger for testing
 type mockLogger struct{}
 
-func (m *mockLogger) Debug(format string, args ...any)              {}
-func (m *mockLogger) Info(format string, args ...any)               {}
-func (m *mockLogger) Warn(format string, args ...any)               {}
-func (m *mockLogger) Error(format string, args ...any)              {}
-func (m *mockLogger) Fatal(format string, args ...any)              {}
-func (m *mockLogger) SetLevel(level schemas.LogLevel)               {}
+func (m *mockLogger) Debug(format string, args ...any)                  {}
+func (m *mockLogger) Info(format string, args ...any)                   {}
+func (m *mockLogger) Warn(format string, args ...any)                   {}
+func (m *mockLogger) Error(format string, args ...any)                  {}
+func (m *mockLogger) Fatal(format string, args ...any)                  {}
+func (m *mockLogger) SetLevel(level schemas.LogLevel)                   {}
 func (m *mockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed

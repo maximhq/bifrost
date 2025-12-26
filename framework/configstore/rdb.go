@@ -665,7 +665,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 					if processedARN, err := envutils.ProcessEnvValue(*bedrockConfig.ARN); err == nil {
 						bedrockConfigCopy.ARN = &processedARN
 					}
-				}				
+				}
 				bedrockConfig = &bedrockConfigCopy
 			}
 

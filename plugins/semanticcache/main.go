@@ -377,7 +377,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	ctx.SetValue(requestIDKey, requestID)
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
-	
+
 	performDirectSearch, performSemanticSearch := true, true
 	if (*ctx).Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := (*ctx).Value(CacheTypeKey).(CacheType)

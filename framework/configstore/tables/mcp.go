@@ -10,14 +10,14 @@ import (
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                 uint      `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID           string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name               string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	ConnectionType     string    `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString   *string   `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON    *string   `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
-	ToolsToExecuteJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
-	HeadersJSON        string    `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	ID                 uint    `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID           string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name               string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	ConnectionType     string  `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
+	ConnectionString   *string `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON    *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
+	ToolsToExecuteJSON string  `gorm:"type:text" json:"-"` // JSON serialized []string
+	HeadersJSON        string  `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
