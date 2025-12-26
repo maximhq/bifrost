@@ -1,13 +1,13 @@
-"use client"
+"use client";
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons"
-import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs"
-import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs"
-import { ColumnDef } from "@tanstack/react-table"
-import { ArrowUpDown, Trash2 } from "lucide-react"
-import moment from "moment"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusBarColors } from "@/lib/constants/logs";
+import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ColumnDef } from "@tanstack/react-table";
+import { ArrowUpDown, Trash2 } from "lucide-react";
+import moment from "moment";
 
 function getMessage(log?: LogEntry) {
 	if (log?.input_history && log.input_history.length > 0) {
@@ -48,14 +48,12 @@ function getMessage(log?: LogEntry) {
 export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess = true): ColumnDef<LogEntry>[] => [
 	{
 		accessorKey: "status",
-		header: "Status",
+		header: "",
+		size: 8,
+		maxSize: 8,
 		cell: ({ row }) => {
 			const status = row.original.status as Status;
-			return (
-				<Badge variant="secondary" className={`${StatusColors[status] ?? ""} font-mono text-xs uppercase`}>
-					{status}
-				</Badge>
-			);
+			return <div className={`h-full min-h-[24px] w-1 rounded-sm ${StatusBarColors[status]}`} />;
 		},
 	},
 	{
@@ -68,7 +66,7 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		),
 		cell: ({ row }) => {
 			const timestamp = row.original.timestamp;
-			return <div className="font-mono text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
+			return <div className="text-xs">{moment(timestamp).format("YYYY-MM-DD hh:mm:ss A (Z)")}</div>;
 		},
 	},
 	{
@@ -174,12 +172,12 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	{
 		id: "actions",
 		cell: ({ row }) => {
-			const log = row.original
+			const log = row.original;
 			return (
 				<Button variant="outline" size="icon" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
 					<Trash2 />
 				</Button>
-			)
+			);
 		},
 	},
-]
+];

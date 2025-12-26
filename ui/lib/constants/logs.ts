@@ -81,6 +81,13 @@ export const StatusColors = {
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
+export const StatusBarColors = {
+	success: "bg-green-500",
+	error: "bg-red-500",
+	processing: "bg-blue-500",
+	cancelled: "bg-gray-400",
+} as const;
+
 export const RequestTypeLabels = {
 	"chat.completion": "Chat",
 	response: "Responses",

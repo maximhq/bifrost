@@ -411,6 +411,10 @@ func initStoresFromFile(ctx context.Context, config *Config, configData *ConfigD
 			return err
 		}
 		logger.Info("config store initialized")
+		// Clear restart required flag on server startup
+		if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {
+			logger.Warn("failed to clear restart required config: %v", err)
+		}
 	}
 
 	// Initialize log store
@@ -1520,6 +1524,11 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	// Initialize default config store
 	if err = initDefaultConfigStore(ctx, config, configDBPath); err != nil {
 		return nil, err
+	}
+
+	// Clear restart required flag on server startup
+	if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {
+		logger.Warn("failed to clear restart required config: %v", err)
 	}
 
 	// Load or create default client config

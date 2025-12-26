@@ -299,12 +299,19 @@ export const DefaultGlobalProxyConfig: GlobalProxyConfig = {
 	enable_for_api: false,
 };
 
+// Restart required configuration
+export interface RestartRequiredConfig {
+	required: boolean;
+	reason?: string;
+}
+
 // Bifrost Config
 export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
 	auth_config?: AuthConfig;
 	proxy_config?: GlobalProxyConfig;
+	restart_required?: RestartRequiredConfig;
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
