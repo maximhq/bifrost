@@ -36,6 +36,8 @@ import (
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
+	// GetHeaderFilterConfig returns the global header filter configuration
+	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
 }
 
 // Retry backoff constants for validation
@@ -380,6 +382,11 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	// Load governance config
 	loadGovernanceConfigFromFile(ctx, config, &configData)
 
+	// Load header filter config from store (not from file, as it's a runtime config)
+	if config.ConfigStore != nil {
+		loadDefaultHeaderFilterConfig(ctx, config)
+	}
+
 	// Load auth config
 	loadAuthConfigFromFile(ctx, config, &configData)
 
@@ -490,6 +497,13 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 			}
 		}
 	}
+
+	// Sync HeaderFilterConfig to store for UI/API access
+	if config.ClientConfig.HeaderFilterConfig != nil && config.ConfigStore != nil {
+		if err = config.ConfigStore.UpdateHeaderFilterConfig(ctx, config.ClientConfig.HeaderFilterConfig); err != nil {
+			logger.Warn("failed to update header filter config in store: %v", err)
+		}
+	}
 }
 
 // mergeClientConfig merges config file values into existing client config
@@ -530,6 +544,18 @@ func mergeClientConfig(dbConfig *configstore.ClientConfig, fileConfig *configsto
 	}
 	if !dbConfig.EnableLiteLLMFallbacks && fileConfig.EnableLiteLLMFallbacks {
 		dbConfig.EnableLiteLLMFallbacks = fileConfig.EnableLiteLLMFallbacks
+	}
+	// Merge HeaderFilterConfig: DB takes priority, but fill in empty values from config file
+	if dbConfig.HeaderFilterConfig == nil && fileConfig.HeaderFilterConfig != nil {
+		dbConfig.HeaderFilterConfig = fileConfig.HeaderFilterConfig
+	} else if dbConfig.HeaderFilterConfig != nil && fileConfig.HeaderFilterConfig != nil {
+		// Merge individual lists: DB values take priority, but if empty, use file values
+		if len(dbConfig.HeaderFilterConfig.Allowlist) == 0 && len(fileConfig.HeaderFilterConfig.Allowlist) > 0 {
+			dbConfig.HeaderFilterConfig.Allowlist = fileConfig.HeaderFilterConfig.Allowlist
+		}
+		if len(dbConfig.HeaderFilterConfig.Denylist) == 0 && len(fileConfig.HeaderFilterConfig.Denylist) > 0 {
+			dbConfig.HeaderFilterConfig.Denylist = fileConfig.HeaderFilterConfig.Denylist
+		}
 	}
 }
 
@@ -1549,6 +1575,9 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	// Load governance config
 	loadDefaultGovernanceConfig(ctx, config)
 
+	// Load header filter config
+	loadDefaultHeaderFilterConfig(ctx, config)
+
 	// Load MCP config
 	if err = loadDefaultMCPConfig(ctx, config); err != nil {
 		return nil, err
@@ -1728,6 +1757,18 @@ func loadDefaultGovernanceConfig(ctx context.Context, config *Config) {
 	}
 	if governanceConfig != nil {
 		config.GovernanceConfig = governanceConfig
+	}
+}
+
+// loadDefaultHeaderFilterConfig loads header filter configuration from the store
+func loadDefaultHeaderFilterConfig(ctx context.Context, config *Config) {
+	headerFilterConfig, err := config.ConfigStore.GetHeaderFilterConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to get header filter config from store: %v", err)
+		return
+	}
+	if headerFilterConfig != nil {
+		config.ClientConfig.HeaderFilterConfig = headerFilterConfig
 	}
 }
 
@@ -2019,6 +2060,14 @@ func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configst
 // reads are atomic and won't cause panics.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
+}
+
+// GetHeaderFilterConfig returns the global header filter configuration
+// Note: This method doesn't use locking for performance. In rare cases during
+// config updates, it may return stale data, but this is acceptable since pointer
+// reads are atomic and won't cause panics.
+func (c *Config) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
+	return c.ClientConfig.HeaderFilterConfig
 }
 
 // GetLoadedPlugins returns the current snapshot of loaded plugins.

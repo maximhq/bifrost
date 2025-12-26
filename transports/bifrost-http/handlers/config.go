@@ -31,6 +31,7 @@ type ConfigManager interface {
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
+	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
@@ -157,6 +158,13 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			}
 			mapConfig["proxy_config"] = proxyConfig
 		}
+		// Fetching header filter config
+		headerFilterConfig, err := h.store.ConfigStore.GetHeaderFilterConfig(ctx)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("failed to get header filter config from store: %v", err))
+		} else if headerFilterConfig != nil {
+			mapConfig["header_filter_config"] = headerFilterConfig
+		}
 		// Fetching restart required config
 		restartConfig, err := h.store.ConfigStore.GetRestartRequiredConfig(ctx)
 		if err != nil {
@@ -264,6 +272,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 
 	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
+
+	// Handle HeaderFilterConfig changes
+	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
+		updatedConfig.HeaderFilterConfig = payload.ClientConfig.HeaderFilterConfig
+		if err := h.configManager.ReloadHeaderFilterConfig(ctx, payload.ClientConfig.HeaderFilterConfig); err != nil {
+			logger.Warn(fmt.Sprintf("failed to reload header filter config: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload header filter config: %v", err))
+			return
+		}
+	}
 
 	// Validate LogRetentionDays
 	if payload.ClientConfig.LogRetentionDays < 1 {
@@ -610,4 +628,15 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		"status":  "success",
 		"message": "proxy configuration updated successfully",
 	})
+}
+
+// headerFilterConfigEqual compares two GlobalHeaderFilterConfig for equality
+func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Denylist, b.Denylist)
 }

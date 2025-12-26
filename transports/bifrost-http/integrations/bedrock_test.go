@@ -6,6 +6,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
@@ -13,11 +14,16 @@ import (
 
 // mockHandlerStore implements lib.HandlerStore for testing
 type mockHandlerStore struct {
-	allowDirectKeys bool
+	allowDirectKeys    bool
+	headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig
 }
 
 func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return m.allowDirectKeys
+}
+
+func (m *mockHandlerStore) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
+	return m.headerFilterConfig
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

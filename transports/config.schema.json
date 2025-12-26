@@ -80,6 +80,27 @@
         "enable_litellm_fallbacks": {
           "type": "boolean",
           "description": "Enable litellm-specific fallbacks for text completion for Groq"
+        },
+        "header_filter_config": {
+          "type": "object",
+          "description": "Global header filtering configuration for x-bf-eh-* headers forwarded to LLM providers",
+          "properties": {
+            "allowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "If non-empty, only these headers (from x-bf-eh-* prefix) are allowed to be forwarded"
+            },
+            "denylist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Headers to always block from being forwarded"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

@@ -677,6 +677,18 @@ export const globalProxyFormSchema = z.object({
 	proxy_config: globalProxyConfigSchema,
 });
 
+// Global header filter configuration schema
+// Controls which headers with the x-bf-eh-* prefix are forwarded to LLM providers
+export const globalHeaderFilterConfigSchema = z.object({
+	allowlist: z.array(z.string()).optional(), // If non-empty, only these headers are allowed
+	denylist: z.array(z.string()).optional(), // Headers to always block
+});
+
+// Global header filter form schema for the HeaderFilterView
+export const globalHeaderFilterFormSchema = z.object({
+	header_filter_config: globalHeaderFilterConfigSchema,
+});
+
 // Export type inference helpers
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
@@ -694,3 +706,5 @@ export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;
 export type GlobalProxyConfigSchema = z.infer<typeof globalProxyConfigSchema>;
 export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
+export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
+export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
