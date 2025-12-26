@@ -111,6 +111,10 @@ if ! git diff --cached --quiet; then
   git commit -m "framework: bump core to $CORE_VERSION --skip-pipeline"
   # Push the bump so go.mod/go.sum changes are recorded on the branch
   CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+    # In detached HEAD state (common in CI), use GITHUB_REF_NAME or default to main
+    CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+  fi
   git push origin "$CURRENT_BRANCH"
   echo "🔧 Pushed framework bump to $CURRENT_BRANCH"
 else

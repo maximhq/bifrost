@@ -67,6 +67,7 @@ type Bifrost struct {
 	pluginPipelinePool  sync.Pool                          // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                          // Pool for BifrostRequest objects
 	logger              schemas.Logger                     // logger instance, default logger is used if not provided
+	tracer              atomic.Value                       // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
 	mcpManager          *mcp.MCPManager                    // MCP integration manager (nil if MCP not configured)
 	mcpInitOnce         sync.Once                          // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
@@ -77,12 +78,32 @@ type Bifrost struct {
 type PluginPipeline struct {
 	plugins []schemas.Plugin
 	logger  schemas.Logger
+	tracer  schemas.Tracer
 
 	// Number of PreHooks that were executed (used to determine which PostHooks to run in reverse order)
 	executedPreHooks int
 	// Errors from PreHooks and PostHooks
 	preHookErrors  []error
 	postHookErrors []error
+
+	// Streaming post-hook timing accumulation (for aggregated spans)
+	postHookTimings     map[string]*pluginTimingAccumulator // keyed by plugin name
+	postHookPluginOrder []string                            // order in which post-hooks ran (for nested span creation)
+	chunkCount          int
+}
+
+// pluginTimingAccumulator accumulates timing information for a plugin across streaming chunks
+type pluginTimingAccumulator struct {
+	totalDuration time.Duration
+	invocations   int
+	errors        int
+}
+
+// tracerWrapper wraps a Tracer to ensure atomic.Value stores consistent types.
+// This is necessary because atomic.Value.Store() panics if called with values
+// of different concrete types, even if they implement the same interface.
+type tracerWrapper struct {
+	tracer schemas.Tracer
 }
 
 // Global logger instance which is set in the Init function
@@ -104,6 +125,13 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	}
 
 	providerUtils.SetLogger(config.Logger)
+
+	// Initialize tracer (use NoOpTracer if not provided)
+	tracer := config.Tracer
+	if tracer == nil {
+		tracer = schemas.DefaultTracer()
+	}
+
 	bifrostCtx, cancel := context.WithCancel(ctx)
 	bifrost := &Bifrost{
 		ctx:           bifrostCtx,
@@ -115,6 +143,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keySelector:   config.KeySelector,
 		logger:        config.Logger,
 	}
+	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	bifrost.plugins.Store(&config.Plugins)
 
 	// Initialize providers slice
@@ -221,6 +250,20 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	return bifrost, nil
 }
 
+// SetTracer sets the tracer for the Bifrost instance.
+func (bifrost *Bifrost) SetTracer(tracer schemas.Tracer) {
+	if tracer == nil {
+		// Fall back to no-op tracer if not provided
+		tracer = schemas.DefaultTracer()
+	}
+	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
+}
+
+// getTracer returns the tracer from atomic storage with type assertion.
+func (bifrost *Bifrost) getTracer() schemas.Tracer {
+	return bifrost.tracer.Load().(*tracerWrapper).tracer
+}
+
 // ReloadConfig reloads the config from DB
 // Currently we only update account and drop excess requests
 // We will keep on adding other aspects as required
@@ -318,7 +361,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx context.Context, req *schemas.Bifr
 
 	response, bifrostErr := executeRequestWithRetries(&ctx, config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 		return provider.ListModels(ctx, keys, request)
-	}, schemas.ListModelsRequest, req.Provider, "")
+	}, schemas.ListModelsRequest, req.Provider, "", bifrost.getTracer(), nil)
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType: schemas.ListModelsRequest,
@@ -1971,7 +2014,6 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 	return nil
 }
 
-
 // PROVIDER MANAGEMENT
 
 // createBaseProvider creates a provider based on the base provider type
@@ -2351,9 +2393,19 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
+		// Start span for fallback attempt
+		tracer := bifrost.getTracer()
+		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
+		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
+		tracer.SetAttribute(handle, "fallback.index", i+1)
+		ctx = spanCtx
+
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
 			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
+			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
+			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
 		}
 
@@ -2361,8 +2413,15 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
+
+		// End span with error status
+		if fallbackErr.Error != nil {
+			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
+		}
+		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
@@ -2433,8 +2492,18 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
+		// Start span for fallback attempt
+		tracer := bifrost.getTracer()
+		spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("fallback.%s.%s", fallback.Provider, fallback.Model), schemas.SpanKindFallback)
+		tracer.SetAttribute(handle, schemas.AttrProviderName, string(fallback.Provider))
+		tracer.SetAttribute(handle, schemas.AttrRequestModel, fallback.Model)
+		tracer.SetAttribute(handle, "fallback.index", i+1)
+		ctx = spanCtx
+
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
+			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
+			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
 			continue
 		}
 
@@ -2442,8 +2511,15 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
 			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			return result, nil
 		}
+
+		// End span with error status
+		if fallbackErr.Error != nil {
+			tracer.SetAttribute(handle, "error", fallbackErr.Error.Message)
+		}
+		tracer.EndSpan(handle, schemas.SpanStatusError, "fallback failed")
 
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
@@ -2771,6 +2847,8 @@ func executeRequestWithRetries[T any](
 	requestType schemas.RequestType,
 	providerKey schemas.ModelProvider,
 	model string,
+	tracer schemas.Tracer,
+	req *schemas.BifrostRequest,
 ) (T, *schemas.BifrostError) {
 	var result T
 	var bifrostError *schemas.BifrostError
@@ -2799,8 +2877,75 @@ func executeRequestWithRetries[T any](
 
 		logger.Debug("attempting %s request for provider %s", requestType, providerKey)
 
+		// Start span for LLM call (or retry attempt)
+		var spanName string
+		var spanKind schemas.SpanKind
+		if attempts > 0 {
+			spanName = fmt.Sprintf("retry.attempt.%d", attempts)
+			spanKind = schemas.SpanKindRetry
+		} else {
+			spanName = "llm.call"
+			spanKind = schemas.SpanKindLLMCall
+		}
+		spanCtx, handle := tracer.StartSpan(*ctx, spanName, spanKind)
+		tracer.SetAttribute(handle, schemas.AttrProviderName, string(providerKey))
+		tracer.SetAttribute(handle, schemas.AttrRequestModel, model)
+		tracer.SetAttribute(handle, "request.type", string(requestType))
+		if attempts > 0 {
+			tracer.SetAttribute(handle, "retry.count", attempts)
+		}
+
+		// Populate LLM request attributes (messages, parameters, etc.)
+		if req != nil {
+			tracer.PopulateLLMRequestAttributes(handle, req)
+		}
+
+		// Update context with span ID
+		*ctx = spanCtx
+
+		// Store tracer in context BEFORE calling requestHandler, so streaming goroutines
+		// have access to it for completing deferred spans when the stream ends.
+		// The streaming goroutine captures the context when it starts, so these values
+		// must be set before requestHandler() is called.
+		*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyTracer, tracer)
+
+		// Record stream start time for TTFT calculation (only for streaming requests)
+		// This is also used by RunPostHooks to detect streaming mode
+		if IsStreamRequestType(requestType) {
+			streamStartTime := time.Now()
+			*ctx = context.WithValue(*ctx, schemas.BifrostContextKeyStreamStartTime, streamStartTime)
+		}
+
 		// Attempt the request
 		result, bifrostError = requestHandler()
+
+		// Check if result is a streaming channel - if so, defer span completion
+		if _, isStreamChan := any(result).(chan *schemas.BifrostStream); isStreamChan {
+			// For streaming requests, store the span handle in TraceStore keyed by trace ID
+			// This allows the provider's streaming goroutine to retrieve it later
+			if traceID, ok := (*ctx).Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				tracer.StoreDeferredSpan(traceID, handle)
+			}
+			// Don't end the span here - it will be ended when streaming completes
+		} else {
+			// Populate LLM response attributes for non-streaming responses
+			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
+				tracer.PopulateLLMResponseAttributes(handle, resp, bifrostError)
+			}
+
+			// End span with appropriate status
+			if bifrostError != nil {
+				if bifrostError.Error != nil {
+					tracer.SetAttribute(handle, "error", bifrostError.Error.Message)
+				}
+				if bifrostError.StatusCode != nil {
+					tracer.SetAttribute(handle, "status_code", *bifrostError.StatusCode)
+				}
+				tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
+			} else {
+				tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+			}
+		}
 
 		logger.Debug("request %s for provider %s completed", requestType, providerKey)
 
@@ -2897,8 +3042,16 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 			} else {
 				// Use the custom provider name for actual key selection, but pass base provider type for key validation
+				// Start span for key selection
+				keyTracer := bifrost.getTracer()
+				keySpanCtx, keyHandle := keyTracer.StartSpan(req.Context, "key.selection", schemas.SpanKindInternal)
+				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, string(provider.GetProviderKey()))
+				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
+
 				key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
 				if err != nil {
+					keyTracer.SetAttribute(keyHandle, "error", err.Error())
+					keyTracer.EndSpan(keyHandle, schemas.SpanStatusError, err.Error())
 					bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
 					req.Err <- schemas.BifrostError{
 						IsBifrostError: false,
@@ -2914,6 +3067,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					}
 					continue
 				}
+				keyTracer.SetAttribute(keyHandle, "key.id", key.ID)
+				keyTracer.SetAttribute(keyHandle, "key.name", key.Name)
+				keyTracer.EndSpan(keyHandle, schemas.SpanStatusOk, "")
+				// Update context with span ID for subsequent operations
+				req.Context = keySpanCtx
 				req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
 				req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
 			}
@@ -2930,20 +3088,32 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				return resp, nil
 			}
+			// Store a finalizer callback to create aggregated post-hook spans at stream end
+			// This closure captures the pipeline reference and releases it after finalization
+			postHookSpanFinalizer := func(ctx context.Context) {
+				pipeline.FinalizeStreamingPostHookSpans(ctx)
+				// Release the pipeline AFTER finalizing spans (not before streaming completes)
+				bifrost.releasePluginPipeline(pipeline)
+			}
+			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeyPostHookSpanFinalizer, postHookSpanFinalizer)
 		}
 
 		// Execute request with retries
+		reqTracer := bifrost.getTracer()
 		if IsStreamRequestType(req.RequestType) {
 			stream, bifrostError = executeRequestWithRetries(&req.Context, config, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
 				return bifrost.handleProviderStreamRequest(provider, req, key, postHookRunner)
-			}, req.RequestType, provider.GetProviderKey(), model)
+			}, req.RequestType, provider.GetProviderKey(), model, reqTracer, &req.BifrostRequest)
 		} else {
 			result, bifrostError = executeRequestWithRetries(&req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
 				return bifrost.handleProviderRequest(provider, req, key, keys)
-			}, req.RequestType, provider.GetProviderKey(), model)
+			}, req.RequestType, provider.GetProviderKey(), model, reqTracer, &req.BifrostRequest)
 		}
 
-		if pipeline != nil {
+		// Release pipeline immediately for non-streaming requests only
+		// For streaming, the pipeline is released in the postHookSpanFinalizer after streaming completes
+		// Exception: if streaming request has an error, release immediately since finalizer won't be called
+		if pipeline != nil && (!IsStreamRequestType(req.RequestType) || bifrostError != nil) {
 			bifrost.releasePluginPipeline(pipeline)
 		}
 
@@ -3162,12 +3332,33 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 		*ctx = pluginCtx.GetParentCtxWithUserValues()
 	}()
 	for i, plugin := range p.plugins {
-		p.logger.Debug("running pre-hook for plugin %s", plugin.GetName())
-		req, shortCircuit, err = plugin.PreHook(pluginCtx, req)
-		if err != nil {
-			p.preHookErrors = append(p.preHookErrors, err)
-			p.logger.Warn("error in PreHook for plugin %s: %v", plugin.GetName(), err)
+		pluginName := plugin.GetName()
+		p.logger.Debug("running pre-hook for plugin %s", pluginName)
+
+		// Start span for this plugin's PreHook
+		spanCtx, handle := p.tracer.StartSpan(pluginCtx, fmt.Sprintf("plugin.%s.prehook", pluginName), schemas.SpanKindPlugin)
+		// Update pluginCtx with span context for nested operations
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				pluginCtx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
 		}
+
+		req, shortCircuit, err = plugin.PreHook(pluginCtx, req)
+
+		// End span with appropriate status
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.preHookErrors = append(p.preHookErrors, err)
+			p.logger.Warn("error in PreHook for plugin %s: %v", pluginName, err)
+		} else if shortCircuit != nil {
+			p.tracer.SetAttribute(handle, "short_circuit", true)
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "short-circuit")
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		}
+
 		p.executedPreHooks = i + 1
 		if shortCircuit != nil {
 			return req, shortCircuit, p.executedPreHooks // short-circuit: only plugins up to and including i ran
@@ -3180,6 +3371,7 @@ func (p *PluginPipeline) RunPreHooks(ctx *context.Context, req *schemas.BifrostR
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
+// For streaming requests, it accumulates timing per plugin instead of creating individual spans per chunk.
 func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	// Defensive: ensure count is within valid bounds
 	if runFrom < 0 {
@@ -3188,20 +3380,60 @@ func (p *PluginPipeline) RunPostHooks(ctx *context.Context, resp *schemas.Bifros
 	if runFrom > len(p.plugins) {
 		runFrom = len(p.plugins)
 	}
+
+	// Detect streaming mode - if StreamStartTime is set, we're in a streaming context
+	isStreaming := (*ctx).Value(schemas.BifrostContextKeyStreamStartTime) != nil
+
 	var err error
 	pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(*ctx, 10*time.Second)
 	defer cancel()
 	for i := runFrom - 1; i >= 0; i-- {
 		plugin := p.plugins[i]
-		p.logger.Debug("running post-hook for plugin %s", plugin.GetName())
-		resp, bifrostErr, err = plugin.PostHook(pluginCtx, resp, bifrostErr)
-		if err != nil {
-			p.postHookErrors = append(p.postHookErrors, err)
-			p.logger.Warn("error in PostHook for plugin %s: %v", plugin.GetName(), err)
+		pluginName := plugin.GetName()
+		p.logger.Debug("running post-hook for plugin %s", pluginName)
+
+		if isStreaming {
+			// For streaming: accumulate timing, don't create individual spans per chunk
+			start := time.Now()
+			resp, bifrostErr, err = plugin.PostHook(pluginCtx, resp, bifrostErr)
+			duration := time.Since(start)
+
+			p.accumulatePluginTiming(pluginName, duration, err != nil)
+			if err != nil {
+				p.postHookErrors = append(p.postHookErrors, err)
+				p.logger.Warn("error in PostHook for plugin %s: %v", pluginName, err)
+			}
+		} else {
+			// For non-streaming: create span per plugin (existing behavior)
+			spanCtx, handle := p.tracer.StartSpan(pluginCtx, fmt.Sprintf("plugin.%s.posthook", pluginName), schemas.SpanKindPlugin)
+			// Update pluginCtx with span context for nested operations
+			if spanCtx != nil {
+				if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+					pluginCtx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+				}
+			}
+
+			resp, bifrostErr, err = plugin.PostHook(pluginCtx, resp, bifrostErr)
+
+			// End span with appropriate status
+			if err != nil {
+				p.tracer.SetAttribute(handle, "error", err.Error())
+				p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+				p.postHookErrors = append(p.postHookErrors, err)
+				p.logger.Warn("error in PostHook for plugin %s: %v", pluginName, err)
+			} else {
+				p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+			}
 		}
 		// If a plugin recovers from an error (sets bifrostErr to nil and sets resp), allow that
 		// If a plugin invalidates a response (sets resp to nil and sets bifrostErr), allow that
 	}
+
+	// Increment chunk count for streaming
+	if isStreaming {
+		p.chunkCount++
+	}
+
 	// Capturing plugin ctx values and putting them in the request context
 	*ctx = pluginCtx.GetParentCtxWithUserValues()
 	// Final logic: if both are set, error takes precedence, unless error is nil
@@ -3221,6 +3453,91 @@ func (p *PluginPipeline) resetPluginPipeline() {
 	p.executedPreHooks = 0
 	p.preHookErrors = p.preHookErrors[:0]
 	p.postHookErrors = p.postHookErrors[:0]
+	// Reset streaming timing accumulation
+	p.chunkCount = 0
+	if p.postHookTimings != nil {
+		clear(p.postHookTimings)
+	}
+	p.postHookPluginOrder = p.postHookPluginOrder[:0]
+}
+
+// accumulatePluginTiming accumulates timing for a plugin during streaming
+func (p *PluginPipeline) accumulatePluginTiming(pluginName string, duration time.Duration, hasError bool) {
+	if p.postHookTimings == nil {
+		p.postHookTimings = make(map[string]*pluginTimingAccumulator)
+	}
+	timing, ok := p.postHookTimings[pluginName]
+	if !ok {
+		timing = &pluginTimingAccumulator{}
+		p.postHookTimings[pluginName] = timing
+		// Track order on first occurrence (first chunk)
+		p.postHookPluginOrder = append(p.postHookPluginOrder, pluginName)
+	}
+	timing.totalDuration += duration
+	timing.invocations++
+	if hasError {
+		timing.errors++
+	}
+}
+
+// FinalizeStreamingPostHookSpans creates aggregated spans for each plugin after streaming completes.
+// This should be called once at the end of streaming to create one span per plugin with average timing.
+// Spans are nested to mirror the pre-hook hierarchy (each post-hook is a child of the previous one).
+func (p *PluginPipeline) FinalizeStreamingPostHookSpans(ctx context.Context) {
+	if p.postHookTimings == nil || len(p.postHookTimings) == 0 || len(p.postHookPluginOrder) == 0 {
+		return
+	}
+
+	// Collect handles and timing info to end spans in reverse order
+	type spanInfo struct {
+		handle    schemas.SpanHandle
+		hasErrors bool
+	}
+	spans := make([]spanInfo, 0, len(p.postHookPluginOrder))
+	currentCtx := ctx
+
+	// Start spans in execution order (nested: each is a child of the previous)
+	for _, pluginName := range p.postHookPluginOrder {
+		timing, ok := p.postHookTimings[pluginName]
+		if !ok || timing.invocations == 0 {
+			continue
+		}
+
+		// Create span as child of the previous span (nested hierarchy)
+		newCtx, handle := p.tracer.StartSpan(currentCtx, fmt.Sprintf("plugin.%s.posthook", pluginName), schemas.SpanKindPlugin)
+		if handle == nil {
+			continue
+		}
+
+		// Calculate average duration in milliseconds
+		avgMs := float64(timing.totalDuration.Milliseconds()) / float64(timing.invocations)
+
+		// Set aggregated attributes
+		p.tracer.SetAttribute(handle, schemas.AttrPluginInvocations, timing.invocations)
+		p.tracer.SetAttribute(handle, schemas.AttrPluginAvgDurationMs, avgMs)
+		p.tracer.SetAttribute(handle, schemas.AttrPluginTotalDurationMs, timing.totalDuration.Milliseconds())
+
+		if timing.errors > 0 {
+			p.tracer.SetAttribute(handle, schemas.AttrPluginErrorCount, timing.errors)
+		}
+
+		spans = append(spans, spanInfo{handle: handle, hasErrors: timing.errors > 0})
+		currentCtx = newCtx
+	}
+
+	// End spans in reverse order (innermost first, like unwinding a call stack)
+	for i := len(spans) - 1; i >= 0; i-- {
+		if spans[i].hasErrors {
+			p.tracer.EndSpan(spans[i].handle, schemas.SpanStatusError, "some invocations failed")
+		} else {
+			p.tracer.EndSpan(spans[i].handle, schemas.SpanStatusOk, "")
+		}
+	}
+}
+
+// GetChunkCount returns the number of chunks processed during streaming
+func (p *PluginPipeline) GetChunkCount() int {
+	return p.chunkCount
 }
 
 // getPluginPipeline gets a PluginPipeline from the pool and configures it
@@ -3228,6 +3545,7 @@ func (bifrost *Bifrost) getPluginPipeline() *PluginPipeline {
 	pipeline := bifrost.pluginPipelinePool.Get().(*PluginPipeline)
 	pipeline.plugins = *bifrost.plugins.Load()
 	pipeline.logger = bifrost.logger
+	pipeline.tracer = bifrost.getTracer()
 	return pipeline
 }
 
@@ -3623,6 +3941,11 @@ func (bifrost *Bifrost) Shutdown() {
 		if err != nil {
 			bifrost.logger.Warn(fmt.Sprintf("Error cleaning up MCP manager: %s", err.Error()))
 		}
+	}
+
+	// Stop the tracerWrapper to clean up background goroutines
+	if tracerWrapper := bifrost.tracer.Load().(*tracerWrapper); tracerWrapper != nil && tracerWrapper.tracer != nil {
+		tracerWrapper.tracer.Stop()
 	}
 
 	// Cleanup plugins

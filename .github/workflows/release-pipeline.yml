@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "v1.4.0"]
 
 # Prevent concurrent runs
 concurrency:
@@ -594,7 +594,7 @@ jobs:
           fi
 
           # Build the message with proper formatting
-          MESSAGE=$(printf "🚀 **Release Pipeline Complete**\n\n**Components:**\n• Core: %s\n• Framework: %s\n• Plugins: %s\n• Bifrost HTTP: %s\n\n**Details:**\n• Branch: \`main\`\n• Commit: \`%.8s\`\n• Author: %s\n\n[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" "$CORE_STATUS" "$FRAMEWORK_STATUS" "$PLUGINS_STATUS" "$BIFROST_STATUS" "${{ github.sha }}" "${{ github.actor }}")
+          MESSAGE=$(printf "🚀 **Release Pipeline Complete**\n\n**Components:**\n• Core: %s\n• Framework: %s\n• Plugins: %s\n• Bifrost HTTP: %s\n\n**Details:**\n• Branch: \`${{ github.ref_name }}\`\n• Commit: \`%.8s\`\n• Author: %s\n\n[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" "$CORE_STATUS" "$FRAMEWORK_STATUS" "$PLUGINS_STATUS" "$BIFROST_STATUS" "${{ github.sha }}" "${{ github.actor }}")
 
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"

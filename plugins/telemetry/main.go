@@ -276,9 +276,9 @@ func (p *PrometheusPlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-func (p *PrometheusPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportMiddleware is not used for this plugin
+func (p *PrometheusPlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return nil
 }
 
 // PreHook records the start time of the request in the context.
@@ -464,7 +464,7 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	return result, bifrostErr, nil
 }
 
-// PrometheusMiddleware wraps a FastHTTP handler to collect Prometheus metrics.
+// HTTPMiddleware wraps a FastHTTP handler to collect Prometheus metrics.
 // It tracks:
 //   - Total number of requests
 //   - Request duration

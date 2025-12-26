@@ -8,6 +8,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -28,7 +29,7 @@ func NewSessionHandler(configStore configstore.ConfigStore) *SessionHandler {
 }
 
 // RegisterRoutes registers the session-related routes
-func (h *SessionHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *SessionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.POST("/api/session/login", lib.ChainMiddlewares(h.login, middlewares...))
 	r.POST("/api/session/logout", lib.ChainMiddlewares(h.logout, middlewares...))
 	r.GET("/api/session/is-auth-enabled", lib.ChainMiddlewares(h.isAuthEnabled, middlewares...))

@@ -69,7 +69,7 @@ import (
 // ExtensionRouter defines the interface that all integration routers must implement
 // to register their routes with the main HTTP router.
 type ExtensionRouter interface {
-	RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware)
+	RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
 }
 
 // StreamingRequest interface for requests that support streaming
@@ -322,7 +322,7 @@ func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, ro
 
 // RegisterRoutes registers all configured routes on the given fasthttp router.
 // This method implements the ExtensionRouter interface.
-func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
 		method := strings.ToUpper(route.Method)
@@ -510,14 +510,13 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 	// allows providers that check ctx.Done() to cancel early if needed. This is less critical than
 	// streaming requests (where we actively detect write errors), but still provides a mechanism
 	// for providers to respect cancellation.
-	requestCtx := *bifrostCtx
-
+	
 	var response interface{}
 	var err error
 
 	switch {
 	case bifrostReq.ListModelsRequest != nil:
-		listModelsResponse, bifrostErr := g.client.ListModelsRequest(requestCtx, bifrostReq.ListModelsRequest)
+		listModelsResponse, bifrostErr := g.client.ListModelsRequest(ctx, bifrostReq.ListModelsRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -537,7 +536,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 	case bifrostReq.TextCompletionRequest != nil:
-		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(requestCtx, bifrostReq.TextCompletionRequest)
+		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(ctx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -560,7 +559,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TextResponseConverter(bifrostCtx, textCompletionResponse)
 	case bifrostReq.ChatRequest != nil:
-		chatResponse, bifrostErr := g.client.ChatCompletionRequest(requestCtx, bifrostReq.ChatRequest)
+		chatResponse, bifrostErr := g.client.ChatCompletionRequest(ctx, bifrostReq.ChatRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -583,7 +582,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
 	case bifrostReq.ResponsesRequest != nil:
-		responsesResponse, bifrostErr := g.client.ResponsesRequest(requestCtx, bifrostReq.ResponsesRequest)
+		responsesResponse, bifrostErr := g.client.ResponsesRequest(ctx, bifrostReq.ResponsesRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -606,7 +605,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
 	case bifrostReq.EmbeddingRequest != nil:
-		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(requestCtx, bifrostReq.EmbeddingRequest)
+		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(ctx, bifrostReq.EmbeddingRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -629,7 +628,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
 	case bifrostReq.SpeechRequest != nil:
-		speechResponse, bifrostErr := g.client.SpeechRequest(requestCtx, bifrostReq.SpeechRequest)
+		speechResponse, bifrostErr := g.client.SpeechRequest(ctx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -663,7 +662,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 	case bifrostReq.TranscriptionRequest != nil:
-		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(requestCtx, bifrostReq.TranscriptionRequest)
+		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(ctx, bifrostReq.TranscriptionRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -686,7 +685,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
 	case bifrostReq.CountTokensRequest != nil:
-		countTokensResponse, bifrostErr := g.client.CountTokensRequest(requestCtx, bifrostReq.CountTokensRequest)
+		countTokensResponse, bifrostErr := g.client.CountTokensRequest(ctx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -1135,9 +1134,23 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 // Bifrost handles cleanup internally for normal completion and errors, so we only cancel
 // upstream streams when write errors indicate the client has disconnected.
 func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, config RouteConfig, streamChan chan *schemas.BifrostStream, cancel context.CancelFunc) {
+	// Signal to tracing middleware that trace completion should be deferred
+	// The streaming callback will complete the trace after the stream ends
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
+	// Get the trace completer function for use in the streaming callback
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
-		defer w.Flush()
+		defer func() {
+			w.Flush()
+			// Complete the trace after streaming finishes
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			if traceCompleter != nil {
+				traceCompleter()
+			}
+		}()
 
 		// Create encoder for AWS Event Stream if needed
 		var eventStreamEncoder *eventstream.Encoder

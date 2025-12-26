@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
@@ -108,6 +109,7 @@ type BifrostHTTPServer struct {
 	WebSocketHandler                   *handlers.WebSocketHandler
 	LogsCleaner                        *logstore.LogsCleaner
 	MCPServerHandler                   *handlers.MCPServerHandler
+	devPprofHandler                    *handlers.DevPprofHandler
 }
 
 var logger schemas.Logger
@@ -210,7 +212,7 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 }
 
 // LoadPlugin loads a plugin by name and returns it as type T.
-func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string, pluginConfig any, bifrostConfig *lib.Config, EnterpriseOverrides lib.EnterpriseOverrides) (T, error) {
+func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
 	var zero T
 	if path != nil {
 		logger.Info("loading dynamic plugin %s from path %s", name, *path)
@@ -261,7 +263,7 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 			return p, nil
 		}
 		return zero, fmt.Errorf("logging plugin type mismatch")
-	case EnterpriseOverrides.GetGovernancePluginName():
+	case governance.PluginName:
 		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
 		if err != nil {
 			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
@@ -322,12 +324,12 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 }
 
 // LoadPlugins loads the plugins for the server.
-func LoadPlugins(ctx context.Context, config *lib.Config, EnterpriseOverrides lib.EnterpriseOverrides) ([]schemas.Plugin, []schemas.PluginStatus, error) {
+func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []schemas.PluginStatus, error) {
 	var err error
 	pluginStatus := []schemas.PluginStatus{}
 	plugins := []schemas.Plugin{}
 	// Initialize telemetry plugin
-	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, nil, config, EnterpriseOverrides)
+	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -349,7 +351,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config, EnterpriseOverrides li
 		// Use dedicated logs database with high-scale optimizations
 		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, &logging.Config{
 			DisableContentLogging: &config.ClientConfig.DisableContentLogging,
-		}, config, EnterpriseOverrides)
+		}, config)
 		if err != nil {
 			logger.Error("failed to initialize logging plugin: %v", err)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -375,32 +377,34 @@ func LoadPlugins(ctx context.Context, config *lib.Config, EnterpriseOverrides li
 	// Initializing governance plugin
 	if config.ClientConfig.EnableGovernance {
 		// Initialize governance plugin
-		governancePlugin, err := EnterpriseOverrides.LoadGovernancePlugin(ctx, config)
+		governancePlugin, err := LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, nil, &governance.Config{
+			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
+		}, config)
 		if err != nil {
 			logger.Error("failed to initialize governance plugin: %s", err.Error())
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   EnterpriseOverrides.GetGovernancePluginName(),
+				Name:   governance.PluginName,
 				Status: schemas.PluginStatusError,
 				Logs:   []string{fmt.Sprintf("error initializing governance plugin %v", err)},
 			})
 		} else if governancePlugin != nil {
 			plugins = append(plugins, governancePlugin)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   EnterpriseOverrides.GetGovernancePluginName(),
+				Name:   governance.PluginName,
 				Status: schemas.PluginStatusActive,
 				Logs:   []string{"governance plugin initialized successfully"},
 			})
 		}
 	} else {
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
-			Name:   EnterpriseOverrides.GetGovernancePluginName(),
+			Name:   governance.PluginName,
 			Status: schemas.PluginStatusDisabled,
 			Logs:   []string{"governance plugin disabled"},
 		})
 	}
 	for _, plugin := range config.PluginConfigs {
 		// Skip built-in plugins that are already handled above
-		if plugin.Name == telemetry.PluginName || plugin.Name == logging.PluginName || plugin.Name == EnterpriseOverrides.GetGovernancePluginName() {
+		if plugin.Name == telemetry.PluginName || plugin.Name == logging.PluginName || plugin.Name == governance.PluginName {
 			continue
 		}
 		if !plugin.Enabled {
@@ -411,7 +415,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config, EnterpriseOverrides li
 			})
 			continue
 		}
-		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config, EnterpriseOverrides)
+		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config)
 		if err != nil {
 			if slices.Contains(enterprisePlugins, plugin.Name) {
 				continue
@@ -506,7 +510,7 @@ func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.
 // and returns the BaseGovernancePlugin implementation or an error.
 func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlugin, error) {
 	s.PluginsMutex.RLock()
-	plugin, err := FindPluginByName[schemas.Plugin](s.Plugins, s.GetGovernancePluginName())
+	plugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil, err
@@ -653,7 +657,7 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 // GetGovernanceData returns the governance data
 func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
 	s.PluginsMutex.RLock()
-	governancePlugin, err := FindPluginByName[schemas.Plugin](s.Plugins, s.GetGovernancePluginName())
+	governancePlugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil
@@ -820,7 +824,7 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, plugin schemas
 // Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
-	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config, s)
+	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
 		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
 		return err
@@ -936,7 +940,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 }
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
-func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
 
@@ -946,7 +950,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 }
 
 // RegisterAPIRoutes initializes the routes for the Bifrost HTTP server.
-func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, EnterpriseOverrides lib.EnterpriseOverrides, middlewares ...lib.BifrostHTTPMiddleware) error {
+func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks ServerCallbacks, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
@@ -955,7 +959,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
 	}
 	var governanceHandler *handlers.GovernanceHandler
-	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, EnterpriseOverrides.GetGovernancePluginName())
+	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
 	if governancePlugin != nil {
 		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
@@ -1015,6 +1019,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WebSocketHandler != nil {
 		s.WebSocketHandler.RegisterRoutes(s.Router, middlewares...)
 	}
+	// Register dev pprof handler only in dev mode
+	if handlers.IsDevMode() {
+		logger.Info("dev mode enabled, registering pprof endpoints")
+		s.devPprofHandler = handlers.NewDevPprofHandler()
+		s.devPprofHandler.RegisterRoutes(s.Router, middlewares...)
+	}
 	// Add Prometheus /metrics endpoint
 	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
 	if err == nil && prometheusPlugin.GetRegistry() != nil {
@@ -1032,7 +1042,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 }
 
 // RegisterUIRoutes registers the UI handler with the specified router
-func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...lib.BifrostHTTPMiddleware) {
+func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
@@ -1063,26 +1073,6 @@ func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids [
 	return virtualKeys
 }
 
-func (s *BifrostHTTPServer) GetGovernancePluginName() string {
-	if s.OSSToEnterprisePluginNameOverrides != nil {
-		if name, ok := s.OSSToEnterprisePluginNameOverrides[governance.PluginName]; ok && name != "" {
-			return name
-		}
-	}
-	return governance.PluginName
-}
-
-func (s *BifrostHTTPServer) LoadGovernancePlugin(ctx context.Context, config *lib.Config) (schemas.Plugin, error) {
-	governancePlugin, err := LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, nil, &governance.Config{
-		IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
-	}, config, s)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize governance plugin: %v", err)
-	}
-	return governancePlugin, nil
-}
-
 func (s *BifrostHTTPServer) LoadPricingManager(ctx context.Context, pricingConfig *modelcatalog.Config, configStore configstore.ConfigStore) (*modelcatalog.ModelCatalog, error) {
 	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, configStore, nil, logger)
 	if err != nil {
@@ -1092,8 +1082,8 @@ func (s *BifrostHTTPServer) LoadPricingManager(ctx context.Context, pricingConfi
 }
 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
-func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []lib.BifrostHTTPMiddleware {
-	commonMiddlewares := []lib.BifrostHTTPMiddleware{}
+func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
+	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
 	// Preparing middlewares
 	// Initializing prometheus plugin
 	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
@@ -1128,7 +1118,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to create app directory %s: %v", configDir, err)
 	}
 	// Initialize high-performance configuration store with dedicated database
-	s.Config, err = lib.LoadConfig(ctx, configDir, s)
+	s.Config, err = lib.LoadConfig(ctx, configDir)
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
@@ -1167,7 +1157,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Load plugins
 	s.pluginStatusMutex.Lock()
 	defer s.pluginStatusMutex.Unlock()
-	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config, s)
+	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config)
 	if err != nil {
 		return fmt.Errorf("failed to load plugins %v", err)
 	}
@@ -1227,7 +1217,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		apiMiddlewares = append(apiMiddlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
 	}
 	// Register routes
-	err = s.RegisterAPIRoutes(s.ctx, s, s, apiMiddlewares...)
+	err = s.RegisterAPIRoutes(s.ctx, s, apiMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1236,7 +1226,31 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		inferenceMiddlewares = append(inferenceMiddlewares, handlers.AuthMiddleware(s.Config.ConfigStore))
 	}
 	// Registering inference middlewares
-	inferenceMiddlewares = append([]lib.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config, s)}, inferenceMiddlewares...)
+	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
+	// Curating observability plugins
+	observabilityPlugins := []schemas.ObservabilityPlugin{}
+	for _, plugin := range s.Plugins {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+		}
+	}
+	// Check if logging plugin is enabled
+	loggingPluginEnabled := false
+	if _, err := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName); err == nil {
+		loggingPluginEnabled = true
+	}
+	// Initialize tracer when observability plugins OR logging plugin is enabled
+	// This enables the central streaming accumulator for both use cases
+	if len(observabilityPlugins) > 0 || loggingPluginEnabled {
+		// Initializing tracer with embedded streaming accumulator
+		traceStore := tracing.NewTraceStore(60*time.Minute, logger)
+		tracer := tracing.NewTracer(traceStore, s.Config.PricingManager, logger)
+		s.Client.SetTracer(tracer)
+		// Always add tracing middleware when tracer is enabled - it creates traces and sets traceID in context
+		// The observability plugins are optional (can be empty if only logging is enabled)
+		tracingMiddleware := handlers.NewTracingMiddleware(tracer, observabilityPlugins)
+		inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{tracingMiddleware.Middleware()}, inferenceMiddlewares...)
+	}
 	err = s.RegisterInferenceRoutes(s.ctx, inferenceMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
@@ -1255,6 +1269,12 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 // Start starts the HTTP server at the specified host and port
 // Also watches signals and errors
 func (s *BifrostHTTPServer) Start() error {
+	// Printing plugin status in a table
+	s.pluginStatusMutex.RLock()
+	for _, pluginStatus := range s.pluginStatus {
+		logger.Info("plugin status: %s - %s", pluginStatus.Name, pluginStatus.Status)
+	}
+	s.pluginStatusMutex.RUnlock()	
 	// Create channels for signal and error handling
 	sigChan := make(chan os.Signal, 1)
 	errChan := make(chan error, 1)
@@ -1307,6 +1327,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.LogsCleaner != nil {
 				logger.Info("stopping log retention cleaner...")
 				s.LogsCleaner.StopCleanupRoutine()
+			}
+			if s.devPprofHandler != nil {
+				logger.Info("stopping dev pprof handler...")
+				s.devPprofHandler.Cleanup()
 			}
 			if s.Config != nil && s.Config.LogsStore != nil {
 				s.Config.LogsStore.Close(shutdownCtx)
