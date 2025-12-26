@@ -21,6 +21,9 @@ const defaultConfig: CoreConfig = {
 	max_request_body_size_mb: 100,
 	enable_litellm_fallbacks: false,
 	log_retention_days: 365,
+	mcp_agent_depth: 10,
+	mcp_tool_execution_timeout: 30,
+	mcp_code_mode_binding_level: "server",
 };
 
 export default function ClientSettingsView() {
@@ -58,7 +61,11 @@ export default function ClientSettingsView() {
 
 	const handleSave = useCallback(async () => {
 		try {
-			await updateCoreConfig({ ...bifrostConfig!, client_config: localConfig }).unwrap();
+			if (!bifrostConfig) {
+				toast.error("Configuration not loaded. Please refresh and try again.");
+				return;
+			}
+			await updateCoreConfig({ ...bifrostConfig, client_config: localConfig }).unwrap();
 			toast.success("Client settings updated successfully.");
 		} catch (error) {
 			toast.error(getErrorMessage(error));
@@ -66,7 +73,7 @@ export default function ClientSettingsView() {
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
 
 	return (
-		<div className="space-y-4 w-full max-w-4xl mx-auto">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div className="flex items-center justify-between">
 				<div>
 					<h2 className="text-2xl font-semibold tracking-tight">Client Settings</h2>

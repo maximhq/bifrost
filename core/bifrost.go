@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -66,7 +67,8 @@ type Bifrost struct {
 	pluginPipelinePool  sync.Pool                          // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                          // Pool for BifrostRequest objects
 	logger              schemas.Logger                     // logger instance, default logger is used if not provided
-	mcpManager          *MCPManager                        // MCP integration manager (nil if MCP not configured)
+	mcpManager          *mcp.MCPManager                    // MCP integration manager (nil if MCP not configured)
+	mcpInitOnce         sync.Once                          // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                // Custom key selector function
 }
@@ -179,13 +181,10 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	// Initialize MCP manager if configured
 	if config.MCPConfig != nil {
-		mcpManager, err := newMCPManager(bifrostCtx, *config.MCPConfig, bifrost.logger)
-		if err != nil {
-			bifrost.logger.Warn(fmt.Sprintf("failed to initialize MCP manager: %v", err))
-		} else {
-			bifrost.mcpManager = mcpManager
+		bifrost.mcpInitOnce.Do(func() {
+			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, *config.MCPConfig, bifrost.logger)
 			bifrost.logger.Info("MCP integration initialized successfully")
-		}
+		})
 	}
 
 	// Create buffered channels for each provider and start workers
@@ -539,8 +538,7 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx context.Context, req *sc
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
-// ChatCompletionRequest sends a chat completion request to the specified provider.
-func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) makeChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -574,8 +572,33 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+
 	return response.ChatResponse, nil
+}
+
+// ChatCompletionRequest sends a chat completion request to the specified provider.
+func (bifrost *Bifrost) ChatCompletionRequest(ctx context.Context, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	response, err := bifrost.makeChatCompletionRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if we should enter agent mode
+	if bifrost.mcpManager != nil {
+		return bifrost.mcpManager.CheckAndExecuteAgentForChatRequest(
+			&ctx,
+			req,
+			response,
+			bifrost.makeChatCompletionRequest,
+		)
+	}
+
+	return response, nil
 }
 
 // ChatCompletionStreamRequest sends a chat completion stream request to the specified provider.
@@ -612,8 +635,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx context.Context, req *sc
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
-// ResponsesRequest sends a responses request to the specified provider.
-func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+func (bifrost *Bifrost) makeResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -647,8 +669,32 @@ func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.Bifro
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
 	return response.ResponsesResponse, nil
+}
+
+// ResponsesRequest sends a responses request to the specified provider.
+func (bifrost *Bifrost) ResponsesRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// If ctx is nil, use the bifrost context (defensive check for mcp agent mode)
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	response, err := bifrost.makeResponsesRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if we should enter agent mode
+	if bifrost.mcpManager != nil {
+		return bifrost.mcpManager.CheckAndExecuteAgentForResponsesRequest(
+			&ctx,
+			req,
+			response,
+			bifrost.makeResponsesRequest,
+		)
+	}
+
+	return response, nil
 }
 
 // ResponsesStreamRequest sends a responses stream request to the specified provider.
@@ -1683,10 +1729,10 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 		return fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}
 
-	return bifrost.mcpManager.registerTool(name, description, handler, toolSchema)
+	return bifrost.mcpManager.RegisterTool(name, description, handler, toolSchema)
 }
 
-// ExecuteMCPTool executes an MCP tool call and returns the result as a tool message.
+// ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
 // This is the main public API for manual MCP tool execution.
 //
 // Parameters:
@@ -1696,7 +1742,7 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 // Returns:
 //   - schemas.ChatMessage: Tool message with execution result
 //   - schemas.BifrostError: Any execution error
-func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+func (bifrost *Bifrost) ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	if bifrost.mcpManager == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1709,16 +1755,53 @@ func (bifrost *Bifrost) ExecuteMCPTool(ctx context.Context, toolCall schemas.Cha
 		}
 	}
 
-	result, err := bifrost.mcpManager.executeTool(ctx, toolCall)
+	result, err := bifrost.mcpManager.ExecuteChatTool(ctx, toolCall)
 	if err != nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: err.Error(),
-				Error:   err,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: schemas.ChatCompletionRequest, // MCP tools are used with chat completions
+			},
+		}
+	}
+
+	return result, nil
+}
+
+// ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
+
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - schemas.ResponsesMessage: Tool message with execution result
+//   - schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	if bifrost.mcpManager == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP is not configured in this Bifrost instance",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest, // MCP tools are used with responses requests
+			},
+		}
+	}
+
+	result, err := bifrost.mcpManager.ExecuteResponsesTool(ctx, toolCall)
+	if err != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest, // MCP tools are used with responses requests
 			},
 		}
 	}
@@ -1741,12 +1824,9 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		return nil, fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}
 
-	clients, err := bifrost.mcpManager.GetClients()
-	if err != nil {
-		return nil, err
-	}
-
+	clients := bifrost.mcpManager.GetClients()
 	clientsInConfig := make([]schemas.MCPClient, 0, len(clients))
+
 	for _, client := range clients {
 		tools := make([]schemas.ChatToolFunction, 0, len(client.ToolMap))
 		for _, tool := range client.ToolMap {
@@ -1759,19 +1839,25 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 			return tools[i].Name < tools[j].Name
 		})
 
-		state := schemas.MCPConnectionStateConnected
-		if client.Conn == nil {
-			state = schemas.MCPConnectionStateDisconnected
-		}
-
 		clientsInConfig = append(clientsInConfig, schemas.MCPClient{
 			Config: client.ExecutionConfig,
 			Tools:  tools,
-			State:  state,
+			State:  client.State,
 		})
 	}
 
 	return clientsInConfig, nil
+}
+
+// GetAvailableTools returns the available tools for the given context.
+//
+// Returns:
+//   - []schemas.ChatTool: List of available tools
+func (bifrost *Bifrost) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
+	if bifrost.mcpManager == nil {
+		return nil
+	}
+	return bifrost.mcpManager.GetAvailableTools(ctx)
 }
 
 // AddMCPClient adds a new MCP client to the Bifrost instance.
@@ -1792,13 +1878,17 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 //	})
 func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 	if bifrost.mcpManager == nil {
-		manager := &MCPManager{
-			ctx:       bifrost.ctx,
-			clientMap: make(map[string]*MCPClient),
-			logger:    bifrost.logger,
-		}
+		// Use sync.Once to ensure thread-safe initialization
+		bifrost.mcpInitOnce.Do(func() {
+			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, schemas.MCPConfig{
+				ClientConfigs: []schemas.MCPClientConfig{config},
+			}, bifrost.logger)
+		})
+	}
 
-		bifrost.mcpManager = manager
+	// Handle case where initialization succeeded elsewhere but manager is still nil
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP manager is not initialized")
 	}
 
 	return bifrost.mcpManager.AddClient(config)
@@ -1865,6 +1955,22 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 
 	return bifrost.mcpManager.ReconnectClient(id)
 }
+
+// UpdateToolManagerConfig updates the tool manager config for the MCP manager.
+// This allows for hot-reloading of the tool manager config at runtime.
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error {
+	if bifrost.mcpManager == nil {
+		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+	}
+
+	bifrost.mcpManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+		MaxAgentDepth:        maxAgentDepth,
+		ToolExecutionTimeout: time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		CodeModeBindingLevel: schemas.CodeModeBindingLevel(codeModeBindingLevel),
+	})
+	return nil
+}
+
 
 // PROVIDER MANAGEMENT
 
@@ -2378,11 +2484,8 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 	}
 
 	// Add MCP tools to request if MCP is configured and requested
-	if req.RequestType != schemas.EmbeddingRequest &&
-		req.RequestType != schemas.SpeechRequest &&
-		req.RequestType != schemas.TranscriptionRequest &&
-		bifrost.mcpManager != nil {
-		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
+	if bifrost.mcpManager != nil {
+		req = bifrost.mcpManager.AddToolsToRequest(ctx, req)
 	}
 
 	pipeline := bifrost.getPluginPipeline()
@@ -2498,7 +2601,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx context.Context, req *schemas.Bifro
 
 	// Add MCP tools to request if MCP is configured and requested
 	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.mcpManager != nil {
-		req = bifrost.mcpManager.addMCPToolsToBifrostRequest(ctx, req)
+		req = bifrost.mcpManager.AddToolsToRequest(ctx, req)
 	}
 
 	pipeline := bifrost.getPluginPipeline()
@@ -2690,7 +2793,7 @@ func executeRequestWithRetries[T any](
 
 			// Calculate and apply backoff
 			backoff := calculateBackoff(attempts-1, config)
-			logger.Debug("sleeping for %s", backoff)
+			logger.Debug("sleeping for %s before retry", backoff)
 			time.Sleep(backoff)
 		}
 
@@ -3516,7 +3619,7 @@ func (bifrost *Bifrost) Shutdown() {
 
 	// Cleanup MCP manager
 	if bifrost.mcpManager != nil {
-		err := bifrost.mcpManager.cleanup()
+		err := bifrost.mcpManager.Cleanup()
 		if err != nil {
 			bifrost.logger.Warn(fmt.Sprintf("Error cleaning up MCP manager: %s", err.Error()))
 		}

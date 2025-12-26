@@ -1,0 +1,3 @@
+- feat: added code mode to mcp
+- feat: added health monitoring to mcp
+- feat: added responses format tool execution support to mcp

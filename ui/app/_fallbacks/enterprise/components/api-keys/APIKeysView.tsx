@@ -5,13 +5,12 @@ import { Button } from "@/components/ui/button";
 import { useGetCoreConfigQuery } from "@/lib/store";
 import { Copy, InfoIcon, KeyRound } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { toast } from "sonner";
 import ContactUsView from "../views/contactUsView";
 
 export default function APIKeysView() {
 	const { data: bifrostConfig, isLoading } = useGetCoreConfigQuery({ fromDB: true });
-	const [isTokenVisible, setIsTokenVisible] = useState(false);
 	const isAuthConfigure = useMemo(() => {
 		return bifrostConfig?.auth_config?.is_enabled;
 	}, [bifrostConfig]);

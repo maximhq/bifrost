@@ -1,0 +1,3 @@
+- refactor: extracted governance store into an interface for extensibility
+- refactor: extended the way governance store handles rate limits
+- chore: added e2e tests for governance plugin

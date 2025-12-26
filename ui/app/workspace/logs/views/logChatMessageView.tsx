@@ -111,14 +111,14 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
 					) : (
-						<div className="px-6 py-2 font-mono text-xs text-red-800">{message.refusal}</div>
+						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap text-red-800">{message.refusal}</div>
 					)}
 				</div>
 			)}
 
 			{/* Handle content */}
 			{message.content && (
-				<div className="border-b last:border-b-0">
+				<div className="border-b break-words last:border-b-0">
 					{typeof message.content === "string" ? (
 						<>
 							{isJson(message.content) ? (
@@ -133,7 +133,7 @@ export default function LogChatMessageView({ message, audioFormat }: LogChatMess
 									options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 								/>
 							) : (
-								<div className="px-6 py-2 font-mono text-xs whitespace-pre-wrap">{message.content}</div>
+								<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{message.content}</div>
 							)}
 						</>
 					) : (

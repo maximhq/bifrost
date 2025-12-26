@@ -8,14 +8,15 @@ require (
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
+	github.com/mark3labs/mcp-go v0.43.2
 	github.com/maximhq/bifrost/core v1.2.42
-	github.com/maximhq/bifrost/framework v1.1.52
-	github.com/maximhq/bifrost/plugins/governance v1.3.53
-	github.com/maximhq/bifrost/plugins/logging v1.3.53
-	github.com/maximhq/bifrost/plugins/maxim v1.4.53
-	github.com/maximhq/bifrost/plugins/otel v1.0.52
-	github.com/maximhq/bifrost/plugins/semanticcache v1.3.52
-	github.com/maximhq/bifrost/plugins/telemetry v1.3.52
+	github.com/maximhq/bifrost/framework v1.1.50
+	github.com/maximhq/bifrost/plugins/governance v1.3.51
+	github.com/maximhq/bifrost/plugins/logging v1.3.51
+	github.com/maximhq/bifrost/plugins/maxim v1.4.51
+	github.com/maximhq/bifrost/plugins/otel v1.0.50
+	github.com/maximhq/bifrost/plugins/semanticcache v1.3.50
+	github.com/maximhq/bifrost/plugins/telemetry v1.3.50
 	github.com/prometheus/client_golang v1.23.0
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
@@ -89,7 +90,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
-	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect

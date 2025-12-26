@@ -316,7 +316,7 @@ export default function AppSidebar() {
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
-	const hasMCPToolsAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
@@ -369,11 +369,11 @@ export default function AppSidebar() {
 			hasAccess: hasModelProvidersAccess,
 		},
 		{
-			title: "MCP Tools",
-			url: "/workspace/mcp-clients",
+			title: "MCP Gateway",
+			url: "/workspace/mcp-gateway",
 			icon: MCPIcon,
 			description: "MCP configuration",
-			hasAccess: hasMCPToolsAccess,
+			hasAccess: hasMCPGatewayAccess,
 		},
 		{
 			title: "Plugins",
@@ -485,6 +485,13 @@ export default function AppSidebar() {
 					icon: Settings,
 					description: "Client configuration settings",
 					hasAccess: hasSettingsAccess,
+				},
+				{
+					title: "MCP Gateway",
+					url: "/workspace/config/mcp-gateway",
+					icon: MCPIcon,
+					description: "MCP gateway configuration",
+					hasAccess: hasMCPGatewayAccess,
 				},
 				{
 					title: "Pricing Config",
@@ -715,7 +722,7 @@ export default function AppSidebar() {
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
-										router={router}										
+										router={router}
 									/>
 								);
 							})}

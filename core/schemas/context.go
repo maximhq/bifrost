@@ -171,6 +171,9 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
 	bc.userValues[key] = value
 }
 

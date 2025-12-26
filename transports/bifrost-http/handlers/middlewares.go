@@ -12,7 +12,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -47,7 +46,7 @@ func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 }
 
 // TransportInterceptorMiddleware collects all plugin interceptors and calls them one by one
-func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
+func TransportInterceptorMiddleware(config *lib.Config, enterpriseOverrides lib.EnterpriseOverrides) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			// Get plugins from config - lock-free read
@@ -56,10 +55,14 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 				next(ctx)
 				return
 			}
+			if enterpriseOverrides == nil {
+				next(ctx)
+				return
+			}
 			// If governance plugin is not loaded, skip interception
 			hasGovernance := false
 			for _, p := range plugins {
-				if p.GetName() == governance.PluginName {
+				if p.GetName() == enterpriseOverrides.GetGovernancePluginName() {
 					hasGovernance = true
 					break
 				}

@@ -1,13 +1,13 @@
-"use client"
+"use client";
 
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons"
-import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs"
-import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs"
-import { ColumnDef } from "@tanstack/react-table"
-import { ArrowUpDown, Trash2 } from "lucide-react"
-import moment from "moment"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
+import { ProviderName, RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
+import { LogEntry, ResponsesMessageContentBlock } from "@/lib/types/logs";
+import { ColumnDef } from "@tanstack/react-table";
+import { ArrowUpDown, Trash2 } from "lucide-react";
+import moment from "moment";
 
 function getMessage(log?: LogEntry) {
 	if (log?.input_history && log.input_history.length > 0) {
@@ -26,7 +26,8 @@ function getMessage(log?: LogEntry) {
 		}
 		return lastTextContentBlock;
 	} else if (log?.responses_input_history && log.responses_input_history.length > 0) {
-		let lastMessageContent = log.responses_input_history[log.responses_input_history.length - 1].content;
+		let lastMessage = log.responses_input_history[log.responses_input_history.length - 1];
+		let lastMessageContent = lastMessage.content;
 		if (typeof lastMessageContent === "string") {
 			return lastMessageContent;
 		}
@@ -36,7 +37,18 @@ function getMessage(log?: LogEntry) {
 				lastTextContentBlock = block.text;
 			}
 		}
-		return lastTextContentBlock;
+		// If no content found in content field, check output field for Responses API
+		if (!lastTextContentBlock && lastMessage.output) {
+			// Handle output field - it could be a string, an array of content blocks, or a computer tool call output data
+			if (typeof lastMessage.output === "string") {
+				return lastMessage.output;
+			} else if (Array.isArray(lastMessage.output)) {
+				return lastMessage.output.map((block) => block.text).join("\n");
+			} else if (lastMessage.output.type && lastMessage.output.type === "computer_screenshot") {
+				return lastMessage.output.image_url;
+			}
+		}
+		return lastTextContentBlock ?? "";
 	} else if (log?.speech_input) {
 		return log.speech_input.input;
 	} else if (log?.transcription_input) {
@@ -174,12 +186,12 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 	{
 		id: "actions",
 		cell: ({ row }) => {
-			const log = row.original
+			const log = row.original;
 			return (
 				<Button variant="outline" size="icon" onClick={() => onDelete(log)} disabled={!hasDeleteAccess}>
 					<Trash2 />
 				</Button>
-			)
+			);
 		},
 	},
-]
+];
