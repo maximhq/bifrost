@@ -1949,6 +1949,37 @@ func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.G
 	}).Error
 }
 
+// GetHeaderFilterConfig retrieves the header filter configuration from the database.
+func (s *RDBConfigStore) GetHeaderFilterConfig(ctx context.Context) (*tables.GlobalHeaderFilterConfig, error) {
+	var configEntry tables.TableGovernanceConfig
+	if err := s.db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigHeaderFilterKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry.Value == "" {
+		return nil, nil
+	}
+	var headerFilterConfig tables.GlobalHeaderFilterConfig
+	if err := json.Unmarshal([]byte(configEntry.Value), &headerFilterConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal header filter config: %w", err)
+	}
+	return &headerFilterConfig, nil
+}
+
+// UpdateHeaderFilterConfig updates the header filter configuration in the database.
+func (s *RDBConfigStore) UpdateHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error {
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal header filter config: %w", err)
+	}
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigHeaderFilterKey,
+		Value: string(configJSON),
+	}).Error
+}
+
 // GetRestartRequiredConfig retrieves the restart required configuration from the database.
 func (s *RDBConfigStore) GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error) {
 	var configEntry tables.TableGovernanceConfig

@@ -123,6 +123,10 @@ type ConfigStore interface {
 	GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error)
 	UpdateProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 
+	// Header filter config CRUD
+	GetHeaderFilterConfig(ctx context.Context) (*tables.GlobalHeaderFilterConfig, error)
+	UpdateHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
+
 	// Restart required config CRUD
 	GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error)
 	SetRestartRequiredConfig(ctx context.Context, config *tables.RestartRequiredConfig) error

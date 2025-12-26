@@ -34,19 +34,20 @@ type EnvKeyInfo struct {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
-	DropExcessRequests      bool     `json:"drop_excess_requests"`                // Drop excess requests if the provider queue is full
-	InitialPoolSize         int      `json:"initial_pool_size"`                   // The initial pool size for the bifrost client
-	PrometheusLabels        []string `json:"prometheus_labels"`                   // The labels to be used for prometheus metrics
-	EnableLogging           bool     `json:"enable_logging"`                      // Enable logging of requests and responses
-	DisableContentLogging   bool     `json:"disable_content_logging"`             // Disable logging of content
-	LogRetentionDays        int      `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool     `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceGovernanceHeader bool     `json:"enforce_governance_header"`           // Enforce governance on all requests
-	AllowDirectKeys         bool     `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
-	AllowedOrigins          []string `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	MaxRequestBodySizeMB    int      `json:"max_request_body_size_mb"`            // The maximum request body size in MB
-	EnableLiteLLMFallbacks  bool     `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
-	ConfigHash              string   `json:"-"`                                   // Config hash for reconciliation (not serialized)
+	DropExcessRequests      bool                            `json:"drop_excess_requests"`                // Drop excess requests if the provider queue is full
+	InitialPoolSize         int                             `json:"initial_pool_size"`                   // The initial pool size for the bifrost client
+	PrometheusLabels        []string                        `json:"prometheus_labels"`                   // The labels to be used for prometheus metrics
+	EnableLogging           bool                            `json:"enable_logging"`                      // Enable logging of requests and responses
+	DisableContentLogging   bool                            `json:"disable_content_logging"`             // Disable logging of content
+	LogRetentionDays        int                             `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
+	EnableGovernance        bool                            `json:"enable_governance"`                   // Enable governance on all requests
+	EnforceGovernanceHeader bool                            `json:"enforce_governance_header"`           // Enforce governance on all requests
+	AllowDirectKeys         bool                            `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
+	AllowedOrigins          []string                        `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	MaxRequestBodySizeMB    int                             `json:"max_request_body_size_mb"`            // The maximum request body size in MB
+	EnableLiteLLMFallbacks  bool                            `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
+	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
+	ConfigHash              string                          `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -138,6 +139,34 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash HeaderFilterConfig
+	if c.HeaderFilterConfig != nil {
+		// Hash Allowlist (sorted for deterministic hashing)
+		if len(c.HeaderFilterConfig.Allowlist) > 0 {
+			sortedAllowlist := make([]string, len(c.HeaderFilterConfig.Allowlist))
+			copy(sortedAllowlist, c.HeaderFilterConfig.Allowlist)
+			sort.Strings(sortedAllowlist)
+			data, err := sonic.Marshal(sortedAllowlist)
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte("headerFilterConfig.allowlist:"))
+			hash.Write(data)
+		}
+		// Hash Denylist (sorted for deterministic hashing)
+		if len(c.HeaderFilterConfig.Denylist) > 0 {
+			sortedDenylist := make([]string, len(c.HeaderFilterConfig.Denylist))
+			copy(sortedDenylist, c.HeaderFilterConfig.Denylist)
+			sort.Strings(sortedDenylist)
+			data, err := sonic.Marshal(sortedDenylist)
+			if err != nil {
+				return "", err
+			}
+			hash.Write([]byte("headerFilterConfig.denylist:"))
+			hash.Write(data)
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

@@ -63,6 +63,7 @@ type ServerCallbacks interface {
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
+	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -834,6 +835,23 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 	// Store the proxy config in memory for use by components that need it
 	s.Config.ProxyConfig = config
 	logger.Info("proxy configuration reloaded: enabled=%t, type=%s", config.Enabled, config.Type)
+	return nil
+}
+
+// ReloadHeaderFilterConfig reloads the header filter configuration
+func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	// Store the header filter config in ClientConfig
+	s.Config.ClientConfig.HeaderFilterConfig = config
+	allowlistLen := 0
+	denylistLen := 0
+	if config != nil {
+		allowlistLen = len(config.Allowlist)
+		denylistLen = len(config.Denylist)
+	}
+	logger.Info("header filter configuration reloaded: allowlist=%d, denylist=%d", allowlistLen, denylistLen)
 	return nil
 }
 

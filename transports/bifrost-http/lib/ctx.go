@@ -8,12 +8,14 @@ package lib
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -75,7 +77,7 @@ import (
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains any prometheus and maxim header values
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*context.Context, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*context.Context, context.CancelFunc) {
 	// Create cancellable context for all requests
 	// This enables proper cleanup when clients disconnect or requests are cancelled
 	baseCtx := context.Background()
@@ -95,9 +97,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	maximTags := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
-	// Denylist of header names that should not be accepted (case-insensitive)
-	denylist := map[string]bool{
-		"authorization":       true,
+	// Security denylist of header names that should never be accepted (case-insensitive)
+	// This denylist is always enforced regardless of user configuration
+	securityDenylist := map[string]bool{
 		"proxy-authorization": true,
 		"cookie":              true,
 		"host":                true,
@@ -110,6 +112,35 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 		"x-goog-api-key": true,
 		"x-bf-api-key":   true,
 		"x-bf-vk":        true,
+	}
+
+	// shouldAllowHeader determines if a header should be forwarded based on
+	// the configurable header filter config (separate from security denylist)
+	// Filter logic:
+	// 1. If allowlist is non-empty, header must be in allowlist
+	// 2. If denylist is non-empty, header must not be in denylist
+	// 3. If both are non-empty, allowlist takes precedence first, then denylist filters
+	// 4. If both are empty, header is allowed
+	shouldAllowHeader := func(headerName string) bool {
+		if headerFilterConfig == nil {
+			return true
+		}
+		hasAllowlist := len(headerFilterConfig.Allowlist) > 0
+		hasDenylist := len(headerFilterConfig.Denylist) > 0
+
+		// If allowlist is non-empty, header must be in allowlist
+		if hasAllowlist {
+			if !slices.Contains(headerFilterConfig.Allowlist, headerName) {
+				return false
+			}
+		}
+		// If denylist is non-empty, header must not be in denylist
+		if hasDenylist {
+			if slices.Contains(headerFilterConfig.Denylist, headerName) {
+				return false
+			}
+		}
+		return true
 	}
 
 	// Then process other headers
@@ -252,13 +283,41 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			}
 			// Normalize header name to lowercase
 			labelName = strings.ToLower(labelName)
-			// Validate against denylist
-			if denylist[labelName] {
+			// Validate against security denylist (always enforced)
+			if securityDenylist[labelName] {
+				return true
+			}
+			// Apply configurable header filter
+			if !shouldAllowHeader(labelName) {
 				return true
 			}
 			// Append header value (allow multiple values for the same header)
 			extraHeaders[labelName] = append(extraHeaders[labelName], string(value))
 			return true
+		}
+		// Direct header forwarding: when allowlist is configured, any header explicitly
+		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
+		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
+		// Only applies when allowlist is non-empty (backward compatible).
+		if headerFilterConfig != nil && len(headerFilterConfig.Allowlist) > 0 {
+			// Check if this header is explicitly in the allowlist
+			if slices.Contains(headerFilterConfig.Allowlist, keyStr) {
+				// Skip reserved x-bf-* headers (handled separately)
+				if strings.HasPrefix(keyStr, "x-bf-") {
+					return true
+				}
+				// Validate against security denylist (always enforced)
+				if securityDenylist[keyStr] {
+					return true
+				}
+				// Check denylist (allowlist check already passed by being in allowlist)
+				if len(headerFilterConfig.Denylist) > 0 && slices.Contains(headerFilterConfig.Denylist, keyStr) {
+					return true
+				}
+				// Forward the header directly with its original name
+				extraHeaders[keyStr] = append(extraHeaders[keyStr], string(value))
+				return true
+			}
 		}
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
