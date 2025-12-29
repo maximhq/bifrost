@@ -191,6 +191,9 @@ func GetSampleResponsesTool(toolName SampleToolType) *schemas.ResponsesTool {
 	}
 }
 
+// Test file URL
+const TestFileURL = "https://www.berkshirehathaway.com/letters/2024ltr.pdf"
+
 // Test image of an ant
 const TestImageURL = "https://pestworldcdn-dcf2a8gbggazaghf.z01.azurefd.net/media/561791/carpenter-ant4.jpg"
 

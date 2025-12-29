@@ -831,6 +831,24 @@ func ImageProcessingRetryConfig() TestRetryConfig {
 	}
 }
 
+// FileInputRetryConfig creates a retry config for file/document input tests
+func FileInputRetryConfig() TestRetryConfig {
+	return TestRetryConfig{
+		MaxAttempts: 10,
+		BaseDelay:   2000 * time.Millisecond,
+		MaxDelay:    10 * time.Second,
+		Conditions: []TestRetryCondition{
+			&EmptyResponseCondition{},
+			&FileNotProcessedCondition{},
+			&GenericResponseCondition{},
+			&ContentValidationCondition{}, // Retry when valid response lacks expected document content
+		},
+		OnRetry: func(attempt int, reason string, t *testing.T) {
+			t.Logf("🔄 Retrying file input test (attempt %d): %s", attempt, reason)
+		},
+	}
+}
+
 // StreamingRetryConfig creates a retry config for streaming tests
 func StreamingRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
@@ -1157,6 +1175,8 @@ func GetTestRetryConfigForScenario(scenarioName string, testConfig Comprehensive
 		return ToolCallRetryConfig("") // Tool-calling focused
 	case "ImageURL", "ImageBase64", "MultipleImages":
 		return ImageProcessingRetryConfig()
+	case "FileInput":
+		return FileInputRetryConfig() // Document processing with file-specific conditions
 	case "CompleteEnd2End_Vision": // 🎯 Vision step of end-to-end test
 		return ImageProcessingRetryConfig()
 	case "CompleteEnd2End_Chat": // 💬 Chat step of end-to-end test

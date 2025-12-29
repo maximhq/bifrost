@@ -156,6 +156,26 @@ func VisionExpectations(expectedKeywords []string) ResponseExpectations {
 	return expectations
 }
 
+// FileInputExpectations returns validation expectations for file input scenarios
+func FileInputExpectations() ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:     true,
+		ExpectedChoiceCount:   1,
+		ShouldHaveUsageStats:  true,
+		ShouldHaveTimestamps:  true,
+		ShouldHaveModel:       true,
+		ShouldHaveLatency:     true,
+		ShouldContainKeywords: []string{"hello", "world"}, // Content from the test PDF
+		ShouldNotContainWords: []string{
+			"cannot", "unable", "error", "failed",
+			"unsupported", "invalid", "corrupted",
+			"can't read", "cannot read", "no file",
+			"no document", "cannot process",
+		},
+		IsRelevantToPrompt: true,
+	}
+}
+
 // SpeechExpectations returns validation expectations for speech synthesis scenarios
 func SpeechExpectations(minAudioBytes int) ResponseExpectations {
 	return ResponseExpectations{
@@ -274,6 +294,9 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 
 	case "MultipleImages":
 		return VisionExpectations([]string{"compare", "similar", "different", "images"})
+
+	case "FileInput":
+		return FileInputExpectations()
 
 	case "ChatCompletionStream":
 		return StreamingExpectations()

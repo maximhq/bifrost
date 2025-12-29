@@ -42,6 +42,8 @@ func TestCohere(t *testing.T) {
 			ImageURL:              false, // Supported by c4ai-aya-vision-8b model
 			ImageBase64:           true,  // Supported by c4ai-aya-vision-8b model
 			MultipleImages:        false, // Supported by c4ai-aya-vision-8b model
+			FileBase64:            false, // Not supported
+			FileURL:               false, // Not supported
 			CompleteEnd2End:       false,
 			Embedding:             true,
 			Reasoning:             true,

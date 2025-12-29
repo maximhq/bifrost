@@ -2432,10 +2432,6 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 					},
 				}
 
-				if fileBlock.Filename != nil {
-					part.FileData.DisplayName = *fileBlock.Filename
-				}
-
 				return part, nil
 			}
 

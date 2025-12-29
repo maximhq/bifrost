@@ -40,6 +40,8 @@ func TestPerplexity(t *testing.T) {
 			ImageBase64:           false, // Not supported yet
 			MultipleImages:        false, // Not supported yet
 			CompleteEnd2End:       false,
+			FileBase64:            false,
+			FileURL:               false,
 			Embedding:             false, // Not supported yet
 			ListModels:            false,
 		},

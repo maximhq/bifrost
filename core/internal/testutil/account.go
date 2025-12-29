@@ -33,6 +33,8 @@ type TestScenarios struct {
 	ImageURL              bool
 	ImageBase64           bool
 	MultipleImages        bool
+	FileBase64            bool
+	FileURL               bool
 	CompleteEnd2End       bool
 	SpeechSynthesis       bool // Text-to-speech functionality
 	SpeechSynthesisStream bool // Streaming text-to-speech functionality

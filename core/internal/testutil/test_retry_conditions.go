@@ -366,6 +366,67 @@ func (c *ImageNotProcessedCondition) GetConditionName() string {
 	return "ImageNotProcessed"
 }
 
+// =============================================================================
+// FILE/DOCUMENT PROCESSING CONDITIONS
+// =============================================================================
+
+// FileNotProcessedCondition checks if file/document was not properly processed
+type FileNotProcessedCondition struct{}
+
+func (c *FileNotProcessedCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {
+	if err != nil || response == nil {
+		return false, ""
+	}
+
+	// Check both Chat Completions and Responses API formats
+	if response.ChatResponse == nil && response.ResponsesResponse == nil {
+		return false, ""
+	}
+
+	// Get response content
+	content := strings.ToLower(GetResultContent(response))
+
+	// Check for generic responses that don't indicate file/document processing
+	fileProcessingFailurePhrases := []string{
+		"i can't read",
+		"i cannot read",
+		"unable to read",
+		"can't access",
+		"cannot access",
+		"no file",
+		"no document",
+		"not able to read",
+		"i don't see",
+		"i cannot process",
+		"unable to process",
+		"can't open",
+		"cannot open",
+		"invalid file",
+		"corrupted",
+		"unsupported format",
+		"failed to load",
+		"no pdf",
+		"cannot view",
+	}
+
+	for _, phrase := range fileProcessingFailurePhrases {
+		if strings.Contains(content, phrase) {
+			return true, fmt.Sprintf("response suggests file was not processed: contains '%s'", phrase)
+		}
+	}
+
+	// If content is suspiciously short for document analysis
+	if len(strings.TrimSpace(content)) < 15 {
+		return true, "response too short for meaningful document analysis"
+	}
+
+	return false, ""
+}
+
+func (c *FileNotProcessedCondition) GetConditionName() string {
+	return "FileNotProcessed"
+}
+
 // GenericResponseCondition checks for generic/template responses
 type GenericResponseCondition struct{}
 

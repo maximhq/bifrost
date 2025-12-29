@@ -40,6 +40,8 @@ func TestOllama(t *testing.T) {
 			ImageURL:              false,
 			ImageBase64:           false,
 			MultipleImages:        false,
+			FileBase64:            false,
+			FileURL:               false,
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			ListModels:            true,
