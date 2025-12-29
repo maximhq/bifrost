@@ -185,19 +185,18 @@ cd ..
 
 # Run integration tests with different configurations
 echo "🧪 Running integration tests with different configurations..."
-# CONFIGS_TO_TEST=(
-#   "default"
-#   "emptystate"
-#   "noconfigstorenologstore"
-#   "witconfigstorelogstorepostgres"
-#   "withconfigstore"
-#   "withconfigstorelogsstorepostgres"
-#   "withconfigstorelogsstoresqlite"
-#   "withdynamicplugin"
-#   "withobservability"
-#   "withsemanticcache"
-# )
-CONFIGS_TO_TEST=()
+CONFIGS_TO_TEST=(
+  "default"
+  "emptystate"
+  "noconfigstorenologstore"
+  "witconfigstorelogstorepostgres"
+  "withconfigstore"
+  "withconfigstorelogsstorepostgres"
+  "withconfigstorelogsstoresqlite"
+  "withdynamicplugin"
+  "withobservability"
+  "withsemanticcache"
+)
 
 TEST_BINARY="../tmp/bifrost-http"
 CONFIGS_DIR="../.github/workflows/configs"
