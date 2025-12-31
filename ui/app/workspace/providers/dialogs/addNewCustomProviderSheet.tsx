@@ -104,7 +104,7 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 
 	return (
 		<Sheet open={show} onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8">
+			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8" data-testid="custom-provider-sheet">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>Add Custom Provider</SheetTitle>
 					<SheetDescription>Enter the details of your custom provider.</SheetDescription>
@@ -120,7 +120,7 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 										<FormLabel className="text-right">Name</FormLabel>
 										<div className="col-span-3">
 											<FormControl>
-												<Input placeholder="Name" {...field} />
+												<Input placeholder="Name" data-testid="custom-provider-name" {...field} />
 											</FormControl>
 											<FormMessage />
 										</div>
@@ -136,7 +136,7 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 										<div>
 											<FormControl>
 												<Select onValueChange={field.onChange} defaultValue={field.value}>
-													<SelectTrigger className="w-full">
+													<SelectTrigger className="w-full" data-testid="base-provider-select">
 														<SelectValue placeholder="Select base format" />
 													</SelectTrigger>
 													<SelectContent>
@@ -153,21 +153,21 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 									</FormItem>
 								)}
 							/>
-							<FormField
-								control={form.control}
-								name="base_url"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel>Base URL</FormLabel>
-										<div>
-											<FormControl>
-												<Input placeholder={"https://api.your-provider.com"} {...field} value={field.value || ""} />
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
+						<FormField
+							control={form.control}
+							name="base_url"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel>Base URL</FormLabel>
+									<div>
+										<FormControl>
+											<Input placeholder={"https://api.your-provider.com"} data-testid="base-url-input" {...field} value={field.value || ""} />
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
 							{!isKeyLessDisabled && (
 								<FormField
 									control={form.control}
@@ -192,10 +192,10 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 						</div>
 						<SheetFooter className="mt-4 flex flex-row gap-2 pt-4">
 							<div className="ml-auto flex flex-row gap-2">
-								<Button type="button" variant="outline" onClick={onClose}>
+								<Button type="button" variant="outline" onClick={onClose} data-testid="custom-provider-cancel-btn">
 									Cancel
 								</Button>
-								<Button type="submit" isLoading={isAddingProvider}>
+								<Button type="submit" isLoading={isAddingProvider} data-testid="custom-provider-save-btn">
 									Add
 								</Button>
 							</div>

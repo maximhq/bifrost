@@ -429,6 +429,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={(e) => e.preventDefault()}
+				data-testid="vk-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start px-3 pt-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
@@ -451,7 +452,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										<FormItem>
 											<FormLabel>Name *</FormLabel>
 											<FormControl>
-												<Input placeholder="e.g., Production API Key" {...field} />
+												<Input placeholder="e.g., Production API Key" data-testid="vk-name-input" {...field} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -465,7 +466,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										<FormItem>
 											<FormLabel>Description</FormLabel>
 											<FormControl>
-												<Textarea placeholder="This key is used for..." {...field} rows={3} />
+												<Textarea placeholder="This key is used for..." data-testid="vk-description-input" {...field} rows={3} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -477,7 +478,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									name="isActive"
 									render={({ field }) => (
 										<FormItem>
-											<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} />
+											<Toggle label="Is this key active?" val={field.value} setVal={field.onChange} data-testid="vk-is-active-toggle" />
 										</FormItem>
 									)}
 								/>
@@ -513,7 +514,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											setSelectedProvider(""); // Reset to placeholder state
 										}}
 									>
-										<SelectTrigger className="flex-1">
+										<SelectTrigger className="flex-1" data-testid="vk-provider-select">
 											<SelectValue placeholder="Select a provider to add" />
 										</SelectTrigger>
 										<SelectContent>
@@ -1076,7 +1077,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															defaultValue={field.value}
 														>
 															<FormControl className="w-full">
-																<SelectTrigger>
+																<SelectTrigger data-testid="vk-entity-type-select">
 																	<SelectValue />
 																</SelectTrigger>
 															</FormControl>
@@ -1099,7 +1100,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															<FormLabel className="font-normal">Select Team</FormLabel>
 															<Select onValueChange={field.onChange} defaultValue={field.value}>
 																<FormControl className="w-full">
-																	<SelectTrigger>
+																	<SelectTrigger data-testid="vk-team-select">
 																		<SelectValue placeholder="Select a team" />
 																	</SelectTrigger>
 																</FormControl>
@@ -1135,7 +1136,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															<FormLabel className="font-normal">Select Customer</FormLabel>
 															<Select onValueChange={field.onChange} defaultValue={field.value}>
 																<FormControl className="w-full">
-																	<SelectTrigger>
+																	<SelectTrigger data-testid="vk-customer-select">
 																		<SelectValue placeholder="Select a customer" />
 																	</SelectTrigger>
 																</FormControl>
@@ -1164,14 +1165,14 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 						{/* Form Footer */}
 						<div className="dark:bg-card border-border bg-white py-6">
 							<div className="flex justify-end gap-2">
-								<Button type="button" variant="outline" onClick={handleClose}>
+								<Button type="button" variant="outline" onClick={handleClose} data-testid="vk-cancel-btn">
 									Cancel
 								</Button>
 								<TooltipProvider>
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<span className="inline-block">
-												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit}>
+												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit} data-testid="vk-save-btn">
 													{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 												</Button>
 											</span>

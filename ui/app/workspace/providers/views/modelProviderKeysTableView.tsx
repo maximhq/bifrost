@@ -89,19 +89,20 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
 					<div className="flex items-center gap-2">Configured keys</div>
-					<Button
-						disabled={!hasUpdateProviderAccess}
-						onClick={() => {
-							handleAddKey(provider.keys.length);
-						}}
-					>
-						<PlusIcon className="h-4 w-4" />
-						Add new key
-					</Button>
+				<Button
+					disabled={!hasUpdateProviderAccess}
+					data-testid="add-key-btn"
+					onClick={() => {
+						handleAddKey(provider.keys.length);
+					}}
+				>
+					<PlusIcon className="h-4 w-4" />
+					Add new key
+				</Button>
 				</CardTitle>
 			</CardHeader>
 			<div className="w-full rounded-sm border">
-				<Table className="w-full">
+				<Table className="w-full" data-testid="keys-table">
 					<TableHeader className="w-full">
 						<TableRow>
 							<TableHead>API Key</TableHead>
@@ -121,7 +122,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 						{provider.keys.map((key, index) => {
 							const isKeyEnabled = key.enabled ?? true;
 							return (
-								<TableRow key={index} className="text-sm transition-colors hover:bg-white" onClick={() => {}}>
+								<TableRow key={index} data-testid={`key-row-${key.name}`} className="text-sm transition-colors hover:bg-white" onClick={() => {}}>
 									<TableCell>
 										<div className="flex items-center space-x-2">
 											<span className="font-mono text-sm">{key.name}</span>

@@ -9,6 +9,7 @@ LOG_STYLE ?= json
 LOG_LEVEL ?= info
 TEST_REPORTS_DIR ?= test-reports
 GOTESTSUM_FORMAT ?= standard-verbose
+FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
@@ -26,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -51,6 +52,7 @@ help: ## Show this help message
 	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: standard-verbose)"
 	@echo "  TESTCASE          Exact test name to run (e.g., TestVirtualKeyTokenRateLimit)"
 	@echo "  PATTERN           Substring pattern to filter tests (alternative to TESTCASE)"
+	@echo "  FLOW              E2E test flow to run: providers|virtual-keys (default: all)"
 
 cleanup-enterprise: ## Clean up enterprise directories if present
 	@echo "$(GREEN)Cleaning up enterprise...$(NC)"
@@ -1157,6 +1159,40 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		exit 1; \
 	else \
 		echo "$(GREEN)✓ TypeScript integration tests complete$(NC)"; \
+	fi
+
+install-playwright: ## Install Playwright test dependencies
+	@echo "$(GREEN)Installing Playwright dependencies...$(NC)"
+	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
+	@cd tests/e2e && npm install
+	@cd tests/e2e && npx playwright install --with-deps chromium
+	@echo "$(GREEN)Playwright is ready$(NC)"
+
+run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=providers|virtual-keys])
+	@echo "$(GREEN)Running Playwright E2E tests...$(NC)"
+	@if [ -n "$(FLOW)" ]; then \
+		echo "$(CYAN)Running $(FLOW) tests...$(NC)"; \
+		cd tests/e2e && npx playwright test features/$(FLOW); \
+	else \
+		echo "$(CYAN)Running all E2E tests...$(NC)"; \
+		cd tests/e2e && npx playwright test; \
+	fi
+	@echo ""
+	@echo "$(GREEN)E2E tests complete$(NC)"
+	@echo "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+
+run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
+	@echo "$(GREEN)Opening Playwright UI...$(NC)"
+	@cd tests/e2e && npx playwright test --ui
+
+run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
+	@echo "$(GREEN)Running E2E tests in headed mode...$(NC)"
+	@if [ -n "$(FLOW)" ]; then \
+		echo "$(CYAN)Running $(FLOW) tests (headed)...$(NC)"; \
+		cd tests/e2e && npx playwright test features/$(FLOW) --headed; \
+	else \
+		echo "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
+		cd tests/e2e && npx playwright test --headed; \
 	fi
 
 # Quick start with example config

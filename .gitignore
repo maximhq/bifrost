@@ -66,3 +66,37 @@ target/
 
 # MCP servers
 examples/mcps/**/bin/
+
+
+# Dependencies
+node_modules/
+
+# Test results
+test-results/
+playwright-report/
+blob-report/
+
+# Screenshots and videos
+screenshots/
+videos/
+
+# Coverage
+coverage/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug logs
+*.log
+npm-debug.log*
+
+# Playwright
+playwright/.cache/

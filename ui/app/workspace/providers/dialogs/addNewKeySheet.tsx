@@ -23,7 +23,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyIndex }: P
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8">
+			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-8" data-testid="key-form">
 				<SheetHeader className="flex flex-col items-start">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

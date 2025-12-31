@@ -140,6 +140,7 @@ export default function Providers() {
 									return (
 										<Tooltip key={p.name}>
 											<TooltipTrigger
+												data-testid={`provider-${p.name}`}
 												className={cn(
 													"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
 													selectedProvider?.name === p.name
@@ -171,6 +172,7 @@ export default function Providers() {
 								{customProviders.map((p) => (
 									<Tooltip key={p.name}>
 										<TooltipTrigger
+											data-testid={`provider-${p.name}`}
 											className={cn(
 												"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
 												selectedProvider?.name === p.name
@@ -220,6 +222,7 @@ export default function Providers() {
 						<Button
 							variant="outline"
 							size="sm"
+							data-testid="add-provider-btn"
 							className="w-full justify-start"
 							disabled={!hasProviderCreateAccess}
 							onClick={(e) => {

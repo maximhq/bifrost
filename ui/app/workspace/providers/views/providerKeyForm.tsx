@@ -89,7 +89,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 				{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				<div className="dark:bg-card bg-white pt-6">
 					<div className="flex justify-end space-x-3">
-						<Button type="button" variant="outline" onClick={onCancel}>
+						<Button type="button" variant="outline" onClick={onCancel} data-testid="key-cancel-btn">
 							Cancel
 						</Button>
 						<TooltipProvider>
@@ -100,6 +100,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 											type="submit"
 											disabled={!form.formState.isDirty || !form.formState.isValid}
 											isLoading={form.formState.isSubmitting || isUpdatingProvider}
+											data-testid="key-save-btn"
 										>
 											<Save className="h-4 w-4" />
 											Save
