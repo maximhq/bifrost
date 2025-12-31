@@ -18,7 +18,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyIndex }: P
 
 	return (
 		<Sheet open={show} onOpenChange={(open) => { if (!open) onCancel(); }}>
-			<SheetContent className="custom-scrollbar bg-white dark:bg-card p-4">
+			<SheetContent className="custom-scrollbar bg-white dark:bg-card p-4" data-testid="key-form">
 				<SheetHeader>
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">
