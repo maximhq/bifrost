@@ -13,7 +13,7 @@
 image:
   repository: docker.io/maximhq/bifrost
   pullPolicy: IfNotPresent
-  tag: "v1.3.54"
+  tag: "v1.3.55"
 
 replicaCount: 1
 
@@ -58,7 +58,7 @@ bifrost:
     enableLogging: true
     enableGovernance: true
     enforceGovernanceHeader: false
-    allowDirectKeys: true
+    allowDirectKeys: false
     maxRequestBodySizeMb: 100
   
   # ==========================================================================
