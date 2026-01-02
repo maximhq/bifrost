@@ -297,7 +297,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	// Mark cache-hit once to avoid concurrent ctx writes
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
-	
+
 	// Create stream channel
 	streamChan := make(chan *schemas.BifrostStream)
 
@@ -354,11 +354,12 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 
 			// Send chunk to stream
 			streamChan <- &schemas.BifrostStream{
-				BifrostTextCompletionResponse:      cachedResponse.TextCompletionResponse,
-				BifrostChatResponse:                cachedResponse.ChatResponse,
-				BifrostResponsesStreamResponse:     cachedResponse.ResponsesStreamResponse,
-				BifrostSpeechStreamResponse:        cachedResponse.SpeechStreamResponse,
-				BifrostTranscriptionStreamResponse: cachedResponse.TranscriptionStreamResponse,
+				BifrostTextCompletionResponse:        cachedResponse.TextCompletionResponse,
+				BifrostChatResponse:                  cachedResponse.ChatResponse,
+				BifrostResponsesStreamResponse:       cachedResponse.ResponsesStreamResponse,
+				BifrostSpeechStreamResponse:          cachedResponse.SpeechStreamResponse,
+				BifrostTranscriptionStreamResponse:   cachedResponse.TranscriptionStreamResponse,
+				BifrostImageGenerationStreamResponse: cachedResponse.ImageGenerationStreamResponse,
 			}
 		}
 	}()
