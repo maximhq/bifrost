@@ -1,0 +1,188 @@
+# Files API schemas
+
+S3StorageConfig:
+  type: object
+  description: AWS S3 storage configuration
+  properties:
+    bucket:
+      type: string
+      description: S3 bucket name
+    region:
+      type: string
+      description: AWS region
+    prefix:
+      type: string
+      description: Path prefix for stored files
+
+GCSStorageConfig:
+  type: object
+  description: Google Cloud Storage configuration
+  properties:
+    bucket:
+      type: string
+      description: GCS bucket name
+    project:
+      type: string
+      description: GCP project ID
+    prefix:
+      type: string
+      description: Path prefix for stored files
+
+FileStorageConfig:
+  type: object
+  description: Storage configuration for cloud storage backends
+  properties:
+    s3:
+      $ref: '#/S3StorageConfig'
+    gcs:
+      $ref: '#/GCSStorageConfig'
+
+FilePurpose:
+  type: string
+  enum:
+    - batch
+    - assistants
+    - fine-tune
+    - vision
+    - batch_output
+    - user_data
+    - responses
+    - evals
+
+FileStatus:
+  type: string
+  enum:
+    - uploaded
+    - processed
+    - processing
+    - error
+    - deleted
+
+FileUploadRequest:
+  type: object
+  required:
+    - file
+    - purpose
+  properties:
+    file:
+      type: string
+      format: binary
+    purpose:
+      $ref: '#/FilePurpose'
+    provider:
+      $ref: './common.yaml#/ModelProvider'
+
+FileUploadResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    bytes:
+      type: integer
+      format: int64
+    created_at:
+      type: integer
+      format: int64
+    filename:
+      type: string
+    purpose:
+      $ref: '#/FilePurpose'
+    status:
+      $ref: '#/FileStatus'
+    status_details:
+      type: string
+    expires_at:
+      type: integer
+      format: int64
+    storage_backend:
+      type: string
+    storage_uri:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+FileListResponse:
+  type: object
+  properties:
+    object:
+      type: string
+    data:
+      type: array
+      items:
+        $ref: '#/FileObject'
+    has_more:
+      type: boolean
+    after:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+FileObject:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    bytes:
+      type: integer
+      format: int64
+    created_at:
+      type: integer
+      format: int64
+    filename:
+      type: string
+    purpose:
+      $ref: '#/FilePurpose'
+    status:
+      $ref: '#/FileStatus'
+    status_details:
+      type: string
+    expires_at:
+      type: integer
+      format: int64
+
+FileRetrieveResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    bytes:
+      type: integer
+      format: int64
+    created_at:
+      type: integer
+      format: int64
+    filename:
+      type: string
+    purpose:
+      $ref: '#/FilePurpose'
+    status:
+      $ref: '#/FileStatus'
+    status_details:
+      type: string
+    expires_at:
+      type: integer
+      format: int64
+    storage_backend:
+      type: string
+    storage_uri:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+FileDeleteResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    deleted:
+      type: boolean
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

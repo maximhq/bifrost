@@ -1,0 +1,418 @@
+---
+title: "Azure"
+description: "Azure OpenAI Service API conversion guide - deployment management, authentication, multi-model support"
+icon: "microsoft"
+---
+
+## Overview
+
+Azure is a cloud provider offering access to OpenAI and Anthropic models through the Azure OpenAI Service. Bifrost performs conversions including:
+- **Deployment mapping** - Model identifiers mapped to Azure deployment IDs with version handling
+- **Authentication modes** - API key or bearer token (OAuth) support
+- **Model routing** - Automatic provider detection (OpenAI vs Anthropic) based on deployment
+- **API versioning** - Configurable API versions with preview support for Responses API
+- **Custom endpoints** - Full control over Azure endpoint configuration
+- **Multi-model support** - Unified interface for OpenAI, Anthropic (via Azure), and Gemini models
+- **Request/response pass-through** - Support for raw request/response bodies for advanced use cases
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/openai/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/openai/v1/responses` |
+| Embeddings | ✅ | - | `/openai/v1/embeddings` |
+| Files | ✅ | - | `/openai/v1/files` |
+| List Models | ✅ | - | `/openai/v1/models` |
+| Batch | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+
+<Note>
+**Azure-specific**: Batch operations and Text Completions are not supported by Azure OpenAI Service. Responses API uses preview API version and is available for both OpenAI and Anthropic models.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Azure Handling | Notes |
+|-----------|---|-------|
+| `model` | Mapped to `deployment_id` | Supports version matching and base model matching |
+| `max_completion_tokens` | Direct pass-through | OpenAI models only |
+| `temperature`, `top_p` | Direct pass-through | Same across all models |
+| All other params | Model-specific conversion | Converted per underlying provider (OpenAI/Anthropic) |
+
+### Authentication Configuration
+
+Azure uses custom endpoint and deployment configuration:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/gpt-4-deployment",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "deployment": "my-gpt4-deployment",
+    "endpoint": "https://my-org.openai.azure.com"
+  }' \
+  -H "api-key: YOUR_AZURE_API_KEY"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.Azure,
+    Model:    "gpt-4",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "deployment": "my-gpt4-deployment",
+            "endpoint": "https://my-org.openai.azure.com",
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Key Configuration
+
+The key configuration for Azure requires:
+
+```json
+{
+  "azure_key_config": {
+    "endpoint": "https://your-org.openai.azure.com",
+    "api_version": "2024-10-21",
+    "deployments": {
+      "gpt-4": "my-gpt4-deployment",
+      "gpt-4-turbo": "my-gpt4-turbo-deployment",
+      "claude-3": "my-claude-deployment"
+    }
+  }
+}
+```
+
+**Configuration Details**:
+- `endpoint` - Azure OpenAI resource endpoint (required)
+- `api_version` - API version to use (default: `2024-10-21`)
+- `deployments` - Map of model names to deployment IDs (optional, can be provided per-request)
+- `allowed_models` - List of allowed models to use from this key (optional)
+
+### Deployment Selection
+
+Deployments can be specified at three levels (in order of precedence):
+
+1. **Per-request** (highest priority)
+   ```json
+   {"deployment": "custom-deployment"}
+   ```
+
+2. **Key configuration**
+   ```json
+   {"deployments": {"gpt-4": "my-gpt4-deployment"}}
+   ```
+
+3. **Model name** (lowest priority, if no deployment specified)
+   Model name is used as deployment ID directly
+
+## OpenAI Models
+
+When using OpenAI models (GPT-4, GPT-4 Turbo, GPT-3.5-Turbo, etc.), Bifrost passes through OpenAI-compatible parameters directly.
+
+### Parameter Mapping for OpenAI
+
+All OpenAI-standard parameters are supported. Refer to [OpenAI documentation](/providers/supported-providers/openai) for detailed conversion details.
+
+## Anthropic Models
+
+When using Anthropic models through Azure (Claude 3 family), Bifrost converts requests to Anthropic format.
+
+### Parameter Mapping for Anthropic
+
+All Anthropic-standard parameters are supported with special handling:
+
+- **Reasoning/Thinking**: `reasoning` parameters converted to Anthropic's `thinking` structure
+- **System messages**: Extracted and placed in separate `system` field
+- **Tool message grouping**: Consecutive tool messages merged
+
+Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for detailed conversion details.
+
+### Special Notes for Azure + Anthropic
+
+- API version automatically set to `2023-06-01` for Anthropic models
+- Endpoints use `/anthropic/v1/` paths internally
+- Authentication uses `x-api-key` header for Anthropic models
+- Minimum reasoning budget: 1024 tokens
+
+## API Versioning
+
+- **Default version**: `2024-10-21` (supports latest OpenAI features)
+- **Preview version**: `preview` (used for Responses API)
+- **Custom version**: Set via `api_version` in key config
+
+Different API versions may have different feature support. Bifrost automatically adjusts endpoint paths and parameters based on the configured version.
+
+## Streaming
+
+Streaming uses OpenAI or Anthropic format depending on model type:
+
+- **OpenAI models**: Standard OpenAI streaming with `chat.completion.chunk` events
+- **Anthropic models**: Anthropic streaming format with content blocks
+
+---
+
+# 2. Responses API
+
+The Responses API is available for both OpenAI and Anthropic models on Azure and uses the preview API version.
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Azure Handling | Notes |
+|-----------|---|-------|
+| `instructions` | Becomes system message | Model-specific conversion |
+| `input` | Converted to user message(s) | String or array support |
+| `max_output_tokens` | Model-specific field mapping | OpenAI vs Anthropic conversion |
+| All other params | Model-specific conversion | Converted per underlying provider |
+
+### OpenAI Models
+
+For OpenAI models (GPT-4, etc.), conversion follows OpenAI's Responses API format.
+
+### Anthropic Models
+
+For Anthropic models (Claude, etc.), conversion follows Anthropic's message format:
+- `instructions` becomes system message
+- `reasoning` mapped to `thinking` structure
+
+### Endpoint Configuration
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/claude-3-sonnet",
+    "input": "Hello, how are you?",
+    "instructions": "You are a helpful assistant",
+    "deployment": "my-claude-deployment",
+    "endpoint": "https://my-org.openai.azure.com"
+  }' \
+  -H "api-key: YOUR_AZURE_API_KEY"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+    Provider: schemas.Azure,
+    Model:    "claude-3-sonnet",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        Instructions: schemas.Ptr("You are a helpful assistant"),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Special Handling
+
+- Uses `/openai/v1/responses` endpoint with `preview` API version
+- All request body conversions handled automatically
+- Supports raw request body passthrough for advanced cases
+
+**OpenAI Models - gpt-oss Special Message Handling:**
+For OpenAI models through Azure, see [OpenAI Responses API documentation](/providers/supported-providers/openai) for details on special gpt-oss model handling regarding reasoning conversion (summaries vs. content blocks).
+
+**Anthropic Models:**
+Refer to [Anthropic Responses API](/providers/supported-providers/anthropic#2-responses-api) for parameter details.
+
+---
+
+# 3. Embeddings
+
+Embeddings are supported for OpenAI models only (not available for Anthropic models on Azure).
+
+## Request Parameters
+
+| Parameter | Azure Handling |
+|-----------|---|
+| `input` | Direct pass-through |
+| `model` | Mapped to deployment |
+| `dimensions` | Direct pass-through (when supported) |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "text-embedding-3-small",
+    "input": ["text to embed"],
+    "deployment": "my-embedding-deployment"
+  }' \
+  -H "api-key: YOUR_AZURE_API_KEY"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Azure,
+    Model:    "text-embedding-3-small",
+    Input: &schemas.EmbeddingInput{
+        Texts: []string{"text to embed"},
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Response Conversion
+
+Embeddings response is passed through directly from Azure OpenAI with standard format:
+
+```json
+{
+  "data": [
+    {
+      "object": "embedding",
+      "embedding": [0.1234, -0.5678, ...],
+      "index": 0
+    }
+  ],
+  "model": "text-embedding-3-small",
+  "usage": {
+    "prompt_tokens": 10,
+    "total_tokens": 10
+  }
+}
+```
+
+---
+
+# 4. Files API
+
+Files operations are supported for OpenAI models only.
+
+## Supported Operations
+
+| Operation | Support |
+|-----------|---------|
+| Upload | ✅ |
+| List | ✅ |
+| Retrieve | ✅ |
+| Delete | ✅ |
+| Get Content | ✅ |
+
+Files are stored in Azure and can be used with batch operations.
+
+---
+
+# 5. List Models
+
+## Request Parameters
+
+None required.
+
+## Response Conversion
+
+Lists available models/deployments configured in the Azure key. Response includes model metadata, capabilities, and lifecycle status.
+
+```json
+{
+  "data": [
+    {
+      "id": "gpt-4",
+      "object": "model",
+      "created": 1687882411,
+      "status": "active",
+      "lifecycle_status": "stable",
+      "capabilities": {
+        "chat_completion": true,
+        "embeddings": false
+      }
+    }
+  ]
+}
+```
+
+---
+
+## Caveats
+
+<Accordion title="Deployment ID Required">
+**Severity**: High
+**Behavior**: Model names must map to Azure deployment IDs
+**Impact**: Request fails without valid deployment mapping
+**Code**: `azure.go:145-200`
+</Accordion>
+
+<Accordion title="Model Provider Detection">
+**Severity**: Medium
+**Behavior**: Automatic detection of OpenAI vs Anthropic based on model name
+**Impact**: Different conversion logic applied transparently
+**Code**: `azure.go:92-114`
+</Accordion>
+
+<Accordion title="Responses API Preview Version (including Anthropic)">
+**Severity**: Medium
+**Behavior**: Responses API automatically uses preview API version, which differs from Chat Completions API version. For Anthropic models, Responses API specifically uses `preview` API version.
+**Impact**: Different API version for Responses vs Chat Completions. Automatic version override for Responses requests.
+**Code**: `azure.go:92-114`, `azure.go:109-113`, `azure.go:694`
+</Accordion>
+
+<Accordion title="Version Matching for Deployments">
+**Severity**: Low
+**Behavior**: Model version differences ignored when matching to deployments
+**Impact**: `gpt-4` and `gpt-4-turbo` can map to same deployment
+**Code**: `models.go:13-58`
+</Accordion>
+
+---
+
+## Configuration
+
+**HTTP Settings**: API Version `2024-10-21` (configurable) | Max Connections 5000 | Max Idle 60 seconds
+
+**Endpoint Format**: `https://{resource-name}.openai.azure.com/openai/v1/{path}?api-version={version}`
+
+**Note**: Bifrost automatically constructs URLs using the endpoint from key configuration and the configured API version.
+
+## Setup & Configuration
+
+Azure requires endpoint URLs, deployment mappings, and API version configuration. For detailed instructions on setting up Azure authentication, see the quickstart guides:
+
+<Tabs>
+<Tab title="Gateway">
+
+See **[Provider-Specific Authentication - Azure](../../quickstart/gateway/provider-configuration#azure)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
+
+</Tab>
+<Tab title="Go SDK">
+
+See **[Provider-Specific Authentication - Azure](../../quickstart/go-sdk/provider-configuration#azure)** in the Go SDK Quickstart for programmatic configuration examples.
+
+</Tab>
+</Tabs>

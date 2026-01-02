@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/fasthttp/router"
@@ -21,14 +22,32 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// securityHeaders is the list of headers that cannot be configured in allowlist/denylist
+// These headers are always blocked for security reasons regardless of user configuration
+var securityHeaders = []string{
+	"authorization",
+	"proxy-authorization",
+	"cookie",
+	"host",
+	"content-length",
+	"connection",
+	"transfer-encoding",
+	"x-api-key",
+	"x-goog-api-key",
+	"x-bf-api-key",
+	"x-bf-vk",
+}
+
 // ConfigManager is the interface for the config manager
 type ConfigManager interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
+	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
+	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
 }
 
 // ConfigHandler manages runtime configuration updates for Bifrost.
@@ -55,6 +74,7 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...lib.Bifr
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
+	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version
@@ -104,7 +124,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		} else if h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.PricingURL != nil {
 			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
 				PricingURL:          h.store.FrameworkConfig.Pricing.PricingURL,
-				PricingSyncInterval: bifrost.Ptr(int64(*h.store.FrameworkConfig.Pricing.PricingSyncInterval)),
+				PricingSyncInterval: bifrost.Ptr(int64((*h.store.FrameworkConfig.Pricing.PricingSyncInterval).Seconds())),
 			}
 		}
 	}
@@ -153,6 +173,13 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 				proxyConfig.Password = "<redacted>"
 			}
 			mapConfig["proxy_config"] = proxyConfig
+		}
+		// Fetching restart required config
+		restartConfig, err := h.store.ConfigStore.GetRestartRequiredConfig(ctx)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("failed to get restart required config from store: %v", err))
+		} else if restartConfig != nil {
+			mapConfig["restart_required"] = restartConfig
 		}
 	}
 	SendJSON(ctx, mapConfig)
@@ -207,6 +234,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig := currentConfig
 
 	shouldReloadTelemetryPlugin := false
+	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
 		h.configManager.UpdateDropExcessRequests(ctx, payload.ClientConfig.DropExcessRequests)
@@ -216,20 +244,59 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels
 		shouldReloadTelemetryPlugin = true
+		restartReasons = append(restartReasons, "Prometheus labels")
 	}
 
 	if !slices.Equal(payload.ClientConfig.AllowedOrigins, currentConfig.AllowedOrigins) {
 		updatedConfig.AllowedOrigins = payload.ClientConfig.AllowedOrigins
+		restartReasons = append(restartReasons, "Allowed origins")
 	}
 
+	if payload.ClientConfig.InitialPoolSize != currentConfig.InitialPoolSize {
+		restartReasons = append(restartReasons, "Initial pool size")
+	}
 	updatedConfig.InitialPoolSize = payload.ClientConfig.InitialPoolSize
+
+	if payload.ClientConfig.EnableLogging != currentConfig.EnableLogging {
+		restartReasons = append(restartReasons, "Logging enabled")
+	}
 	updatedConfig.EnableLogging = payload.ClientConfig.EnableLogging
+
+	if payload.ClientConfig.DisableContentLogging != currentConfig.DisableContentLogging {
+		restartReasons = append(restartReasons, "Content logging")
+	}
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
+
+	if payload.ClientConfig.EnableGovernance != currentConfig.EnableGovernance {
+		restartReasons = append(restartReasons, "Governance enabled")
+	}
 	updatedConfig.EnableGovernance = payload.ClientConfig.EnableGovernance
+
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceGovernanceHeader
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
+	if payload.ClientConfig.MaxRequestBodySizeMB != currentConfig.MaxRequestBodySizeMB {
+		restartReasons = append(restartReasons, "Max request body size")
+	}
 	updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
+
 	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
+
+	// Handle HeaderFilterConfig changes
+	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
+		// Validate that no security headers are in the allowlist or denylist
+		if err := validateHeaderFilterConfig(payload.ClientConfig.HeaderFilterConfig); err != nil {
+			logger.Warn(fmt.Sprintf("invalid header filter config: %v", err))
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		updatedConfig.HeaderFilterConfig = payload.ClientConfig.HeaderFilterConfig
+		if err := h.configManager.ReloadHeaderFilterConfig(ctx, payload.ClientConfig.HeaderFilterConfig); err != nil {
+			logger.Warn(fmt.Sprintf("failed to reload header filter config: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload header filter config: %v", err))
+			return
+		}
+	}
 
 	// Validate LogRetentionDays
 	if payload.ClientConfig.LogRetentionDays < 1 {
@@ -335,7 +402,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		// }
 	}
 	// Checking auth config and trying to update if required
-	if payload.AuthConfig != nil && payload.AuthConfig.IsEnabled {
+	if payload.AuthConfig != nil {
 		// Getting current governance config
 		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
 		if err != nil {
@@ -345,42 +412,101 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				return
 			}
 		}
-		if authConfig == nil && payload.AuthConfig.IsEnabled && (payload.AuthConfig.AdminUserName == "" || payload.AuthConfig.AdminPassword == "") {
-			SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
-			return
-		}
-		// Fetching current Auth config
-		if payload.AuthConfig.AdminUserName != "" {
-			if payload.AuthConfig.AdminPassword == "<redacted>" {
-				if authConfig == nil || authConfig.AdminPassword == "" {
-					SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
-					return
-				}
-				// Assuming that password hasn't been changed
-				payload.AuthConfig.AdminPassword = authConfig.AdminPassword
-			} else {
-				// Password has been changed
-				// We will hash the password
-				hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword)
-				if err != nil {
-					logger.Warn(fmt.Sprintf("failed to hash password: %v", err))
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
-					return
-				}
-				payload.AuthConfig.AdminPassword = string(hashedPassword)
+
+		// Check if auth config has changed (for restart required flag)
+		authChanged := false
+		if authConfig == nil {
+			// No existing config, any enabled state is a change
+			if payload.AuthConfig.IsEnabled {
+				authChanged = true
+			}
+		} else {
+			// Compare with existing config
+			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
+				payload.AuthConfig.AdminUserName != authConfig.AdminUserName ||
+				payload.AuthConfig.DisableAuthOnInference != authConfig.DisableAuthOnInference ||
+				(payload.AuthConfig.AdminPassword != "<redacted>" && payload.AuthConfig.AdminPassword != "") {
+				authChanged = true
 			}
 		}
-		err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
-		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to update auth config: %v", err))
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
-			return
+		if authChanged {
+			restartReasons = append(restartReasons, "Authentication")
+		}
+
+		if payload.AuthConfig.IsEnabled {
+			if authConfig == nil && (payload.AuthConfig.AdminUserName == "" || payload.AuthConfig.AdminPassword == "") {
+				SendError(ctx, fasthttp.StatusBadRequest, "auth username and password must be provided")
+				return
+			}
+			// Fetching current Auth config
+			if payload.AuthConfig.AdminUserName != "" {
+				if payload.AuthConfig.AdminPassword == "<redacted>" {
+					if authConfig == nil || authConfig.AdminPassword == "" {
+						SendError(ctx, fasthttp.StatusBadRequest, "auth password must be provided")
+						return
+					}
+					// Assuming that password hasn't been changed
+					payload.AuthConfig.AdminPassword = authConfig.AdminPassword
+				} else {
+					// Password has been changed
+					// We will hash the password
+					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword)
+					if err != nil {
+						logger.Warn(fmt.Sprintf("failed to hash password: %v", err))
+						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
+						return
+					}
+					payload.AuthConfig.AdminPassword = string(hashedPassword)
+				}
+			}
+		}
+		// Get auth config from store
+		authConfig, _ = h.store.ConfigStore.GetAuthConfig(ctx)
+		if authConfig != nil {
+			err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
+			if err != nil {
+				logger.Warn(fmt.Sprintf("failed to update auth config: %v", err))
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
+				return
+			}
 		}
 	}
+
+	// Set restart required flag if any restart-requiring configs changed
+	if len(restartReasons) > 0 {
+		reason := fmt.Sprintf("%s settings have been updated. A restart is required for changes to take full effect.", strings.Join(restartReasons, ", "))
+		if err := h.store.ConfigStore.SetRestartRequiredConfig(ctx, &configstoreTables.RestartRequiredConfig{
+			Required: true,
+			Reason:   reason,
+		}); err != nil {
+			logger.Warn(fmt.Sprintf("failed to set restart required config: %v", err))
+		}
+	}
+
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "configuration updated successfully",
+	})
+}
+
+// forceSyncPricing triggers an immediate pricing sync and resets the pricing sync timer
+func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		return
+	}
+
+	if err := h.configManager.ForceReloadPricing(ctx); err != nil {
+		logger.Warn(fmt.Sprintf("failed to force pricing sync: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
+		return
+	}
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "pricing sync triggered",
 	})
 }
 
@@ -508,9 +634,60 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Set restart required flag for proxy config changes
+	if err := h.store.ConfigStore.SetRestartRequiredConfig(ctx, &configstoreTables.RestartRequiredConfig{
+		Required: true,
+		Reason:   "Proxy configuration has been updated. A restart is required for all changes to take full effect.",
+	}); err != nil {
+		logger.Warn(fmt.Sprintf("failed to set restart required config: %v", err))
+	}
+
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "proxy configuration updated successfully",
 	})
+}
+
+// headerFilterConfigEqual compares two GlobalHeaderFilterConfig for equality
+func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return slices.Equal(a.Allowlist, b.Allowlist) && slices.Equal(a.Denylist, b.Denylist)
+}
+
+// validateHeaderFilterConfig validates that no security headers are in the allowlist or denylist
+// Returns an error if any security headers are found
+func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConfig) error {
+	if config == nil {
+		return nil
+	}
+
+	var foundSecurityHeaders []string
+
+	// Check allowlist for security headers
+	for _, header := range config.Allowlist {
+		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if slices.Contains(securityHeaders, headerLower) {
+			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
+		}
+	}
+
+	// Check denylist for security headers
+	for _, header := range config.Denylist {
+		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {
+			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
+		}
+	}
+
+	if len(foundSecurityHeaders) > 0 {
+		return fmt.Errorf("the following headers are not allowed to be configured: %s. These headers are security headers and are always blocked", strings.Join(foundSecurityHeaders, ", "))
+	}
+
+	return nil
 }

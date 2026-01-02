@@ -28,6 +28,8 @@ const (
 	ErrProviderDoRequest            = "failed to execute HTTP request to provider API"
 	ErrProviderResponseDecode       = "failed to decode response body from provider API"
 	ErrProviderResponseUnmarshal    = "failed to unmarshal response from provider API"
+	ErrProviderResponseEmpty        = "empty response received from provider"
+	ErrProviderResponseHTML         = "HTML response received from provider"
 	ErrProviderRawRequestUnmarshal  = "failed to unmarshal raw request from provider API"
 	ErrProviderRawResponseUnmarshal = "failed to unmarshal raw response from provider API"
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
@@ -153,10 +155,11 @@ const (
 
 // ProxyConfig holds the configuration for proxy settings.
 type ProxyConfig struct {
-	Type     ProxyType `json:"type"`     // Type of proxy to use
-	URL      string    `json:"url"`      // URL of the proxy server
-	Username string    `json:"username"` // Username for proxy authentication
-	Password string    `json:"password"` // Password for proxy authentication
+	Type      ProxyType `json:"type"`        // Type of proxy to use
+	URL       string    `json:"url"`         // URL of the proxy server
+	Username  string    `json:"username"`    // Username for proxy authentication
+	Password  string    `json:"password"`    // Password for proxy authentication
+	CACertPEM string    `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy
 }
 
 // AllowedRequests controls which operations are permitted.
@@ -170,11 +173,22 @@ type AllowedRequests struct {
 	ChatCompletionStream bool `json:"chat_completion_stream"`
 	Responses            bool `json:"responses"`
 	ResponsesStream      bool `json:"responses_stream"`
+	CountTokens          bool `json:"count_tokens"`
 	Embedding            bool `json:"embedding"`
 	Speech               bool `json:"speech"`
 	SpeechStream         bool `json:"speech_stream"`
 	Transcription        bool `json:"transcription"`
 	TranscriptionStream  bool `json:"transcription_stream"`
+	BatchCreate          bool `json:"batch_create"`
+	BatchList            bool `json:"batch_list"`
+	BatchRetrieve        bool `json:"batch_retrieve"`
+	BatchCancel          bool `json:"batch_cancel"`
+	BatchResults         bool `json:"batch_results"`
+	FileUpload           bool `json:"file_upload"`
+	FileList             bool `json:"file_list"`
+	FileRetrieve         bool `json:"file_retrieve"`
+	FileDelete           bool `json:"file_delete"`
+	FileContent          bool `json:"file_content"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -198,6 +212,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Responses
 	case ResponsesStreamRequest:
 		return ar.ResponsesStream
+	case CountTokensRequest:
+		return ar.CountTokens
 	case EmbeddingRequest:
 		return ar.Embedding
 	case SpeechRequest:
@@ -208,6 +224,26 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Transcription
 	case TranscriptionStreamRequest:
 		return ar.TranscriptionStream
+	case BatchCreateRequest:
+		return ar.BatchCreate
+	case BatchListRequest:
+		return ar.BatchList
+	case BatchRetrieveRequest:
+		return ar.BatchRetrieve
+	case BatchCancelRequest:
+		return ar.BatchCancel
+	case BatchResultsRequest:
+		return ar.BatchResults
+	case FileUploadRequest:
+		return ar.FileUpload
+	case FileListRequest:
+		return ar.FileList
+	case FileRetrieveRequest:
+		return ar.FileRetrieve
+	case FileDeleteRequest:
+		return ar.FileDelete
+	case FileContentRequest:
+		return ar.FileContent
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -296,6 +332,8 @@ type Provider interface {
 	Responses(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostResponsesResponse, *BifrostError)
 	// ResponsesStream performs a completion request using the Responses API stream (uses chat completion stream request internally for non-openai providers)
 	ResponsesStream(ctx context.Context, postHookRunner PostHookRunner, key Key, request *BifrostResponsesRequest) (chan *BifrostStream, *BifrostError)
+	// CountTokens performs a count tokens request
+	CountTokens(ctx context.Context, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx context.Context, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
 	// Speech performs a text to speech request
@@ -312,4 +350,24 @@ type Provider interface {
 	// ImageGenerationStream performs a image generation stream request
 	ImageGenerationStream(ctx context.Context, postHookRunner PostHookRunner, key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStream, *BifrostError)
+	// BatchCreate creates a new batch job for asynchronous processing
+	BatchCreate(ctx context.Context, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
+	// BatchList lists batch jobs
+	BatchList(ctx context.Context, keys []Key, request *BifrostBatchListRequest) (*BifrostBatchListResponse, *BifrostError)
+	// BatchRetrieve retrieves a specific batch job
+	BatchRetrieve(ctx context.Context, keys []Key, request *BifrostBatchRetrieveRequest) (*BifrostBatchRetrieveResponse, *BifrostError)
+	// BatchCancel cancels a batch job
+	BatchCancel(ctx context.Context, keys []Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
+	// BatchResults retrieves results from a completed batch job
+	BatchResults(ctx context.Context, keys []Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
+	// FileUpload uploads a file to the provider
+	FileUpload(ctx context.Context, key Key, request *BifrostFileUploadRequest) (*BifrostFileUploadResponse, *BifrostError)
+	// FileList lists files from the provider
+	FileList(ctx context.Context, keys []Key, request *BifrostFileListRequest) (*BifrostFileListResponse, *BifrostError)
+	// FileRetrieve retrieves file metadata from the provider
+	FileRetrieve(ctx context.Context, keys []Key, request *BifrostFileRetrieveRequest) (*BifrostFileRetrieveResponse, *BifrostError)
+	// FileDelete deletes a file from the provider
+	FileDelete(ctx context.Context, keys []Key, request *BifrostFileDeleteRequest) (*BifrostFileDeleteResponse, *BifrostError)
+	// FileContent downloads file content from the provider
+	FileContent(ctx context.Context, keys []Key, request *BifrostFileContentRequest) (*BifrostFileContentResponse, *BifrostError)
 }

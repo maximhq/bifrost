@@ -1,0 +1,39 @@
+# Anthropic Integration - Legacy Complete API Endpoints
+
+complete:
+  post:
+    operationId: anthropicCreateComplete
+    summary: Create completion (Anthropic legacy format)
+    description: |
+      Creates a text completion using Anthropic's legacy Complete API.
+      Supports streaming via SSE.
+    tags:
+      - Anthropic Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/text.yaml#/AnthropicTextResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

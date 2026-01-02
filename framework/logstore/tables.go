@@ -28,21 +28,22 @@ const (
 
 // SearchFilters represents the available filters for log searches
 type SearchFilters struct {
-	Providers      []string   `json:"providers,omitempty"`
-	Models         []string   `json:"models,omitempty"`
-	Status         []string   `json:"status,omitempty"`
-	Objects        []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
-	SelectedKeyIDs []string   `json:"selected_key_ids,omitempty"`
-	VirtualKeyIDs  []string   `json:"virtual_key_ids,omitempty"`
-	StartTime      *time.Time `json:"start_time,omitempty"`
-	EndTime        *time.Time `json:"end_time,omitempty"`
-	MinLatency     *float64   `json:"min_latency,omitempty"`
-	MaxLatency     *float64   `json:"max_latency,omitempty"`
-	MinTokens      *int       `json:"min_tokens,omitempty"`
-	MaxTokens      *int       `json:"max_tokens,omitempty"`
-	MinCost        *float64   `json:"min_cost,omitempty"`
-	MaxCost        *float64   `json:"max_cost,omitempty"`
-	ContentSearch  string     `json:"content_search,omitempty"`
+	Providers       []string   `json:"providers,omitempty"`
+	Models          []string   `json:"models,omitempty"`
+	Status          []string   `json:"status,omitempty"`
+	Objects         []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
+	SelectedKeyIDs  []string   `json:"selected_key_ids,omitempty"`
+	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
+	StartTime       *time.Time `json:"start_time,omitempty"`
+	EndTime         *time.Time `json:"end_time,omitempty"`
+	MinLatency      *float64   `json:"min_latency,omitempty"`
+	MaxLatency      *float64   `json:"max_latency,omitempty"`
+	MinTokens       *int       `json:"min_tokens,omitempty"`
+	MaxTokens       *int       `json:"max_tokens,omitempty"`
+	MinCost         *float64   `json:"min_cost,omitempty"`
+	MaxCost         *float64   `json:"max_cost,omitempty"`
+	MissingCostOnly bool       `json:"missing_cost_only,omitempty"`
+	ContentSearch   string     `json:"content_search,omitempty"`
 }
 
 // PaginationOptions represents pagination parameters

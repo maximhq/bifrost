@@ -1,16 +1,20 @@
 "use client";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 import { Separator } from "@/components/ui/separator";
-import { TagInput } from "@/components/ui/tagInput";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { ModelPlaceholders } from "@/lib/constants/config";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info } from "lucide-react";
+import { Info, Plus, Trash2 } from "lucide-react";
 import { Control, UseFormReturn } from "react-hook-form";
+
+// Providers that support batch APIs
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini"];
 
 interface Props {
 	control: Control<any>;
@@ -18,11 +22,34 @@ interface Props {
 	form: UseFormReturn<any>;
 }
 
+// Batch API form field for all providers
+function BatchAPIFormField({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	return (
+		<FormField
+			control={control}
+			name={`key.use_for_batch_api`}
+			render={({ field }) => (
+				<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+					<div className="space-y-1.5">
+						<FormLabel>Use for Batch APIs</FormLabel>
+						<FormDescription>
+							Enable this key for batch API operations. Only keys with this enabled will be used for batch requests.
+						</FormDescription>
+					</div>
+					<FormControl>
+						<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+					</FormControl>
+				</FormItem>
+			)}
+		/>
+	);
+}
+
 export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
-	const modelsPlaceholder = ModelPlaceholders[providerName as keyof typeof ModelPlaceholders] ?? ModelPlaceholders.default;
+	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
 			{isBedrock && (
@@ -84,7 +111,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormControl>
 								<Input
 									placeholder="1.0"
-									className="w-[220px]"
+									className="w-[260px]"
 									value={field.value === undefined || field.value === null ? "" : String(field.value)}
 									onChange={(e) => {
 										// Keep as string during typing to allow partial input
@@ -144,12 +171,13 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</TooltipProvider>
 						</div>
 						<FormControl>
-							<TagInput placeholder={modelsPlaceholder} value={field.value || []} onValueChange={field.onChange} />
+							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} />
 						</FormControl>
 						<FormMessage />
 					</FormItem>
 				)}
 			/>
+			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
 					<FormField
@@ -217,6 +245,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
 			{isVertex && (
@@ -497,8 +526,116 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</FormItem>
 						)}
 					/>
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
+		</div>
+	);
+}
+
+// Bedrock S3 configuration section for batch operations
+function BedrockBatchS3ConfigSection({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	const buckets = form.watch("key.bedrock_key_config.batch_s3_config.buckets") || [];
+
+	const addBucket = () => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		form.setValue(
+			"key.bedrock_key_config.batch_s3_config.buckets",
+			[...currentBuckets, { bucket_name: "", prefix: "", is_default: currentBuckets.length === 0 }],
+			{ shouldDirty: true },
+		);
+	};
+
+	const removeBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.filter((_: any, i: number) => i !== index);
+		// If we removed the default bucket and there are still buckets, make the first one default
+		if (currentBuckets[index]?.is_default && newBuckets.length > 0) {
+			newBuckets[0].is_default = true;
+		}
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	const setDefaultBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.map((bucket: any, i: number) => ({
+			...bucket,
+			is_default: i === index,
+		}));
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	return (
+		<div className="space-y-4">
+			<Separator className="my-4" />
+			<div className="flex items-center justify-between">
+				<div>
+					<FormLabel className="text-base">S3 Bucket Configuration</FormLabel>
+					<FormDescription>Configure S3 buckets for Bedrock batch operations</FormDescription>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={addBucket}>
+					<Plus className="mr-2 h-4 w-4" />
+					Add Bucket
+				</Button>
+			</div>
+			{buckets.length === 0 && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>No S3 Buckets Configured</AlertTitle>
+					<AlertDescription>
+						Add at least one S3 bucket to store batch job input/output files for Bedrock batch operations.
+					</AlertDescription>
+				</Alert>
+			)}
+			{buckets.map((_: any, index: number) => (
+				<div key={index} className="space-y-4 rounded-sm border p-2">
+					<div className="flex items-center justify-between">
+						<div className="flex items-center gap-2">
+							<span className="text-sm font-medium">Bucket {index + 1}</span>
+							{buckets[index]?.is_default && (
+								<span className="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">Default</span>
+							)}
+						</div>
+						<div className="flex items-center gap-2">
+							{!buckets[index]?.is_default && buckets.length > 1 && (
+								<Button type="button" variant="ghost" size="sm" onClick={() => setDefaultBucket(index)}>
+									Set as Default
+								</Button>
+							)}
+							<Button type="button" variant="ghost" size="sm" onClick={() => removeBucket(index)}>
+								<Trash2 className="text-destructive h-4 w-4" />
+							</Button>
+						</div>
+					</div>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.bucket_name`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Bucket Name</FormLabel>
+								<FormControl>
+									<Input placeholder="my-batch-bucket or env.S3_BUCKET_NAME" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.prefix`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Prefix (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="batch-jobs/ or env.S3_PREFIX" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormDescription>Optional path prefix for batch files in the bucket</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			))}
 		</div>
 	);
 }

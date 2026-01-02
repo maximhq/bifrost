@@ -125,7 +125,7 @@ func (provider *CohereProvider) buildRequestURL(ctx context.Context, defaultPath
 // completeRequest sends a request to Cohere's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []byte, url string, key string, meta *providerUtils.RequestMetadata) ([]byte, time.Duration, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -153,7 +153,7 @@ func (provider *CohereProvider) completeRequest(ctx context.Context, jsonData []
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
-		return nil, latency, parseCohereError(resp)
+		return nil, latency, parseCohereError(resp, meta)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -210,7 +210,10 @@ func (provider *CohereProvider) listModelsByKey(ctx context.Context, key schemas
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, parseCohereError(resp)
+		return nil, parseCohereError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			RequestType: schemas.ListModelsRequest,
+		})
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -293,7 +296,11 @@ func (provider *CohereProvider) ChatCompletion(ctx context.Context, key schemas.
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.ChatCompletionRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +405,11 @@ func (provider *CohereProvider) ChatCompletionStream(ctx context.Context, postHo
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseCohereError(resp)
+		return nil, parseCohereError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ChatCompletionStreamRequest,
+		})
 	}
 
 	// Create response channel
@@ -517,7 +528,11 @@ func (provider *CohereProvider) Responses(ctx context.Context, key schemas.Key, 
 	}
 
 	// Convert to Cohere v2 request
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.ResponsesRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -623,7 +638,11 @@ func (provider *CohereProvider) ResponsesStream(ctx context.Context, postHookRun
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseCohereError(resp)
+		return nil, parseCohereError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ResponsesStreamRequest,
+		})
 	}
 
 	// Create response channel
@@ -763,7 +782,11 @@ func (provider *CohereProvider) Embedding(ctx context.Context, key schemas.Key, 
 	}
 
 	// Create Bifrost request for conversion
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value, &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.EmbeddingRequest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -826,4 +849,121 @@ func (provider *CohereProvider) ImageGeneration(ctx context.Context, key schemas
 // ImageGenerationStream is not supported by the Cohere provider.
 func (provider *CohereProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
+// BatchCreate is not supported by Cohere provider.
+func (provider *CohereProvider) BatchCreate(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
+}
+
+// BatchList is not supported by Cohere provider.
+func (provider *CohereProvider) BatchList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
+}
+
+// BatchRetrieve is not supported by Cohere provider.
+func (provider *CohereProvider) BatchRetrieve(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
+}
+
+// BatchCancel is not supported by Cohere provider.
+func (provider *CohereProvider) BatchCancel(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchResults is not supported by Cohere provider.
+func (provider *CohereProvider) BatchResults(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
+}
+
+// FileUpload is not supported by Cohere provider.
+func (provider *CohereProvider) FileUpload(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+}
+
+// FileList is not supported by Cohere provider.
+func (provider *CohereProvider) FileList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
+}
+
+// FileRetrieve is not supported by Cohere provider.
+func (provider *CohereProvider) FileRetrieve(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
+}
+
+// FileDelete is not supported by Cohere provider.
+func (provider *CohereProvider) FileDelete(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
+}
+
+// FileContent is not supported by Cohere provider.
+func (provider *CohereProvider) FileContent(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
+}
+
+// CountTokens performs a token counting request via Cohere's /v1/tokenize API.
+func (provider *CohereProvider) CountTokens(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToCohereCountTokensRequest(request) },
+		providerName,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	responseBody, latency, bifrostErr := provider.completeRequest(
+		ctx,
+		jsonBody,
+		provider.buildRequestURL(ctx, "/v1/tokenize", schemas.CountTokensRequest),
+		key.Value,
+		&providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.CountTokensRequest,
+		},
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	cohereResponse := &CohereCountTokensResponse{}
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
+		responseBody,
+		cohereResponse,
+		jsonBody,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	bifrostResponse := cohereResponse.ToBifrostCountTokensResponse(request.Model)
+	if bifrostResponse == nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, fmt.Errorf("nil Cohere count tokens response"), providerName)
+	}
+
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.CountTokensRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
 }

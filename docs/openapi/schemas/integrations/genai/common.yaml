@@ -1,0 +1,80 @@
+# Google GenAI (Gemini) Integration Common Types
+
+GeminiError:
+  type: object
+  properties:
+    error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        status:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: '#/GeminiErrorDetails'
+
+GeminiErrorDetails:
+  type: object
+  properties:
+    '@type':
+      type: string
+      description: Type identifier for the error details
+    fieldViolations:
+      type: array
+      items:
+        type: object
+        properties:
+          description:
+            type: string
+
+GeminiModel:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Model resource name (e.g., models/gemini-pro)
+    baseModelId:
+      type: string
+    version:
+      type: string
+    displayName:
+      type: string
+    description:
+      type: string
+    inputTokenLimit:
+      type: integer
+    outputTokenLimit:
+      type: integer
+    supportedGenerationMethods:
+      type: array
+      items:
+        type: string
+    thinking:
+      type: boolean
+      description: Whether the model supports thinking mode
+    temperature:
+      type: number
+      description: Default temperature for the model
+    maxTemperature:
+      type: number
+      description: Maximum allowed temperature for the model
+    topP:
+      type: number
+      description: Default nucleus-sampling value
+    topK:
+      type: integer
+      description: Default top-k sampling value
+
+GeminiListModelsResponse:
+  type: object
+  properties:
+    models:
+      type: array
+      items:
+        $ref: '#/GeminiModel'
+    nextPageToken:
+      type: string

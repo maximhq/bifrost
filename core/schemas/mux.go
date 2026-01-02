@@ -575,7 +575,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					case ResponsesInputMessageContentBlockTypeImage:
 						chatBlockType = ChatContentBlockTypeImage // "input_image" -> "image_url"
 					case ResponsesInputMessageContentBlockTypeFile:
-						chatBlockType = ChatContentBlockTypeFile // "input_file" -> "input_file" (same)
+						chatBlockType = ChatContentBlockTypeFile // "input_file" -> "file"
 					case ResponsesInputMessageContentBlockTypeAudio:
 						chatBlockType = ChatContentBlockTypeInputAudio // "input_audio" -> "input_audio" (same)
 					default:
@@ -651,12 +651,15 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
+			TextTokens:   cu.PromptTokensDetails.TextTokens,
 			AudioTokens:  cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:  cu.PromptTokensDetails.ImageTokens,
 			CachedTokens: cu.PromptTokensDetails.CachedTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
 		usage.OutputTokensDetails = &ResponsesResponseOutputTokens{
+			TextTokens:               cu.CompletionTokensDetails.TextTokens,
 			AcceptedPredictionTokens: cu.CompletionTokensDetails.AcceptedPredictionTokens,
 			AudioTokens:              cu.CompletionTokensDetails.AudioTokens,
 			ReasoningTokens:          cu.CompletionTokensDetails.ReasoningTokens,
@@ -684,12 +687,15 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
+			TextTokens:   ru.InputTokensDetails.TextTokens,
 			AudioTokens:  ru.InputTokensDetails.AudioTokens,
+			ImageTokens:  ru.InputTokensDetails.ImageTokens,
 			CachedTokens: ru.InputTokensDetails.CachedTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
 		usage.CompletionTokensDetails = &ChatCompletionTokensDetails{
+			TextTokens:               ru.OutputTokensDetails.TextTokens,
 			AcceptedPredictionTokens: ru.OutputTokensDetails.AcceptedPredictionTokens,
 			AudioTokens:              ru.OutputTokensDetails.AudioTokens,
 			ReasoningTokens:          ru.OutputTokensDetails.ReasoningTokens,
@@ -1146,8 +1152,12 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Handle different types of streaming content
-	if delta.Content != nil && *delta.Content != "" {
-		// Text content delta
+	hasContent := delta.Content != nil && *delta.Content != ""
+	hasReasoning := delta.Reasoning != nil && *delta.Reasoning != ""
+
+	// Create output items if we have content OR reasoning (for reasoning-only models)
+	if hasContent || (hasReasoning && !state.TextItemAdded) {
+		// Text content delta (or reasoning-only response)
 		if !state.TextItemAdded {
 			// Add text item if not already added
 			outputIndex := 0
@@ -1201,22 +1211,34 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.SequenceNumber++
 		}
 
-		// Emit text delta
-		itemID := state.ItemIDs["text"]
-		response := &BifrostResponsesStreamResponse{
-			Type:           ResponsesStreamResponseTypeOutputTextDelta,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    Ptr(0),
-			ContentIndex:   Ptr(0),
-			Delta:          delta.Content,
-			ExtraFields:    cr.ExtraFields,
+		// Emit text delta - at least one is required for lifecycle validation
+		// Even for reasoning-only responses, we emit an empty delta on the first chunk
+		if hasContent || (!state.TextItemHasContent && (hasReasoning || hasContent)) {
+			itemID := state.ItemIDs["text"]
+
+			var contentDelta string
+			if hasContent {
+				contentDelta = *delta.Content
+			} else {
+				// For reasoning-only responses, emit empty delta on first chunk
+				contentDelta = ""
+			}
+
+			response := &BifrostResponsesStreamResponse{
+				Type:           ResponsesStreamResponseTypeOutputTextDelta,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    Ptr(0),
+				ContentIndex:   Ptr(0),
+				Delta:          &contentDelta,
+				ExtraFields:    cr.ExtraFields,
+			}
+			if itemID != "" {
+				response.ItemID = &itemID
+			}
+			responses = append(responses, response)
+			state.SequenceNumber++
+			state.TextItemHasContent = true
 		}
-		if itemID != "" {
-			response.ItemID = &itemID
-		}
-		responses = append(responses, response)
-		state.SequenceNumber++
-		state.TextItemHasContent = true
 	}
 
 	if len(delta.ToolCalls) > 0 {
@@ -1385,8 +1407,8 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	// Check if this is a completion chunk with finish_reason
 	if choice.FinishReason != nil {
-		// Close text item if still open and has content
-		if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
+		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
+		if state.TextItemAdded && !state.TextItemClosed {
 			outputIndex := 0
 			itemID := state.ItemIDs["text"]
 

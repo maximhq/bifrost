@@ -135,23 +135,24 @@ export function ModelMultiselect({
 			debounce={300}
 			isCreatable={true}
 			dynamicOptionCreation={true}
-			createOptionText="Press enter to add new model"			
+			createOptionText="Press enter to add new model"
 			defaultOptions={defaultOptions}
 			isLoading={isLoading}
 			placeholder={placeholder}
 			disabled={disabled || !provider}
 			className={cn("!min-h-10 w-full", className)}
-			triggerClassName="!shadow-none !border-border !min-h-10"
+			triggerClassName="!shadow-none !border-border !min-h-10 px-1"
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 			isClearable={false}
 			closeMenuOnSelect={false}
 			menuPlacement="auto"
+			menuListClassName="mx-1"
 			inputValue={inputValue}
 			onInputChange={handleInputChange}
 			noResultsFoundPlaceholder="No models found"
 			emptyResultPlaceholder={provider ? "Start typing to search models..." : "Please select a provider first"}
 			views={{
-				dropdownIndicator: () => <></>,
+				dropdownIndicator: () => <></>,				
 				multiValue: (multiValueProps: MultiValueProps<ModelOption>) => {
 					return (
 						<div

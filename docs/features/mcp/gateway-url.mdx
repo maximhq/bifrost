@@ -1,0 +1,364 @@
+---
+title: "MCP Gateway URL"
+sidebarTitle: "Gateway URL"
+description: "Expose Bifrost as an MCP server for Claude Desktop and other MCP clients."
+icon: "server"
+---
+
+<Note>
+This feature is only available on `v1.4.0-prerelease1` and above. Please check the [changelogs](../../changelogs) for more details.
+</Note>
+
+<Info>
+This feature is only available in the **Gateway** deployment. It is not available when using Bifrost as a Go SDK.
+</Info>
+
+## Overview
+
+Bifrost can act as an **MCP server**, exposing all your connected MCP tools to external MCP clients like Claude Desktop, Cursor, or any other MCP-compatible application.
+
+This enables a powerful pattern:
+- Connect Bifrost to multiple MCP servers (filesystem, web search, databases, etc.)
+- Expose all those tools through a single MCP endpoint
+- External clients connect to Bifrost and get access to all aggregated tools
+
+```mermaid
+graph TD
+    Clients["<b>External MCP Clients</b><br/>Claude Desktop, Cursor<br/>Custom Apps"]
+
+    Gateway["<b>Bifrost Gateway</b>"]
+    Endpoints["<b>Endpoints</b><br/>POST /mcp: JSON-RPC<br/>GET /mcp: SSE Stream"]
+    Registry["<b>Aggregated Tool Registry</b><br/>filesystem • web search<br/>databases • custom tools"]
+
+    Servers["<b>External MCP Servers</b><br/>filesystem • web-search<br/>databases • custom"]
+
+    Clients -->|MCP Protocol<br/>HTTP/SSE| Gateway
+    Gateway --> Endpoints
+    Gateway --> Registry
+    Gateway -->|MCP Protocol| Servers
+
+    style Clients fill:#F3E5F5,stroke:#4A148C,stroke-width:2.5px,color:#1A1A1A
+    style Gateway fill:#E8F5E9,stroke:#1B5E20,stroke-width:2.5px,color:#1A1A1A
+    style Endpoints fill:#E3F2FD,stroke:#0D47A1,stroke-width:2.5px,color:#1A1A1A
+    style Registry fill:#FFF3E0,stroke:#BF360C,stroke-width:2.5px,color:#1A1A1A
+    style Servers fill:#FFFDE7,stroke:#F57F17,stroke-width:2.5px,color:#1A1A1A
+```
+
+---
+
+## Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/mcp` | POST | JSON-RPC 2.0 messages for tool discovery and execution |
+| `/mcp` | GET | Server-Sent Events (SSE) for persistent connections |
+
+### POST /mcp (JSON-RPC)
+
+Handle JSON-RPC 2.0 messages for tool listing and execution:
+
+```bash
+# List available tools
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/list"
+  }'
+
+# Call a tool
+curl -X POST http://localhost:8080/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "filesystem_read_file",
+      "arguments": {
+        "path": "/tmp/test.txt"
+      }
+    }
+  }'
+```
+
+### GET /mcp (SSE)
+
+Establish a persistent SSE connection for real-time communication:
+
+```bash
+curl -N http://localhost:8080/mcp \
+  -H "Accept: text/event-stream"
+```
+
+The SSE endpoint sends:
+- `connection/opened` message on connect
+- Keeps connection alive until client disconnects
+
+---
+
+## External MCP Client Integration
+
+The `/mcp` endpoint supports any MCP-compatible client that can communicate via HTTP or SSE:
+
+- **Claude Desktop** - macOS and Windows desktop application
+- **Cursor** - IDE with MCP support
+- **Custom Applications** - Any app implementing the MCP protocol
+- **Browser Extensions** - Tools with MCP client capability
+
+To connect an external MCP client, configure it to connect to:
+```
+http://your-bifrost-gateway/mcp
+```
+
+Include any required Virtual Key authentication headers if governance is enabled.
+
+---
+
+## Virtual Key Authentication
+
+Bifrost supports per-Virtual Key MCP servers, allowing you to expose different tools to different clients.
+
+### Global Server (No Virtual Key)
+
+When `enforce_governance_header` is `false`, requests without a Virtual Key use the global MCP server with all available tools.
+
+### Virtual Key-Specific Servers
+
+When using Virtual Keys, each VK gets its own MCP server with filtered tools based on its configuration.
+
+**Authenticate with Virtual Key:**
+
+```bash
+# Via Authorization header
+curl -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer vk_your_virtual_key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+
+# Via X-Api-Key header
+curl -X POST http://localhost:8080/mcp \
+  -H "X-Api-Key: vk_your_virtual_key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+
+# Via x-bf-virtual-key header
+curl -X POST http://localhost:8080/mcp \
+  -H "x-bf-virtual-key: vk_your_virtual_key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+```
+
+**Claude Desktop with Virtual Key:**
+
+```json
+{
+  "mcpServers": {
+    "bifrost-production": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer vk_your_production_key"
+      }
+    },
+    "bifrost-development": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer vk_your_development_key"
+      }
+    }
+  }
+}
+```
+
+---
+
+## Tool Filtering for MCP Clients
+
+Control which tools are exposed to MCP clients using Virtual Keys:
+
+### Per-Virtual Key Tool Access
+
+Configure which tools each Virtual Key can access:
+
+```json
+{
+  "governance": {
+    "virtual_keys": [
+      {
+        "name": "production-key",
+        "mcp_configs": [
+          {
+            "mcp_client_name": "filesystem",
+            "tools_to_execute": ["read_file", "list_directory"]
+          },
+          {
+            "mcp_client_name": "web_search",
+            "tools_to_execute": ["*"]
+          }
+        ]
+      },
+      {
+        "name": "admin-key",
+        "mcp_configs": [
+          {
+            "mcp_client_name": "filesystem",
+            "tools_to_execute": ["*"]
+          },
+          {
+            "mcp_client_name": "database",
+            "tools_to_execute": ["*"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Learn more about Virtual Key tool filtering in [MCP Tool Filtering](../governance/mcp-tools).
+
+---
+
+## Advanced Gateway Features
+
+### Health Monitoring
+
+Bifrost automatically monitors the health of connected MCP clients:
+
+**How it works:**
+- **Ping Mechanism:** Every 10 seconds (configurable), sends a ping to each connected client
+- **Check Timeout:** Each ping has a 5-second timeout
+- **Failure Threshold:** After 5 consecutive failed pings, client is marked as `disconnected`
+- **State Tracking:** Real-time state updates (connected ↔ disconnected)
+- **Manual Reconnection:** Once disconnected, requires manual reconnect via API or UI
+
+**Configuration:**
+```json
+{
+  "mcp": {
+    "health_monitor_config": {
+      "check_interval": "10s",
+      "check_timeout": "5s",
+      "max_consecutive_failures": 5
+    }
+  }
+}
+```
+
+When a client is disconnected after 5 consecutive failed health checks, tools from that client become unavailable. You can manually reconnect using the API or Go SDK:
+
+**Gateway API:**
+```bash
+POST /api/mcp/client/{id}/reconnect
+```
+
+**Go SDK:**
+```go
+// Reconnect a disconnected MCP client
+err := client.ReconnectMCPClient(context.Background(), clientID)
+if err != nil {
+    // Handle reconnection error
+    log.Printf("Failed to reconnect client: %v", err)
+}
+```
+
+### Request ID Tracking
+
+For Agent Mode operations, Bifrost can track intermediate tool executions:
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    FetchNewRequestIDFunc: func(ctx context.Context) string {
+        // Generate unique ID per agent iteration
+        return fmt.Sprintf("agent-%s-%d", ctx.Value("original-id"), time.Now().UnixMilli())
+    },
+}
+```
+
+This enables detailed audit trails for autonomous tool execution.
+
+### Dynamic Tool Discovery
+
+Tools are discovered from MCP servers during:
+1. **Client Connection** - Initial ListTools request
+2. **Runtime Updates** - When server tool list changes
+3. **Configuration Changes** - When tools_to_execute is updated
+
+The MCP Server dynamically updates its tool registry from the tool manager.
+
+---
+
+## Security Considerations
+
+<Warning>
+The MCP Gateway exposes tools to external clients. Consider these security measures:
+</Warning>
+
+### 1. Enable Virtual Key Enforcement
+
+Always enable `enforce_governance_header` in production:
+
+```json
+{
+  "client": {
+    "enforce_governance_header": true
+  }
+}
+```
+
+This ensures all MCP requests require a valid Virtual Key.
+
+### 2. Use HTTPS
+
+Deploy Bifrost behind a reverse proxy (nginx, Cloudflare, etc.) with TLS enabled:
+
+```
+MCP Client → HTTPS → Reverse Proxy → HTTP → Bifrost Gateway
+```
+
+### 3. Limit Tool Access
+
+Use Virtual Keys to limit which tools each client can access. Follow the principle of least privilege.
+
+### 4. Network Restrictions
+
+Consider network-level restrictions to limit which IPs can access the MCP endpoint.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Claude Desktop not connecting">
+    1. Verify the URL is correct and Bifrost is running
+    2. Check if Bifrost is accessible from Claude Desktop's network
+    3. Restart Claude Desktop after configuration changes
+    4. Check Bifrost logs for connection attempts
+  </Accordion>
+
+  <Accordion title="No tools showing up">
+    1. Verify MCP clients are connected in Bifrost
+    2. Check that `tools_to_execute` includes the expected tools
+    3. If using Virtual Keys, verify the VK has MCP tool access configured
+  </Accordion>
+
+  <Accordion title="Virtual Key authentication failing">
+    1. Ensure the Virtual Key exists and is active
+    2. Check the header format (Bearer prefix for Authorization)
+    3. Verify `enforce_governance_header` setting matches your setup
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tool Filtering" icon="filter" href="./filtering">
+    Control which tools are available per request
+  </Card>
+  <Card title="Virtual Key MCP Tools" icon="key" href="../governance/mcp-tools">
+    Configure per-VK tool access
+  </Card>
+</CardGroup>

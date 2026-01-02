@@ -103,6 +103,36 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				}
 			}
 		}
+		// Handle audio data - accumulate audio data and transcript
+		if chunk.Delta.Audio != nil {
+			if completeMessage.ChatAssistantMessage == nil {
+				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			if completeMessage.ChatAssistantMessage.Audio == nil {
+				// First chunk with audio - initialize
+				completeMessage.ChatAssistantMessage.Audio = &schemas.ChatAudioMessageAudio{
+					ID:         chunk.Delta.Audio.ID,
+					Data:       chunk.Delta.Audio.Data,
+					ExpiresAt:  chunk.Delta.Audio.ExpiresAt,
+					Transcript: chunk.Delta.Audio.Transcript,
+				}
+			} else {
+				// Subsequent chunks - accumulate data and transcript
+				if chunk.Delta.Audio.Data != "" {
+					completeMessage.ChatAssistantMessage.Audio.Data += chunk.Delta.Audio.Data
+				}
+				if chunk.Delta.Audio.Transcript != "" {
+					completeMessage.ChatAssistantMessage.Audio.Transcript += chunk.Delta.Audio.Transcript
+				}
+				// Update ID and ExpiresAt if present (they should be consistent or final)
+				if chunk.Delta.Audio.ID != "" {
+					completeMessage.ChatAssistantMessage.Audio.ID = chunk.Delta.Audio.ID
+				}
+				if chunk.Delta.Audio.ExpiresAt != 0 {
+					completeMessage.ChatAssistantMessage.Audio.ExpiresAt = chunk.Delta.Audio.ExpiresAt
+				}
+			}
+		}
 		// Accumulate tool calls
 		if len(chunk.Delta.ToolCalls) > 0 {
 			a.accumulateToolCallsInMessage(completeMessage, chunk.Delta.ToolCalls)

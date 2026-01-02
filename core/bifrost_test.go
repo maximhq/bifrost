@@ -8,6 +8,8 @@ import (
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // Mock time.Sleep to avoid real delays in tests
@@ -397,8 +399,8 @@ func TestIsRateLimitError_AllPatterns(t *testing.T) {
 			}
 
 			// Test case insensitive - mixed case
-			if !IsRateLimitErrorMessage(strings.Title(pattern)) {
-				t.Errorf("Title case pattern '%s' should be detected as rate limit error", strings.Title(pattern))
+			if !IsRateLimitErrorMessage(cases.Title(language.English).String(pattern)) {
+				t.Errorf("Title case pattern '%s' should be detected as rate limit error", cases.Title(language.English).String(pattern))
 			}
 
 			// Test as part of larger message

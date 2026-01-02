@@ -1,0 +1,367 @@
+# AWS Bedrock Converse API Schemas
+
+BedrockConverseRequest:
+  type: object
+  properties:
+    messages:
+      type: array
+      items:
+        $ref: '#/BedrockMessage'
+      description: Array of messages for the conversation
+    system:
+      type: array
+      items:
+        $ref: '#/BedrockSystemMessage'
+      description: System messages/prompts
+    inferenceConfig:
+      $ref: '#/BedrockInferenceConfig'
+    toolConfig:
+      $ref: '#/BedrockToolConfig'
+    guardrailConfig:
+      $ref: '#/BedrockGuardrailConfig'
+    additionalModelRequestFields:
+      type: object
+      description: Model-specific parameters
+    additionalModelResponseFieldPaths:
+      type: array
+      items:
+        type: string
+    performanceConfig:
+      $ref: '#/BedrockPerformanceConfig'
+    promptVariables:
+      type: object
+      additionalProperties:
+        $ref: '#/BedrockPromptVariable'
+    requestMetadata:
+      type: object
+      additionalProperties:
+        type: string
+    serviceTier:
+      $ref: '#/BedrockServiceTier'
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+BedrockMessage:
+  type: object
+  required:
+    - role
+    - content
+  properties:
+    role:
+      $ref: './common.yaml#/BedrockMessageRole'
+    content:
+      type: array
+      items:
+        $ref: '#/BedrockContentBlock'
+
+BedrockSystemMessage:
+  type: object
+  properties:
+    text:
+      type: string
+    guardContent:
+      $ref: '#/BedrockGuardContent'
+    cachePoint:
+      $ref: '#/BedrockCachePoint'
+
+BedrockContentBlock:
+  type: object
+  properties:
+    text:
+      type: string
+    image:
+      $ref: '#/BedrockImageSource'
+    document:
+      $ref: '#/BedrockDocumentSource'
+    toolUse:
+      $ref: '#/BedrockToolUse'
+    toolResult:
+      $ref: '#/BedrockToolResult'
+    guardContent:
+      $ref: '#/BedrockGuardContent'
+    reasoningContent:
+      $ref: '#/BedrockReasoningContent'
+    json:
+      type: object
+      description: JSON content for tool call results
+    cachePoint:
+      $ref: '#/BedrockCachePoint'
+
+BedrockImageSource:
+  type: object
+  properties:
+    format:
+      type: string
+      enum: [jpeg, png, gif, webp]
+    source:
+      type: object
+      properties:
+        bytes:
+          type: string
+          format: byte
+
+BedrockDocumentSource:
+  type: object
+  properties:
+    format:
+      type: string
+      enum: [pdf, csv, doc, docx, xls, xlsx, html, txt, md]
+    name:
+      type: string
+    source:
+      type: object
+      properties:
+        bytes:
+          type: string
+          format: byte
+        text:
+          type: string
+          description: Plain text content (for text-based documents)
+
+BedrockToolUse:
+  type: object
+  properties:
+    toolUseId:
+      type: string
+    name:
+      type: string
+    input:
+      type: object
+
+BedrockToolResult:
+  type: object
+  properties:
+    toolUseId:
+      type: string
+    content:
+      type: array
+      items:
+        $ref: '#/BedrockContentBlock'
+    status:
+      type: string
+      enum: [success, error]
+
+BedrockGuardContent:
+  type: object
+  properties:
+    text:
+      type: object
+      properties:
+        text:
+          type: string
+        qualifiers:
+          type: array
+          items:
+            type: string
+
+BedrockReasoningContent:
+  type: object
+  properties:
+    reasoningText:
+      type: object
+      properties:
+        text:
+          type: string
+        signature:
+          type: string
+
+BedrockCachePoint:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [default]
+
+BedrockInferenceConfig:
+  type: object
+  properties:
+    maxTokens:
+      type: integer
+    temperature:
+      type: number
+    topP:
+      type: number
+    stopSequences:
+      type: array
+      items:
+        type: string
+
+BedrockToolConfig:
+  type: object
+  properties:
+    tools:
+      type: array
+      items:
+        $ref: '#/BedrockTool'
+    toolChoice:
+      $ref: '#/BedrockToolChoice'
+
+BedrockTool:
+  type: object
+  properties:
+    toolSpec:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        inputSchema:
+          type: object
+          properties:
+            json:
+              type: object
+    cachePoint:
+      $ref: '#/BedrockCachePoint'
+
+BedrockToolChoice:
+  type: object
+  properties:
+    auto:
+      type: object
+    any:
+      type: object
+    tool:
+      type: object
+      properties:
+        name:
+          type: string
+
+BedrockGuardrailConfig:
+  type: object
+  properties:
+    guardrailIdentifier:
+      type: string
+    guardrailVersion:
+      type: string
+    trace:
+      type: string
+      enum: [enabled, disabled]
+
+BedrockPerformanceConfig:
+  type: object
+  properties:
+    latency:
+      type: string
+      enum: [standard, optimized]
+
+BedrockPromptVariable:
+  type: object
+  properties:
+    text:
+      type: string
+
+BedrockServiceTier:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [reserved, priority, default, flex]
+
+# Response types
+BedrockConverseResponse:
+  type: object
+  properties:
+    output:
+      type: object
+      properties:
+        message:
+          $ref: '#/BedrockMessage'
+    stopReason:
+      type: string
+      enum: [end_turn, tool_use, max_tokens, stop_sequence, guardrail_intervened, content_filtered]
+    usage:
+      $ref: '#/BedrockUsage'
+    metrics:
+      type: object
+      properties:
+        latencyMs:
+          type: integer
+    additionalModelResponseFields:
+      type: object
+    trace:
+      type: object
+    performanceConfig:
+      $ref: '#/BedrockPerformanceConfig'
+    serviceTier:
+      $ref: '#/BedrockServiceTier'
+
+BedrockUsage:
+  type: object
+  properties:
+    inputTokens:
+      type: integer
+    outputTokens:
+      type: integer
+    totalTokens:
+      type: integer
+    cacheReadInputTokens:
+      type: integer
+    cacheWriteInputTokens:
+      type: integer
+
+# Stream event types
+BedrockStreamEvent:
+  type: object
+  description: Flat structure for streaming events matching actual Bedrock API response
+  properties:
+    role:
+      type: string
+      description: For messageStart events
+    contentBlockIndex:
+      type: integer
+      description: For content block events
+    delta:
+      $ref: '#/BedrockContentBlockDelta'
+    stopReason:
+      type: string
+      description: For messageStop events
+    start:
+      $ref: '#/BedrockContentBlockStart'
+    usage:
+      $ref: '#/BedrockUsage'
+    metrics:
+      type: object
+      properties:
+        latencyMs:
+          type: integer
+    trace:
+      type: object
+    additionalModelResponseFields:
+      type: object
+    invokeModelRawChunk:
+      type: string
+      format: byte
+      description: Raw bytes for legacy invoke stream
+
+BedrockContentBlockDelta:
+  type: object
+  properties:
+    text:
+      type: string
+    reasoningContent:
+      type: object
+      properties:
+        text:
+          type: string
+        signature:
+          type: string
+    toolUse:
+      type: object
+      properties:
+        input:
+          type: string
+
+BedrockContentBlockStart:
+  type: object
+  properties:
+    toolUse:
+      type: object
+      properties:
+        toolUseId:
+          type: string
+        name:
+          type: string

@@ -40,7 +40,15 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		usage = result.EmbeddingResponse.Usage
 	case result.SpeechResponse != nil:
-		return 0
+		if result.SpeechResponse.Usage != nil {
+			usage = &schemas.BifrostLLMUsage{
+				PromptTokens:     result.SpeechResponse.Usage.InputTokens,
+				CompletionTokens: result.SpeechResponse.Usage.OutputTokens,
+				TotalTokens:      result.SpeechResponse.Usage.TotalTokens,
+			}
+		} else {
+			return 0
+		}
 	case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{
 			PromptTokens:     result.SpeechStreamResponse.Usage.InputTokens,
@@ -65,6 +73,9 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 			audioTokenDetails.AudioTokens = result.TranscriptionResponse.Usage.InputTokenDetails.AudioTokens
 			audioTokenDetails.TextTokens = result.TranscriptionResponse.Usage.InputTokenDetails.TextTokens
 		}
+		if result.TranscriptionResponse.Usage.Seconds != nil {
+			audioSeconds = result.TranscriptionResponse.Usage.Seconds
+		}
 	case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{}
 		if result.TranscriptionStreamResponse.Usage.InputTokens != nil {
@@ -82,6 +93,9 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 			audioTokenDetails = &schemas.TranscriptionUsageInputTokenDetails{}
 			audioTokenDetails.AudioTokens = result.TranscriptionStreamResponse.Usage.InputTokenDetails.AudioTokens
 			audioTokenDetails.TextTokens = result.TranscriptionStreamResponse.Usage.InputTokenDetails.TextTokens
+		}
+		if result.TranscriptionStreamResponse.Usage.Seconds != nil {
+			audioSeconds = result.TranscriptionStreamResponse.Usage.Seconds
 		}
 	default:
 		return 0
@@ -223,12 +237,16 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		// Use audio-specific token pricing if available
 		audioTokens := float64(audioTokenDetails.AudioTokens)
 		textTokens := float64(audioTokenDetails.TextTokens)
+		isAbove200k := totalTokens > TokenTierAbove200K
 		isAbove128k := totalTokens > TokenTierAbove128K
 
 		// Determine the appropriate token pricing rates
 		var inputTokenRate, outputTokenRate float64
 
-		if isAbove128k {
+		if isAbove200k {
+			inputTokenRate = getSafeFloat64(pricing.InputCostPerTokenAbove200kTokens, pricing.InputCostPerToken)
+			outputTokenRate = getSafeFloat64(pricing.OutputCostPerTokenAbove200kTokens, pricing.OutputCostPerToken)
+		} else if isAbove128k {
 			inputTokenRate = getSafeFloat64(pricing.InputCostPerTokenAbove128kTokens, pricing.InputCostPerToken)
 			outputTokenRate = getSafeFloat64(pricing.OutputCostPerTokenAbove128kTokens, pricing.OutputCostPerToken)
 		} else {

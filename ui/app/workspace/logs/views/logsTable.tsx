@@ -21,6 +21,8 @@ interface DataTableProps {
 	isSocketConnected: boolean;
 	liveEnabled: boolean;
 	onLiveToggle: (enabled: boolean) => void;
+	fetchLogs: () => Promise<void>;
+	fetchStats: () => Promise<void>;
 }
 
 export function LogsDataTable({
@@ -36,6 +38,8 @@ export function LogsDataTable({
 	isSocketConnected,
 	liveEnabled,
 	onLiveToggle,
+	fetchLogs,
+	fetchStats,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
 
@@ -81,7 +85,7 @@ export function LogsDataTable({
 
 	return (
 		<div className="space-y-2">
-			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} />
+			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} fetchLogs={fetchLogs} fetchStats={fetchStats} />
 			<div className="max-h-[calc(100vh-16.5rem)] rounded-sm border">
 				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
 					<TableHeader className="px-2">

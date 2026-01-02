@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
@@ -104,18 +105,20 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 						<TableRow>
 							<TableHead>API Key</TableHead>
 							<TableHead>Weight</TableHead>
+							<TableHead>Enabled</TableHead>
 							<TableHead className="text-right"></TableHead>
 						</TableRow>
 					</TableHeader>
 					<TableBody>
 						{provider.keys.length === 0 && (
 							<TableRow>
-								<TableCell colSpan={3} className="py-6 text-center">
+								<TableCell colSpan={4} className="py-6 text-center">
 									No keys found.
 								</TableCell>
 							</TableRow>
 						)}
 						{provider.keys.map((key, index) => {
+							const isKeyEnabled = key.enabled ?? true;
 							return (
 								<TableRow key={index} className="text-sm transition-colors hover:bg-white" onClick={() => {}}>
 									<TableCell>
@@ -127,6 +130,26 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 										<div className="flex items-center space-x-2">
 											<span className="font-mono text-sm">{key.weight}</span>
 										</div>
+									</TableCell>
+									<TableCell>
+										<Switch
+											checked={isKeyEnabled}
+											size="md"
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												updateProvider({
+													...provider,
+													keys: provider.keys.map((k, i) => (i === index ? { ...k, enabled: checked } : k)),
+												})
+													.unwrap()
+													.then(() => {
+														toast.success(`Key ${checked ? "enabled" : "disabled"} successfully`);
+													})
+													.catch((err) => {
+														toast.error("Failed to update key", { description: getErrorMessage(err) });
+													});
+											}}
+										/>
 									</TableCell>
 									<TableCell className="text-right">
 										<div className="flex items-center justify-end space-x-2">
@@ -141,6 +164,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 														onClick={() => {
 															setShowAddNewKeyDialog({ show: true, keyIndex: index });
 														}}
+														disabled={!hasUpdateProviderAccess || !isKeyEnabled}
 													>
 														<PencilIcon className="mr-1 h-4 w-4" />
 														Edit

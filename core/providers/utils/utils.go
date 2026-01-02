@@ -4,6 +4,8 @@ package utils
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -102,7 +105,6 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	}
 
 	var dialFunc fasthttp.DialFunc
-
 	// Create the appropriate proxy based on type
 	switch proxyConfig.Type {
 	case schemas.NoProxy:
@@ -112,7 +114,18 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
-		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyConfig.URL)
+		proxyURL := proxyConfig.URL
+		if proxyConfig.Username != "" && proxyConfig.Password != "" {
+			parsedURL, err := url.Parse(proxyConfig.URL)
+			if err != nil {
+				logger.Warn("Invalid proxy configuration: invalid HTTP proxy URL")
+				return client
+			}
+			// Set user and password in the parsed URL
+			parsedURL.User = url.UserPassword(proxyConfig.Username, proxyConfig.Password)
+			proxyURL = parsedURL.String()
+		}
+		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL == "" {
 			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
@@ -143,7 +156,38 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		client.Dial = dialFunc
 	}
 
+	// Configure custom CA certificate if provided
+	if proxyConfig.CACertPEM != "" {
+		tlsConfig, err := createTLSConfigWithCA(proxyConfig.CACertPEM)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Failed to configure custom CA certificate: %v", err))
+		} else {
+			client.TLSConfig = tlsConfig
+		}
+	}
+
 	return client
+}
+
+// createTLSConfigWithCA creates a TLS configuration with a custom CA certificate
+// appended to the system root CA pool.
+func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
+	// Get the system root CA pool
+	rootCAs, err := x509.SystemCertPool()
+	if err != nil {
+		// If we can't get system certs, create a new pool
+		rootCAs = x509.NewCertPool()
+	}
+
+	// Append the custom CA certificate
+	if !rootCAs.AppendCertsFromPEM([]byte(caCertPEM)) {
+		return nil, fmt.Errorf("failed to parse CA certificate PEM")
+	}
+
+	return &tls.Config{
+		RootCAs:    rootCAs,
+		MinVersion: tls.VersionTLS12,
+	}, nil
 }
 
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies.
@@ -314,12 +358,13 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 // HandleProviderAPIError processes error responses from provider APIs.
 // It attempts to unmarshal the error response and returns a BifrostError
 // with the appropriate status code and error information.
-// errorResp must be a pointer to the target struct for unmarshaling.
+// HTML detection only runs if JSON parsing fails to avoid expensive regex operations
+// on responses that are almost certainly valid JSON. errorResp must be a pointer to
+// the target struct for unmarshaling.
 func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.BifrostError {
 	statusCode := resp.StatusCode()
-	body := append([]byte(nil), resp.Body()...)
 
-	// decode body
+	// Decode body
 	decodedBody, err := CheckAndDecodeBody(resp)
 	if err != nil {
 		return &schemas.BifrostError{
@@ -331,24 +376,48 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 		}
 	}
 
-	body = decodedBody
-
-	if err := sonic.Unmarshal(body, errorResp); err != nil {
-		rawResponse := body
-		message := fmt.Sprintf("provider API error: %s", string(rawResponse))
+	// Check for empty response
+	trimmed := strings.TrimSpace(string(decodedBody))
+	if len(trimmed) == 0 {
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Message: message,
+				Message: schemas.ErrProviderResponseEmpty,
 			},
 		}
 	}
 
+	// Try JSON parsing first
+	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
+		// JSON parsing succeeded, return success
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error:          &schemas.ErrorField{},
+		}
+	}
+
+	// JSON parsing failed - now check if it's an HTML response (expensive operation)
+	if IsHTMLResponse(resp, decodedBody) {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderResponseHTML,
+				Error:   errors.New(string(decodedBody)),
+			},
+		}
+	}
+
+	// Not HTML either - return raw response as error message
+	message := fmt.Sprintf("provider API error: %s", string(decodedBody))
 	return &schemas.BifrostError{
 		IsBifrostError: false,
 		StatusCode:     &statusCode,
-		Error:          &schemas.ErrorField{},
+		Error: &schemas.ErrorField{
+			Message: message,
+		},
 	}
 }
 
@@ -356,9 +425,19 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 // It attempts to parse the response body into the provided response type
 // and returns either the parsed response or a BifrostError if parsing fails.
 // If sendBackRawResponse is true, it returns the raw response interface, otherwise nil.
-func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
-	var rawRequest interface{}
-	var rawResponse interface{}
+// HTML detection only runs if JSON parsing fails to avoid expensive regex operations
+// on responses that are almost certainly valid JSON.
+func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
+	// Check for empty response
+	trimmed := strings.TrimSpace(string(responseBody))
+	if len(trimmed) == 0 {
+		return nil, nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderResponseEmpty,
+			},
+		}
+	}
 
 	var wg sync.WaitGroup
 	var structuredErr, rawRequestErr, rawResponseErr error
@@ -397,6 +476,17 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	wg.Wait()
 
 	if structuredErr != nil {
+		// JSON parsing failed - check if it's an HTML response (expensive operation)
+		if IsHTMLResponse(nil, responseBody) {
+			return nil, nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderResponseHTML,
+					Error:   errors.New(string(responseBody)),
+				},
+			}
+		}
+
 		return nil, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -444,6 +534,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	return nil, nil, nil
 }
 
+// ParseAndSetRawRequest parses the raw request body and sets it in the extra fields.
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	var rawRequest interface{}
 	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
@@ -460,6 +551,7 @@ func NewUnsupportedOperationError(requestType schemas.RequestType, providerName 
 		IsBifrostError: false,
 		Error: &schemas.ErrorField{
 			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
+			Code:    schemas.Ptr("unsupported_operation"),
 		},
 		ExtraFields: schemas.BifrostErrorExtraFields{
 			Provider:    providerName,
@@ -495,6 +587,174 @@ func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	default:
 		return resp.Body(), nil
 	}
+}
+
+// IsHTMLResponse checks if the response is HTML by examining the Content-Type header
+// and/or the response body for HTML indicators.
+func IsHTMLResponse(resp *fasthttp.Response, body []byte) bool {
+	// Check Content-Type header first (most reliable indicator)
+	if resp != nil {
+		contentType := strings.ToLower(string(resp.Header.Peek("Content-Type")))
+		if strings.Contains(contentType, "text/html") {
+			return true
+		}
+	}
+
+	// If body is small, it's unlikely to be HTML
+	if len(body) < 20 {
+		return false
+	}
+
+	// Check for HTML indicators in body
+	bodyLower := strings.ToLower(string(body))
+
+	// Look for common HTML tags or DOCTYPE
+	htmlIndicators := []string{
+		"<!doctype html",
+		"<html",
+		"<head",
+		"<body",
+		"<title>",
+		"<h1>",
+		"<h2>",
+		"<h3>",
+		"<p>",
+		"<div",
+	}
+
+	for _, indicator := range htmlIndicators {
+		if strings.Contains(bodyLower, indicator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Limit body size to prevent ReDoS on very large malicious responses
+const maxBodySize = 32 * 1024 // 32KB
+
+// ExtractHTMLErrorMessage extracts meaningful error information from an HTML response.
+// It attempts to find error messages from title tags, headers, and visible text.
+// UNUSED for now but could be useful in the future
+func ExtractHTMLErrorMessage(body []byte) string {
+	if len(body) > maxBodySize {
+		body = body[:maxBodySize]
+	}
+
+	bodyStr := string(body)
+	bodyLower := strings.ToLower(bodyStr)
+
+	// Try to extract title first
+	if idx := strings.Index(bodyLower, "<title>"); idx != -1 {
+		endIdx := strings.Index(bodyLower[idx:], "</title>")
+		if endIdx != -1 {
+			title := strings.TrimSpace(bodyStr[idx+7 : idx+endIdx])
+			if title != "" && title != "Error" {
+				return title
+			}
+		}
+	}
+
+	// Try to extract from h1, h2, h3 tags (common for error pages)
+	for _, tag := range []string{"h1", "h2", "h3"} {
+		pattern := fmt.Sprintf("<%s[^>]*>([^<]+)</%s>", tag, tag)
+		re := regexp.MustCompile("(?i)" + pattern)
+		if matches := re.FindStringSubmatch(bodyStr); len(matches) > 1 {
+			msg := strings.TrimSpace(matches[1])
+			if msg != "" {
+				return msg
+			}
+		}
+	}
+
+	// Try to extract from meta description
+	pattern := `<meta\s+name="description"\s+content="([^"]+)"`
+	re := regexp.MustCompile("(?i)" + pattern)
+	if matches := re.FindStringSubmatch(bodyStr); len(matches) > 1 {
+		msg := strings.TrimSpace(matches[1])
+		if msg != "" {
+			return msg
+		}
+	}
+
+	// Extract visible text: remove script and style tags, then extract text
+	// Remove script and style tags and their content
+	re = regexp.MustCompile(`(?i)<script[^>]*>.*?</script>|<style[^>]*>.*?</style>`)
+	cleaned := re.ReplaceAllString(bodyStr, "")
+
+	// Remove HTML tags
+	re = regexp.MustCompile(`<[^>]+>`)
+	cleaned = re.ReplaceAllString(cleaned, " ")
+
+	// Clean up whitespace and get first meaningful sentence
+	sentences := strings.FieldsFunc(cleaned, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+
+	for _, sentence := range sentences {
+		trimmed := strings.TrimSpace(sentence)
+		if len(trimmed) > 10 && len(trimmed) < 500 {
+			// Limit to first 200 chars to avoid very long messages
+			if len(trimmed) > 200 {
+				trimmed = trimmed[:200] + "..."
+			}
+			return trimmed
+		}
+	}
+
+	// If all else fails, return a generic message with status code context
+	return "HTML error response received from provider"
+}
+
+// JSONLParseResult holds parsed items and any line-level errors encountered during parsing.
+type JSONLParseResult struct {
+	Errors []schemas.BatchError
+}
+
+// ParseJSONL parses JSONL data line by line, calling the provided callback for each line.
+// It collects parse errors with line numbers rather than silently skipping failed lines.
+// The callback receives the line bytes and returns an error if parsing fails.
+// This function operates directly on byte slices to avoid unnecessary string conversions.
+func ParseJSONL(data []byte, parseLine func(line []byte) error) JSONLParseResult {
+	result := JSONLParseResult{}
+
+	lineNum := 0
+	start := 0
+
+	for i := 0; i <= len(data); i++ {
+		// Check for newline or end of data
+		if i == len(data) || data[i] == '\n' {
+			lineNum++
+
+			// Extract the line (excluding the newline character)
+			end := i
+			if end > start {
+				line := data[start:end]
+
+				// Trim trailing carriage return for Windows-style line endings
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
+
+				// Skip empty lines
+				if len(line) > 0 {
+					if err := parseLine(line); err != nil {
+						lineNumCopy := lineNum
+						result.Errors = append(result.Errors, schemas.BatchError{
+							Code:    "parse_error",
+							Message: err.Error(),
+							Line:    &lineNumCopy,
+						})
+					}
+				}
+			}
+
+			start = i + 1
+		}
+	}
+
+	return result
 }
 
 // NewConfigurationError creates a standardized error for configuration errors.
@@ -543,6 +803,14 @@ func NewProviderAPIError(message string, err error, statusCode int, providerType
 			Provider: providerType,
 		},
 	}
+}
+
+// RequestMetadata contains metadata about a request for error reporting.
+// This struct is used to pass request context to parseError functions.
+type RequestMetadata struct {
+	Provider    schemas.ModelProvider
+	Model       string
+	RequestType schemas.RequestType
 }
 
 // ShouldSendBackRawRequest checks if the raw request should be sent back.
@@ -823,8 +1091,8 @@ func GetProviderName(defaultProvider schemas.ModelProvider, customConfig *schema
 // after sending the finish_reason. This function helps determine the correct stream termination logic.
 func ProviderSendsDoneMarker(providerName schemas.ModelProvider) bool {
 	switch providerName {
-	case schemas.Cerebras, schemas.Perplexity:
-		// Cerebras and Perplexity don't send [DONE] marker, ends stream after finish_reason
+	case schemas.Cerebras, schemas.Perplexity, schemas.HuggingFace:
+		// Cerebras, Perplexity, and HuggingFace don't send [DONE] marker, ends stream after finish_reason
 		return false
 	default:
 		// Default to expecting [DONE] marker for safety
@@ -897,9 +1165,7 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 		}
 	}
 
-	if len(responses) == 1 {
-		return responses[0]
-	}
+	// Always apply deduplication, even for single responses
 
 	// Use a map to track unique model IDs for efficient deduplication
 	seenIDs := make(map[string]struct{})

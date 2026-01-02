@@ -1,8 +1,11 @@
 package bedrock
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -668,13 +671,13 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				})
 
 				// If there's text content, also emit the delta
-				if reasoningDelta.Text != "" {
+				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
 					deltaResponse := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber + len(responses),
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
-						Delta:          &reasoningDelta.Text,
+						Delta:          reasoningDelta.Text,
 						ItemID:         &itemID,
 					}
 					responses = append(responses, deltaResponse)
@@ -683,14 +686,14 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				return responses, nil, false
 			} else {
 				// Subsequent reasoning deltas - just emit the delta
-				if reasoningDelta.Text != "" {
+				if reasoningDelta.Text != nil && *reasoningDelta.Text != "" {
 					itemID := state.ItemIDs[outputIndex]
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta,
 						SequenceNumber: sequenceNumber,
 						OutputIndex:    schemas.Ptr(outputIndex),
 						ContentIndex:   &contentBlockIndex,
-						Delta:          &reasoningDelta.Text,
+						Delta:          reasoningDelta.Text,
 					}
 					if itemID != "" {
 						response.ItemID = &itemID
@@ -1071,7 +1074,7 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			// This is reasoning text delta
 			event.Delta = &BedrockContentBlockDelta{
 				ReasoningContent: &BedrockReasoningContentText{
-					Text: *bifrostResp.Delta,
+					Text: bifrostResp.Delta,
 				},
 			}
 		} else {
@@ -1202,7 +1205,7 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 }
 
 // ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format
-func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.BifrostResponsesRequest, error) {
+func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *context.Context) (*schemas.BifrostResponsesRequest, error) {
 	if request == nil {
 		return nil, fmt.Errorf("bedrock request is nil")
 	}
@@ -1218,7 +1221,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 	}
 
 	// Convert messages using the new conversion method
-	convertedMessages := ConvertBedrockMessagesToBifrostMessages(request.Messages, request.System, false)
+	convertedMessages := ConvertBedrockMessagesToBifrostMessages(ctx, request.Messages, request.System, false)
 	bifrostReq.Input = convertedMessages
 
 	// Convert inference config to parameters
@@ -1279,6 +1282,13 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 				}
 
 				bifrostReq.Params.Tools = append(bifrostReq.Params.Tools, bifrostTool)
+			} else if tool.CachePoint != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+				// add cache control to last tool in tools array
+				if len(bifrostReq.Params.Tools) > 0 {
+					bifrostReq.Params.Tools[len(bifrostReq.Params.Tools)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
 			}
 		}
 	}
@@ -1301,6 +1311,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 
 	// Convert additional model request fields to extra params
 	if len(request.AdditionalModelRequestFields) > 0 {
+		// Handle Anthropic reasoning_config format (snake_case)
 		reasoningConfig, ok := schemas.SafeExtractFromMap(request.AdditionalModelRequestFields, "reasoning_config")
 		if ok {
 			if reasoningConfigMap, ok := reasoningConfig.(map[string]interface{}); ok {
@@ -1312,10 +1323,14 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 						}
 						if maxTokens, ok := schemas.SafeExtractInt(reasoningConfigMap["budget_tokens"]); ok {
 							minBudgetTokens := 0
+							defaultMaxTokens := DefaultCompletionMaxTokens
+							if request.InferenceConfig != nil && request.InferenceConfig.MaxTokens != nil {
+								defaultMaxTokens = *request.InferenceConfig.MaxTokens
+							}
 							if schemas.IsAnthropicModel(bifrostReq.Model) {
 								minBudgetTokens = anthropic.MinimumReasoningMaxTokens
 							}
-							effort := providerUtils.GetReasoningEffortFromBudgetTokens(maxTokens, minBudgetTokens, *request.InferenceConfig.MaxTokens)
+							effort := providerUtils.GetReasoningEffortFromBudgetTokens(maxTokens, minBudgetTokens, defaultMaxTokens)
 							bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
 								Effort:    schemas.Ptr(effort),
 								MaxTokens: schemas.Ptr(maxTokens),
@@ -1323,6 +1338,26 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 							}
 						}
 					} else {
+						bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+							Effort: schemas.Ptr("none"),
+						}
+					}
+				}
+			}
+		}
+
+		// Handle Nova reasoningConfig format (camelCase)
+		if novaReasoningConfig, ok := schemas.SafeExtractFromMap(request.AdditionalModelRequestFields, "reasoningConfig"); ok {
+			if novaReasoningConfigMap, ok := novaReasoningConfig.(map[string]interface{}); ok {
+				if typeStr, ok := schemas.SafeExtractString(novaReasoningConfigMap["type"]); ok {
+					if typeStr == "enabled" {
+						// Extract maxReasoningEffort from Nova format
+						if effortStr, ok := schemas.SafeExtractString(novaReasoningConfigMap["maxReasoningEffort"]); ok {
+							bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
+								Effort: schemas.Ptr(effortStr),
+							}
+						}
+					} else if typeStr == "disabled" {
 						bifrostReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{
 							Effort: schemas.Ptr("none"),
 						}
@@ -1400,7 +1435,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest() (*schemas.Bif
 }
 
 // ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest
-func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
+func ToBedrockResponsesRequest(ctx *context.Context, bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
@@ -1439,37 +1474,115 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 				bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
 			}
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if schemas.IsAnthropicModel(bifrostReq.Model) && *bifrostReq.Params.Reasoning.MaxTokens < anthropic.MinimumReasoningMaxTokens {
+				tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
+				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+					// bedrock does not support dynamic reasoning budget like gemini
+					// setting it to default max tokens
+					tokenBudget = anthropic.MinimumReasoningMaxTokens
+				}
+				if schemas.IsAnthropicModel(bifrostReq.Model) && tokenBudget < anthropic.MinimumReasoningMaxTokens {
 					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 				}
-				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
-					"type":          "enabled",
-					"budget_tokens": *bifrostReq.Params.Reasoning.MaxTokens,
-				}
-			} else {
-				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-					minBudgetTokens := MinimumReasoningMaxTokens
-					if schemas.IsAnthropicModel(bifrostReq.Model) {
-						minBudgetTokens = anthropic.MinimumReasoningMaxTokens
+				if schemas.IsAnthropicModel(bifrostReq.Model) {
+					bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+						"type":          "enabled",
+						"budget_tokens": tokenBudget,
 					}
+				} else if schemas.IsNovaModel(bifrostReq.Model) {
+					minBudgetTokens := MinimumReasoningMaxTokens
 					defaultMaxTokens := DefaultCompletionMaxTokens
 					if inferenceConfig.MaxTokens != nil {
 						defaultMaxTokens = *inferenceConfig.MaxTokens
 					} else {
 						inferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
 					}
-					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, defaultMaxTokens)
-					if err != nil {
-						return nil, err
+					maxReasoningEffort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, minBudgetTokens, defaultMaxTokens)
+					typeStr := "enabled"
+					switch maxReasoningEffort {
+					case "high":
+						inferenceConfig.MaxTokens = nil
+						inferenceConfig.Temperature = nil
+						inferenceConfig.TopP = nil
+					case "minimal":
+						maxReasoningEffort = "low"
+					case "none":
+						typeStr = "disabled"
 					}
-					bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
-						"type":          "enabled",
-						"budget_tokens": budgetTokens,
+
+					config := map[string]any{
+						"type": typeStr,
+					}
+					if typeStr != "disabled" {
+						config["maxReasoningEffort"] = maxReasoningEffort
+					}
+
+					bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+				}
+			} else {
+				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
+					if schemas.IsNovaModel(bifrostReq.Model) {
+						effort := *bifrostReq.Params.Reasoning.Effort
+						typeStr := "enabled"
+						switch effort {
+						case "high":
+							// for nova models we need to unset these fields at high effort
+							inferenceConfig.MaxTokens = nil
+							inferenceConfig.Temperature = nil
+							inferenceConfig.TopP = nil
+						case "low", "medium":
+							// no special handling needed for low and medium
+						case "minimal":
+							effort = "low"
+						case "none":
+							typeStr = "disabled"
+						}
+
+						config := map[string]any{
+							"type": typeStr,
+						}
+						if typeStr != "disabled" {
+							config["maxReasoningEffort"] = effort
+						}
+
+						bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+					} else {
+						minBudgetTokens := MinimumReasoningMaxTokens
+						if schemas.IsAnthropicModel(bifrostReq.Model) {
+							minBudgetTokens = anthropic.MinimumReasoningMaxTokens
+						}
+						defaultMaxTokens := DefaultCompletionMaxTokens
+						if inferenceConfig.MaxTokens != nil {
+							defaultMaxTokens = *inferenceConfig.MaxTokens
+						} else {
+							inferenceConfig.MaxTokens = schemas.Ptr(DefaultCompletionMaxTokens)
+						}
+						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, minBudgetTokens, defaultMaxTokens)
+						if err != nil {
+							return nil, err
+						}
+						if schemas.IsAnthropicModel(bifrostReq.Model) {
+							bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+								"type":          "enabled",
+								"budget_tokens": budgetTokens,
+							}
+						}
 					}
 				} else {
 					bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
 						"type": "disabled",
 					}
+				}
+			}
+		}
+		if bifrostReq.Params.Text != nil {
+			if bifrostReq.Params.Text.Format != nil {
+				responseFormatTool := convertTextFormatToTool(ctx, bifrostReq.Params.Text)
+				// append to bedrockTools
+				if responseFormatTool != nil {
+					if bedrockReq.ToolConfig == nil {
+						bedrockReq.ToolConfig = &BedrockToolConfig{}
+					}
+					bedrockReq.ToolConfig.Tools = append(bedrockReq.ToolConfig.Tools, *responseFormatTool)
 				}
 			}
 		}
@@ -1548,6 +1661,14 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 					},
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)
+
+				if tool.CacheControl != nil && !schemas.IsNovaModel(bifrostReq.Model) {
+					bedrockTools = append(bedrockTools, BedrockTool{
+						CachePoint: &BedrockCachePoint{
+							Type: BedrockCachePointTypeDefault,
+						},
+					})
+				}
 			}
 		}
 
@@ -1576,7 +1697,7 @@ func ToBedrockResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Be
 }
 
 // ToBifrostResponsesResponse converts BedrockConverseResponse to BifrostResponsesResponse
-func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.BifrostResponsesResponse, error) {
+func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *context.Context) (*schemas.BifrostResponsesResponse, error) {
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
@@ -1588,7 +1709,7 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse() (*schemas.
 
 	// Convert output message to Responses format using the new conversion method
 	if response.Output != nil && response.Output.Message != nil {
-		outputMessages := ConvertBedrockMessagesToBifrostMessages([]BedrockMessage{*response.Output.Message}, []BedrockSystemMessage{}, true)
+		outputMessages := ConvertBedrockMessagesToBifrostMessages(ctx, []BedrockMessage{*response.Output.Message}, []BedrockSystemMessage{}, true)
 		bifrostResp.Output = outputMessages
 	}
 
@@ -1675,6 +1796,13 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Usage.InputTokens = bifrostResp.Usage.InputTokens
 		bedrockResp.Usage.OutputTokens = bifrostResp.Usage.OutputTokens
 		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
+
+		if bifrostResp.Usage.InputTokensDetails != nil {
+			bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
+		}
+		if bifrostResp.Usage.OutputTokensDetails != nil {
+			bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
+		}
 	}
 
 	// Set metrics
@@ -2335,23 +2463,39 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 		// (they cannot exist alone in Bedrock without violating the constraint)
 	}
 
+	// Merge consecutive messages with the same role
+	// This ensures document blocks are in the same message as text blocks (Bedrock requirement)
+	mergedMessages := []BedrockMessage{}
+	for i := 0; i < len(bedrockMessages); i++ {
+		currentMsg := bedrockMessages[i]
+
+		// Merge any consecutive messages with the same role
+		for i+1 < len(bedrockMessages) && bedrockMessages[i+1].Role == currentMsg.Role {
+			i++
+			currentMsg.Content = append(currentMsg.Content, bedrockMessages[i].Content...)
+		}
+
+		mergedMessages = append(mergedMessages, currentMsg)
+	}
+	bedrockMessages = mergedMessages
+
 	return bedrockMessages, systemMessages, nil
 }
 
 // ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
 // This is the main conversion method from Bedrock to Bifrost - handles all message types and content blocks
-func ConvertBedrockMessagesToBifrostMessages(bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+func ConvertBedrockMessagesToBifrostMessages(ctx *context.Context, bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Convert system messages first
-	for _, sysMsg := range systemMessages {
-		systemBifrostMsgs := convertBedrockSystemMessageToBifrostMessages(&sysMsg)
+	systemBifrostMsgs := convertBedrockSystemMessageToBifrostMessages(systemMessages)
+	if len(systemBifrostMsgs) > 0 {
 		bifrostMessages = append(bifrostMessages, systemBifrostMsgs...)
 	}
 
 	// Convert regular messages
 	for _, msg := range bedrockMessages {
-		convertedMessages := convertSingleBedrockMessageToBifrostMessages(&msg, isOutputMessage)
+		convertedMessages := convertSingleBedrockMessageToBifrostMessages(ctx, &msg, isOutputMessage)
 		bifrostMessages = append(bifrostMessages, convertedMessages...)
 	}
 
@@ -2375,6 +2519,13 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 					systemMessages = append(systemMessages, BedrockSystemMessage{
 						Text: block.Text,
 					})
+					if block.CacheControl != nil {
+						systemMessages = append(systemMessages, BedrockSystemMessage{
+							CachePoint: &BedrockCachePoint{
+								Type: BedrockCachePointTypeDefault,
+							},
+						})
+					}
 				}
 			}
 		}
@@ -2405,43 +2556,96 @@ func convertBifrostMessageToBedrockMessage(msg *schemas.ResponsesMessage) *Bedro
 }
 
 // convertBedrockSystemMessageToBifrostMessages converts a Bedrock system message to Bifrost messages
-func convertBedrockSystemMessageToBifrostMessages(sysMsg *BedrockSystemMessage) []schemas.ResponsesMessage {
-	if sysMsg.Text != nil {
-		systemRole := schemas.ResponsesInputMessageRoleSystem
-		msgType := schemas.ResponsesMessageTypeMessage
-		return []schemas.ResponsesMessage{{
-			Type: &msgType,
-			Role: &systemRole,
-			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{
-					{
-						Type: schemas.ResponsesInputMessageContentBlockTypeText,
-						Text: sysMsg.Text,
+func convertBedrockSystemMessageToBifrostMessages(systemMessages []BedrockSystemMessage) []schemas.ResponsesMessage {
+	var bifrostMessages []schemas.ResponsesMessage
+
+	for _, sysMsg := range systemMessages {
+		if sysMsg.CachePoint != nil {
+			// add it to last content block of last message
+			if len(bifrostMessages) > 0 {
+				lastMessage := &bifrostMessages[len(bifrostMessages)-1]
+				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
+					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
+			}
+		}
+		if sysMsg.Text != nil {
+			systemRole := schemas.ResponsesInputMessageRoleSystem
+			msgType := schemas.ResponsesMessageTypeMessage
+			bifrostMessages = append(bifrostMessages, schemas.ResponsesMessage{
+				Type: &msgType,
+				Role: &systemRole,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: sysMsg.Text,
+						},
 					},
 				},
-			},
-		}}
+			})
+		}
+
 	}
-	return []schemas.ResponsesMessage{}
+	return bifrostMessages
+}
+
+// Helper to convert Bedrock role to Bifrost role
+func convertBedrockRoleToBifrostRole(bedrockRole BedrockMessageRole) schemas.ResponsesMessageRoleType {
+	switch bedrockRole {
+	case BedrockMessageRoleUser:
+		return schemas.ResponsesInputMessageRoleUser
+	case BedrockMessageRoleAssistant:
+		return schemas.ResponsesInputMessageRoleAssistant
+	default:
+		return schemas.ResponsesInputMessageRoleUser
+	}
+}
+
+// Helper to create a text message
+func createTextMessage(
+	text *string,
+	role schemas.ResponsesMessageRoleType,
+	textBlockType schemas.ResponsesMessageContentBlockType,
+	isOutputMessage bool,
+) schemas.ResponsesMessage {
+	bifrostMsg := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: &role,
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: textBlockType,
+					Text: text,
+				},
+			},
+		},
+	}
+	if isOutputMessage {
+		bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+	}
+	return bifrostMsg
 }
 
 // convertSingleBedrockMessageToBifrostMessages converts a single Bedrock message to Bifrost messages
-func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var outputMessages []schemas.ResponsesMessage
 	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
+
+	// Check if we have a structured output tool
+	var structuredOutputToolName string
+	if ctx != nil && *ctx != nil {
+		if toolName, ok := (*ctx).Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
+			structuredOutputToolName = toolName
+		}
+	}
 
 	for _, block := range msg.Content {
 		if block.Text != nil {
 			// Text content
-			var role schemas.ResponsesMessageRoleType
-			switch msg.Role {
-			case BedrockMessageRoleUser:
-				role = schemas.ResponsesInputMessageRoleUser
-			case BedrockMessageRoleAssistant:
-				role = schemas.ResponsesInputMessageRoleAssistant
-			default:
-				role = schemas.ResponsesInputMessageRoleUser
-			}
+			role := convertBedrockRoleToBifrostRole(msg.Role)
 
 			// For assistant messages (previous model outputs), use output_text type
 			// For user/system messages, use input_text type
@@ -2450,18 +2654,7 @@ func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputM
 				textBlockType = schemas.ResponsesOutputMessageContentTypeText
 			}
 
-			bifrostMsg := schemas.ResponsesMessage{
-				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Role: &role,
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: textBlockType,
-							Text: block.Text,
-						},
-					},
-				},
-			}
+			bifrostMsg := createTextMessage(block.Text, role, textBlockType, isOutputMessage)
 			if isOutputMessage {
 				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
 			}
@@ -2472,7 +2665,7 @@ func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputM
 			if block.ReasoningContent.ReasoningText != nil {
 				reasoningContentBlocks = append(reasoningContentBlocks, schemas.ResponsesMessageContentBlock{
 					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text:      &block.ReasoningContent.ReasoningText.Text,
+					Text:      block.ReasoningContent.ReasoningText.Text,
 					Signature: block.ReasoningContent.ReasoningText.Signature,
 				})
 			}
@@ -2483,21 +2676,94 @@ func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputM
 			toolUseID := block.ToolUse.ToolUseID
 			toolUseName := block.ToolUse.Name
 
-			toolMsg := schemas.ResponsesMessage{
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: schemas.Ptr("completed"),
-				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					CallID:    &toolUseID,
-					Name:      &toolUseName,
-					Arguments: schemas.Ptr(schemas.JsonifyInput(block.ToolUse.Input)),
+			// Check if this is a structured output tool - if so, convert to text content
+			if structuredOutputToolName != "" && toolUseName == structuredOutputToolName {
+				// This is a structured output tool - convert to text message
+				role := convertBedrockRoleToBifrostRole(msg.Role)
+
+				// Marshal the tool input to JSON string
+				var contentStr string
+				if block.ToolUse.Input != nil {
+					contentStr = schemas.JsonifyInput(block.ToolUse.Input)
+				} else {
+					contentStr = "{}"
+				}
+
+				bifrostMsg := createTextMessage(&contentStr, role, schemas.ResponsesOutputMessageContentTypeText, isOutputMessage)
+				if isOutputMessage {
+					bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+				}
+				outputMessages = append(outputMessages, bifrostMsg)
+			} else {
+				// Normal tool call message
+				toolMsg := schemas.ResponsesMessage{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &toolUseID,
+						Name:      &toolUseName,
+						Arguments: schemas.Ptr(schemas.JsonifyInput(block.ToolUse.Input)),
+					},
+				}
+				if isOutputMessage {
+					toolMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+					role := schemas.ResponsesInputMessageRoleAssistant
+					toolMsg.Role = &role
+				}
+				outputMessages = append(outputMessages, toolMsg)
+			}
+
+		} else if block.Document != nil {
+			// Document content
+			role := convertBedrockRoleToBifrostRole(msg.Role)
+
+			// Convert document to file block
+			fileBlock := schemas.ResponsesMessageContentBlock{
+				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+			}
+
+			// Set filename from document name
+			if block.Document.Name != "" {
+				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
+			}
+
+			// Set file type based on format
+			if block.Document.Format != "" {
+				var fileType string
+				switch block.Document.Format {
+				case "pdf":
+					fileType = "application/pdf"
+				case "txt", "md", "html", "csv":
+					fileType = "text/plain"
+				default:
+					fileType = "application/pdf" // Default to PDF
+				}
+				fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
+			}
+
+			// Convert document source data
+			if block.Document.Source != nil {
+				if block.Document.Source.Text != nil {
+					// Plain text content
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
+				} else if block.Document.Source.Bytes != nil {
+					// Base64 encoded bytes (PDF)
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Bytes
+				}
+			}
+
+			bifrostMsg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role: &role,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{fileBlock},
 				},
 			}
 			if isOutputMessage {
-				toolMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
-				role := schemas.ResponsesInputMessageRoleAssistant
-				toolMsg.Role = &role
+				bifrostMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
 			}
-			outputMessages = append(outputMessages, toolMsg)
+			outputMessages = append(outputMessages, bifrostMsg)
 
 		} else if block.ToolResult != nil {
 			// Tool result content - typically not in assistant output but handled for completeness
@@ -2548,6 +2814,16 @@ func convertSingleBedrockMessageToBifrostMessages(msg *BedrockMessage, isOutputM
 				}
 			}
 			outputMessages = append(outputMessages, resultMsg)
+		} else if block.CachePoint != nil {
+			// add cache control to last content block of last message
+			if len(outputMessages) > 0 {
+				lastMessage := &outputMessages[len(outputMessages)-1]
+				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
+					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				}
+			}
 		}
 	}
 
@@ -2580,7 +2856,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 				reasoningBlock := BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
-							Text:      *block.Text,
+							Text:      block.Text,
 							Signature: block.Signature,
 						},
 					},
@@ -2594,7 +2870,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 				reasoningBlock := BedrockContentBlock{
 					ReasoningContent: &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
-							Text: reasoningContent.Text,
+							Text: &reasoningContent.Text,
 						},
 					},
 				}
@@ -2607,7 +2883,7 @@ func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage) []
 			reasoningBlock := BedrockContentBlock{
 				ReasoningContent: &BedrockReasoningContent{
 					ReasoningText: &BedrockReasoningContentText{
-						Text: encryptedText,
+						Text: &encryptedText,
 					},
 				},
 			}
@@ -2630,7 +2906,6 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 		for _, block := range content.ContentBlocks {
 
 			bedrockBlock := BedrockContentBlock{}
-
 			switch block.Type {
 			case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
 				bedrockBlock.Text = block.Text
@@ -2646,10 +2921,67 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 				if block.Text != nil {
 					bedrockBlock.ReasoningContent = &BedrockReasoningContent{
 						ReasoningText: &BedrockReasoningContentText{
-							Text:      *block.Text,
+							Text:      block.Text,
 							Signature: block.Signature,
 						},
 					}
+				}
+			case schemas.ResponsesInputMessageContentBlockTypeFile:
+				if block.ResponsesInputMessageContentBlockFile != nil {
+					doc := &BedrockDocumentSource{
+						Name:   "document", // Default
+						Format: "pdf",      // Default
+						Source: &BedrockDocumentSourceData{},
+					}
+
+					// Set filename (normalized for Bedrock)
+					if block.ResponsesInputMessageContentBlockFile.Filename != nil {
+						doc.Name = normalizeBedrockFilename(*block.ResponsesInputMessageContentBlockFile.Filename)
+					}
+
+					// Determine format: text or PDF based on FileType
+					isTextFile := false
+					if block.ResponsesInputMessageContentBlockFile.FileType != nil {
+						fileType := *block.ResponsesInputMessageContentBlockFile.FileType
+						// Check if it's a text type
+						if strings.HasPrefix(fileType, "text/") ||
+							fileType == "txt" || fileType == "md" ||
+							fileType == "html" {
+							doc.Format = "txt"
+							isTextFile = true
+						} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
+							doc.Format = "pdf"
+						}
+					}
+
+					// Handle file data
+					if block.ResponsesInputMessageContentBlockFile.FileData != nil {
+						fileData := *block.ResponsesInputMessageContentBlockFile.FileData
+
+						// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
+						if strings.HasPrefix(fileData, "data:") {
+							urlInfo := schemas.ExtractURLTypeInfo(fileData)
+							if urlInfo.DataURLWithoutPrefix != nil {
+								// PDF or other binary - keep as base64
+								doc.Source.Bytes = urlInfo.DataURLWithoutPrefix
+								bedrockBlock.Document = doc
+								break
+							}
+						}
+
+						// Not a data URL - use as-is
+						if isTextFile {
+							// bytes is necessary for bedrock
+							// base64 string of the text
+							doc.Source.Text = &fileData
+							encoded := base64.StdEncoding.EncodeToString([]byte(fileData))
+							doc.Source.Bytes = &encoded
+						} else {
+							doc.Source.Bytes = &fileData
+						}
+					}
+
+					bedrockBlock.Document = doc
 				}
 			default:
 				// Don't add anything for unknown types
@@ -2657,6 +2989,14 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(content s
 			}
 
 			blocks = append(blocks, bedrockBlock)
+
+			if block.CacheControl != nil {
+				blocks = append(blocks, BedrockContentBlock{
+					CachePoint: &BedrockCachePoint{
+						Type: BedrockCachePointTypeDefault,
+					},
+				})
+			}
 		}
 	}
 

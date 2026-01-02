@@ -1,0 +1,150 @@
+# Transcription API schemas
+
+TranscriptionRequest:
+  type: object
+  required:
+    - model
+    - file
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    file:
+      type: string
+      format: binary
+      description: Audio file to transcribe
+    fallbacks:
+      type: array
+      items:
+        type: string
+    stream:
+      type: boolean
+    language:
+      type: string
+    prompt:
+      type: string
+    response_format:
+      type: string
+      enum: [json, text, srt, verbose_json, vtt]
+    file_format:
+      type: string
+
+TranscriptionResponse:
+  type: object
+  properties:
+    duration:
+      type: number
+    language:
+      type: string
+    logprobs:
+      type: array
+      items:
+        $ref: '#/TranscriptionLogProb'
+    segments:
+      type: array
+      items:
+        $ref: '#/TranscriptionSegment'
+    task:
+      type: string
+    text:
+      type: string
+    usage:
+      $ref: '#/TranscriptionUsage'
+    words:
+      type: array
+      items:
+        $ref: '#/TranscriptionWord'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+TranscriptionLogProb:
+  type: object
+  properties:
+    token:
+      type: string
+    logprob:
+      type: number
+    bytes:
+      type: array
+      items:
+        type: integer
+
+TranscriptionSegment:
+  type: object
+  properties:
+    id:
+      type: integer
+    seek:
+      type: integer
+    start:
+      type: number
+    end:
+      type: number
+    text:
+      type: string
+    tokens:
+      type: array
+      items:
+        type: integer
+    temperature:
+      type: number
+    avg_logprob:
+      type: number
+    compression_ratio:
+      type: number
+    no_speech_prob:
+      type: number
+
+TranscriptionWord:
+  type: object
+  properties:
+    word:
+      type: string
+    start:
+      type: number
+    end:
+      type: number
+
+TranscriptionUsage:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [tokens, duration]
+    input_tokens:
+      type: integer
+    input_token_details:
+      $ref: '#/TranscriptionUsageInputTokenDetails'
+    output_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+    seconds:
+      type: integer
+
+TranscriptionUsageInputTokenDetails:
+  type: object
+  properties:
+    text_tokens:
+      type: integer
+    audio_tokens:
+      type: integer
+
+TranscriptionStreamResponse:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [transcript.text.delta, transcript.text.done]
+    delta:
+      type: string
+    logprobs:
+      type: array
+      items:
+        $ref: '#/TranscriptionLogProb'
+    text:
+      type: string
+    usage:
+      $ref: '#/TranscriptionUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

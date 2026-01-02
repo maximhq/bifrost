@@ -804,7 +804,7 @@ func makeVirtualKeyWithProviderConfigs(id, name, value string, providerConfigs [
 func makeVirtualKeyProviderConfig(provider string, weight float64, allowedModels []string, keys []tables.TableKey) tables.TableVirtualKeyProviderConfig {
 	return tables.TableVirtualKeyProviderConfig{
 		Provider:      provider,
-		Weight:        weight,
+		Weight:        &weight,
 		AllowedModels: allowedModels,
 		Keys:          keys,
 	}
@@ -812,12 +812,13 @@ func makeVirtualKeyProviderConfig(provider string, weight float64, allowedModels
 
 // makeTableKey creates a TableKey for use in virtual key provider configs
 func makeTableKey(keyID, name, value, provider string) tables.TableKey {
+	defaultWeight := 1.0
 	return tables.TableKey{
 		KeyID:    keyID,
 		Name:     name,
 		Value:    value,
 		Provider: provider,
-		Weight:   1.0,
+		Weight:   &defaultWeight,
 	}
 }
 
@@ -6030,7 +6031,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
@@ -6063,7 +6064,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "anthropic", // Different provider
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"claude-3"},
 				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
@@ -6092,7 +6093,7 @@ func TestGenerateVirtualKeyHash_WithProviderConfigs(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        2.0, // Different weight
+				Weight:        ptrFloat64(2.0), // Different weight
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 				BudgetID:      &budgetID,
 				RateLimitID:   &rateLimitID,
@@ -6593,7 +6594,7 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 			},
 		},
@@ -6625,7 +6626,7 @@ func TestVirtualKeyHashComparison_RoundTrip(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 			},
 		},
@@ -7412,7 +7413,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        1.5,
+					Weight:        ptrFloat64(1.5),
 					AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 				},
 			},
@@ -7450,7 +7451,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.5,
+				Weight:        ptrFloat64(1.5),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 			},
 		},
@@ -7505,7 +7506,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        2.0,
+					Weight:        ptrFloat64(2.0),
 					AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 				},
 			},
@@ -7536,8 +7537,8 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 		if pc.Provider != "openai" {
 			t.Errorf("Expected provider 'openai', got '%s'", pc.Provider)
 		}
-		if pc.Weight != 2.0 {
-			t.Errorf("Expected weight 2.0, got %f", pc.Weight)
+		if pc.Weight == nil || *pc.Weight != 2.0 {
+			t.Errorf("Expected weight 2.0, got %v", pc.Weight)
 		}
 	}
 }
@@ -7618,7 +7619,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        2.0,
+					Weight:        ptrFloat64(2.0),
 					AllowedModels: []string{"gpt-4"},
 					Keys:          []tables.TableKey{dbKey}, // Reference existing DB key
 				},
@@ -7676,7 +7677,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-1"},
 				},
@@ -7693,7 +7694,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-2"}, // Different key ID
 				},
@@ -7725,7 +7726,7 @@ func TestSQLite_VirtualKey_ProviderConfigKeyIDs(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-1"}, // Same as vk1
 				},
@@ -7766,7 +7767,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        2.0,
+					Weight:        ptrFloat64(2.0),
 					AllowedModels: []string{"gpt-4"},
 				},
 			},
@@ -7803,8 +7804,8 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 		if providerConfigs[0].Provider != "openai" {
 			t.Errorf("Expected provider 'openai', got '%s'", providerConfigs[0].Provider)
 		}
-		if providerConfigs[0].Weight != 2.0 {
-			t.Errorf("Expected weight 2.0, got %f", providerConfigs[0].Weight)
+		if providerConfigs[0].Weight == nil || *providerConfigs[0].Weight != 2.0 {
+			t.Errorf("Expected weight 2.0, got %v", providerConfigs[0].Weight)
 		}
 	}
 }
@@ -7837,7 +7838,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        1.0,
+					Weight:        ptrFloat64(1.0),
 					AllowedModels: []string{"gpt-4"},
 					// Keys left empty - means all keys for the provider are allowed
 				},
@@ -7889,7 +7890,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-1", Name: "key-1"},
 				},
@@ -7907,7 +7908,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-2", Name: "key-2"}, // Different key
 				},
@@ -7939,7 +7940,7 @@ func TestSQLite_VKProviderConfig_HashChangesOnKeyIDChange(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider: "openai",
-				Weight:   1.0,
+				Weight:   ptrFloat64(1.0),
 				Keys: []tables.TableKey{
 					{KeyID: "key-id-1", Name: "key-1"},
 					{KeyID: "key-id-2", Name: "key-2"}, // Additional key
@@ -7972,7 +7973,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 			},
 		},
@@ -7988,7 +7989,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        2.5, // Different weight
+				Weight:        ptrFloat64(2.5), // Different weight
 				AllowedModels: []string{"gpt-4"},
 			},
 		},
@@ -8004,7 +8005,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"}, // Different models
 			},
 		},
@@ -8047,7 +8048,7 @@ func TestSQLite_VKProviderConfig_WeightAndAllowedModels(t *testing.T) {
 		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 			{
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 			},
 		},
@@ -8137,7 +8138,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 				ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 					{
 						Provider:      "openai",
-						Weight:        1.0,
+						Weight:        ptrFloat64(1.0),
 						AllowedModels: []string{"gpt-4"},
 					},
 				},
@@ -8874,7 +8875,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_PreservedOnFileChange(t *test
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        1.0,
+					Weight:        ptrFloat64(1.0),
 					AllowedModels: []string{"gpt-4"},
 				},
 			},
@@ -8907,7 +8908,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_PreservedOnFileChange(t *test
 	anthropicConfig := tables.TableVirtualKeyProviderConfig{
 		VirtualKeyID:  "vk-1",
 		Provider:      "anthropic",
-		Weight:        1.0,
+		Weight:        ptrFloat64(1.0),
 		AllowedModels: []string{"claude-3-opus"},
 	}
 	err = config1.ConfigStore.CreateVirtualKeyProviderConfig(ctx, &anthropicConfig)
@@ -8938,7 +8939,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_PreservedOnFileChange(t *test
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        2.0, // Changed from 1.0 to 2.0 - triggers hash mismatch
+					Weight:        ptrFloat64(2.0), // Changed from 1.0 to 2.0 - triggers hash mismatch
 					AllowedModels: []string{"gpt-4"},
 				},
 			},
@@ -8967,8 +8968,8 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_PreservedOnFileChange(t *test
 	for _, pc := range providerConfigs3 {
 		if pc.Provider == "openai" {
 			hasOpenAI = true
-			if pc.Weight != 2.0 {
-				t.Errorf("Expected openai weight to be updated to 2.0, got %f", pc.Weight)
+			if pc.Weight == nil || *pc.Weight != 2.0 {
+				t.Errorf("Expected openai weight to be updated to 2.0, got %v", pc.Weight)
 			}
 		}
 		if pc.Provider == "anthropic" {
@@ -9444,7 +9445,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
 				{
 					Provider:      "openai",
-					Weight:        1.5,
+					Weight:        ptrFloat64(1.5),
 					AllowedModels: []string{"gpt-4"},
 				},
 			},
@@ -9487,10 +9488,10 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 		if providerConfigs[0].Provider != "openai" {
 			t.Errorf("Expected provider 'openai', got '%s'", providerConfigs[0].Provider)
 		}
-		if providerConfigs[0].Weight != 1.5 {
-			t.Errorf("Expected weight 1.5, got %f", providerConfigs[0].Weight)
+		if providerConfigs[0].Weight == nil || *providerConfigs[0].Weight != 1.5 {
+			t.Errorf("Expected weight 1.5, got %v", providerConfigs[0].Weight)
 		}
-		t.Logf("✓ Provider config: provider=%s, weight=%f", providerConfigs[0].Provider, providerConfigs[0].Weight)
+		t.Logf("✓ Provider config: provider=%s, weight=%v", providerConfigs[0].Provider, providerConfigs[0].Weight)
 	}
 
 	// Verify MCP configs
@@ -9586,7 +9587,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				BudgetID:      &budgetID1,
 			},
@@ -9594,7 +9595,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            2,
 				VirtualKeyID:  "vk-1",
 				Provider:      "anthropic",
-				Weight:        2.0,
+				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
 				BudgetID:      &budgetID2,
 			},
@@ -9602,7 +9603,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            3,
 				VirtualKeyID:  "vk-1",
 				Provider:      "cohere",
-				Weight:        1.5,
+				Weight:        ptrFloat64(1.5),
 				AllowedModels: []string{"command"},
 			},
 		},
@@ -9620,14 +9621,14 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            3,
 				VirtualKeyID:  "vk-1",
 				Provider:      "cohere",
-				Weight:        1.5,
+				Weight:        ptrFloat64(1.5),
 				AllowedModels: []string{"command"},
 			},
 			{
 				ID:            2,
 				VirtualKeyID:  "vk-1",
 				Provider:      "anthropic",
-				Weight:        2.0,
+				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
 				BudgetID:      &budgetID2,
 			},
@@ -9635,7 +9636,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				BudgetID:      &budgetID1,
 			},
@@ -9654,7 +9655,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            2,
 				VirtualKeyID:  "vk-1",
 				Provider:      "anthropic",
-				Weight:        2.0,
+				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3"},
 				BudgetID:      &budgetID2,
 			},
@@ -9662,7 +9663,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				BudgetID:      &budgetID1,
 			},
@@ -9670,7 +9671,7 @@ func TestGenerateVirtualKeyHash_StableProviderConfigOrdering(t *testing.T) {
 				ID:            3,
 				VirtualKeyID:  "vk-1",
 				Provider:      "cohere",
-				Weight:        1.5,
+				Weight:        ptrFloat64(1.5),
 				AllowedModels: []string{"command"},
 			},
 		},
@@ -9716,7 +9717,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4o"},
 			},
 		},
@@ -9734,7 +9735,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-4"},
 			},
 		},
@@ -9752,7 +9753,7 @@ func TestGenerateVirtualKeyHash_StableAllowedModelsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-3.5-turbo", "gpt-4o", "gpt-4", "gpt-4-turbo"},
 			},
 		},
@@ -9798,7 +9799,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				Keys: []tables.TableKey{
 					{KeyID: "key-1", Name: "key-1"},
@@ -9821,7 +9822,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				Keys: []tables.TableKey{
 					{KeyID: "key-3", Name: "key-3"},
@@ -9844,7 +9845,7 @@ func TestGenerateVirtualKeyHash_StableKeyIDsOrdering(t *testing.T) {
 				ID:            1,
 				VirtualKeyID:  "vk-1",
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4"},
 				Keys: []tables.TableKey{
 					{KeyID: "key-2", Name: "key-2"},
@@ -10091,7 +10092,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 			{
 				ID:            1,
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-4", "gpt-3.5-turbo"},
 				Keys: []tables.TableKey{
 					{KeyID: "key-1"},
@@ -10101,7 +10102,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 			{
 				ID:            2,
 				Provider:      "anthropic",
-				Weight:        2.0,
+				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-3", "claude-2"},
 				Keys: []tables.TableKey{
 					{KeyID: "key-3"},
@@ -10134,7 +10135,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 			{
 				ID:            2,
 				Provider:      "anthropic",
-				Weight:        2.0,
+				Weight:        ptrFloat64(2.0),
 				AllowedModels: []string{"claude-2", "claude-3"}, // reversed
 				Keys: []tables.TableKey{
 					{KeyID: "key-3"},
@@ -10143,7 +10144,7 @@ func TestGenerateVirtualKeyHash_StableCombinedOrdering(t *testing.T) {
 			{
 				ID:            1,
 				Provider:      "openai",
-				Weight:        1.0,
+				Weight:        ptrFloat64(1.0),
 				AllowedModels: []string{"gpt-3.5-turbo", "gpt-4"}, // reversed
 				Keys: []tables.TableKey{
 					{KeyID: "key-2"}, // reversed
@@ -12025,7 +12026,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Provider:   "openai",
 			Value:      "sk-123",
 			Models:     models,
-			Weight:     1.5,
+			Weight:     ptrFloat64(1.5),
 		}
 
 		// Generate hash using schemas.Key (what the hash function expects)
@@ -12033,7 +12034,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Name:   keyToSave.Name,
 			Value:  keyToSave.Value,
 			Models: keyToSave.Models,
-			Weight: keyToSave.Weight,
+			Weight: getWeight(keyToSave.Weight),
 		}
 		hashBeforeSave, _ := configstore.GenerateKeyHash(schemaKey)
 
@@ -12046,7 +12047,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			Name:   keyFromDB.Name,
 			Value:  keyFromDB.Value,
 			Models: keyFromDB.Models,
-			Weight: keyFromDB.Weight,
+			Weight: getWeight(keyFromDB.Weight),
 		}
 		hashAfterLoad, _ := configstore.GenerateKeyHash(schemaKeyFromDB)
 
@@ -12075,14 +12076,14 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 			ProviderID:     provider.ID,
 			Provider:       "azure",
 			Value:          "azure-key-value",
-			Weight:         1.0,
+			Weight:         ptrFloat64(1.0),
 			AzureKeyConfig: azureConfig,
 		}
 
 		schemaKey := schemas.Key{
 			Name:           keyToSave.Name,
 			Value:          keyToSave.Value,
-			Weight:         keyToSave.Weight,
+			Weight:         getWeight(keyToSave.Weight),
 			AzureKeyConfig: keyToSave.AzureKeyConfig,
 		}
 		hashBeforeSave, _ := configstore.GenerateKeyHash(schemaKey)
@@ -12095,7 +12096,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 		schemaKeyFromDB := schemas.Key{
 			Name:           keyFromDB.Name,
 			Value:          keyFromDB.Value,
-			Weight:         keyFromDB.Weight,
+			Weight:         getWeight(keyFromDB.Weight),
 			AzureKeyConfig: keyFromDB.AzureKeyConfig,
 		}
 		hashAfterLoad, _ := configstore.GenerateKeyHash(schemaKeyFromDB)
@@ -12258,4 +12259,287 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
+}
+
+// =============================================================================
+// Weight=0 Handling Tests
+// =============================================================================
+// These tests verify that a weight of 0 is correctly preserved (not defaulted to 1.0)
+// This is critical because weight=0 should disable a key from weighted random selection.
+
+// TestKeyWeight_ZeroPreserved verifies that a key with weight: 0 in config.json
+// is preserved as 0, not incorrectly defaulted to 1.0.
+func TestKeyWeight_ZeroPreserved(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	keyID := uuid.NewString()
+	providers := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: keyID, Name: "zero-weight-key", Value: "sk-test123", Weight: 0}, // Explicit zero
+			},
+		},
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	defer config.ConfigStore.Close(context.Background())
+
+	openaiConfig, exists := config.Providers[schemas.OpenAI]
+	if !exists {
+		t.Fatal("Expected openai provider to exist")
+	}
+
+	if len(openaiConfig.Keys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(openaiConfig.Keys))
+	}
+
+	if openaiConfig.Keys[0].Weight != 0 {
+		t.Errorf("Expected weight 0 (explicitly set), got %f", openaiConfig.Keys[0].Weight)
+	}
+}
+
+// TestKeyWeight_DefaultToOneWhenNotSet verifies that a key without an explicit weight
+// defaults to 1.0 when not specified (the expected default behavior).
+func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	keyID := uuid.NewString()
+	providers := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: keyID, Name: "default-weight-key", Value: "sk-test123", Weight: 1}, // Explicit 1 (default)
+			},
+		},
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	config, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	defer config.ConfigStore.Close(context.Background())
+
+	openaiConfig, exists := config.Providers[schemas.OpenAI]
+	if !exists {
+		t.Fatal("Expected openai provider to exist")
+	}
+
+	if openaiConfig.Keys[0].Weight != 1.0 {
+		t.Errorf("Expected weight 1.0 (default), got %f", openaiConfig.Keys[0].Weight)
+	}
+}
+
+// TestSQLite_Key_WeightZero_RoundTrip tests that a key with weight=0 survives
+// a database round-trip correctly (not defaulted to 1.0 by GORM).
+func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	keyID := uuid.NewString()
+	providers := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: keyID, Name: "zero-weight-key", Value: "sk-test123", Weight: 0},
+			},
+		},
+	}
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+
+	// First load - creates DB entries
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+
+	if config1.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
+		t.Errorf("First load: Expected weight 0, got %f", config1.Providers[schemas.OpenAI].Keys[0].Weight)
+	}
+	config1.ConfigStore.Close(ctx)
+
+	// Second load - reads from DB
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed: %v", err)
+	}
+	defer config2.ConfigStore.Close(ctx)
+
+	if config2.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
+		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
+			config2.Providers[schemas.OpenAI].Keys[0].Weight)
+	}
+}
+
+// ptrFloat64 is a helper function to create a pointer to a float64 value
+func ptrFloat64(v float64) *float64 {
+	return &v
+}
+
+// TestVKProviderConfig_WeightZeroPreserved verifies that a virtual key provider config
+// with weight=0 is preserved correctly and hash generation works.
+func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	// Create providers
+	providers := map[string]configstore.ProviderConfig{
+		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test123", "https://api.openai.com"),
+	}
+
+	// Create virtual key with provider config that has weight=0
+	vk := tables.TableVirtualKey{
+		ID:       "vk-zero-weight",
+		Name:     "test-vk",
+		Value:    "vk_test123",
+		IsActive: true,
+		ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+			{
+				Provider: "openai",
+				Weight:   ptrFloat64(0.0), // Explicit zero weight
+			},
+		},
+	}
+
+	configData := makeConfigDataWithVirtualKeysAndDir(providers, []tables.TableVirtualKey{vk}, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	defer config.ConfigStore.Close(ctx)
+
+	// Verify virtual key exists and has provider config with weight=0
+	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
+		t.Fatal("Expected virtual key in governance config")
+	}
+
+	vkFromConfig := config.GovernanceConfig.VirtualKeys[0]
+	if len(vkFromConfig.ProviderConfigs) == 0 {
+		t.Fatal("Expected provider config in virtual key")
+	}
+
+	pc := vkFromConfig.ProviderConfigs[0]
+	if pc.Weight == nil {
+		t.Fatal("Expected Weight to be set (not nil)")
+	}
+	if *pc.Weight != 0.0 {
+		t.Errorf("Expected provider config weight 0, got %f", *pc.Weight)
+	}
+}
+
+// TestSQLite_VKProviderConfig_WeightZero_RoundTrip tests that a virtual key provider config
+// with weight=0 survives a database round-trip correctly.
+func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	keyID := uuid.NewString()
+	providers := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: keyID, Name: "openai-key", Value: "sk-test123", Weight: 1},
+			},
+		},
+	}
+
+	vks := []tables.TableVirtualKey{
+		{
+			ID:       "vk-zero-weight",
+			Name:     "test-vk",
+			Value:    "vk_abc123",
+			IsActive: true,
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{
+				{
+					Provider:      "openai",
+					Weight:        ptrFloat64(0.0), // Explicit zero weight
+					AllowedModels: []string{"gpt-4"},
+				},
+			},
+		},
+	}
+
+	configData := makeConfigDataWithVirtualKeysAndDir(providers, vks, tempDir)
+	createConfigFile(t, tempDir, configData)
+
+	ctx := context.Background()
+
+	// First load
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+
+	vk1 := config1.GovernanceConfig.VirtualKeys[0]
+	if len(vk1.ProviderConfigs) == 0 {
+		t.Fatal("First load: Expected provider configs")
+	}
+	if vk1.ProviderConfigs[0].Weight == nil {
+		t.Fatal("First load: Expected Weight to be set")
+	}
+	if *vk1.ProviderConfigs[0].Weight != 0 {
+		t.Errorf("First load: Expected provider config weight 0, got %f", *vk1.ProviderConfigs[0].Weight)
+	}
+	config1.ConfigStore.Close(ctx)
+
+	// Second load from DB
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed: %v", err)
+	}
+	defer config2.ConfigStore.Close(ctx)
+
+	vk2 := config2.GovernanceConfig.VirtualKeys[0]
+	if len(vk2.ProviderConfigs) == 0 {
+		t.Fatal("Second load: Expected provider configs")
+	}
+	if vk2.ProviderConfigs[0].Weight == nil {
+		t.Fatal("Second load: Expected Weight to be set (not nil) - it was incorrectly defaulted")
+	}
+	if *vk2.ProviderConfigs[0].Weight != 0 {
+		t.Errorf("Second load (from DB): Expected provider config weight 0, got %f - incorrectly defaulted to 1.0",
+			*vk2.ProviderConfigs[0].Weight)
+	}
+}
+
+// TestKeyWeight_HashDiffersBetweenZeroAndOne verifies that key hashes are different
+// for weight=0 vs weight=1, ensuring the change is detected during sync.
+func TestKeyWeight_HashDiffersBetweenZeroAndOne(t *testing.T) {
+	keyWithZeroWeight := schemas.Key{
+		ID:     "test-key",
+		Name:   "test",
+		Value:  "sk-123",
+		Weight: 0,
+	}
+	keyWithOneWeight := schemas.Key{
+		ID:     "test-key",
+		Name:   "test",
+		Value:  "sk-123",
+		Weight: 1,
+	}
+
+	hash0, err := configstore.GenerateKeyHash(keyWithZeroWeight)
+	if err != nil {
+		t.Fatalf("Failed to generate hash for weight=0: %v", err)
+	}
+
+	hash1, err := configstore.GenerateKeyHash(keyWithOneWeight)
+	if err != nil {
+		t.Fatalf("Failed to generate hash for weight=1: %v", err)
+	}
+
+	if hash0 == hash1 {
+		t.Error("Expected different hashes for weight=0 vs weight=1, but they are the same")
+	}
 }

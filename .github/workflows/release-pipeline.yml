@@ -81,7 +81,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.3"
+          go-version: "1.25.5"
       - name: Configure Git
         run: |
           git config user.name "GitHub Actions Bot"
@@ -115,6 +115,9 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
@@ -137,7 +140,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.3"
+          go-version: "1.25.5"
 
       - name: Configure Git
         run: |
@@ -187,6 +190,7 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -213,7 +217,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.3"
+          go-version: "1.25.5"
 
       - name: Configure Git
         run: |
@@ -263,6 +267,7 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   bifrost-http-release:
@@ -292,7 +297,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.3"
+          go-version: "1.25.5"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -351,6 +356,7 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
         run: ./.github/workflows/scripts/release-bifrost-http.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
   # Docker build amd64

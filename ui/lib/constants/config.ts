@@ -37,6 +37,7 @@ export const ModelPlaceholders = {
 	cohere: "e.g. command-r, command-r-plus",
 	gemini: "e.g. gemini-1.5-pro, gemini-1.5-flash",
 	groq: "e.g. llama3-70b-8192, mixtral-8x7b-32768",
+	huggingface: "e.g. sambanova/meta-llama/Llama-3.1-8B-Instruct, nebius/Qwen/Qwen3-Embedding-8B",
 	mistral: "e.g. mistral-7b-instruct, mixtral-8x7b",
 	openrouter: "e.g. openai/gpt-4, anthropic/claude-3-haiku",
 	sgl: "e.g. sgl-2, sgl-vision",
@@ -46,6 +47,7 @@ export const ModelPlaceholders = {
 	ollama: "e.g. llama3.1, llama2",
 	openai: "e.g. gpt-4, gpt-4o, gpt-4o-mini, gpt-3.5-turbo",
 	vertex: "e.g. gemini-1.5-pro, text-bison, chat-bison",
+	nebius: "e.g. openai/gpt-oss-120b, google/gemma-2-9b-it-fast, Qwen/Qwen2.5-VL-72B-Instruct"
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -56,6 +58,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	cohere: true,
 	gemini: true,
 	groq: true,
+	huggingface: true,
 	mistral: true,
 	openrouter: true,
 	sgl: false,
@@ -65,6 +68,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	openai: true,
 	vertex: true,
 	perplexity: true,
+	nebius: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -101,8 +105,9 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"speech_stream",
 		"transcription",
 		"transcription_stream",
+		"count_tokens",
 	],
-	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream"],
+	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
 	gemini: [
 		"list_models",
 		"chat_completion",
@@ -114,8 +119,9 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"transcription_stream",
 		"speech",
 		"speech_stream",
+		"count_tokens",
 	],
-	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding"],
+	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
 	bedrock: ["list_models", "text_completion", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding"],
 };
 

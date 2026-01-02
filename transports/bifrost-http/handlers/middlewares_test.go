@@ -3,10 +3,22 @@ package handlers
 import (
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// mockLogger is a mock implementation of schemas.Logger for testing
+type mockLogger struct{}
+
+func (m *mockLogger) Debug(format string, args ...any)              {}
+func (m *mockLogger) Info(format string, args ...any)               {}
+func (m *mockLogger) Warn(format string, args ...any)               {}
+func (m *mockLogger) Error(format string, args ...any)              {}
+func (m *mockLogger) Fatal(format string, args ...any)              {}
+func (m *mockLogger) SetLevel(level schemas.LogLevel)               {}
+func (m *mockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
 func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
@@ -15,6 +27,8 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			AllowedOrigins: []string{},
 		},
 	}
+
+	SetLogger(&mockLogger{})
 
 	localhostOrigins := []string{
 		"http://localhost:3000",
@@ -42,10 +56,10 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")) != origin {
 				t.Errorf("Expected Access-Control-Allow-Origin to be %s, got %s", origin, string(ctx.Response.Header.Peek("Access-Control-Allow-Origin")))
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {

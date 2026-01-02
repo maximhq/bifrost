@@ -13,32 +13,18 @@ fi
 
 PLUGIN_NAME="$1"
 
-# Get core version from parameter or latest tag
+# Get core version from parameter or version file
 if [ -n "${2:-}" ]; then
   CORE_VERSION="$2"
 else
-  # Get latest core version from git tags
-  LATEST_CORE_TAG=$(git tag -l "core/v*" | sort -V | tail -1)
-  if [ -z "$LATEST_CORE_TAG" ]; then
-    echo "❌ No core tags found, using version from file"
-    CORE_VERSION="v$(tr -d '\n\r' < core/version)"
-  else
-    CORE_VERSION=${LATEST_CORE_TAG#core/}
-  fi
+  CORE_VERSION="v$(tr -d '\n\r' < core/version)"
 fi
 
-# Get framework version from parameter or latest tag
+# Get framework version from parameter or version file
 if [ -n "${3:-}" ]; then
   FRAMEWORK_VERSION="$3"
 else
-  # Get latest framework version from git tags
-  LATEST_FRAMEWORK_TAG=$(git tag -l "framework/v*" | sort -V | tail -1)
-  if [ -z "$LATEST_FRAMEWORK_TAG" ]; then
-    echo "❌ No framework tags found, using version from file"
-    FRAMEWORK_VERSION="v$(tr -d '\n\r' < framework/version)"
-  else
-    FRAMEWORK_VERSION=${LATEST_FRAMEWORK_TAG#framework/}
-  fi
+  FRAMEWORK_VERSION="v$(tr -d '\n\r' < framework/version)"
 fi
 
 # Ensure we have the latest version

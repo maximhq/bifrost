@@ -565,7 +565,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 {
   "error": {
     "type": "virtual_key_required",
-    "message": "x-bf-vk header is missing"
+    "message": "virtual key is missing in headers"
   }
 }
 ```
@@ -615,7 +615,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 {
   "error": {
     "type": "budget_exceeded",
-    "message": "Budget check failed: VK budget exceeded: 105.50 > 100.00 dollars"
+    "message": "Budget exceeded: VK budget exceeded: 105.50 > 100.00 dollars"
   }
 }
 ```

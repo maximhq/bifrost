@@ -1,0 +1,153 @@
+# AWS Bedrock - Batch Inference Endpoints
+
+batch-jobs:
+  post:
+    operationId: bedrockCreateBatchJob
+    summary: Create batch inference job (Bedrock format)
+    description: |
+      Creates a batch inference job using AWS Bedrock format.
+    tags:
+      - Bedrock Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+  get:
+    operationId: bedrockListBatchJobs
+    summary: List batch inference jobs (Bedrock format)
+    description: |
+      Lists batch inference jobs using AWS Bedrock format.
+    tags:
+      - Bedrock Integration
+    parameters:
+      - name: maxResults
+        in: query
+        schema:
+          type: integer
+        description: Maximum number of results to return
+      - name: nextToken
+        in: query
+        schema:
+          type: string
+        description: Token for pagination
+      - name: statusEquals
+        in: query
+        schema:
+          type: string
+          enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating, Scheduled]
+        description: Filter by status
+      - name: nameContains
+        in: query
+        schema:
+          type: string
+        description: Filter by job name containing this string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/batch.yaml#/BedrockBatchListResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+
+batch-job-by-id:
+  get:
+    operationId: bedrockRetrieveBatchJob
+    summary: Retrieve batch inference job (Bedrock format)
+    description: |
+      Retrieves a batch inference job using AWS Bedrock format.
+    tags:
+      - Bedrock Integration
+    parameters:
+      - name: jobIdentifier
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Job identifier
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+
+batch-job-cancel:
+  post:
+    operationId: bedrockCancelBatchJob
+    summary: Cancel batch inference job (Bedrock format)
+    description: |
+      Cancels a batch inference job using AWS Bedrock format.
+    tags:
+      - Bedrock Integration
+    parameters:
+      - name: jobIdentifier
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Job identifier to cancel
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/batch.yaml#/BedrockBatchCancelResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'

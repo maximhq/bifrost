@@ -1,0 +1,107 @@
+# LangChain - Cohere-compatible Endpoints
+# Reuses Cohere integration schemas
+
+chat:
+  post:
+    operationId: langchainCohereChat
+    summary: Chat with model (LangChain - Cohere format)
+    description: |
+      Sends a chat request using Cohere-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatStreamEvent'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+
+embed:
+  post:
+    operationId: langchainCohereEmbed
+    summary: Create embeddings (LangChain - Cohere format)
+    description: |
+      Creates embeddings using Cohere-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/embed.yaml#/CohereEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/embed.yaml#/CohereEmbeddingResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+
+tokenize:
+  post:
+    operationId: langchainCohereTokenize
+    summary: Tokenize text (LangChain - Cohere format)
+    description: |
+      Tokenizes text using Cohere-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'

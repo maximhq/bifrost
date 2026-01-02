@@ -271,19 +271,39 @@ For complete monitoring capabilities, see [Built-in Observability](../../feature
 
 ## MCP Tools Integration
 
-Bifrost automatically sends all configured MCP tools to your agents. This means your agents can access filesystem operations, database queries, web search, and more without any additional configuration.
-
 <Note>
-**Important: MCP Tool Execution Behavior**
-
-When using Bifrost as a gateway, MCP tool calls require manual approval and execution for security reasons. Bifrost returns the tool call information but doesn't automatically execute it. You need to handle the approval and execution logic by calling the `v1/mcp/tool/execute` endpoint.
-
-**Gateway-on-Gateway Limitations**: If your agent/editor (like Zed) has its own gateway that routes through Bifrost, the agent's gateway may not handle MCP tool approvals that come from Bifrost. In such cases, we recommend configuring MCP tools directly in your agent/editor instead of relying on Bifrost's MCP integration.
-
-We intentionally avoid supporting "gateway-on-gateway" MCP setups because handling tool approvals across multiple gateways introduces unnecessary complexity and falls outside the scope of what an LLM gateway should manage. While we're working on an agentic mode that will allow Bifrost to automatically execute certain tool calls, the current design prioritizes security and clear responsibility boundaries.
+This feature is only available on `v1.4.0-prerelease1` and above. Please check the [changelogs](../../changelogs) for more details.
 </Note>
 
-For setup and available tools, see [MCP Integration](../../features/mcp).
+Bifrost exposes all configured MCP tools through a dedicated MCP server endpoint at `/mcp`. This allows external MCP clients (Claude Code, Cursor, and other MCP-compatible applications) to connect directly and access your tools.
+
+### Connect Claude Code to Bifrost MCP
+
+Add Bifrost as an MCP server to Claude Code:
+
+```bash
+claude mcp add --transport http bifrost http://localhost:8080/mcp
+```
+
+This gives Claude Code access to all configured MCP tools in Bifrost without any additional setup. Once connected, Claude Code can use filesystem operations, database queries, web search, and any other MCP tools you've connected to Bifrost.
+
+### Supported Agents
+
+You can connect any MCP-compatible client to Bifrost's MCP server:
+
+- **Claude Code** - Add via `claude mcp add` command
+- **Cursor IDE** - Configure in cursor settings
+- **Custom Applications** - Any app implementing the MCP protocol
+
+### Tool Access Control
+
+Control which tools each client can access using Virtual Keys:
+
+- Create a Virtual Key for each client/environment
+- Configure which MCP servers and tools the key can access
+- Bifrost automatically enforces these permissions
+
+For complete setup instructions and tool filtering options, see [MCP Gateway URL](../../features/mcp/gateway-url).
 
 ## Next Steps
 

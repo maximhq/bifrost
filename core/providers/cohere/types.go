@@ -10,6 +10,11 @@ import (
 
 const MinimumReasoningMaxTokens = 1
 const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+// Limits for tokenize input api call https://docs.cohere.com/reference/tokenize#request
+const (
+	cohereTokenizeMinTextLength = 1
+	cohereTokenizeMaxTextLength = 65536
+)
 
 // ==================== REQUEST TYPES ====================
 
@@ -236,6 +241,12 @@ type CohereTool struct {
 	ParameterDefinitions map[string]CohereParameterDefinition `json:"parameter_definitions"` // Definitions of the tool's parameters
 }
 
+// CohereCountTokensRequest represents a Cohere tokenize request
+type CohereCountTokensRequest struct {
+	Model string `json:"model"` // Required: Model whose tokenizer should be used
+	Text  string `json:"text"`  // Required: Text to tokenize (1-65536 chars)
+}
+
 // CohereEmbeddingRequest represents a Cohere embedding request
 type CohereEmbeddingRequest struct {
 	Model           string                 `json:"model"`                      // Required: ID of embedding model
@@ -298,6 +309,23 @@ type CohereEmbeddingAPIVersion struct {
 }
 
 // ==================== RESPONSE TYPES ====================
+
+// CohereCountTokensResponse represents the response from the tokenize endpoint
+type CohereCountTokensResponse struct {
+	Tokens       []int               `json:"tokens"`
+	TokenStrings []string            `json:"token_strings,omitempty"`
+	Meta         *CohereTokenizeMeta `json:"meta,omitempty"`
+}
+
+// CohereTokenizeMeta captures metadata returned by the tokenize endpoint
+type CohereTokenizeMeta struct {
+	APIVersion *CohereTokenizeAPIVersion `json:"api_version,omitempty"`
+}
+
+// CohereTokenizeAPIVersion describes API version metadata
+type CohereTokenizeAPIVersion struct {
+	Version *string `json:"version,omitempty"`
+}
 
 // CohereChatResponse represents a Cohere  chat completion response
 type CohereChatResponse struct {

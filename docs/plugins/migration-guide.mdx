@@ -1,0 +1,308 @@
+---
+title: "Plugin Migration Guide"
+description: "How to migrate your Bifrost plugins from v1.3.x to v1.4.x"
+icon: "arrow-up-right-dots"
+---
+
+## Overview
+
+Bifrost v1.4.x introduces a new plugin interface for HTTP transport layer interception. This guide helps you migrate existing plugins from the v1.3.x `TransportInterceptor` pattern to the v1.4.x `HTTPTransportMiddleware` pattern.
+
+<Note>
+If your plugin doesn't use `TransportInterceptor`, no migration is needed. The `PreHook`, `PostHook`, `Init`, `GetName`, and `Cleanup` functions remain unchanged.
+</Note>
+
+## What Changed?
+
+The HTTP transport interception mechanism changed from a simple function that receives and returns headers/body to a middleware pattern that wraps the entire request handler chain.
+
+### Key Differences
+
+| Aspect | v1.3.x (TransportInterceptor) | v1.4.x+ (HTTPTransportMiddleware) |
+|--------|-------------------------------|-----------------------------------|
+| Function signature | `TransportInterceptor(ctx, url, headers, body)` | `HTTPTransportMiddleware()` |
+| Return type | `(headers, body, error)` | `BifrostHTTPMiddleware` |
+| Access scope | Headers and body as maps | Full `*fasthttp.RequestCtx` |
+| Flow control | Implicit (return modified values) | Explicit (`next(ctx)` call) |
+| Capability | Request modification only | Request AND response modification |
+
+### Why the Change?
+
+The new middleware pattern provides:
+
+1. **Full HTTP control** - Access to the complete `*fasthttp.RequestCtx` including method, path, query params, and all headers
+2. **Response interception** - Ability to modify responses after they return from downstream handlers
+3. **Better composability** - Standard middleware pattern that chains naturally with other handlers
+4. **More flexibility** - Can short-circuit requests, add timing, implement retries, etc.
+
+## Migration Steps
+
+### Step 1: Update Imports
+
+Add the `fasthttp` import to your plugin:
+
+```go
+import (
+	"fmt"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"  // Add this import
+)
+```
+
+### Step 2: Replace the Function
+
+**Before (v1.3.x):**
+
+```go
+// TransportInterceptor modifies raw HTTP headers and body
+func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	// Add custom header
+	headers["X-Custom-Header"] = "value"
+	
+	// Modify body
+	body["custom_field"] = "custom_value"
+	
+	return headers, body, nil
+}
+```
+
+**After (v1.4.x+):**
+
+```go
+// HTTPTransportMiddleware returns a middleware for HTTP transport
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// Add custom header
+			ctx.Request.Header.Set("X-Custom-Header", "value")
+			
+			// Modify body (if needed)
+			// Note: Body modification requires parsing and re-serializing
+			// ctx.Request.SetBody(modifiedBody)
+			
+			// Call next handler in chain
+			next(ctx)
+			
+			// Can also modify response here after next() returns
+		}
+	}
+}
+```
+
+### Step 3: Update Body Modification Logic
+
+In v1.3.x, you received the body as a `map[string]any`. In v1.4.x, you work with raw bytes:
+
+**Before (v1.3.x):**
+
+```go
+func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	// Direct map access
+	body["model"] = "gpt-4"
+	return headers, body, nil
+}
+```
+
+**After (v1.4.x+):**
+
+```go
+import "github.com/bytedance/sonic"
+
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// Parse existing body
+			var body map[string]any
+			if err := sonic.Unmarshal(ctx.Request.Body(), &body); err == nil {
+				// Modify body
+				body["model"] = "gpt-4"
+				
+				// Re-serialize and set
+				if newBody, err := sonic.Marshal(body); err == nil {
+					ctx.Request.SetBody(newBody)
+				}
+			}
+			
+			next(ctx)
+		}
+	}
+}
+```
+
+### Step 4: Handle Response Modification (New Capability)
+
+The new pattern allows you to modify responses, which wasn't possible in v1.3.x:
+
+```go
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			// Before request
+			startTime := time.Now()
+			
+			// Process request
+			next(ctx)
+			
+			// After response - NEW CAPABILITY
+			duration := time.Since(startTime)
+			ctx.Response.Header.Set("X-Processing-Time", duration.String())
+		}
+	}
+}
+```
+
+## Common Migration Patterns
+
+### Adding Headers
+
+**v1.3.x:**
+```go
+headers["Authorization"] = "Bearer " + token
+return headers, body, nil
+```
+
+**v1.4.x+:**
+```go
+ctx.Request.Header.Set("Authorization", "Bearer " + token)
+next(ctx)
+```
+
+### Reading Headers
+
+**v1.3.x:**
+```go
+apiKey := headers["X-API-Key"]
+```
+
+**v1.4.x+:**
+```go
+apiKey := string(ctx.Request.Header.Peek("X-API-Key"))
+```
+
+### Conditional Processing
+
+**v1.3.x:**
+```go
+func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	if headers["X-Skip-Processing"] == "true" {
+		return headers, body, nil
+	}
+	// Process...
+	return headers, body, nil
+}
+```
+
+**v1.4.x+:**
+```go
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if string(ctx.Request.Header.Peek("X-Skip-Processing")) == "true" {
+				next(ctx)
+				return
+			}
+			// Process...
+			next(ctx)
+		}
+	}
+}
+```
+
+### Error Handling
+
+**v1.3.x:**
+```go
+func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+	if headers["X-API-Key"] == "" {
+		return nil, nil, fmt.Errorf("missing API key")
+	}
+	return headers, body, nil
+}
+```
+
+**v1.4.x+:**
+```go
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if len(ctx.Request.Header.Peek("X-API-Key")) == 0 {
+				ctx.SetStatusCode(401)
+				ctx.SetBodyString(`{"error": "missing API key"}`)
+				return // Don't call next - short-circuit the request
+			}
+			next(ctx)
+		}
+	}
+}
+```
+
+## Testing Your Migration
+
+1. **Build your updated plugin:**
+   ```bash
+   go build -buildmode=plugin -o my-plugin.so main.go
+   ```
+
+2. **Update Bifrost to v1.4.x:**
+   ```bash
+   go get github.com/maximhq/bifrost/core@v1.4.0
+   ```
+
+3. **Test with a simple request:**
+   ```bash
+   curl -X POST http://localhost:8080/v1/chat/completions \
+     -H "Content-Type: application/json" \
+     -d '{"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "Hello"}]}'
+   ```
+
+4. **Verify logs show the new middleware being called:**
+   ```
+   HTTPTransportMiddleware called
+   PreHook called
+   PostHook called
+   ```
+
+## Troubleshooting
+
+### Plugin fails to load after migration
+
+**Error:** `plugin: symbol TransportInterceptor not found`
+
+This error occurs if Bifrost v1.4.x is looking for the old function. Make sure:
+1. You've updated to `HTTPTransportMiddleware`
+2. The function signature matches exactly
+3. You've rebuilt the plugin with the correct core version
+
+### Body modification not working
+
+Make sure you're calling `ctx.Request.SetBody()` with the serialized bytes, not the map directly:
+
+```go
+// Wrong
+ctx.Request.SetBody(body) // body is map[string]any
+
+// Correct
+bodyBytes, _ := sonic.Marshal(body)
+ctx.Request.SetBody(bodyBytes)
+```
+
+### Headers not being set
+
+Remember that `fasthttp` header methods are case-sensitive for custom headers:
+
+```go
+// Set header
+ctx.Request.Header.Set("X-Custom-Header", "value")
+
+// Read header - use Peek for []byte or string conversion
+value := string(ctx.Request.Header.Peek("X-Custom-Header"))
+```
+
+## Need Help?
+
+- **Discord Community**: [Join our Discord](https://getmax.im/bifrost-discord)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/maximhq/bifrost/issues)
+- **Writing Plugins Guide**: [Full plugin documentation](./writing-plugin)
+
+

@@ -34,6 +34,10 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 		} catch (ignored) {}
 	}
 
+	// Extract audio format from request params
+	// Format can be in params.audio?.format or params.extra_params?.audio?.format
+	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
+
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8">
@@ -115,10 +119,22 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 
+							{/* Display audio params if present */}
+							{(log.params as any)?.audio && (
+								<>
+									{(log.params as any).audio.format && (
+										<LogEntryDetailsView className="w-full" label="Audio Format" value={(log.params as any).audio.format} />
+									)}
+									{(log.params as any).audio.voice && (
+										<LogEntryDetailsView className="w-full" label="Audio Voice" value={(log.params as any).audio.voice} />
+									)}
+								</>
+							)}
+
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
 								Object.entries(log.params)
-									.filter(([key]) => key !== "tools" && key !== "instructions")
+									.filter(([key]) => key !== "tools" && key !== "instructions" && key !== "audio")
 									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
@@ -360,7 +376,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Conversation History</div>
 						{log.input_history.slice(0, -1).map((message, index) => (
-							<LogChatMessageView key={index} message={message} />
+							<LogChatMessageView key={index} message={message} audioFormat={audioFormat} />
 						))}
 					</>
 				)}
@@ -369,7 +385,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				{log.input_history && log.input_history.length > 0 && (
 					<>
 						<div className="mt-4 w-full text-left text-sm font-medium">Input</div>
-						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} />
+						<LogChatMessageView message={log.input_history[log.input_history.length - 1]} audioFormat={audioFormat} />
 					</>
 				)}
 
@@ -388,7 +404,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 flex w-full items-center gap-2">
 									<div className="text-sm font-medium">Response</div>
 								</div>
-								<LogChatMessageView message={log.output_message} />
+								<LogChatMessageView message={log.output_message} audioFormat={audioFormat} />
 							</>
 						)}
 						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error.message && (

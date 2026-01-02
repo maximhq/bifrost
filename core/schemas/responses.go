@@ -265,14 +265,17 @@ type ResponsesResponseUsage struct {
 }
 
 type ResponsesResponseInputTokens struct {
-	AudioTokens int `json:"audio_tokens"` // Tokens for audio input
+	TextTokens  int `json:"text_tokens,omitempty"`  // Tokens for text input
+	AudioTokens int `json:"audio_tokens,omitempty"` // Tokens for audio input
+	ImageTokens int `json:"image_tokens,omitempty"` // Tokens for image input
 
 	// For Providers which follow OpenAI's spec, CachedTokens means the number of input tokens read from the cache+input tokens used to create the cache entry. (because they do not differentiate between cache creation and cache read tokens)
 	// For Providers which do not follow OpenAI's spec, CachedTokens means only the number of input tokens read from the cache.
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens int `json:"cached_tokens,omitempty"`
 }
 
 type ResponsesResponseOutputTokens struct {
+	TextTokens               int  `json:"text_tokens,omitempty"`
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
@@ -412,6 +415,9 @@ type ResponsesMessageContentBlock struct {
 
 	*ResponsesOutputMessageContentText    // Normal text output from the model
 	*ResponsesOutputMessageContentRefusal // Model refusal to answer
+
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type ResponsesInputMessageContentBlockImage struct {
@@ -420,9 +426,10 @@ type ResponsesInputMessageContentBlockImage struct {
 }
 
 type ResponsesInputMessageContentBlockFile struct {
-	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data
+	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data or plain text
 	FileURL  *string `json:"file_url,omitempty"`  // Direct URL to file
 	Filename *string `json:"filename,omitempty"`  // Name of the file
+	FileType *string `json:"file_type,omitempty"` // MIME type (e.g., "application/pdf", "text/plain")
 }
 
 type ResponsesInputMessageContentBlockAudio struct {
@@ -625,7 +632,7 @@ type ResponsesComputerToolCallPendingSafetyCheck struct {
 
 // ResponsesComputerToolCallAction represents the different types of computer actions
 type ResponsesComputerToolCallAction struct {
-	Type    string                                `json:"type"`             // "click" | "double_click" | "drag" | "keypress" | "move" | "screenshot" | "scroll" | "type" | "wait"
+	Type    string                                `json:"type"`             // "click" | "double_click" | "drag" | "keypress" | "move" | "screenshot" | "scroll" | "type" | "wait" | "zoom"
 	X       *int                                  `json:"x,omitempty"`      // Common X coordinate field (Click, DoubleClick, Move, Scroll)
 	Y       *int                                  `json:"y,omitempty"`      // Common Y coordinate field (Click, DoubleClick, Move, Scroll)
 	Button  *string                               `json:"button,omitempty"` // "left" | "right" | "wheel" | "back" | "forward"
@@ -634,6 +641,7 @@ type ResponsesComputerToolCallAction struct {
 	ScrollX *int                                  `json:"scroll_x,omitempty"`
 	ScrollY *int                                  `json:"scroll_y,omitempty"`
 	Text    *string                               `json:"text,omitempty"`
+	Region  []int                                 `json:"region,omitempty"` // [x1, y1, x2, y2] for zoom action (Anthropic Opus 4.5)
 }
 
 type ResponsesComputerToolCallActionPath struct {
@@ -1057,6 +1065,9 @@ type ResponsesTool struct {
 	Name        *string           `json:"name,omitempty"`        // Common name field (Function, Custom tools)
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
 
+	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch
 	*ResponsesToolComputerUsePreview
@@ -1217,6 +1228,8 @@ type ResponsesToolComputerUsePreview struct {
 	DisplayHeight int    `json:"display_height"` // The height of the computer display
 	DisplayWidth  int    `json:"display_width"`  // The width of the computer display
 	Environment   string `json:"environment"`    // The type of computer environment to control
+
+	EnableZoom *bool `json:"enable_zoom,omitempty"` // for computer tool in anthropic only
 }
 
 // ResponsesToolWebSearch represents a tool web search

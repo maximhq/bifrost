@@ -13,6 +13,7 @@ type TableClientConfig struct {
 	DropExcessRequests      bool   `gorm:"default:false" json:"drop_excess_requests"`
 	PrometheusLabelsJSON    string `gorm:"type:text" json:"-"` // JSON serialized []string
 	AllowedOriginsJSON      string `gorm:"type:text" json:"-"` // JSON serialized []string
+	HeaderFilterConfigJSON  string `gorm:"type:text" json:"-"` // JSON serialized GlobalHeaderFilterConfig
 	InitialPoolSize         int    `gorm:"default:300" json:"initial_pool_size"`
 	EnableLogging           bool   `gorm:"" json:"enable_logging"`
 	DisableContentLogging   bool   `gorm:"default:false" json:"disable_content_logging"`                // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
@@ -32,8 +33,9 @@ type TableClientConfig struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	PrometheusLabels []string `gorm:"-" json:"prometheus_labels"`
-	AllowedOrigins   []string `gorm:"-" json:"allowed_origins,omitempty"`	
+	PrometheusLabels   []string                  `gorm:"-" json:"prometheus_labels"`
+	AllowedOrigins     []string                  `gorm:"-" json:"allowed_origins,omitempty"`
+	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -60,6 +62,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.AllowedOriginsJSON = "[]"
 	}
 
+	if cc.HeaderFilterConfig != nil {
+		data, err := json.Marshal(cc.HeaderFilterConfig)
+		if err != nil {
+			return err
+		}
+		cc.HeaderFilterConfigJSON = string(data)
+	} else {
+		cc.HeaderFilterConfigJSON = ""
+	}
+
 	return nil
 }
 
@@ -75,6 +87,14 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		if err := json.Unmarshal([]byte(cc.AllowedOriginsJSON), &cc.AllowedOrigins); err != nil {
 			return err
 		}
+	}
+
+	if cc.HeaderFilterConfigJSON != "" {
+		var headerFilterConfig GlobalHeaderFilterConfig
+		if err := json.Unmarshal([]byte(cc.HeaderFilterConfigJSON), &headerFilterConfig); err != nil {
+			return err
+		}
+		cc.HeaderFilterConfig = &headerFilterConfig
 	}
 
 	return nil

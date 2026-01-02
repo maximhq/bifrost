@@ -43,6 +43,9 @@ type LogManager interface {
 
 	// DeleteLogs deletes multiple log entries by their IDs
 	DeleteLogs(ctx context.Context, ids []string) error
+
+	// RecalculateCosts recomputes missing costs for logs matching the filters
+	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
 }
 
 // PluginLogManager implements LogManager interface wrapping the plugin
@@ -97,6 +100,13 @@ func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 		return fmt.Errorf("log store not initialized")
 	}
 	return p.plugin.store.DeleteLogs(ctx, ids)
+}
+
+func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.RecalculateCosts(ctx, *filters, limit)
 }
 
 // GetPluginLogManager returns a LogManager interface for this plugin

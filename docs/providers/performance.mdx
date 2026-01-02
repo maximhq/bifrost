@@ -1,0 +1,507 @@
+---
+title: "Performance Tuning"
+description: "Optimize Bifrost for high throughput with concurrency, buffer sizing, and memory pool configuration"
+icon: "gauge-high"
+---
+
+## Overview
+
+Bifrost provides three key performance configuration parameters that control throughput, memory usage, and request handling behavior:
+
+| Parameter | Scope | Default | Description |
+|-----------|-------|---------|-------------|
+| **Concurrency** | Per Provider | 1000 | Number of worker goroutines processing requests simultaneously |
+| **Buffer Size** | Per Provider | 5000 | Maximum requests that can be queued before blocking/dropping |
+| **Initial Pool Size** | Global | 5000 | Pre-allocated objects in sync pools to reduce GC pressure |
+
+<Info>
+These defaults are suitable for most production deployments handling up to ~5000 RPS. For higher throughput or constrained environments, tuning these parameters can significantly improve performance.
+</Info>
+
+---
+
+## Understanding the Parameters
+
+### Concurrency (Per Provider)
+
+**What it does:** Controls two aspects of provider performance:
+1. **Worker Goroutines:** The number of goroutines that process requests for each provider. Each worker pulls requests from the provider's queue and executes them against the provider's API.
+2. **Provider Pool Pre-warming:** Pre-allocates provider-specific response objects (e.g., `AnthropicMessageResponse`, `OpenAIResponse`) in sync pools to reduce allocations during request handling.
+
+**Impact:**
+- **Higher concurrency** = More parallel requests to the provider, higher throughput, more pre-allocated response objects
+- **Lower concurrency** = Fewer parallel requests, lower resource usage, respects provider rate limits
+
+**Default:** `1000` workers per provider
+
+<Tabs>
+<Tab title="Gateway (config.json)">
+
+```json
+{
+    "providers": {
+        "openai": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 100,
+                "buffer_size": 500
+            }
+        }
+    }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+            Concurrency: 100, // 100 concurrent workers
+            BufferSize:  500, // 500 request queue capacity
+        },
+    }, nil
+}
+```
+
+</Tab>
+</Tabs>
+
+### Buffer Size (Per Provider)
+
+**What it does:** Sets the capacity of the buffered channel (queue) for each provider. Incoming requests are queued here before being picked up by workers.
+
+**Impact:**
+- **Larger buffer** = More requests can be queued during traffic spikes, handles burst traffic better
+- **Smaller buffer** = Lower memory footprint, faster backpressure signals to clients
+
+**Default:** `5000` requests per provider queue
+
+**Queue Full Behavior:** Controlled by `drop_excess_requests`:
+- `false` (default): New requests block until queue space is available
+- `true`: New requests are immediately dropped with an error when queue is full
+
+<Warning>
+**Constraint:** Buffer size must be greater than or equal to concurrency. If `concurrency > buffer_size`, provider setup will fail.
+</Warning>
+
+### Initial Pool Size (Global)
+
+**What it does:** Controls the number of pre-allocated objects in Bifrost's internal sync pools at startup. These pools recycle objects to reduce garbage collection overhead.
+
+**Pooled Objects:**
+- Channel messages (request wrappers)
+- Response channels
+- Error channels
+- Stream channels
+- Plugin pipelines
+- Request objects
+
+**Impact:**
+- **Higher initial pool** = Less GC pressure during high traffic, more consistent latency, higher initial memory usage
+- **Lower initial pool** = Lower initial memory footprint, may cause more allocations under load
+
+**Default:** `5000` objects per pool
+
+<Tabs>
+<Tab title="Gateway (config.json)">
+
+```json
+{
+    "config": {
+        "initial_pool_size": 10000,
+        "drop_excess_requests": false
+    }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+bifrostConfig := schemas.BifrostConfig{
+    Account:            myAccount,
+    InitialPoolSize:    10000, // Pre-warm pools with 10,000 objects
+    DropExcessRequests: false,
+}
+
+client, err := bifrost.Init(ctx, bifrostConfig)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Sizing Guidelines
+
+### Concurrency & Buffer Size (Per Provider)
+
+Configure these settings **per provider** based on the expected RPS for that specific provider:
+
+| Provider RPS | Concurrency | Buffer Size |
+|--------------|-------------|-------------|
+| 100 | 100 | 150 |
+| 500 | 500 | 750 |
+| 1000 | 1000 | 1500 |
+| 2500 | 2500 | 3750 |
+| 5000 | 5000 | 7500 |
+| 10000 | 10000 | 15000 |
+
+<Info>
+**Example:** If you expect 2000 RPS to OpenAI and 500 RPS to Anthropic, configure OpenAI with `concurrency: 2000, buffer_size: 3000` and Anthropic with `concurrency: 500, buffer_size: 750`.
+</Info>
+
+**Formula:**
+```
+concurrency = expected_rps
+buffer_size = 1.5 × expected_rps
+```
+
+This ratio ensures:
+- Enough queue capacity to absorb traffic bursts
+- Workers are never starved for work
+- Backpressure is applied before memory exhaustion
+
+### Initial Pool Size (Global)
+
+Configure this setting based on **total RPS across all providers combined**:
+
+| Total RPS (All Providers) | Initial Pool Size | Memory Estimate |
+|---------------------------|-------------------|-----------------|
+| 100 | 150 | ~50 MB |
+| 500 | 750 | ~100 MB |
+| 1000 | 1500 | ~200 MB |
+| 2500 | 3750 | ~400 MB |
+| 5000 | 7500 | ~800 MB |
+| 10000 | 15000 | ~1.5 GB |
+
+<Note>
+Memory estimates are approximate and vary based on request/response sizes, number of providers, and plugins. Monitor actual memory usage in your environment.
+</Note>
+
+**Formula:**
+```
+initial_pool_size = 1.5 × total_expected_rps
+```
+
+Additionally, ensure:
+```
+initial_pool_size >= max(buffer_size across all providers)
+```
+
+This ensures pools are pre-warmed to handle peak queue depths without runtime allocations.
+
+---
+
+## Multi-Node Deployments
+
+When running multiple Bifrost instances behind a load balancer, **divide the per-node settings by the number of nodes** based on your total expected RPS.
+
+### Formula
+
+```
+Per-Node Concurrency = Total Concurrency / Number of Nodes
+Per-Node Buffer Size = Total Buffer Size / Number of Nodes
+Per-Node Initial Pool Size = Total Initial Pool Size / Number of Nodes
+```
+
+### Example: 10,000 RPS Across 4 Nodes
+
+**Total capacity (aggregate across all 4 nodes):**
+- Total RPS: 10,000 RPS
+- Per-node RPS: ~2,500 RPS per node
+
+**Single node settings for 10,000 RPS (if running on one node):**
+- Concurrency: 10000
+- Buffer Size: 15000
+- Initial Pool Size: 15000
+
+**Per-node settings (4 nodes, 10,000 RPS total):**
+
+| Parameter | Total (Aggregate) | Per Node (4 nodes) |
+|-----------|-------------------|-------------------|
+| Concurrency | 10000 | 2500 |
+| Buffer Size | 15000 | 3750 |
+| Initial Pool Size | 15000 | 3750 |
+
+<Tabs>
+<Tab title="Gateway (config.json)">
+
+```json
+{
+    "config": {
+        "initial_pool_size": 3750,
+        "drop_excess_requests": false
+    },
+    "providers": {
+        "openai": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 2500,
+                "buffer_size": 3750
+            }
+        },
+        "anthropic": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 2500,
+                "buffer_size": 3750
+            }
+        }
+    }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+const numNodes = 4
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    // Total capacity divided by number of nodes
+    // Total: 10,000 RPS across 4 nodes = 2,500 RPS per node
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+            Concurrency: 10000 / numNodes, // 2500 per node
+            BufferSize:  15000 / numNodes, // 3750 per node
+        },
+    }, nil
+}
+
+// In main initialization
+bifrostConfig := schemas.BifrostConfig{
+    Account:         myAccount,
+    InitialPoolSize: 15000 / numNodes, // 3750 per node
+}
+```
+
+</Tab>
+</Tabs>
+
+<Tip>
+**Kubernetes Horizontal Pod Autoscaling:** When using HPA, configure settings for your minimum replica count. As pods scale up, each node handles a smaller portion of traffic. Consider using environment variables or ConfigMaps to dynamically adjust settings based on replica count.
+</Tip>
+
+---
+
+## Provider-Specific Tuning
+
+Different providers have different rate limits and latency characteristics. Tune each provider independently:
+
+### Provider Rate Limit Considerations
+
+| Provider | Typical Rate Limits | Recommended Concurrency | Notes |
+|----------|---------------------|------------------------|-------|
+| OpenAI | 500-10000 RPM (varies by tier) | 100-500 | Higher tiers support more concurrency |
+| Anthropic | 1000-4000 RPM (varies by tier) | 50-200 | More conservative rate limits |
+| Bedrock | Per-model limits | 100-300 | Check AWS quotas for your account |
+| Azure OpenAI | Deployment-specific | 100-500 | Configure per-deployment |
+| Vertex AI | Per-model quotas | 100-300 | Check GCP quotas |
+| Groq | Very high throughput | 500-1000 | Designed for high concurrency |
+| Ollama | Local resource bound | 10-50 | Limited by local GPU/CPU |
+
+### Example: Mixed Provider Configuration
+
+<Tabs>
+<Tab title="Gateway (config.json)">
+
+```json
+{
+    "providers": {
+        "openai": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 200,
+                "buffer_size": 1000
+            }
+        },
+        "anthropic": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 100,
+                "buffer_size": 500
+            }
+        },
+        "groq": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 500,
+                "buffer_size": 2500
+            }
+        },
+        "ollama": {
+            "keys": [...],
+            "concurrency_and_buffer_size": {
+                "concurrency": 20,
+                "buffer_size": 100
+            }
+        }
+    }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                Concurrency: 200,
+                BufferSize:  1000,
+            },
+        }, nil
+    case schemas.Anthropic:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                Concurrency: 100,
+                BufferSize:  500,
+            },
+        }, nil
+    case schemas.Groq:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                Concurrency: 500,
+                BufferSize:  2500,
+            },
+        }, nil
+    case schemas.Ollama:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                Concurrency: 20,
+                BufferSize:  100,
+            },
+        }, nil
+    default:
+        return &schemas.ProviderConfig{
+            NetworkConfig:            schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        }, nil
+    }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Queue Overflow Handling
+
+When the provider queue reaches capacity, Bifrost's behavior is controlled by `drop_excess_requests`:
+
+### Blocking Mode (Default)
+
+```json
+{
+    "config": {
+        "drop_excess_requests": false
+    }
+}
+```
+
+- New requests **wait** until queue space is available
+- Ensures no requests are lost
+- May increase latency during high load
+- Suitable for critical workloads where every request matters
+
+### Drop Mode
+
+```json
+{
+    "config": {
+        "drop_excess_requests": true
+    }
+}
+```
+
+- New requests are **immediately rejected** when queue is full
+- Returns error: `"request dropped: queue is full"`
+- Maintains consistent latency for accepted requests
+- Suitable for real-time applications where stale requests are useless
+
+<Tip>
+**Best Practice:** Use `drop_excess_requests: true` with buffer sizes at 1.5x concurrency for production workloads. This prevents memory exhaustion while still handling reasonable traffic bursts.
+</Tip>
+
+---
+
+## Monitoring and Diagnostics
+
+### Key Metrics to Monitor
+
+| Metric | Healthy Range | Action if Exceeded |
+|--------|---------------|-------------------|
+| Queue depth | < 50% of buffer_size | Increase buffer or concurrency |
+| Request latency (p99) | < 2x average | Check provider rate limits |
+| Dropped requests | 0 | Increase buffer_size |
+| Memory usage | Stable | Reduce pool/buffer sizes |
+| Goroutine count | Stable | Check for goroutine leaks |
+
+### Health Check Endpoint
+
+The Gateway exposes health and metrics endpoints:
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Prometheus metrics
+curl http://localhost:8080/metrics
+```
+
+---
+
+## Best Practices Summary
+
+<CardGroup cols={2}>
+  <Card title="Start Conservative" icon="shield">
+    Begin with lower values and scale up based on observed performance. Over-provisioning wastes resources.
+  </Card>
+  <Card title="Monitor Continuously" icon="chart-line">
+    Track queue depths, latencies, and error rates. Adjust settings based on real traffic patterns.
+  </Card>
+  <Card title="Match Provider Limits" icon="scale-balanced">
+    Don't set concurrency higher than provider rate limits allow. You'll just get rate-limited.
+  </Card>
+  <Card title="Plan for Bursts" icon="bolt">
+    Set buffer_size to 1.5x concurrency to handle traffic spikes without dropping requests.
+  </Card>
+</CardGroup>
+
+### Quick Reference
+
+```
+// Formula
+concurrency      = expected_rps
+buffer_size      = 1.5 × expected_rps
+initial_pool_size = 1.5 × total_rps (across all providers)
+
+// Example: 500 RPS per provider, 2 providers (1000 total RPS)
+concurrency: 500, buffer_size: 750, initial_pool_size: 1500
+
+// Example: 2000 RPS per provider, 3 providers (6000 total RPS)
+concurrency: 2000, buffer_size: 3000, initial_pool_size: 9000
+
+// Multi-node formula
+per_node_value = total_value / number_of_nodes
+```
+
+---
+
+## Related Documentation
+
+- **[Provider Configuration](../quickstart/gateway/provider-configuration)** - Complete provider setup guide
+- **[Custom Providers](./custom-providers)** - Creating custom provider integrations
+- **[Deployment](../deployment-guides/)** - Production deployment guides

@@ -1,0 +1,297 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "client": {
+        "allow_direct_keys": false,
+        "allowed_origins": [
+            "*"
+        ],
+        "disable_content_logging": false,
+        "drop_excess_requests": false,
+        "enable_governance": true,
+        "enable_litellm_fallbacks": false,
+        "enable_logging": true,
+        "enforce_governance_header": true,
+        "initial_pool_size": 300,
+        "log_retention_days": 365,
+        "max_request_body_size_mb": 100
+    },
+    "config_store": {
+        "config": {
+            "path": "../../examples/configs/withvirtualkeys/config.db"
+        },
+        "enabled": true,
+        "type": "sqlite"
+    },
+    "framework": {
+        "pricing": {
+            "pricing_sync_interval": 86400
+        }
+    },
+    "governance": {
+        "auth_config": {
+            "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+            "admin_username": "env.BIFROST_ADMIN_USERNAME",
+            "disable_auth_on_inference": true,
+            "is_enabled": false
+        },
+        "virtual_keys": [
+            {
+                "id": "sk-bf-vk-prod-assistant-us-01",
+                "is_active": true,
+                "name": "prod-assistant-us-key-01-configurations",
+                "provider_configs": [
+                    {
+                        "allowed_keys": [
+                            "azure-us-key-1-prod",
+                            "azure-us-key-2-prod"
+                        ],
+                        "provider": "azure",
+                        "weight": 0.5
+                    },
+                    {
+                        "allowed_keys": [
+                            "vertex-us-east1-prod",
+                            "vertex-global-prod"
+                        ],
+                        "provider": "vertex",
+                        "weight": 0.5
+                    },
+                    {
+                        "allowed_keys": [
+                            "bedrock-us-east-1-prod"
+                        ],
+                        "provider": "bedrock",
+                        "weight": 0.5
+                    }
+                ],
+                "value": "sk-bf-vk-prod-assistant-us-01"
+            },
+            {
+                "id": "sk-bf-vk-prod-assistant-eu-01",
+                "is_active": true,
+                "name": "prod-assistant-eu-key-01-configurations",
+                "provider_configs": [
+                    {
+                        "allowed_keys": [
+                            "azure-eu-key-1-prod"
+                        ],
+                        "provider": "azure",
+                        "weight": 0.5
+                    },
+                    {
+                        "allowed_keys": [
+                            "vertex-europe-west1-prod",
+                            "vertex-global-prod"
+                        ],
+                        "provider": "vertex",
+                        "weight": 0.5
+                    },
+                    {
+                        "allowed_keys": [
+                            "bedrock-eu-central-1-prod"
+                        ],
+                        "provider": "bedrock",
+                        "weight": 0.5
+                    }
+                ],
+                "value": "sk-bf-vk-prod-assistant-eu-01"
+            }
+        ]
+    },
+   "logs_store": {
+        "config": {
+            "path": "../../examples/configs/withvirtualkeys/logs.db"
+        },
+        "enabled": true,
+        "type": "sqlite"
+    },
+    "plugins": [
+        {
+            "config": {
+                "is_vk_mandatory": true
+            },
+            "enabled": true,
+            "name": "governance"
+        }
+    ],
+    "providers": {
+        "azure": {
+            "keys": [
+                {
+                    "azure_key_config": {
+                        "api_version": "2025-03-01-preview",
+                        "deployments": {
+                            "gpt-4.1": "gpt-4.1",
+                            "gpt-4.1-mini": "gpt-4.1-mini",
+                            "gpt-4o": "gpt-4o",
+                            "gpt-4o-mini": "gpt-4o-mini",
+                            "gpt-5": "gpt-5",
+                            "gpt-5-mini": "gpt-5-mini",
+                            "gpt-5.1": "gpt-5.1"
+                        },
+                        "endpoint": "https://orca-prod-us-east-1.openai.azure.com/"
+                    },
+                    "models": [
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "gpt-5",
+                        "gpt-5-mini",
+                        "gpt-5.1"
+                    ],
+                    "name": "azure-us-key-1-prod",
+                    "value": "env.AZURE_OPENAI_API_KEY_US_EAST_1",
+                    "weight": 1
+                },
+                {
+                    "azure_key_config": {
+                        "api_version": "2025-03-01-preview",
+                        "deployments": {
+                            "gpt-4.1": "gpt-4.1",
+                            "gpt-4.1-mini": "gpt-4.1-mini",
+                            "gpt-4o": "gpt-4o",
+                            "gpt-4o-mini": "gpt-4o-mini",
+                            "gpt-5": "gpt-5",
+                            "gpt-5-mini": "gpt-5-mini",
+                            "gpt-5.1": "gpt-5.1"
+                        },
+                        "endpoint": "https://orca-prod-us-east-2.openai.azure.com/"
+                    },
+                    "models": [
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "gpt-5",
+                        "gpt-5-mini",
+                        "gpt-5.1"
+                    ],
+                    "name": "azure-us-key-2-prod",
+                    "value": "env.AZURE_OPENAI_API_KEY_US_EAST_2",
+                    "weight": 1
+                },
+                {
+                    "azure_key_config": {
+                        "api_version": "2025-03-01-preview",
+                        "deployments": {
+                            "gpt-4.1": "gpt-4.1",
+                            "gpt-4.1-mini": "gpt-4.1-mini",
+                            "gpt-4o": "gpt-4o",
+                            "gpt-4o-mini": "gpt-4o-mini",
+                            "gpt-5": "gpt-5",
+                            "gpt-5-mini": "gpt-5-mini",
+                            "gpt-5.1": "gpt-5.1"
+                        },
+                        "endpoint": "https://orca-prod-eu-central-1.openai.azure.com/"
+                    },
+                    "models": [
+                        "gpt-4.1",
+                        "gpt-4.1-mini",
+                        "gpt-4o",
+                        "gpt-4o-mini",
+                        "gpt-5",
+                        "gpt-5-mini",
+                        "gpt-5.1"
+                    ],
+                    "name": "azure-eu-key-1-prod",
+                    "value": "env.AZURE_OPENAI_API_KEY_EU_CENTRAL_1",
+                    "weight": 1
+                }
+            ]
+        },
+        "bedrock": {
+            "keys": [
+                {
+                    "bedrock_key_config": {
+                        "access_key": "env.AWS_ACCESS_KEY_ID_US_EAST_1",
+                        "region": "us-east-1",
+                        "secret_key": "env.AWS_SECRET_ACCESS_KEY_US_EAST_1"
+                    },
+                    "models": [],
+                    "name": "bedrock-us-east-1-prod",
+                    "weight": 1
+                },
+                {
+                    "bedrock_key_config": {
+                        "access_key": "env.AWS_ACCESS_KEY_ID_US_WEST_2",
+                        "region": "us-west-2",
+                        "secret_key": "env.AWS_SECRET_ACCESS_KEY_US_WEST_2"
+                    },
+                    "models": [],
+                    "name": "bedrock-us-west-2-prod",
+                    "weight": 1
+                },
+                {
+                    "bedrock_key_config": {
+                        "access_key": "env.AWS_ACCESS_KEY_ID_EU_CENTRAL_1",
+                        "region": "eu-central-1",
+                        "secret_key": "env.AWS_SECRET_ACCESS_KEY_EU_CENTRAL_1"
+                    },
+                    "models": [],
+                    "name": "bedrock-eu-central-1-prod",
+                    "weight": 1
+                }
+            ]
+        },
+        "vertex": {
+            "keys": [
+                {
+                    "models": [
+                        "google/gemini-2.5-pro",
+                        "google/gemini-2.5-flash-lite",
+                        "google/gemini-2.5-flash"
+                    ],
+                    "name": "vertex-us-east1-prod",
+                    "vertex_key_config": {
+                        "auth_credentials": "env.VERTEX_CREDENTIALS_US_EAST1",
+                        "project_id": "agentic-ai-project-1",
+                        "region": "us-east1"
+                    },
+                    "weight": 1
+                },
+                {
+                    "models": [
+                        "google/gemini-2.5-pro",
+                        "google/gemini-2.5-flash-lite",
+                        "google/gemini-2.5-flash"
+                    ],
+                    "name": "vertex-europe-west1-prod",
+                    "vertex_key_config": {
+                        "auth_credentials": "env.VERTEX_CREDENTIALS_EUROPE_WEST1",
+                        "project_id": "agentic-ai-project-1",
+                        "region": "europe-west1"
+                    },
+                    "weight": 1
+                },
+                {
+                    "models": [
+                        "google/gemini-2.5-pro",
+                        "google/gemini-2.5-flash-lite",
+                        "google/gemini-2.5-flash"
+                    ],
+                    "name": "vertex-us-west1-prod",
+                    "vertex_key_config": {
+                        "auth_credentials": "env.VERTEX_CREDENTIALS_US_WEST1",
+                        "project_id": "agentic-ai-project-1",
+                        "region": "us-west1"
+                    },
+                    "weight": 1
+                },
+                {
+                    "models": [
+                        "google/gemini-3-pro-preview",
+                        "google/gemini-3-flash-preview"
+                    ],
+                    "name": "vertex-global-prod",
+                    "vertex_key_config": {
+                        "auth_credentials": "env.VERTEX_CREDENTIALS_GLOBAL",
+                        "project_id": "agentic-ai-project-1",
+                        "region": "global"
+                    },
+                    "weight": 1
+                }
+            ]
+        }
+    }
+}

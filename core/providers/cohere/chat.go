@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -104,10 +105,17 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				cohereReq.Thinking = &CohereThinking{
-					Type:        ThinkingTypeEnabled,
-					TokenBudget: bifrostReq.Params.Reasoning.MaxTokens,
+				thinking := &CohereThinking{
+					Type: ThinkingTypeEnabled,
 				}
+				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+					// cohere does not support dynamic reasoning budget like gemini
+					// setting it to minimum reasoning budget
+					thinking.TokenBudget = schemas.Ptr(anthropic.MinimumReasoningMaxTokens)
+				} else {
+					thinking.TokenBudget = bifrostReq.Params.Reasoning.MaxTokens
+				}
+				cohereReq.Thinking = thinking
 			} else if bifrostReq.Params.Reasoning.Effort != nil {
 				if *bifrostReq.Params.Reasoning.Effort != "none" {
 					maxCompletionTokens := DefaultCompletionMaxTokens

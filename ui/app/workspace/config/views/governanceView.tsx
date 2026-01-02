@@ -61,7 +61,7 @@ export default function GovernanceView() {
 	}, [bifrostConfig, localConfig, updateCoreConfig]);
 
 	return (
-		<div className="space-y-4">
+		<div className="space-y-4 mx-auto w-full max-w-4xl">
 			<div className="flex items-center justify-between">
 				<div>
 					<h2 className="text-2xl font-semibold tracking-tight">Governance</h2>

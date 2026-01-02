@@ -1,5 +1,5 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
-import { LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs";
+import { LogEntry, LogFilters, LogStats, Pagination, RecalculateCostResponse } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
 
 export const logsApi = baseApi.injectEndpoints({
@@ -50,6 +50,7 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
 				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
 
 				return {
@@ -95,6 +96,7 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.max_latency) params.max_latency = filters.max_latency;
 				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
 				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
 
 				return {
@@ -126,6 +128,15 @@ export const logsApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["Logs"],
 		}),
+
+		recalculateLogCosts: builder.mutation<RecalculateCostResponse, { filters: LogFilters; limit?: number }>({
+			query: ({ filters, limit }) => ({
+				url: "/logs/recalculate-cost",
+				method: "POST",
+				body: { filters, limit },
+			}),
+			invalidatesTags: ["Logs"],
+		}),
 	}),
 });
 
@@ -139,4 +150,5 @@ export const {
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,
+	useRecalculateLogCostsMutation,
 } = logsApi;

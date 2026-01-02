@@ -690,7 +690,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						}
 
 						// Safety check to prevent infinite loops
-						if responseCount > 100 {
+						if responseCount > 300 {
 							goto lifecycleComplete
 						}
 

@@ -62,6 +62,10 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 					}
 				}
 
+				if tool.CacheControl != nil {
+					anthropicTool.CacheControl = tool.CacheControl
+				}
+
 				tools = append(tools, anthropicTool)
 			}
 			anthropicReq.Tools = tools
@@ -100,12 +104,18 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 		// Convert reasoning
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
-				if *bifrostReq.Params.Reasoning.MaxTokens < MinimumReasoningMaxTokens {
+				budgetTokens := *bifrostReq.Params.Reasoning.MaxTokens
+				if *bifrostReq.Params.Reasoning.MaxTokens == -1 {
+					// anthropic does not support dynamic reasoning budget like gemini
+					// setting it to default max tokens
+					budgetTokens = MinimumReasoningMaxTokens
+				}
+				if budgetTokens < MinimumReasoningMaxTokens {
 					return nil, fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", MinimumReasoningMaxTokens)
 				}
 				anthropicReq.Thinking = &AnthropicThinking{
 					Type:         "enabled",
-					BudgetTokens: bifrostReq.Params.Reasoning.MaxTokens,
+					BudgetTokens: schemas.Ptr(budgetTokens),
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
@@ -143,8 +153,9 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							blocks = append(blocks, AnthropicContentBlock{
-								Type: "text",
-								Text: block.Text,
+								Type:         AnthropicContentBlockTypeText,
+								Text:         block.Text,
+								CacheControl: block.CacheControl,
 							})
 						}
 					}
@@ -177,8 +188,9 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 							for _, block := range toolMsg.Content.ContentBlocks {
 								if block.Text != nil {
 									blocks = append(blocks, AnthropicContentBlock{
-										Type: "text",
-										Text: block.Text,
+										Type:         AnthropicContentBlockTypeText,
+										Text:         block.Text,
+										CacheControl: block.CacheControl,
 									})
 								} else if block.ImageURLStruct != nil {
 									blocks = append(blocks, ConvertToAnthropicImageBlock(block))
@@ -233,11 +245,14 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Text != nil {
 							content = append(content, AnthropicContentBlock{
-								Type: AnthropicContentBlockTypeText,
-								Text: block.Text,
+								Type:         AnthropicContentBlockTypeText,
+								Text:         block.Text,
+								CacheControl: block.CacheControl,
 							})
 						} else if block.ImageURLStruct != nil {
 							content = append(content, ConvertToAnthropicImageBlock(block))
+						} else if block.File != nil {
+							content = append(content, ConvertToAnthropicDocumentBlock(block))
 						}
 					}
 				}
@@ -310,53 +325,49 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 
 	// Process content and tool calls
 	if response.Content != nil {
-		if len(response.Content) == 1 && response.Content[0].Type == AnthropicContentBlockTypeText {
-			contentStr = response.Content[0].Text
-		} else {
-			for _, c := range response.Content {
-				switch c.Type {
-				case AnthropicContentBlockTypeText:
-					if c.Text != nil {
-						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-							Type: schemas.ChatContentBlockTypeText,
-							Text: c.Text,
-						})
-					}
-				case AnthropicContentBlockTypeToolUse:
-					if c.ID != nil && c.Name != nil {
-						function := schemas.ChatAssistantMessageToolCallFunction{
-							Name: c.Name,
-						}
-
-						// Marshal the input to JSON string
-						if c.Input != nil {
-							args, err := json.Marshal(c.Input)
-							if err != nil {
-								function.Arguments = fmt.Sprintf("%v", c.Input)
-							} else {
-								function.Arguments = string(args)
-							}
-						} else {
-							function.Arguments = "{}"
-						}
-
-						toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-							Index:    uint16(len(toolCalls)),
-							Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-							ID:       c.ID,
-							Function: function,
-						})
-					}
-				case AnthropicContentBlockTypeThinking:
-					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-						Index:     len(reasoningDetails),
-						Type:      schemas.BifrostReasoningDetailsTypeText,
-						Text:      c.Thinking,
-						Signature: c.Signature,
+		for _, c := range response.Content {
+			switch c.Type {
+			case AnthropicContentBlockTypeText:
+				if c.Text != nil {
+					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: c.Text,
 					})
-					if c.Thinking != nil {
-						reasoningText += *c.Thinking + "\n"
+				}
+			case AnthropicContentBlockTypeToolUse:
+				if c.ID != nil && c.Name != nil {
+					function := schemas.ChatAssistantMessageToolCallFunction{
+						Name: c.Name,
 					}
+
+					// Marshal the input to JSON string
+					if c.Input != nil {
+						args, err := json.Marshal(c.Input)
+						if err != nil {
+							function.Arguments = fmt.Sprintf("%v", c.Input)
+						} else {
+							function.Arguments = string(args)
+						}
+					} else {
+						function.Arguments = "{}"
+					}
+
+					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+						Index:    uint16(len(toolCalls)),
+						Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+						ID:       c.ID,
+						Function: function,
+					})
+				}
+			case AnthropicContentBlockTypeThinking:
+				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+					Index:     len(reasoningDetails),
+					Type:      schemas.BifrostReasoningDetailsTypeText,
+					Text:      c.Thinking,
+					Signature: c.Signature,
+				})
+				if c.Thinking != nil {
+					reasoningText += *c.Thinking + "\n"
 				}
 			}
 		}

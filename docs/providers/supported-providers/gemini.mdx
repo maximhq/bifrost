@@ -1,0 +1,571 @@
+---
+title: "Google Gemini"
+description: "Google Gemini API conversion guide - request/response transformation, message conversion, tool handling, and streaming behavior"
+icon: "diamond"
+---
+
+## Overview
+
+Google Gemini's API has different structure from OpenAI. Bifrost performs extensive conversion including:
+- **Role remapping** - "assistant" → "model", system messages integrated into main flow
+- **Message grouping** - Consecutive tool responses merged into single user message
+- **Parameter renaming** - e.g., `max_completion_tokens` → `maxOutputTokens`, `stop` → `stopSequences`
+- **Function call handling** - Tool call ID preservation and thought signature support
+- **Content modality** - Support for text, images, video, code execution, and thought content
+- **Thinking/Reasoning** - Thinking configuration mapped to Bifrost reasoning structure
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Responses API | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Speech (TTS) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Embeddings | ✅ | - | `/v1beta/models/{model}:embedContent` |
+| Files | ✅ | - | `/upload/storage/v1beta/files` |
+| Batch | ✅ | - | `/v1beta/batchJobs` |
+| List Models | ✅ | - | `/v1beta/models` |
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `max_completion_tokens` | Renamed to `maxOutputTokens` |
+| `temperature`, `top_p` | Direct pass-through |
+| `stop` | Renamed to `stopSequences` |
+| `response_format` | Converted to `responseMimeType` and `responseSchema` |
+| `tools` | Schema restructured (see [Tool Conversion](#tool-conversion)) |
+| `tool_choice` | Mapped to `functionCallingConfig` (see [Tool Conversion](#tool-conversion)) |
+| `reasoning` | Mapped to `thinkingConfig` (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `top_k` | Via `extra_params` (Gemini-specific) |
+| `presence_penalty`, `frequency_penalty` | Via `extra_params` |
+| `seed` | Via `extra_params` |
+
+### Dropped Parameters
+
+The following parameters are silently ignored: `logit_bias`, `logprobs`, `top_logprobs`, `parallel_tool_calls`, `service_tier`
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway) for Gemini-specific fields:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-2.0-flash",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "top_k": 40,
+    "stop_sequences": ["###"]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-2.0-flash",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "top_k": 40,
+            "stop_sequences": []string{"###"},
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Reasoning / Thinking
+
+**Documentation**: See [Bifrost Reasoning Reference](/providers/reasoning)
+
+### Parameter Mapping
+
+- `reasoning.effort` → `thinkingConfig.thinkingLevel` ("low" → `LOW`, "high" → `HIGH`)
+- `reasoning.max_tokens` → `thinkingConfig.thinkingBudget` (token budget for thinking)
+- `reasoning` parameter triggers `thinkingConfig.includeThoughts = true`
+
+### Supported Thinking Levels
+
+- `"low"` / `"minimal"` → `LOW`
+- `"medium"` / `"high"` → `HIGH`
+- `null` or unspecified → Based on `max_tokens`: -1 (dynamic), 0 (disabled), or specific budget
+
+### Example
+
+```json
+// Request
+{"reasoning": {"effort": "high", "max_tokens": 10000}}
+
+// Gemini conversion
+{"thinkingConfig": {"includeThoughts": true, "thinkingLevel": "HIGH", "thinkingBudget": 10000}}
+```
+
+## Message Conversion
+
+### Critical Caveats
+
+- **Role remapping**: "assistant" → "model", "system" → part of user/model content flow
+- **Consecutive tool responses**: Tool response messages merged into single user message with function response parts
+- **Content flattening**: Multi-part content in single message preserved as parts array
+
+### Image Conversion
+
+- **URL images**: `{type: "image_url", image_url: {url: "..."}}` → `{type: "image", source: {type: "url", url: "..."}}`
+- **Base64 images**: Data URL → `{type: "image", source: {type: "base64", media_type: "image/png", ...}}`
+- **Video content**: Preserved with metadata (fps, start/end offset)
+
+## Tool Conversion
+
+Tool definitions are restructured with these mappings:
+- `function.name` → `functionDeclarations.name` (preserved)
+- `function.parameters` → `functionDeclarations.parameters` (Schema format)
+- `function.description` → `functionDeclarations.description`
+- `function.strict` → Dropped (not supported by Gemini)
+
+### Tool Choice Mapping
+
+| OpenAI | Gemini |
+|--------|--------|
+| `"auto"` | `AUTO` (default) |
+| `"none"` | `NONE` |
+| `"required"` | `ANY` |
+| Specific tool | `ANY` with `allowedFunctionNames` |
+
+## Response Conversion
+
+### Field Mapping
+
+- `finishReason` → `finish_reason`:
+  - `STOP` → `stop`
+  - `MAX_TOKENS` → `length`
+  - `SAFETY`, `RECITATION`, `LANGUAGE`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_SAFETY` → `content_filter`
+  - `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL` → `tool_calls`
+
+- `candidates[0].content.parts[0].text` → `choices[0].message.content` (if single text block)
+- `candidates[0].content.parts[].functionCall` → `choices[0].message.tool_calls`
+- `promptTokenCount` → `usage.prompt_tokens`
+- `candidatesTokenCount` → `usage.completion_tokens`
+- `totalTokenCount` → `usage.total_tokens`
+- `cachedContentTokenCount` → `usage.prompt_tokens_details.cached_tokens`
+- `thoughtsTokenCount` → `usage.completion_tokens_details.reasoning_tokens`
+- Thought content (from `text` parts with `thought: true`) → `reasoning` field in stream deltas
+- Function call `args` (map) → JSON string `arguments`
+
+## Streaming
+
+Event structure:
+- Streaming responses contain deltas in `delta.content` (text), `delta.reasoning` (thoughts), `delta.toolCalls` (function calls)
+- Function responses appear as text content in the delta
+- `finish_reason` only set on final chunk
+- Usage metadata only included in final chunk
+
+---
+
+# 2. Responses API
+
+The Responses API uses the same underlying `/generateContent` endpoint but converts between OpenAI's Responses format and Gemini's Messages format.
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `max_output_tokens` | Renamed to `maxOutputTokens` |
+| `temperature`, `top_p` | Direct pass-through |
+| `instructions` | Converted to system instruction text |
+| `input` (string or array) | Converted to messages |
+| `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
+| `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
+| `reasoning` | Mapped to `thinkingConfig` (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `text` | Maps to `responseMimeType` and `responseSchema` |
+| `stop` | Via `extra_params`, renamed to `stopSequences` |
+| `top_k` | Via `extra_params` |
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway):
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-2.0-flash",
+    "input": "Hello, how are you?",
+    "instructions": "You are a helpful assistant.",
+    "top_k": 40
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-2.0-flash",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        Instructions: schemas.Ptr("You are a helpful assistant."),
+        ExtraParams: map[string]interface{}{
+            "top_k": 40,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Input & Instructions
+
+- **Input**: String wrapped as user message or array converted to messages
+- **Instructions**: Becomes system instruction (single text block)
+
+## Tool Support
+
+Supported types: `function`, `computer_use_preview`, `web_search`, `mcp`
+
+Tool conversions same as [Chat Completions](#1-chat-completions) with:
+- Computer tools auto-configured (if specified in Bifrost request)
+- Function-based tools always enabled
+
+## Response Conversion
+
+- `finishReason` → `status`: `STOP`/`MAX_TOKENS`/other → `completed` | `SAFETY` → `incomplete`
+- Output items conversion:
+  - Text parts → `message` field
+  - Function calls → `function_call` field
+  - Thought content → `reasoning` field
+- Usage fields preserved with cache tokens mapped to `*_tokens_details.cached_tokens`
+
+## Streaming
+
+Event structure: Similar to Chat Completions streaming
+- `content_part.added` emitted for text and reasoning parts
+- Item IDs generated as `msg_{responseID}_item_{outputIndex}`
+
+---
+
+# 3. Speech (Text-to-Speech)
+
+Speech synthesis uses the underlying chat generation endpoint with audio response modality.
+
+## Request Parameters
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `input` | Text to synthesize → `contents[0].parts[0].text` |
+| `voice` | Voice name → `generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName` |
+| `response_format` | Only "wav" supported (default); auto-converted from PCM |
+
+### Voice Configuration
+
+**Single Voice**:
+```json
+{
+  "generationConfig": {
+    "responseModalities": ["AUDIO"],
+    "speechConfig": {
+      "voiceConfig": {
+        "prebuiltVoiceConfig": {
+          "voiceName": "Chant-Female"
+        }
+      }
+    }
+  }
+}
+```
+
+**Multi-Speaker**:
+```json
+{
+  "generationConfig": {
+    "responseModalities": ["AUDIO"],
+    "speechConfig": {
+      "multiSpeakerVoiceConfig": {
+        "speakerVoiceConfigs": [
+          {
+            "speaker": "Character A",
+            "voiceConfig": {
+              "prebuiltVoiceConfig": {
+                "voiceName": "Chant-Female"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+## Response Conversion
+
+- Audio data extracted from `candidates[0].content.parts[].inlineData`
+- **Format conversion**: Gemini returns PCM audio (s16le, 24kHz, mono)
+- **Auto-conversion**: PCM → WAV when `response_format: "wav"` (default)
+- Raw audio returned if `response_format` is omitted or empty string
+
+### Supported Voices
+
+Common Gemini voices include:
+- `Chant-Female` - Female voice
+- `Chant-Male` - Male voice
+- Additional voices depend on model capabilities
+
+Check model documentation for complete list of supported voices.
+
+---
+
+# 4. Transcriptions (Speech-to-Text)
+
+Transcriptions are implemented as chat completions with audio content and text prompts.
+
+## Request Parameters
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `file` | Audio bytes → `contents[].parts[].inlineData` |
+| `prompt` | Instructions → `contents[0].parts[0].text` (defaults to "Generate a transcript of the speech.") |
+| `language` | Via `extra_params` (if supported by model) |
+
+### Audio Input Handling
+
+Audio is sent as inline data with auto-detected MIME type:
+```json
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "<prompt text>"
+        },
+        {
+          "inlineData": {
+            "mimeType": "audio/wav",
+            "data": "<base64-encoded-audio>"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Extra Parameters
+
+Safety settings and caching can be configured:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/gemini-2.0-flash",
+    "file": "<binary-audio-data>",
+    "prompt": "Transcribe this audio in the original language."
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.TranscriptionRequest(ctx, &schemas.BifrostTranscriptionRequest{
+    Provider: schemas.Gemini,
+    Model:    "gemini-2.0-flash",
+    Input: &schemas.TranscriptionInput{
+        File: audioBytes,
+    },
+    Params: &schemas.TranscriptionParameters{
+        Prompt: schemas.Ptr("Transcribe this audio."),
+        ExtraParams: map[string]interface{}{
+            "safety_settings": [...],
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Response Conversion
+
+- Transcribed text extracted from `candidates[0].content.parts[].text`
+- `task` set to `"transcribe"`
+- Usage metadata mapped:
+  - `promptTokenCount` → `input_tokens`
+  - `candidatesTokenCount` → `output_tokens`
+  - `totalTokenCount` → `total_tokens`
+
+---
+
+# 5. Embeddings
+
+<Note>
+Supports both single text and batch text embeddings via batch requests.
+</Note>
+
+**Request Parameters**:
+- `input` → `requests[0].content.parts[0].text` (single text joins arrays with space)
+- `dimensions` → `outputDimensionality`
+- Extra task type and title via `extra_params`
+
+**Response Mapping**:
+- `embeddings[].values` → Bifrost embedding array
+- `metadata.billableCharacterCount` → Usage prompt tokens (fallback)
+- Token counts extracted from usage metadata
+
+---
+
+# 6. Batch API
+
+**Request formats**: Inline requests array or file-based input
+
+**Pagination**: Token-based with `pageToken`
+
+**Endpoints**:
+- POST `/v1beta/batchJobs` - Create
+- GET `/v1beta/batchJobs?pageSize={limit}&pageToken={token}` - List
+- GET `/v1beta/batchJobs/{batch_id}` - Retrieve
+- POST `/v1beta/batchJobs/{batch_id}:cancel` - Cancel
+
+**Response Structure**:
+- Status mapping: `BATCH_STATE_PENDING`/`BATCH_STATE_RUNNING` → `in_progress`, `BATCH_STATE_SUCCEEDED` → `completed`, `BATCH_STATE_FAILED` → `failed`, `BATCH_STATE_CANCELLING` → `cancelling`, `BATCH_STATE_CANCELLED` → `cancelled`, `BATCH_STATE_EXPIRED` → `expired`
+- Inline responses: Array in `dest.inlinedResponses`
+- File-based responses: JSONL file in `dest.fileName`
+
+**Note**: RFC3339 timestamps converted to Unix timestamps
+
+---
+
+# 7. Files API
+
+<Note>
+Supports file upload for batch processing and multimodal requests.
+</Note>
+
+**Upload**: Multipart/form-data with `file` (binary) and `filename` (optional)
+
+**Field mapping**:
+- `name` → `id`
+- `displayName` → `filename`
+- `sizeBytes` → `size_bytes`
+- `mimeType` → `content_type`
+- `createTime` (RFC3339) → Converted to Unix timestamp
+
+**Endpoints**:
+- POST `/upload/storage/v1beta/files` - Upload
+- GET `/v1beta/files?limit={limit}&pageToken={token}` (cursor pagination)
+- GET `/v1beta/files/{file_id}` - Retrieve
+- DELETE `/v1beta/files/{file_id}` - Delete
+- GET `/v1beta/files/{file_id}/content` - Download
+
+---
+
+# 8. List Models
+
+**Request**: GET `/v1beta/models?pageSize={limit}&pageToken={token}` (no body)
+
+**Field mapping**:
+- `name` (remove "models/" prefix) → `id` (add "gemini/" prefix)
+- `displayName` → `name`
+- `description` → `description`
+- `inputTokenLimit` → `max_input_tokens`
+- `outputTokenLimit` → `max_output_tokens`
+- Context length = `inputTokenLimit + outputTokenLimit`
+
+**Pagination**: Token-based with `nextPageToken`
+
+---
+
+## Content Type Support
+
+Bifrost supports the following content modalities through Gemini:
+
+| Content Type | Support | Notes |
+|--------------|---------|-------|
+| Text | ✅ | Full support |
+| Images (URL/Base64) | ✅ | Converted to `{type: "image", source: {...}}` |
+| Video | ✅ | With fps, start/end offset metadata |
+| Audio | ⚠️ | Via file references only |
+| PDF | ✅ | Via file references |
+| Code Execution | ✅ | Auto-executed with results returned |
+| Thinking/Reasoning | ✅ | Thought parts marked with `thought: true` |
+| Function Calls | ✅ | With optional thought signatures |
+
+---
+
+## Caveats
+
+<Accordion title="Tool Response Grouping">
+**Severity**: High
+**Behavior**: Consecutive tool response messages merged into single user message
+**Impact**: Message count and structure changes
+**Code**: `chat.go:627-678`
+</Accordion>
+
+<Accordion title="Thinking Content Handling">
+**Severity**: Medium
+**Behavior**: Thought content appears as `text` parts with `thought: true` flag
+**Impact**: Requires checking `thought` flag to distinguish from regular text
+**Code**: `chat.go:242-244, 302-304`
+</Accordion>
+
+<Accordion title="Function Call Arguments Serialization">
+**Severity**: Low
+**Behavior**: Tool call `args` (object) converted to `arguments` (JSON string)
+**Impact**: Requires JSON parsing to access arguments
+**Code**: `chat.go:101-106`
+</Accordion>
+
+<Accordion title="Thought Signature Base64 Encoding">
+**Severity**: Low
+**Behavior**: `thoughtSignature` base64 URL-safe encoded, auto-converted during unmarshal
+**Impact**: Transparent to user; handled automatically
+**Code**: `types.go:1048-1063`
+</Accordion>
+
+<Accordion title="Streaming Finish Reason Timing">
+**Severity**: Medium
+**Behavior**: `finish_reason` only present in final stream chunk with usage metadata
+**Impact**: Cannot determine completion until end of stream
+**Code**: `chat.go:206-208, 325-328`
+</Accordion>
+
+<Accordion title="Cached Content Token Reporting">
+**Severity**: Low
+**Behavior**: Cached tokens reported in `prompt_tokens_details.cached_tokens`, cannot distinguish cache creation vs read
+**Impact**: Billing estimates may be approximate
+**Code**: `utils.go:270-274`
+</Accordion>
+
+<Accordion title="System Instruction Integration">
+**Severity**: Medium
+**Behavior**: System instructions become `systemInstruction` field (separate from messages), not included in message array
+**Impact**: Structure differs from OpenAI's system message approach
+**Code**: `responses.go:34-46`
+</Accordion>
+

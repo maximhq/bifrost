@@ -158,3 +158,10 @@ type VertexValidationError struct {
 		Type  string `json:"type"`  // error type (e.g., "extra_forbidden", "missing")
 	} `json:"detail"`
 }
+
+// VertexCountTokensResponse models the response payload for Vertex's Gemini-style countTokens.
+// Vertex uses camelCase unlike other request json body.
+type VertexCountTokensResponse struct {
+	TotalTokens             int32 `json:"totalTokens,omitempty"`
+	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
+}

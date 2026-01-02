@@ -1,0 +1,104 @@
+# MCP API schemas
+
+MCPConnectionType:
+  type: string
+  enum: [http, stdio, sse, inprocess]
+  description: Connection type for MCP client
+
+MCPConnectionState:
+  type: string
+  enum: [connected, disconnected, error]
+  description: Connection state of an MCP client
+
+MCPStdioConfig:
+  type: object
+  description: STDIO configuration for MCP client
+  properties:
+    command:
+      type: string
+      description: Executable command to run
+    args:
+      type: array
+      items:
+        type: string
+      description: Command line arguments
+    envs:
+      type: array
+      items:
+        type: string
+      description: Environment variables required
+
+MCPClientConfig:
+  type: object
+  description: MCP client configuration
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    connection_type:
+      $ref: '#/MCPConnectionType'
+    connection_string:
+      type: string
+      description: HTTP or SSE URL (required for HTTP or SSE connections)
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Include-only list for tools.
+        ["*"] => all tools are included
+        [] => no tools are included
+        ["tool1", "tool2"] => include only the specified tools
+
+ChatToolFunction:
+  type: object
+  description: Tool function definition
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    parameters:
+      type: object
+      additionalProperties: true
+
+MCPClient:
+  type: object
+  description: Connected MCP client with its tools
+  properties:
+    config:
+      $ref: '#/MCPClientConfig'
+    tools:
+      type: array
+      items:
+        $ref: '#/ChatToolFunction'
+    state:
+      $ref: '#/MCPConnectionState'
+
+ExecuteToolRequest:
+  type: object
+  description: MCP tool execution request
+  properties:
+    id:
+      type: string
+    type:
+      type: string
+    function:
+      type: object
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+
+ExecuteToolResponse:
+  type: object
+  description: MCP tool execution response
+  additionalProperties: true

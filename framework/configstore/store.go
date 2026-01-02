@@ -123,6 +123,11 @@ type ConfigStore interface {
 	GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error)
 	UpdateProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
 
+	// Restart required config CRUD
+	GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error)
+	SetRestartRequiredConfig(ctx context.Context, config *tables.RestartRequiredConfig) error
+	ClearRestartRequiredConfig(ctx context.Context) error
+
 	// Session CRUD
 	GetSession(ctx context.Context, token string) (*tables.SessionsTable, error)
 	CreateSession(ctx context.Context, session *tables.SessionsTable) error

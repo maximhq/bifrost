@@ -127,12 +127,12 @@ export default function Providers() {
 					setShowCustomProviderDialog(false);
 				}}
 			/>
-			<div className="flex flex-col">
+			<div className="flex flex-col" style={{ maxHeight: "calc(100vh - 70px)", width: "300px" }}>
 				<TooltipProvider>
-					<div className="flex w-[250px] flex-col gap-2 pb-10">
+					<div className="custom-scrollbar flex-1 overflow-y-auto">
 						<div className="rounded-md bg-zinc-50/50 p-4 dark:bg-zinc-800/20">
 							{/* Standard Providers */}
-							<div className="mb-4">
+							<div>
 								<div className="text-muted-foreground mb-2 text-xs font-medium">Standard Providers</div>
 								{allProviders.map((p) => {
 									return (
@@ -165,7 +165,7 @@ export default function Providers() {
 										</Tooltip>
 									);
 								})}
-								{customProviders.length > 0 && <div className="text-muted-foreground mb-2 text-xs font-medium">Custom Providers</div>}
+								{customProviders.length > 0 && <div className="text-muted-foreground mb-2 mt-3 text-xs font-medium">Custom Providers</div>}
 								{customProviders.map((p) => (
 									<Tooltip key={p.name}>
 										<TooltipTrigger
@@ -212,23 +212,23 @@ export default function Providers() {
 									</Tooltip>
 								))}
 							</div>
-							<div className="my-4">
-								<Button
-									variant="outline"
-									size="sm"
-									className="w-full justify-start"
-									disabled={!hasProviderCreateAccess}
-									onClick={(e) => {
-										e.preventDefault();
-										e.stopPropagation();
-										setShowCustomProviderDialog(true);
-									}}
-								>
-									<PlusIcon className="h-4 w-4" />
-									<div className="text-xs">Add New Provider</div>
-								</Button>
-							</div>
 						</div>
+					</div>
+					<div className="sticky bottom-0 z-10 bg-zinc-50/80 pt-2 backdrop-blur-sm dark:bg-zinc-900/80">
+						<Button
+							variant="outline"
+							size="sm"
+							className="w-full justify-start"
+							disabled={!hasProviderCreateAccess}
+							onClick={(e) => {
+								e.preventDefault();
+								e.stopPropagation();
+								setShowCustomProviderDialog(true);
+							}}
+						>
+							<PlusIcon className="h-4 w-4" />
+							<div className="text-xs">Add New Custom Provider</div>
+						</Button>
 					</div>
 				</TooltipProvider>
 			</div>

@@ -425,3 +425,154 @@ func (p *LoggerPlugin) extractUniqueStrings(logs []*logstore.Log, extractor func
 	}
 	return result
 }
+
+// RecalculateCosts recomputes cost for log entries that are missing cost values
+func (p *LoggerPlugin) RecalculateCosts(ctx context.Context, filters logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {
+	if p.pricingManager == nil {
+		return nil, fmt.Errorf("pricing manager is not configured")
+	}
+
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	// Always scope to logs that don't have cost populated
+	filters.MissingCostOnly = true
+	pagination := logstore.PaginationOptions{
+		Limit: limit,
+		// Always look at the oldest requests first
+		SortBy: "timestamp",
+		Order:  "asc",
+	}
+
+	searchResult, err := p.store.SearchLogs(ctx, filters, pagination)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search logs for cost recalculation: %w", err)
+	}
+
+	result := &RecalculateCostResult{
+		TotalMatched: searchResult.Stats.TotalRequests,
+	}
+
+	costUpdates := make(map[string]float64, len(searchResult.Logs))
+
+	for _, logEntry := range searchResult.Logs {
+		cost, calcErr := p.calculateCostForLog(&logEntry)
+		if calcErr != nil {
+			result.Skipped++
+			p.logger.Debug("skipping cost recalculation for log %s: %v", logEntry.ID, calcErr)
+			continue
+		}
+		costUpdates[logEntry.ID] = cost
+	}
+
+	if len(costUpdates) > 0 {
+		if err := p.store.BulkUpdateCost(ctx, costUpdates); err != nil {
+			return nil, fmt.Errorf("failed to bulk update costs: %w", err)
+		}
+		result.Updated = len(costUpdates)
+	}
+
+	// Re-count how many logs still match the missing-cost filter after updates
+	remainingResult, err := p.store.SearchLogs(ctx, filters, logstore.PaginationOptions{
+		Limit:  1, // we only need stats.TotalRequests for the count
+		Offset: 0,
+		SortBy: "timestamp",
+		Order:  "asc",
+	})
+	if err != nil {
+		p.logger.Warn("failed to recompute remaining missing-cost logs: %v", err)
+	} else {
+		result.Remaining = remainingResult.Stats.TotalRequests
+	}
+
+	return result, nil
+}
+
+func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, error) {
+	if logEntry == nil {
+		return 0, fmt.Errorf("log entry cannot be nil")
+	}
+
+	if (logEntry.TokenUsageParsed == nil && logEntry.TokenUsage != "") ||
+		(logEntry.CacheDebugParsed == nil && logEntry.CacheDebug != "") {
+		if err := logEntry.DeserializeFields(); err != nil {
+			return 0, fmt.Errorf("failed to deserialize fields for log %s: %w", logEntry.ID, err)
+		}
+	}
+
+	cacheDebug := logEntry.CacheDebugParsed
+	usage := logEntry.TokenUsageParsed
+
+	// Handle cache hits before attempting to use usage data
+	if cacheDebug != nil && cacheDebug.CacheHit {
+		return p.calculateCostForCacheHit(cacheDebug)
+	}
+
+	if usage == nil {
+		return 0, fmt.Errorf("token usage not available for log %s", logEntry.ID)
+	}
+
+	requestType := schemas.RequestType(logEntry.Object)
+	if requestType == "" {
+		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
+		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)
+	}
+
+	baseCost := p.pricingManager.CalculateCostFromUsage(
+		logEntry.Provider,
+		logEntry.Model,
+		"",
+		usage,
+		requestType,
+		false,
+		nil,
+		nil,
+	)
+
+	// For cache misses, combine base cost with embedding cost if available
+	if cacheDebug != nil && !cacheDebug.CacheHit {
+		baseCost += p.calculateCacheEmbeddingCost(cacheDebug)
+	}
+
+	return baseCost, nil
+}
+
+func (p *LoggerPlugin) calculateCostForCacheHit(cacheDebug *schemas.BifrostCacheDebug) (float64, error) {
+	if cacheDebug == nil {
+		return 0, fmt.Errorf("cache debug data missing")
+	}
+
+	// Direct hits have zero cost
+	if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
+		return 0, nil
+	}
+
+	// Semantic hits bill the embedding lookup
+	embeddingCost := p.calculateCacheEmbeddingCost(cacheDebug)
+	return embeddingCost, nil
+}
+
+func (p *LoggerPlugin) calculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug) float64 {
+	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
+		return 0
+	}
+
+	return p.pricingManager.CalculateCostFromUsage(
+		*cacheDebug.ProviderUsed,
+		*cacheDebug.ModelUsed,
+		"",
+		&schemas.BifrostLLMUsage{
+			PromptTokens:     *cacheDebug.InputTokens,
+			CompletionTokens: 0,
+			TotalTokens:      *cacheDebug.InputTokens,
+		},
+		schemas.EmbeddingRequest,
+		false,
+		nil,
+		nil,
+	)
+}

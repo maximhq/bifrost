@@ -133,7 +133,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 	}
 
 	// 5. Check budget hierarchy (VK → Team → Customer)
-	if budgetResult := r.checkBudgetHierarchy(ctx, vk); budgetResult != nil {
+	if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest.Provider); budgetResult != nil {
 		return budgetResult
 	}
 
@@ -270,9 +270,9 @@ func (r *BudgetResolver) checkSingleRateLimit(rateLimit *configstoreTables.Table
 }
 
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
-func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey) *EvaluationResult {
+func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
-	if err := r.store.CheckBudget(ctx, vk); err != nil {
+	if err := r.store.CheckBudget(ctx, vk, provider); err != nil {
 		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))
 
 		return &EvaluationResult{

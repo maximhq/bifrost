@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -65,9 +66,32 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 // Filter OpenAI Specific Parameters
 func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
-	if request.ChatParameters.Reasoning != nil && request.ChatParameters.Reasoning.Effort != nil && *request.ChatParameters.Reasoning.Effort == "minimal" {
-		request.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
+	// Handle reasoning parameter: OpenAI uses effort-based reasoning
+	// Priority: effort (native) > max_tokens (estimated)
+	if request.ChatParameters.Reasoning != nil {
+		if request.ChatParameters.Reasoning.Effort != nil {
+			// Native field is provided, use it (and clear max_tokens)
+			effort := *request.ChatParameters.Reasoning.Effort
+			// Convert "minimal" to "low" for non-OpenAI providers
+			if effort == "minimal" {
+				request.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
+			}
+			// Clear max_tokens since OpenAI doesn't use it
+			request.ChatParameters.Reasoning.MaxTokens = nil
+		} else if request.ChatParameters.Reasoning.MaxTokens != nil {
+			// Estimate effort from max_tokens
+			maxTokens := *request.ChatParameters.Reasoning.MaxTokens
+			maxCompletionTokens := DefaultCompletionMaxTokens
+			if request.ChatParameters.MaxCompletionTokens != nil {
+				maxCompletionTokens = *request.ChatParameters.MaxCompletionTokens
+			}
+			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
+			request.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+			// Clear max_tokens since OpenAI doesn't use it
+			request.ChatParameters.Reasoning.MaxTokens = nil
+		}
 	}
+
 	if request.ChatParameters.PromptCacheKey != nil {
 		request.ChatParameters.PromptCacheKey = nil
 	}

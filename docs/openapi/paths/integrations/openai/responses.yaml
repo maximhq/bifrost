@@ -1,0 +1,99 @@
+# OpenAI Integration - Responses API Endpoints
+
+responses:
+  post:
+    operationId: openaiCreateResponse
+    summary: Create response (OpenAI Responses API)
+    description: |
+      Creates a response using OpenAI Responses API format.
+      Supports streaming via SSE.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/responses`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-responses:
+  post:
+    operationId: azureCreateResponse
+    summary: Create response (Azure OpenAI)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+# Input tokens endpoint (count tokens for Responses API format)
+responses-input-tokens:
+  post:
+    operationId: openaiCountInputTokens
+    summary: Count input tokens
+    description: |
+      Counts the number of tokens in a Responses API request.
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/count-tokens.yaml#/CountTokensResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

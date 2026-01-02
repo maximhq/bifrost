@@ -1,0 +1,28 @@
+# Common schemas used across management APIs
+
+SuccessResponse:
+  type: object
+  description: Generic success response
+  properties:
+    status:
+      type: string
+      example: success
+    message:
+      type: string
+      example: Operation completed successfully
+
+ErrorResponse:
+  type: object
+  description: Error response
+  properties:
+    error:
+      type: string
+    message:
+      type: string
+
+MessageResponse:
+  type: object
+  description: Simple message response
+  properties:
+    message:
+      type: string

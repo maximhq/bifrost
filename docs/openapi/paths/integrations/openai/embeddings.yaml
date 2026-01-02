@@ -1,0 +1,65 @@
+# OpenAI Integration - Embeddings Endpoints
+
+embeddings:
+  post:
+    operationId: openaiCreateEmbedding
+    summary: Create embeddings (OpenAI format)
+    description: |
+      Creates embedding vectors for the input text.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/embeddings`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-embeddings:
+  post:
+    operationId: azureCreateEmbedding
+    summary: Create embeddings (Azure OpenAI)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

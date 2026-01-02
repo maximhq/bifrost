@@ -1,0 +1,385 @@
+---
+title: "Overview"
+description: "Use Bifrost as a drop-in replacement for OpenAI API with full compatibility and enhanced features."
+icon: "book"
+---
+
+## Overview
+
+Bifrost provides complete OpenAI API compatibility through protocol adaptation. The integration handles request transformation, response normalization, and error mapping between OpenAI's API specification and Bifrost's internal processing pipeline.
+
+This integration enables you to utilize Bifrost's features like governance, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing OpenAI SDK-based architecture.
+
+**Endpoint:** `/openai`
+
+---
+
+## Setup
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python {5}
+import openai
+
+# Configure client to use Bifrost
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key"  # Keys handled by Bifrost
+)
+
+# Make requests as usual
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(response.choices[0].message.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {5}
+import OpenAI from "openai";
+
+// Configure client to use Bifrost
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key", // Keys handled by Bifrost
+});
+
+// Make requests as usual
+const response = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello!" }],
+});
+
+console.log(response.choices[0].message.content);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Use multiple providers through the same OpenAI SDK format by prefixing model names with the provider:
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key"
+)
+
+# OpenAI models (default)
+openai_response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello from OpenAI!"}]
+)
+
+# Anthropic models via OpenAI SDK format
+anthropic_response = client.chat.completions.create(
+    model="anthropic/claude-3-sonnet-20240229",
+    messages=[{"role": "user", "content": "Hello from Claude!"}]
+)
+
+# Google Vertex models via OpenAI SDK format
+vertex_response = client.chat.completions.create(
+    model="vertex/gemini-pro",
+    messages=[{"role": "user", "content": "Hello from Gemini!"}]
+)
+
+# Azure models
+azure_response = client.chat.completions.create(
+    model="azure/gpt-4o",
+    messages=[{"role": "user", "content": "Hello from Azure!"}]
+)
+
+# Local Ollama models
+ollama_response = client.chat.completions.create(
+    model="ollama/llama3.1:8b",
+    messages=[{"role": "user", "content": "Hello from Ollama!"}]
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key",
+});
+
+// OpenAI models (default)
+const openaiResponse = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from OpenAI!" }],
+});
+
+// Anthropic models via OpenAI SDK format
+const anthropicResponse = await openai.chat.completions.create({
+  model: "anthropic/claude-3-sonnet-20240229",
+  messages: [{ role: "user", content: "Hello from Claude!" }],
+});
+
+// Google Vertex models via OpenAI SDK format
+const vertexResponse = await openai.chat.completions.create({
+  model: "vertex/gemini-pro",
+  messages: [{ role: "user", content: "Hello from Gemini!" }],
+});
+
+// Azure models
+const azureResponse = await openai.chat.completions.create({
+  model: "azure/gpt-4o",
+  messages: [{ role: "user", content: "Hello from Azure!" }],
+});
+
+// Local Ollama models
+const ollamaResponse = await openai.chat.completions.create({
+  model: "ollama/llama3.1:8b",
+  messages: [{ role: "user", content: "Hello from Ollama!" }],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.):
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key",
+    default_headers={
+        "x-bf-vk": "vk_12345",  # Virtual key for governance
+    }
+)
+
+response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello with custom headers!"}]
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key",
+  defaultHeaders: {
+    "x-bf-vk": "vk_12345", // Virtual key for governance
+  },
+});
+
+const response = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello with custom headers!" }],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly in requests to bypass Bifrost's load balancing. You can pass any provider's API key (OpenAI, Anthropic, Mistral, etc.) since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+import openai
+
+# Using OpenAI's API key directly
+client_with_direct_key = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="sk-your-openai-key"  # OpenAI's API key works
+)
+
+openai_response = client_with_direct_key.chat.completions.create(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello from GPT!"}]
+)
+
+# Or pass different provider keys per request
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="dummy-key"
+)
+
+# Use OpenAI key for GPT models
+openai_response = client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello GPT!"}],
+    extra_headers={
+        "Authorization": "Bearer sk-your-openai-key"
+    }
+)
+
+# Use Anthropic key for Claude models
+anthropic_response = client.chat.completions.create(
+    model="anthropic/claude-3-sonnet-20240229",
+    messages=[{"role": "user", "content": "Hello Claude!"}],
+    extra_headers={
+        "x-api-key": "sk-ant-your-anthropic-key"
+    }
+)
+
+# Use Gemini key for Gemini models
+gemini_response = client.chat.completions.create(
+    model="gemini/gemini-2.5-flash",
+    messages=[{"role": "user", "content": "Hello Gemini!"}],
+    extra_headers={
+        "x-goog-api-key": "sk-gemini-your-gemini-key"
+    }
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import OpenAI from "openai";
+
+// Using OpenAI's API key directly
+const openaiWithDirectKey = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "sk-your-openai-key", // OpenAI's API key works
+});
+
+const openaiResponse = await openaiWithDirectKey.chat.completions.create({
+  model: "openai/gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from GPT!" }],
+});
+
+// Or pass different provider keys per request
+const openai = new OpenAI({
+  baseURL: "http://localhost:8080/openai",
+  apiKey: "dummy-key",
+});
+
+// Use OpenAI key for GPT models
+const openaiResponse = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello GPT!" }],
+  headers: {
+    "Authorization": "Bearer sk-your-openai-key",
+  },
+});
+
+// Use Anthropic key for Claude models
+const anthropicResponseWithHeader = await openai.chat.completions.create({
+  model: "anthropic/claude-3-sonnet-20240229",
+  messages: [{ role: "user", content: "Hello Claude!" }],
+  headers: {
+    "x-api-key": "sk-ant-your-anthropic-key",
+  },
+});
+
+// Use Gemini key for Gemini models
+const geminiResponseWithHeader = await openai.chat.completions.create({
+  model: "gemini/gemini-2.5-flash",
+  messages: [{ role: "user", content: "Hello Gemini!" }],
+  headers: {
+    "x-goog-api-key": "sk-gemini-your-gemini-key",
+  },
+});
+```
+
+</Tab>
+</Tabs>
+
+For Azure, you can use the AzureOpenAI client and point it to Bifrost integration endpoint. The `x-bf-azure-endpoint` header is required to specify your Azure resource endpoint.
+
+<Tabs group="openai-sdk">
+<Tab title="Python">
+
+```python
+from openai import AzureOpenAI
+
+azure_client = AzureOpenAI(
+    api_key="your-azure-api-key",
+    api_version="2024-02-01",
+    azure_endpoint="http://localhost:8080/openai",  # Point to Bifrost
+    default_headers={
+        "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+    }
+)
+
+azure_response = azure_client.chat.completions.create(
+    model="gpt-4-deployment",  # Your deployment name
+    messages=[{"role": "user", "content": "Hello from Azure!"}]
+)
+
+print(azure_response.choices[0].message.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { AzureOpenAI } from "openai";
+
+const azureClient = new AzureOpenAI({
+  apiKey: "your-azure-api-key",
+  apiVersion: "2024-02-01",
+  baseURL: "http://localhost:8080/openai", // Point to Bifrost
+  defaultHeaders: {
+    "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+  }
+});
+
+const azureResponse = await azureClient.chat.completions.create({
+  model: "gpt-4-deployment", // Your deployment name
+  messages: [{ role: "user", content: "Hello from Azure!" }],
+});
+
+console.log(azureResponse.choices[0].message.content);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Supported Features
+
+The OpenAI integration supports all features that are available in both the OpenAI SDK and Bifrost core functionality. If the OpenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.
+
+---
+
+## Next Steps
+
+- **[Files and Batch API](./files-and-batch)** - File uploads and batch processing
+- **[Anthropic SDK](../anthropic-sdk/overview)** - Claude integration patterns
+- **[Google GenAI SDK](../genai-sdk)** - Gemini integration patterns
+- **[Configuration](../../quickstart/README)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+

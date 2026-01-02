@@ -114,7 +114,7 @@ RUN npx next build
 RUN node scripts/fix-paths.js
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.24.3-alpine3.22 AS builder
+FROM golang:1.25.5-alpine3.22 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -230,7 +230,7 @@ RUN npx next build
 RUN node scripts/fix-paths.js
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.24.3-bookworm AS builder
+FROM golang:1.25.5-bookworm AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -380,12 +380,12 @@ error while loading shared libraries: libc.musl-x86_64.so.1: cannot open shared 
 
 | Target Deployment | Build With | Dockerfile Base |
 |-------------------|------------|-----------------|
-| Alpine containers | musl | `golang:1.24.3-alpine3.22` |
-| Debian/Ubuntu containers | glibc | `golang:1.24.3-bookworm` |
-| Ubuntu/Debian servers | glibc | `golang:1.24.3-bookworm` |
+| Alpine containers | musl | `golang:1.25.5-alpine3.22` |
+| Debian/Ubuntu containers | glibc | `golang:1.25.5-bookworm` |
+| Ubuntu/Debian servers | glibc | `golang:1.25.5-bookworm` |
 | RHEL/CentOS servers | glibc | Native build or glibc container |
-| Kubernetes (Alpine) | musl | `golang:1.24.3-alpine3.22` |
-| Kubernetes (Debian) | glibc | `golang:1.24.3-bookworm` |
+| Kubernetes (Alpine) | musl | `golang:1.25.5-alpine3.22` |
+| Kubernetes (Debian) | glibc | `golang:1.25.5-bookworm` |
 
 **Simple rule:** Build with the same base OS family as your deployment target.
 
@@ -398,7 +398,7 @@ Plugins **must** be built with the **exact same environment** as your Bifrost bi
 docker run --rm \
   -v "$PWD:/work" \
   -w /work \
-  golang:1.24.3-alpine3.22 \
+  golang:1.25.5-alpine3.22 \
   sh -c "apk add --no-cache gcc musl-dev && \
          go build -buildmode=plugin -o myplugin.so main.go"
 
@@ -406,7 +406,7 @@ docker run --rm \
 docker run --rm \
   -v "$PWD:/work" \
   -w /work \
-  golang:1.24.3-bookworm \
+  golang:1.25.5-bookworm \
   sh -c "apt-get update && apt-get install -y gcc && \
          go build -buildmode=plugin -o myplugin.so main.go"
 ```
@@ -451,14 +451,14 @@ Test that your plugin loads successfully:
 
 ### Go Version Requirement
 
-Bifrost is built with **Go 1.24.3**. Your plugin **must** be compiled with the exact same Go version to ensure compatibility.
+Bifrost is built with **Go 1.25.5**. Your plugin **must** be compiled with the exact same Go version to ensure compatibility.
 
 ```bash
 # Check your Go version
 go version
-# Should output: go version go1.24.3 ...
+# Should output: go version go1.25.5 ...
 
-# If you need to install Go 1.24.3
+# If you need to install Go 1.25.5
 # Visit: https://go.dev/dl/
 ```
 
@@ -531,12 +531,12 @@ When creating a plugin, your `go.mod` should match Bifrost's Go version:
 ```go
 module github.com/example/my-plugin
 
-go 1.24.3
+go 1.25.5
 
 require (
-    github.com/maximhq/bifrost/core v1.2.26
+    github.com/maximhq/bifrost/core v1.2.38
     // Optional: Add framework for advanced features
-    // github.com/maximhq/bifrost/framework v1.1.33
+    // github.com/maximhq/bifrost/framework v1.1.48
     
     // Add other dependencies as needed, matching versions from Bifrost's go.mod files
     // github.com/bytedance/sonic v1.14.1
@@ -560,14 +560,14 @@ cannot load plugin: plugin was built with a different version of package runtime
 
 **Cause:** Plugin and Bifrost were built with different Go versions.
 
-**Solution:** Use the exact same Go version (Go 1.24.3) for both:
+**Solution:** Use the exact same Go version (Go 1.25.5) for both:
 
 ```bash
 # Check Go version used for Bifrost
 ./tmp/bifrost-http -version
 
 # Verify your Go version matches
-go version  # Should output: go version go1.24.3
+go version  # Should output: go version go1.25.5
 
 # See full compatibility requirements
 ```
@@ -639,10 +639,10 @@ Match Bifrost's exact Go version and key dependencies (see [Go Version and Packa
 
 ```bash
 # Pin Go version in Dockerfile
-FROM golang:1.24.3-alpine3.22 AS builder
+FROM golang:1.25.5-alpine3.22 AS builder
 
 # Pin Go version in Makefile/CI
-GO_VERSION=1.24.3
+GO_VERSION=1.25.5
 ```
 
 ### 3. Test Plugin Loading Locally
@@ -674,14 +674,14 @@ Build plugins in the same Dockerfile as Bifrost:
 
 ```dockerfile
 # Build plugin
-FROM golang:1.24.3-alpine3.22 AS plugin-builder
+FROM golang:1.25.5-alpine3.22 AS plugin-builder
 WORKDIR /plugin
 COPY plugins/myplugin/ .
 RUN apk add --no-cache gcc musl-dev && \
     go build -buildmode=plugin -o myplugin.so main.go
 
 # Build Bifrost
-FROM golang:1.24.3-alpine3.22 AS bifrost-builder
+FROM golang:1.25.5-alpine3.22 AS bifrost-builder
 # ... (bifrost build steps)
 
 # Runtime
@@ -697,7 +697,7 @@ This ensures plugins and Bifrost use identical build environments.
 Now that you have a dynamically linked Bifrost binary:
 
 1. **[Write your first plugin](./writing-plugin)** - Learn the plugin API and create custom functionality
-2. **[Deploy with plugins](./deployment)** - Best practices for production deployments
+2. **[Deploy with plugins](../deployment-guides)** - Best practices for production deployments
 3. **[Example plugins](https://github.com/maximhq/bifrost/tree/main/examples/plugins)** - Study working examples
 
 <Note>

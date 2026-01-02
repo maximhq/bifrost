@@ -367,6 +367,188 @@ func getResponsesRequestParams(req *schemas.BifrostResponsesRequest) []*KeyValue
 	return params
 }
 
+// getFileUploadRequestParams handles the file upload request
+func getFileUploadRequestParams(req *schemas.BifrostFileUploadRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Filename != "" {
+		params = append(params, kvStr("gen_ai.file.filename", req.Filename))
+	}
+	if req.Purpose != "" {
+		params = append(params, kvStr("gen_ai.file.purpose", string(req.Purpose)))
+	}
+	if len(req.File) > 0 {
+		params = append(params, kvInt("gen_ai.file.bytes", int64(len(req.File))))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getFileListRequestParams handles the file list request
+func getFileListRequestParams(req *schemas.BifrostFileListRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Purpose != "" {
+		params = append(params, kvStr("gen_ai.file.purpose", string(req.Purpose)))
+	}
+	if req.Limit > 0 {
+		params = append(params, kvInt("gen_ai.file.limit", int64(req.Limit)))
+	}
+	if req.After != nil {
+		params = append(params, kvStr("gen_ai.file.after", *req.After))
+	}
+	if req.Order != nil {
+		params = append(params, kvStr("gen_ai.file.order", *req.Order))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getFileRetrieveRequestParams handles the file retrieve request
+func getFileRetrieveRequestParams(req *schemas.BifrostFileRetrieveRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.FileID != "" {
+		params = append(params, kvStr("gen_ai.file.file_id", req.FileID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getFileDeleteRequestParams handles the file delete request
+func getFileDeleteRequestParams(req *schemas.BifrostFileDeleteRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.FileID != "" {
+		params = append(params, kvStr("gen_ai.file.file_id", req.FileID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getFileContentRequestParams handles the file content request
+func getFileContentRequestParams(req *schemas.BifrostFileContentRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.FileID != "" {
+		params = append(params, kvStr("gen_ai.file.file_id", req.FileID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getBatchCreateRequestParams handles the batch create request
+func getBatchCreateRequestParams(req *schemas.BifrostBatchCreateRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.InputFileID != "" {
+		params = append(params, kvStr("gen_ai.batch.input_file_id", req.InputFileID))
+	}
+	if req.Endpoint != "" {
+		params = append(params, kvStr("gen_ai.batch.endpoint", string(req.Endpoint)))
+	}
+	if req.CompletionWindow != "" {
+		params = append(params, kvStr("gen_ai.batch.completion_window", req.CompletionWindow))
+	}
+	if len(req.Requests) > 0 {
+		params = append(params, kvInt("gen_ai.batch.requests_count", int64(len(req.Requests))))
+	}
+	if len(req.Metadata) > 0 {
+		params = append(params, kvStr("gen_ai.batch.metadata", fmt.Sprintf("%v", req.Metadata)))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getBatchListRequestParams handles the batch list request
+func getBatchListRequestParams(req *schemas.BifrostBatchListRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.Limit > 0 {
+		params = append(params, kvInt("gen_ai.batch.limit", int64(req.Limit)))
+	}
+	if req.After != nil {
+		params = append(params, kvStr("gen_ai.batch.after", *req.After))
+	}
+	if req.BeforeID != nil {
+		params = append(params, kvStr("gen_ai.batch.before_id", *req.BeforeID))
+	}
+	if req.AfterID != nil {
+		params = append(params, kvStr("gen_ai.batch.after_id", *req.AfterID))
+	}
+	if req.PageToken != nil {
+		params = append(params, kvStr("gen_ai.batch.page_token", *req.PageToken))
+	}
+	if req.PageSize > 0 {
+		params = append(params, kvInt("gen_ai.batch.page_size", int64(req.PageSize)))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getBatchRetrieveRequestParams handles the batch retrieve request
+func getBatchRetrieveRequestParams(req *schemas.BifrostBatchRetrieveRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.BatchID != "" {
+		params = append(params, kvStr("gen_ai.batch.batch_id", req.BatchID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getBatchCancelRequestParams handles the batch cancel request
+func getBatchCancelRequestParams(req *schemas.BifrostBatchCancelRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.BatchID != "" {
+		params = append(params, kvStr("gen_ai.batch.batch_id", req.BatchID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
+// getBatchResultsRequestParams handles the batch results request
+func getBatchResultsRequestParams(req *schemas.BifrostBatchResultsRequest) []*KeyValue {
+	params := []*KeyValue{}
+	if req.BatchID != "" {
+		params = append(params, kvStr("gen_ai.batch.batch_id", req.BatchID))
+	}
+	if req.ExtraParams != nil {
+		for k, v := range req.ExtraParams {
+			params = append(params, kvStr(k, fmt.Sprintf("%v", v)))
+		}
+	}
+	return params
+}
+
 // createResourceSpan creates a new resource span for a Bifrost request
 func (p *OtelPlugin) createResourceSpan(traceID, spanID string, timestamp time.Time, req *schemas.BifrostRequest) *ResourceSpan {
 	provider, model, _ := req.GetRequestFields()
@@ -396,6 +578,36 @@ func (p *OtelPlugin) createResourceSpan(traceID, spanID string, timestamp time.T
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
 		spanName = "gen_ai.responses"
 		params = append(params, getResponsesRequestParams(req.ResponsesRequest)...)
+	case schemas.BatchCreateRequest:
+		spanName = "gen_ai.batch.create"
+		params = append(params, getBatchCreateRequestParams(req.BatchCreateRequest)...)
+	case schemas.BatchListRequest:
+		spanName = "gen_ai.batch.list"
+		params = append(params, getBatchListRequestParams(req.BatchListRequest)...)
+	case schemas.BatchRetrieveRequest:
+		spanName = "gen_ai.batch.retrieve"
+		params = append(params, getBatchRetrieveRequestParams(req.BatchRetrieveRequest)...)
+	case schemas.BatchCancelRequest:
+		spanName = "gen_ai.batch.cancel"
+		params = append(params, getBatchCancelRequestParams(req.BatchCancelRequest)...)
+	case schemas.BatchResultsRequest:
+		spanName = "gen_ai.batch.results"
+		params = append(params, getBatchResultsRequestParams(req.BatchResultsRequest)...)
+	case schemas.FileUploadRequest:
+		spanName = "gen_ai.file.upload"
+		params = append(params, getFileUploadRequestParams(req.FileUploadRequest)...)
+	case schemas.FileListRequest:
+		spanName = "gen_ai.file.list"
+		params = append(params, getFileListRequestParams(req.FileListRequest)...)
+	case schemas.FileRetrieveRequest:
+		spanName = "gen_ai.file.retrieve"
+		params = append(params, getFileRetrieveRequestParams(req.FileRetrieveRequest)...)
+	case schemas.FileDeleteRequest:
+		spanName = "gen_ai.file.delete"
+		params = append(params, getFileDeleteRequestParams(req.FileDeleteRequest)...)
+	case schemas.FileContentRequest:
+		spanName = "gen_ai.file.content"
+		params = append(params, getFileContentRequestParams(req.FileContentRequest)...)
 	}
 	attributes := append(p.attributesFromEnvironment, kvStr("service.name", p.serviceName), kvStr("service.version", p.bifrostVersion))
 	// Preparing final resource span
@@ -440,7 +652,7 @@ func completeResourceSpan(
 	teamID string,
 	teamName string,
 	customerID string,
-	customerName string,	
+	customerName string,
 ) *ResourceSpan {
 	params := []*KeyValue{}
 
@@ -660,6 +872,171 @@ func completeResourceSpan(
 					params = append(params, kvInt("gen_ai.usage.input_token_details.audio_tokens", int64(resp.TranscriptionResponse.Usage.InputTokenDetails.AudioTokens)))
 				}
 			}
+		case resp.BatchCreateResponse != nil:
+			params = append(params, kvStr("gen_ai.batch.id", resp.BatchCreateResponse.ID))
+			params = append(params, kvStr("gen_ai.batch.status", string(resp.BatchCreateResponse.Status)))
+			if resp.BatchCreateResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.batch.object", resp.BatchCreateResponse.Object))
+			}
+			if resp.BatchCreateResponse.Endpoint != "" {
+				params = append(params, kvStr("gen_ai.batch.endpoint", resp.BatchCreateResponse.Endpoint))
+			}
+			if resp.BatchCreateResponse.InputFileID != "" {
+				params = append(params, kvStr("gen_ai.batch.input_file_id", resp.BatchCreateResponse.InputFileID))
+			}
+			if resp.BatchCreateResponse.CompletionWindow != "" {
+				params = append(params, kvStr("gen_ai.batch.completion_window", resp.BatchCreateResponse.CompletionWindow))
+			}
+			if resp.BatchCreateResponse.CreatedAt != 0 {
+				params = append(params, kvInt("gen_ai.batch.created_at", resp.BatchCreateResponse.CreatedAt))
+			}
+			if resp.BatchCreateResponse.ExpiresAt != nil {
+				params = append(params, kvInt("gen_ai.batch.expires_at", *resp.BatchCreateResponse.ExpiresAt))
+			}
+			if resp.BatchCreateResponse.OutputFileID != nil {
+				params = append(params, kvStr("gen_ai.batch.output_file_id", *resp.BatchCreateResponse.OutputFileID))
+			}
+			if resp.BatchCreateResponse.ErrorFileID != nil {
+				params = append(params, kvStr("gen_ai.batch.error_file_id", *resp.BatchCreateResponse.ErrorFileID))
+			}
+			params = append(params, kvInt("gen_ai.batch.request_counts.total", int64(resp.BatchCreateResponse.RequestCounts.Total)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.completed", int64(resp.BatchCreateResponse.RequestCounts.Completed)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.failed", int64(resp.BatchCreateResponse.RequestCounts.Failed)))
+		case resp.BatchListResponse != nil:
+			if resp.BatchListResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.batch.object", resp.BatchListResponse.Object))
+			}
+			params = append(params, kvInt("gen_ai.batch.data_count", int64(len(resp.BatchListResponse.Data))))
+			params = append(params, kvBool("gen_ai.batch.has_more", resp.BatchListResponse.HasMore))
+			if resp.BatchListResponse.FirstID != nil {
+				params = append(params, kvStr("gen_ai.batch.first_id", *resp.BatchListResponse.FirstID))
+			}
+			if resp.BatchListResponse.LastID != nil {
+				params = append(params, kvStr("gen_ai.batch.last_id", *resp.BatchListResponse.LastID))
+			}
+		case resp.BatchRetrieveResponse != nil:
+			params = append(params, kvStr("gen_ai.batch.id", resp.BatchRetrieveResponse.ID))
+			params = append(params, kvStr("gen_ai.batch.status", string(resp.BatchRetrieveResponse.Status)))
+			if resp.BatchRetrieveResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.batch.object", resp.BatchRetrieveResponse.Object))
+			}
+			if resp.BatchRetrieveResponse.Endpoint != "" {
+				params = append(params, kvStr("gen_ai.batch.endpoint", resp.BatchRetrieveResponse.Endpoint))
+			}
+			if resp.BatchRetrieveResponse.InputFileID != "" {
+				params = append(params, kvStr("gen_ai.batch.input_file_id", resp.BatchRetrieveResponse.InputFileID))
+			}
+			if resp.BatchRetrieveResponse.CompletionWindow != "" {
+				params = append(params, kvStr("gen_ai.batch.completion_window", resp.BatchRetrieveResponse.CompletionWindow))
+			}
+			if resp.BatchRetrieveResponse.CreatedAt != 0 {
+				params = append(params, kvInt("gen_ai.batch.created_at", resp.BatchRetrieveResponse.CreatedAt))
+			}
+			if resp.BatchRetrieveResponse.ExpiresAt != nil {
+				params = append(params, kvInt("gen_ai.batch.expires_at", *resp.BatchRetrieveResponse.ExpiresAt))
+			}
+			if resp.BatchRetrieveResponse.InProgressAt != nil {
+				params = append(params, kvInt("gen_ai.batch.in_progress_at", *resp.BatchRetrieveResponse.InProgressAt))
+			}
+			if resp.BatchRetrieveResponse.FinalizingAt != nil {
+				params = append(params, kvInt("gen_ai.batch.finalizing_at", *resp.BatchRetrieveResponse.FinalizingAt))
+			}
+			if resp.BatchRetrieveResponse.CompletedAt != nil {
+				params = append(params, kvInt("gen_ai.batch.completed_at", *resp.BatchRetrieveResponse.CompletedAt))
+			}
+			if resp.BatchRetrieveResponse.FailedAt != nil {
+				params = append(params, kvInt("gen_ai.batch.failed_at", *resp.BatchRetrieveResponse.FailedAt))
+			}
+			if resp.BatchRetrieveResponse.ExpiredAt != nil {
+				params = append(params, kvInt("gen_ai.batch.expired_at", *resp.BatchRetrieveResponse.ExpiredAt))
+			}
+			if resp.BatchRetrieveResponse.CancellingAt != nil {
+				params = append(params, kvInt("gen_ai.batch.cancelling_at", *resp.BatchRetrieveResponse.CancellingAt))
+			}
+			if resp.BatchRetrieveResponse.CancelledAt != nil {
+				params = append(params, kvInt("gen_ai.batch.cancelled_at", *resp.BatchRetrieveResponse.CancelledAt))
+			}
+			if resp.BatchRetrieveResponse.OutputFileID != nil {
+				params = append(params, kvStr("gen_ai.batch.output_file_id", *resp.BatchRetrieveResponse.OutputFileID))
+			}
+			if resp.BatchRetrieveResponse.ErrorFileID != nil {
+				params = append(params, kvStr("gen_ai.batch.error_file_id", *resp.BatchRetrieveResponse.ErrorFileID))
+			}
+			params = append(params, kvInt("gen_ai.batch.request_counts.total", int64(resp.BatchRetrieveResponse.RequestCounts.Total)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.completed", int64(resp.BatchRetrieveResponse.RequestCounts.Completed)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.failed", int64(resp.BatchRetrieveResponse.RequestCounts.Failed)))
+		case resp.BatchCancelResponse != nil:
+			params = append(params, kvStr("gen_ai.batch.id", resp.BatchCancelResponse.ID))
+			params = append(params, kvStr("gen_ai.batch.status", string(resp.BatchCancelResponse.Status)))
+			if resp.BatchCancelResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.batch.object", resp.BatchCancelResponse.Object))
+			}
+			if resp.BatchCancelResponse.CancellingAt != nil {
+				params = append(params, kvInt("gen_ai.batch.cancelling_at", *resp.BatchCancelResponse.CancellingAt))
+			}
+			if resp.BatchCancelResponse.CancelledAt != nil {
+				params = append(params, kvInt("gen_ai.batch.cancelled_at", *resp.BatchCancelResponse.CancelledAt))
+			}
+			params = append(params, kvInt("gen_ai.batch.request_counts.total", int64(resp.BatchCancelResponse.RequestCounts.Total)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.completed", int64(resp.BatchCancelResponse.RequestCounts.Completed)))
+			params = append(params, kvInt("gen_ai.batch.request_counts.failed", int64(resp.BatchCancelResponse.RequestCounts.Failed)))
+		case resp.BatchResultsResponse != nil:
+			params = append(params, kvStr("gen_ai.batch.batch_id", resp.BatchResultsResponse.BatchID))
+			params = append(params, kvInt("gen_ai.batch.results_count", int64(len(resp.BatchResultsResponse.Results))))
+			params = append(params, kvBool("gen_ai.batch.has_more", resp.BatchResultsResponse.HasMore))
+			if resp.BatchResultsResponse.NextCursor != nil {
+				params = append(params, kvStr("gen_ai.batch.next_cursor", *resp.BatchResultsResponse.NextCursor))
+			}
+		case resp.FileUploadResponse != nil:
+			params = append(params, kvStr("gen_ai.file.id", resp.FileUploadResponse.ID))
+			if resp.FileUploadResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.file.object", resp.FileUploadResponse.Object))
+			}
+			params = append(params, kvInt("gen_ai.file.bytes", resp.FileUploadResponse.Bytes))
+			params = append(params, kvInt("gen_ai.file.created_at", resp.FileUploadResponse.CreatedAt))
+			params = append(params, kvStr("gen_ai.file.filename", resp.FileUploadResponse.Filename))
+			params = append(params, kvStr("gen_ai.file.purpose", string(resp.FileUploadResponse.Purpose)))
+			if resp.FileUploadResponse.Status != "" {
+				params = append(params, kvStr("gen_ai.file.status", string(resp.FileUploadResponse.Status)))
+			}
+			if resp.FileUploadResponse.StorageBackend != "" {
+				params = append(params, kvStr("gen_ai.file.storage_backend", string(resp.FileUploadResponse.StorageBackend)))
+			}
+		case resp.FileListResponse != nil:
+			if resp.FileListResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.file.object", resp.FileListResponse.Object))
+			}
+			params = append(params, kvInt("gen_ai.file.data_count", int64(len(resp.FileListResponse.Data))))
+			params = append(params, kvBool("gen_ai.file.has_more", resp.FileListResponse.HasMore))
+		case resp.FileRetrieveResponse != nil:
+			params = append(params, kvStr("gen_ai.file.id", resp.FileRetrieveResponse.ID))
+			if resp.FileRetrieveResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.file.object", resp.FileRetrieveResponse.Object))
+			}
+			params = append(params, kvInt("gen_ai.file.bytes", resp.FileRetrieveResponse.Bytes))
+			params = append(params, kvInt("gen_ai.file.created_at", resp.FileRetrieveResponse.CreatedAt))
+			params = append(params, kvStr("gen_ai.file.filename", resp.FileRetrieveResponse.Filename))
+			params = append(params, kvStr("gen_ai.file.purpose", string(resp.FileRetrieveResponse.Purpose)))
+			if resp.FileRetrieveResponse.Status != "" {
+				params = append(params, kvStr("gen_ai.file.status", string(resp.FileRetrieveResponse.Status)))
+			}
+			if resp.FileRetrieveResponse.StorageBackend != "" {
+				params = append(params, kvStr("gen_ai.file.storage_backend", string(resp.FileRetrieveResponse.StorageBackend)))
+			}
+		case resp.FileDeleteResponse != nil:
+			params = append(params, kvStr("gen_ai.file.id", resp.FileDeleteResponse.ID))
+			if resp.FileDeleteResponse.Object != "" {
+				params = append(params, kvStr("gen_ai.file.object", resp.FileDeleteResponse.Object))
+			}
+			params = append(params, kvBool("gen_ai.file.deleted", resp.FileDeleteResponse.Deleted))
+		case resp.FileContentResponse != nil:
+			params = append(params, kvStr("gen_ai.file.file_id", resp.FileContentResponse.FileID))
+			if resp.FileContentResponse.ContentType != "" {
+				params = append(params, kvStr("gen_ai.file.content_type", resp.FileContentResponse.ContentType))
+			}
+			if len(resp.FileContentResponse.Content) > 0 {
+				params = append(params, kvInt("gen_ai.file.content_bytes", int64(len(resp.FileContentResponse.Content))))
+			}
 		}
 	}
 
@@ -667,11 +1044,13 @@ func completeResourceSpan(
 	status := tracepb.Status_STATUS_CODE_OK
 	if bifrostErr != nil {
 		status = tracepb.Status_STATUS_CODE_ERROR
-		if bifrostErr.Error.Type != nil {
-			params = append(params, kvStr("gen_ai.error.type", *bifrostErr.Error.Type))
-		}
-		if bifrostErr.Error.Code != nil {
-			params = append(params, kvStr("gen_ai.error.code", *bifrostErr.Error.Code))
+		if bifrostErr.Error != nil {
+			if bifrostErr.Error.Type != nil {
+				params = append(params, kvStr("gen_ai.error.type", *bifrostErr.Error.Type))
+			}
+			if bifrostErr.Error.Code != nil {
+				params = append(params, kvStr("gen_ai.error.code", *bifrostErr.Error.Code))
+			}
 		}
 		params = append(params, kvStr("gen_ai.error", bifrostErr.Error.Message))
 	}
@@ -697,7 +1076,7 @@ func completeResourceSpan(
 	span.ScopeSpans[0].Spans[0].Attributes = append(span.ScopeSpans[0].Spans[0].Attributes, params...)
 	span.ScopeSpans[0].Spans[0].Status = &tracepb.Status{Code: status}
 	span.ScopeSpans[0].Spans[0].EndTimeUnixNano = uint64(timestamp.UnixNano())
-	// Attaching virtual keys as resource attributes as well	
+	// Attaching virtual keys as resource attributes as well
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_id", virtualKeyID))
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("virtual_key_name", virtualKeyName))
 	span.Resource.Attributes = append(span.Resource.Attributes, kvStr("selected_key_id", selectedKeyID))

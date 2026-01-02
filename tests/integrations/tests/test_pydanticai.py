@@ -120,7 +120,7 @@ def setup_pydanticai():
     # Cleanup is handled by pytest
 
 
-def get_openai_model(model_name: str = None) -> OpenAIChatModel:
+def get_openai_model(model_name: str | None = None) -> OpenAIChatModel:
     """Create an OpenAI model configured for Bifrost"""
     base_url = get_integration_url("pydanticai")
     if model_name is None:

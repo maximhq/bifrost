@@ -46,6 +46,7 @@ func TestCohere(t *testing.T) {
 			Embedding:             true,
 			Reasoning:             true,
 			ListModels:            true,
+			CountTokens:           true,
 		},
 	}
 

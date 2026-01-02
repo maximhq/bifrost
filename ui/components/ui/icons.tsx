@@ -628,16 +628,16 @@ export const Icons = {
 			</g>
 			<defs>
 				<linearGradient id="paint0_linear_218_7776" x1="31.689" y1="32.6623" x2="23.0441" y2="22.4626" gradientUnits="userSpaceOnUse">
-					<stop stop-color="#36B082" stop-opacity="0.4" />
-					<stop offset="1" stop-color="#36B082" stop-opacity="0" />
+					<stop stopColor="#36B082" stop-opacity="0.4" />
+					<stop offset="1" stopColor="#36B082" stop-opacity="0" />
 				</linearGradient>
 				<linearGradient id="paint1_linear_218_7776" x1="31.689" y1="32.6623" x2="23.0441" y2="22.4626" gradientUnits="userSpaceOnUse">
-					<stop stop-color="#36B082" stop-opacity="0.4" />
-					<stop offset="1" stop-color="#36B082" stop-opacity="0" />
+					<stop stopColor="#36B082" stop-opacity="0.4" />
+					<stop offset="1" stopColor="#36B082" stop-opacity="0" />
 				</linearGradient>
 				<linearGradient id="paint2_linear_218_7776" x1="24" y1="6" x2="24" y2="42" gradientUnits="userSpaceOnUse">
-					<stop stop-color="#72C8A7" />
-					<stop offset="1" stop-color="#0D3B43" />
+					<stop stopColor="#72C8A7" />
+					<stop offset="1" stopColor="#0D3B43" />
 				</linearGradient>
 				<clipPath id="clip0_218_7776">
 					<rect width="48" height="48" fill="white" />

@@ -1491,23 +1491,6 @@ sudo journalctl -u bifrost -f
 - **Message too large**: Check size of broadcast messages
 </Accordion>
 
-### Debug Logging
-
-Enable debug logging to troubleshoot cluster issues:
-
-```json
-{
-  "log_level": "debug",
-  "cluster_config": {
-    "enabled": true,
-    "discovery": {
-      "enabled": true,
-      // ... rest of config
-    }
-  }
-}
-```
-
 **Key log messages to look for**:
 
 ```

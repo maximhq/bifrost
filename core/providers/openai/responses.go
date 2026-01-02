@@ -3,6 +3,7 @@ package openai
 import (
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -83,6 +84,28 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			} else {
 				messages = append(messages, message)
 			}
+		} else if message.ResponsesToolMessage != nil &&
+			message.ResponsesToolMessage.Action != nil &&
+			message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
+			action := message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
+			if action.Type == "zoom" || action.Region != nil {
+				// Copy action and modify
+				newAction := *action
+				newAction.Region = nil
+				if newAction.Type == "zoom" {
+					newAction.Type = "screenshot"
+				}
+
+				actionStructCopy := *message.ResponsesToolMessage.Action
+				actionStructCopy.ResponsesComputerToolCallAction = &newAction
+
+				toolMsgCopy := *message.ResponsesToolMessage
+				toolMsgCopy.Action = &actionStructCopy
+
+				message.ResponsesToolMessage = &toolMsgCopy
+			}
+
+			messages = append(messages, message)
 		} else {
 			messages = append(messages, message)
 		}
@@ -104,6 +127,33 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
+
+		// Handle reasoning parameter: OpenAI uses effort-based reasoning
+		// Priority: effort (native) > max_tokens (estimated)
+		if req.ResponsesParameters.Reasoning != nil {
+			if req.ResponsesParameters.Reasoning.Effort != nil {
+				// Native field is provided, use it (and clear max_tokens)
+				effort := *req.ResponsesParameters.Reasoning.Effort
+				// Convert "minimal" to "low" for non-OpenAI providers
+				if effort == "minimal" {
+					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr("low")
+				}
+				// Clear max_tokens since OpenAI doesn't use it
+				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
+				// Estimate effort from max_tokens
+				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
+				maxOutputTokens := DefaultCompletionMaxTokens
+				if req.ResponsesParameters.MaxOutputTokens != nil {
+					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
+				}
+				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
+				// Clear max_tokens since OpenAI doesn't use it
+				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			}
+		}
+
 		// Filter out tools that OpenAI doesn't support
 		req.filterUnsupportedTools()
 	}
@@ -135,7 +185,15 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 	filteredTools := make([]schemas.ResponsesTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		if supportedTypes[tool.Type] {
-			filteredTools = append(filteredTools, tool)
+			// check for computer use preview
+			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
+				// create new tool and assign it to the filtered tools
+				newTool := tool
+				newTool.ResponsesToolComputerUsePreview.EnableZoom = nil
+				filteredTools = append(filteredTools, newTool)
+			} else {
+				filteredTools = append(filteredTools, tool)
+			}
 		}
 	}
 	req.Tools = filteredTools

@@ -1,0 +1,22 @@
+health:
+  get:
+    operationId: getHealth
+    summary: Health check
+    description: |
+      Returns the health status of the Bifrost server. Checks connectivity to config store,
+      log store, and vector store if configured.
+    tags:
+      - Health
+    responses:
+      '200':
+        description: Server is healthy
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/health.yaml#/HealthResponse'
+      '503':
+        description: Service unavailable
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'

@@ -82,7 +82,6 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
 				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
-
 				<div className="dark:bg-card bg-white pt-6">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel}>

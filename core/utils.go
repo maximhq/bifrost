@@ -47,6 +47,11 @@ var rateLimitPatterns = []string{
 	"concurrent requests limit",
 }
 
+// isModelRequired returns true if the request type requires a model
+func isModelRequired(reqType schemas.RequestType) bool {
+	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest
+}
+
 // Ptr returns a pointer to the given value.
 func Ptr[T any](v T) *T {
 	return &v
@@ -92,10 +97,9 @@ func validateRequest(req *schemas.BifrostRequest) *schemas.BifrostError {
 	if provider == "" {
 		return newBifrostErrorFromMsg("provider is required")
 	}
-	if model == "" {
+	if isModelRequired(req.RequestType) && model == "" {
 		return newBifrostErrorFromMsg("model is required")
 	}
-
 	return nil
 }
 
@@ -192,6 +196,16 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest
+}
+
+// isBatchRequestType returns true if the given request type is a batch API operation.
+func isBatchRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchResultsRequest
+}
+
+// isFileRequestType returns true if the given request type is a file API operation.
+func isFileRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.FileUploadRequest || reqType == schemas.FileListRequest || reqType == schemas.FileRetrieveRequest || reqType == schemas.FileDeleteRequest || reqType == schemas.FileContentRequest
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

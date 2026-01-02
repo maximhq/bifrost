@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -215,6 +216,22 @@ func GetLionBase64Image() (string, error) {
 	return "data:image/png;base64," + string(data), nil
 }
 
+// GetSampleAudioBase64 loads and returns the sample audio file as base64 encoded string
+func GetSampleAudioBase64() (string, error) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("failed to get current file path")
+	}
+	dir := filepath.Dir(filename)
+	filePath := filepath.Join(dir, "scenarios", "media", "sample.mp3")
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
 // CreateSpeechRequest creates a basic speech input for testing
 func CreateSpeechRequest(text, voice, format string) *schemas.BifrostSpeechRequest {
 	return &schemas.BifrostSpeechRequest{
@@ -285,6 +302,25 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: bifrost.Ptr(imageURL),
+					},
+				},
+			},
+		},
+	}
+}
+
+func CreateAudioChatMessage(text, audioData string, audioFormat string) schemas.ChatMessage {
+	format := bifrost.Ptr(audioFormat)
+	return schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: bifrost.Ptr(text)},
+				{
+					Type: schemas.ChatContentBlockTypeInputAudio,
+					InputAudio: &schemas.ChatInputAudio{
+						Data:   audioData,
+						Format: format,
 					},
 				},
 			},
@@ -627,7 +663,7 @@ func GetErrorMessage(err *schemas.BifrostError) string {
 	}
 
 	errorCode := ""
-	if err.Error.Code != nil && *err.Error.Code != "" {
+	if err.Error != nil && err.Error.Code != nil && *err.Error.Code != "" {
 		errorCode = *err.Error.Code
 	}
 

@@ -1,0 +1,303 @@
+---
+title: "Logging"
+description: "Configure logging for debugging, monitoring, and troubleshooting your Bifrost integration."
+icon: "file-lines"
+---
+
+Bifrost provides a flexible logging system with configurable log levels and output formats. You can use the built-in default logger or implement your own custom logger.
+
+## Using the Default Logger
+
+Bifrost includes a `DefaultLogger` that writes to stdout/stderr with timestamps. Create one with your desired log level:
+
+```go
+import (
+    "github.com/maximhq/bifrost"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+    // Create logger with desired level
+    logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+    // Initialize Bifrost with the logger
+    client, err := bifrost.Init(schemas.BifrostConfig{
+        Account: &MyAccount{},
+        Logger:  logger,
+    })
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+## Log Levels
+
+Bifrost supports four log levels, from most to least verbose:
+
+| Level | Constant | Description |
+|-------|----------|-------------|
+| Debug | `schemas.LogLevelDebug` | Detailed debugging information for development |
+| Info | `schemas.LogLevelInfo` | General operational messages |
+| Warn | `schemas.LogLevelWarn` | Potentially harmful situations |
+| Error | `schemas.LogLevelError` | Serious problems requiring attention |
+
+```go
+// Debug level - most verbose, includes all messages
+logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+
+// Info level - general operational messages
+logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+// Warn level - only warnings and errors
+logger := bifrost.NewDefaultLogger(schemas.LogLevelWarn)
+
+// Error level - only errors (least verbose)
+logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+```
+
+You can change the log level at runtime:
+
+```go
+logger.SetLevel(schemas.LogLevelDebug)
+```
+
+## Output Formats
+
+The default logger supports two output formats:
+
+### JSON Output (Default)
+
+Structured JSON logs, ideal for log aggregation systems:
+
+```go
+logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+logger.SetOutputType(schemas.LoggerOutputTypeJSON)
+```
+
+Output example:
+```json
+{"level":"info","time":"2024-01-15T10:30:00Z","message":"Request completed"}
+```
+
+### Pretty Output
+
+Human-readable colored output, ideal for development:
+
+```go
+logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+logger.SetOutputType(schemas.LoggerOutputTypePretty)
+```
+
+Output example:
+```
+10:30:00 INF Request completed
+```
+
+## Custom Logger Implementation
+
+Implement the `Logger` interface to integrate with your existing logging infrastructure:
+
+```go
+type Logger interface {
+    Debug(msg string, args ...any)
+    Info(msg string, args ...any)
+    Warn(msg string, args ...any)
+    Error(msg string, args ...any)
+    Fatal(msg string, args ...any)
+    SetLevel(level schemas.LogLevel)
+    SetOutputType(outputType schemas.LoggerOutputType)
+}
+```
+
+### Example: Zap Logger Integration
+
+```go
+import (
+    "go.uber.org/zap"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type ZapLogger struct {
+    logger *zap.SugaredLogger
+    level  zap.AtomicLevel
+}
+
+func NewZapLogger() *ZapLogger {
+    level := zap.NewAtomicLevelAt(zap.InfoLevel)
+    config := zap.NewProductionConfig()
+    config.Level = level
+    logger, _ := config.Build()
+    return &ZapLogger{
+        logger: logger.Sugar(),
+        level:  level,
+    }
+}
+
+func (l *ZapLogger) Debug(msg string, args ...any) {
+    l.logger.Debugf(msg, args...)
+}
+
+func (l *ZapLogger) Info(msg string, args ...any) {
+    l.logger.Infof(msg, args...)
+}
+
+func (l *ZapLogger) Warn(msg string, args ...any) {
+    l.logger.Warnf(msg, args...)
+}
+
+func (l *ZapLogger) Error(msg string, args ...any) {
+    l.logger.Errorf(msg, args...)
+}
+
+func (l *ZapLogger) Fatal(msg string, args ...any) {
+    l.logger.Fatalf(msg, args...)
+}
+
+func (l *ZapLogger) SetLevel(level schemas.LogLevel) {
+    switch level {
+    case schemas.LogLevelDebug:
+        l.level.SetLevel(zap.DebugLevel)
+    case schemas.LogLevelInfo:
+        l.level.SetLevel(zap.InfoLevel)
+    case schemas.LogLevelWarn:
+        l.level.SetLevel(zap.WarnLevel)
+    case schemas.LogLevelError:
+        l.level.SetLevel(zap.ErrorLevel)
+    }
+}
+
+func (l *ZapLogger) SetOutputType(outputType schemas.LoggerOutputType) {
+    // Zap handles output format via encoder configuration
+}
+```
+
+### Example: Logrus Integration
+
+```go
+import (
+    "github.com/sirupsen/logrus"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type LogrusLogger struct {
+    logger *logrus.Logger
+}
+
+func NewLogrusLogger() *LogrusLogger {
+    logger := logrus.New()
+    logger.SetLevel(logrus.InfoLevel)
+    return &LogrusLogger{logger: logger}
+}
+
+func (l *LogrusLogger) Debug(msg string, args ...any) {
+    l.logger.Debugf(msg, args...)
+}
+
+func (l *LogrusLogger) Info(msg string, args ...any) {
+    l.logger.Infof(msg, args...)
+}
+
+func (l *LogrusLogger) Warn(msg string, args ...any) {
+    l.logger.Warnf(msg, args...)
+}
+
+func (l *LogrusLogger) Error(msg string, args ...any) {
+    l.logger.Errorf(msg, args...)
+}
+
+func (l *LogrusLogger) Fatal(msg string, args ...any) {
+    l.logger.Fatalf(msg, args...)
+}
+
+func (l *LogrusLogger) SetLevel(level schemas.LogLevel) {
+    switch level {
+    case schemas.LogLevelDebug:
+        l.logger.SetLevel(logrus.DebugLevel)
+    case schemas.LogLevelInfo:
+        l.logger.SetLevel(logrus.InfoLevel)
+    case schemas.LogLevelWarn:
+        l.logger.SetLevel(logrus.WarnLevel)
+    case schemas.LogLevelError:
+        l.logger.SetLevel(logrus.ErrorLevel)
+    }
+}
+
+func (l *LogrusLogger) SetOutputType(outputType schemas.LoggerOutputType) {
+    switch outputType {
+    case schemas.LoggerOutputTypeJSON:
+        l.logger.SetFormatter(&logrus.JSONFormatter{})
+    case schemas.LoggerOutputTypePretty:
+        l.logger.SetFormatter(&logrus.TextFormatter{
+            FullTimestamp: true,
+        })
+    }
+}
+```
+
+## Using Your Custom Logger
+
+Pass your custom logger to Bifrost during initialization:
+
+```go
+client, err := bifrost.Init(schemas.BifrostConfig{
+    Account: &MyAccount{},
+    Logger:  NewZapLogger(),  // or NewLogrusLogger()
+})
+```
+
+## Disabling Logging
+
+To disable logging, implement a no-op logger:
+
+```go
+type NoOpLogger struct{}
+
+func (l *NoOpLogger) Debug(msg string, args ...any)                   {}
+func (l *NoOpLogger) Info(msg string, args ...any)                    {}
+func (l *NoOpLogger) Warn(msg string, args ...any)                    {}
+func (l *NoOpLogger) Error(msg string, args ...any)                   {}
+func (l *NoOpLogger) Fatal(msg string, args ...any)                   {}
+func (l *NoOpLogger) SetLevel(level schemas.LogLevel)                 {}
+func (l *NoOpLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+
+// Use it
+client, err := bifrost.Init(schemas.BifrostConfig{
+    Account: &MyAccount{},
+    Logger:  &NoOpLogger{},
+})
+```
+
+## Best Practices
+
+### Development vs Production
+
+```go
+func createLogger(env string) schemas.Logger {
+    logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+
+    if env == "development" {
+        logger.SetLevel(schemas.LogLevelDebug)
+        logger.SetOutputType(schemas.LoggerOutputTypePretty)
+    } else {
+        logger.SetLevel(schemas.LogLevelInfo)
+        logger.SetOutputType(schemas.LoggerOutputTypeJSON)
+    }
+
+    return logger
+}
+```
+
+### Log Level Guidelines
+
+- **Debug**: Use during development to trace request flow, inspect payloads, and diagnose issues
+- **Info**: Use for normal operational events like successful requests, provider switches
+- **Warn**: Use for recoverable issues like retries, fallback activations, deprecated usage
+- **Error**: Use for failures that need attention but don't crash the application
+
+## Next Steps
+
+- **[Context Keys](./context-keys)** - Pass metadata through requests
+- **[Provider Configuration](./provider-configuration)** - Configure multiple providers
+- **[Streaming Responses](./streaming)** - Real-time response handling
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities

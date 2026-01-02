@@ -1,0 +1,35 @@
+# Anthropic Integration - Count Tokens Endpoints
+
+count-tokens:
+  post:
+    operationId: anthropicCountTokens
+    summary: Count tokens (Anthropic format)
+    description: |
+      Counts the number of tokens in a message request.
+    tags:
+      - Anthropic Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/count-tokens.yaml#/AnthropicCountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/count-tokens.yaml#/AnthropicCountTokensResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

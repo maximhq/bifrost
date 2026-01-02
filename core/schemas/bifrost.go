@@ -32,22 +32,24 @@ type BifrostConfig struct {
 type ModelProvider string
 
 const (
-	OpenAI     ModelProvider = "openai"
-	Azure      ModelProvider = "azure"
-	Anthropic  ModelProvider = "anthropic"
-	Bedrock    ModelProvider = "bedrock"
-	Cohere     ModelProvider = "cohere"
-	Vertex     ModelProvider = "vertex"
-	Mistral    ModelProvider = "mistral"
-	Ollama     ModelProvider = "ollama"
-	Groq       ModelProvider = "groq"
-	SGL        ModelProvider = "sgl"
-	Parasail   ModelProvider = "parasail"
-	Perplexity ModelProvider = "perplexity"
-	Cerebras   ModelProvider = "cerebras"
-	Gemini     ModelProvider = "gemini"
-	OpenRouter ModelProvider = "openrouter"
-	Elevenlabs ModelProvider = "elevenlabs"
+	OpenAI      ModelProvider = "openai"
+	Azure       ModelProvider = "azure"
+	Anthropic   ModelProvider = "anthropic"
+	Bedrock     ModelProvider = "bedrock"
+	Cohere      ModelProvider = "cohere"
+	Vertex      ModelProvider = "vertex"
+	Mistral     ModelProvider = "mistral"
+	Ollama      ModelProvider = "ollama"
+	Groq        ModelProvider = "groq"
+	SGL         ModelProvider = "sgl"
+	Parasail    ModelProvider = "parasail"
+	Perplexity  ModelProvider = "perplexity"
+	Cerebras    ModelProvider = "cerebras"
+	Gemini      ModelProvider = "gemini"
+	OpenRouter  ModelProvider = "openrouter"
+	Elevenlabs  ModelProvider = "elevenlabs"
+	HuggingFace ModelProvider = "huggingface"
+	Nebius      ModelProvider = "nebius"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -57,6 +59,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Cohere,
 	Gemini,
 	OpenAI,
+	HuggingFace,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -77,6 +80,8 @@ var StandardProviders = []ModelProvider{
 	Vertex,
 	OpenRouter,
 	Elevenlabs,
+	HuggingFace,
+	Nebius,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -97,6 +102,18 @@ const (
 	TranscriptionStreamRequest   RequestType = "transcription_stream"
 	ImageGenerationRequest       RequestType = "image_generation"
 	ImageGenerationStreamRequest RequestType = "image_generation_stream"
+	BatchCreateRequest           RequestType = "batch_create"
+	BatchListRequest             RequestType = "batch_list"
+	BatchRetrieveRequest         RequestType = "batch_retrieve"
+	BatchCancelRequest           RequestType = "batch_cancel"
+	BatchResultsRequest          RequestType = "batch_results"
+	FileUploadRequest            RequestType = "file_upload"
+	FileListRequest              RequestType = "file_list"
+	FileRetrieveRequest          RequestType = "file_retrieve"
+	FileDeleteRequest            RequestType = "file_delete"
+	FileContentRequest           RequestType = "file_content"
+	CountTokensRequest           RequestType = "count_tokens"
+	UnknownRequest               RequestType = "unknown"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -105,6 +122,7 @@ type BifrostContextKey string
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
 	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                      // string
+	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                 // string (explicit key name selection)
 	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
 	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
 	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
@@ -114,7 +132,7 @@ const (
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"   // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string]string
+	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string][]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"       // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
@@ -142,6 +160,7 @@ type Fallback struct {
 // - TextCompletionRequest
 // - ChatRequest
 // - ResponsesRequest
+// - CountTokensRequest
 // - EmbeddingRequest
 // - SpeechRequest
 // - TranscriptionRequest
@@ -154,10 +173,21 @@ type BifrostRequest struct {
 	TextCompletionRequest  *BifrostTextCompletionRequest
 	ChatRequest            *BifrostChatRequest
 	ResponsesRequest       *BifrostResponsesRequest
+	CountTokensRequest     *BifrostResponsesRequest
 	EmbeddingRequest       *BifrostEmbeddingRequest
 	SpeechRequest          *BifrostSpeechRequest
 	TranscriptionRequest   *BifrostTranscriptionRequest
 	ImageGenerationRequest *BifrostImageGenerationRequest
+	FileUploadRequest      *BifrostFileUploadRequest
+	FileListRequest        *BifrostFileListRequest
+	FileRetrieveRequest    *BifrostFileRetrieveRequest
+	FileDeleteRequest      *BifrostFileDeleteRequest
+	FileContentRequest     *BifrostFileContentRequest
+	BatchCreateRequest     *BifrostBatchCreateRequest
+	BatchListRequest       *BifrostBatchListRequest
+	BatchRetrieveRequest   *BifrostBatchRetrieveRequest
+	BatchCancelRequest     *BifrostBatchCancelRequest
+	BatchResultsRequest    *BifrostBatchResultsRequest
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -169,6 +199,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ChatRequest.Provider, br.ChatRequest.Model, br.ChatRequest.Fallbacks
 	case br.ResponsesRequest != nil:
 		return br.ResponsesRequest.Provider, br.ResponsesRequest.Model, br.ResponsesRequest.Fallbacks
+	case br.CountTokensRequest != nil:
+		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
 	case br.SpeechRequest != nil:
@@ -177,8 +209,57 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks
 	case br.ImageGenerationRequest != nil:
 		return br.ImageGenerationRequest.Provider, br.ImageGenerationRequest.Model, br.ImageGenerationRequest.Fallbacks
+	case br.FileUploadRequest != nil:
+		if br.FileUploadRequest.Model != nil {
+			return br.FileUploadRequest.Provider, *br.FileUploadRequest.Model, nil
+		}
+		return br.FileUploadRequest.Provider, "", nil
+	case br.FileListRequest != nil:
+		if br.FileListRequest.Model != nil {
+			return br.FileListRequest.Provider, *br.FileListRequest.Model, nil
+		}
+		return br.FileListRequest.Provider, "", nil
+	case br.FileRetrieveRequest != nil:
+		if br.FileRetrieveRequest.Model != nil {
+			return br.FileRetrieveRequest.Provider, *br.FileRetrieveRequest.Model, nil
+		}
+		return br.FileRetrieveRequest.Provider, "", nil
+	case br.FileDeleteRequest != nil:
+		if br.FileDeleteRequest.Model != nil {
+			return br.FileDeleteRequest.Provider, *br.FileDeleteRequest.Model, nil
+		}
+		return br.FileDeleteRequest.Provider, "", nil
+	case br.FileContentRequest != nil:
+		if br.FileContentRequest.Model != nil {
+			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
+		}
+		return br.FileContentRequest.Provider, "", nil
+	case br.BatchCreateRequest != nil:
+		if br.BatchCreateRequest.Model != nil {
+			return br.BatchCreateRequest.Provider, *br.BatchCreateRequest.Model, nil
+		}
+		return br.BatchCreateRequest.Provider, "", nil
+	case br.BatchListRequest != nil:
+		if br.BatchListRequest.Model != nil {
+			return br.BatchListRequest.Provider, *br.BatchListRequest.Model, nil
+		}
+		return br.BatchListRequest.Provider, "", nil
+	case br.BatchRetrieveRequest != nil:
+		if br.BatchRetrieveRequest.Model != nil {
+			return br.BatchRetrieveRequest.Provider, *br.BatchRetrieveRequest.Model, nil
+		}
+		return br.BatchRetrieveRequest.Provider, "", nil
+	case br.BatchCancelRequest != nil:
+		if br.BatchCancelRequest.Model != nil {
+			return br.BatchCancelRequest.Provider, *br.BatchCancelRequest.Model, nil
+		}
+		return br.BatchCancelRequest.Provider, "", nil
+	case br.BatchResultsRequest != nil:
+		if br.BatchResultsRequest.Model != nil {
+			return br.BatchResultsRequest.Provider, *br.BatchResultsRequest.Model, nil
+		}
+		return br.BatchResultsRequest.Provider, "", nil
 	}
-
 	return "", "", nil
 }
 
@@ -190,6 +271,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ChatRequest.Provider = provider
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Provider = provider
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
 	case br.SpeechRequest != nil:
@@ -209,6 +292,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ChatRequest.Model = model
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Model = model
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
 	case br.SpeechRequest != nil:
@@ -228,6 +313,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ChatRequest.Fallbacks = fallbacks
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.Fallbacks = fallbacks
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
@@ -247,6 +334,8 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ChatRequest.RawRequestBody = rawRequestBody
 	case br.ResponsesRequest != nil:
 		br.ResponsesRequest.RawRequestBody = rawRequestBody
+	case br.CountTokensRequest != nil:
+		br.CountTokensRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
@@ -266,6 +355,7 @@ type BifrostResponse struct {
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
 	ResponsesStreamResponse       *BifrostResponsesStreamResponse
+	CountTokensResponse           *BifrostCountTokensResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
 	SpeechResponse                *BifrostSpeechResponse
 	SpeechStreamResponse          *BifrostSpeechStreamResponse
@@ -273,6 +363,16 @@ type BifrostResponse struct {
 	TranscriptionStreamResponse   *BifrostTranscriptionStreamResponse
 	ImageGenerationResponse       *BifrostImageGenerationResponse
 	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
+	FileUploadResponse            *BifrostFileUploadResponse
+	FileListResponse              *BifrostFileListResponse
+	FileRetrieveResponse          *BifrostFileRetrieveResponse
+	FileDeleteResponse            *BifrostFileDeleteResponse
+	FileContentResponse           *BifrostFileContentResponse
+	BatchCreateResponse           *BifrostBatchCreateResponse
+	BatchListResponse             *BifrostBatchListResponse
+	BatchRetrieveResponse         *BifrostBatchRetrieveResponse
+	BatchCancelResponse           *BifrostBatchCancelResponse
+	BatchResultsResponse          *BifrostBatchResultsResponse
 }
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
@@ -285,6 +385,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ResponsesResponse.ExtraFields
 	case r.ResponsesStreamResponse != nil:
 		return &r.ResponsesStreamResponse.ExtraFields
+	case r.CountTokensResponse != nil:
+		return &r.CountTokensResponse.ExtraFields
 	case r.EmbeddingResponse != nil:
 		return &r.EmbeddingResponse.ExtraFields
 	case r.SpeechResponse != nil:
@@ -299,6 +401,26 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ImageGenerationResponse.ExtraFields
 	case r.ImageGenerationStreamResponse != nil:
 		return &r.ImageGenerationStreamResponse.ExtraFields
+	case r.FileUploadResponse != nil:
+		return &r.FileUploadResponse.ExtraFields
+	case r.FileListResponse != nil:
+		return &r.FileListResponse.ExtraFields
+	case r.FileRetrieveResponse != nil:
+		return &r.FileRetrieveResponse.ExtraFields
+	case r.FileDeleteResponse != nil:
+		return &r.FileDeleteResponse.ExtraFields
+	case r.FileContentResponse != nil:
+		return &r.FileContentResponse.ExtraFields
+	case r.BatchCreateResponse != nil:
+		return &r.BatchCreateResponse.ExtraFields
+	case r.BatchListResponse != nil:
+		return &r.BatchListResponse.ExtraFields
+	case r.BatchRetrieveResponse != nil:
+		return &r.BatchRetrieveResponse.ExtraFields
+	case r.BatchCancelResponse != nil:
+		return &r.BatchCancelResponse.ExtraFields
+	case r.BatchResultsResponse != nil:
+		return &r.BatchResultsResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
@@ -315,6 +437,7 @@ type BifrostResponseExtraFields struct {
 	RawRequest      interface{}        `json:"raw_request,omitempty"`
 	RawResponse     interface{}        `json:"raw_response,omitempty"`
 	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors     []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 }
 
 // BifrostCacheDebug represents debug information about the cache.

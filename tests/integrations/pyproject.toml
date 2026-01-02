@@ -28,7 +28,7 @@ dependencies = [
     "langchain-openai>=0.1.0",
     "langchain-core>=0.3.0",
     "langchain-anthropic>=0.1.0",
-    "langchain-google-genai>=4.0.0",
+    "langchain-google-genai==4.1.1",
     "langchain-mistralai>=0.1.0",
     "langgraph>=0.1.0",
     "mistralai>=0.4.0",
@@ -44,6 +44,7 @@ dependencies = [
     "langchain-tests>=1.0.2",
     "langchain>=1.1.0",
     "langchain-community>=0.4.1",
+    "langchain-aws>=1.1.0",
 ]
 
 [project.optional-dependencies]

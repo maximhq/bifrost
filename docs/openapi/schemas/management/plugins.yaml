@@ -1,0 +1,81 @@
+# Plugins API schemas
+
+PluginStatus:
+  type: object
+  description: Plugin status information
+  properties:
+    name:
+      type: string
+    status:
+      type: string
+      enum: [active, error, disabled, loading, uninitialized, unloaded, loaded]
+    logs:
+      type: array
+      items:
+        type: string
+
+Plugin:
+  type: object
+  description: Plugin configuration
+  properties:
+    name:
+      type: string
+    enabled:
+      type: boolean
+    config:
+      type: object
+      additionalProperties: true
+    isCustom:
+      type: boolean
+    path:
+      type: string
+    status:
+      $ref: '#/PluginStatus'
+
+ListPluginsResponse:
+  type: object
+  description: List plugins response
+  properties:
+    plugins:
+      type: array
+      items:
+        $ref: '#/Plugin'
+    count:
+      type: integer
+
+CreatePluginRequest:
+  type: object
+  description: Create plugin request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    enabled:
+      type: boolean
+    config:
+      type: object
+      additionalProperties: true
+    path:
+      type: string
+
+UpdatePluginRequest:
+  type: object
+  description: Update plugin request
+  properties:
+    enabled:
+      type: boolean
+    config:
+      type: object
+      additionalProperties: true
+    path:
+      type: string
+
+PluginResponse:
+  type: object
+  description: Plugin operation response
+  properties:
+    message:
+      type: string
+    plugin:
+      $ref: '#/Plugin'

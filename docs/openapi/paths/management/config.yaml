@@ -1,0 +1,136 @@
+config:
+  get:
+    operationId: getConfig
+    summary: Get configuration
+    description: |
+      Retrieves the current Bifrost configuration including client config, framework config,
+      auth config, and connection status for various stores.
+    tags:
+      - Configuration
+    parameters:
+      - name: from_db
+        in: query
+        description: If true, fetch configuration directly from the database
+        schema:
+          type: string
+          enum: ["true", "false"]
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/GetConfigResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateConfig
+    summary: Update configuration
+    description: |
+      Updates the Bifrost configuration. Supports hot-reloading of certain settings
+      like drop_excess_requests. Some settings may require a restart to take effect.
+    tags:
+      - Configuration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/config.yaml#/UpdateConfigRequest'
+    responses:
+      '200':
+        description: Configuration updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+version:
+  get:
+    operationId: getVersion
+    summary: Get version
+    description: Returns the current Bifrost version information.
+    tags:
+      - Configuration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/Version'
+
+proxy-config:
+  get:
+    operationId: getProxyConfig
+    summary: Get proxy configuration
+    description: Retrieves the current global proxy configuration.
+    tags:
+      - Configuration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/ProxyConfig'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Config store not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+  put:
+    operationId: updateProxyConfig
+    summary: Update proxy configuration
+    description: Updates the global proxy configuration.
+    tags:
+      - Configuration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/config.yaml#/ProxyConfig'
+    responses:
+      '200':
+        description: Proxy configuration updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+force-sync-pricing:
+  post:
+    operationId: forceSyncPricing
+    summary: Force pricing sync
+    description: Triggers an immediate pricing sync and resets the pricing sync timer.
+    tags:
+      - Configuration
+    responses:
+      '200':
+        description: Pricing sync triggered successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        description: Config store not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'

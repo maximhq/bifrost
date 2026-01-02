@@ -12,12 +12,12 @@ This guide walks you through creating a custom plugin for Bifrost using our [hel
 
 Before you start, ensure you have:
 
-- **Go 1.24+** installed (must match Bifrost's Go version)
+- **Go 1.25.5** installed (must match Bifrost's Go version)
 - **Linux or macOS** (Go plugins are not supported on Windows)
 - **Bifrost** installed and configured
 - Basic understanding of Go programming
 
-<Note>Make sure your go.mod has the go version pinned to 1.24.0</Note>
+<Note>Make sure your go.mod has the go version pinned to 1.25.5</Note>
 
 ## Project Structure
 
@@ -53,15 +53,79 @@ Your `go.mod` should look like this:
 ```go
 module github.com/yourusername/my-plugin
 
-go 1.24.0
+go 1.25.5
 
-require github.com/maximhq/bifrost/core v1.2.17
+require github.com/maximhq/bifrost/core v1.2.38
 ```
 
 ## Step 2: Implement the Plugin Interface
 
 Create `main.go` with the required plugin functions. Here's the complete hello-world example:
 
+<Tabs>
+  <Tab title="v1.4.x+">
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// Init is called when the plugin is loaded
+// config contains the plugin configuration from config.json
+func Init(config any) error {
+	fmt.Println("Init called")
+	// Initialize your plugin here (database connections, API clients, etc.)
+	return nil
+}
+
+// GetName returns the plugin's unique identifier
+func GetName() string {
+	return "Hello World Plugin"
+}
+
+// HTTPTransportMiddleware returns a middleware for HTTP transport
+// Only called when using HTTP transport (bifrost-http)
+func HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			fmt.Println("HTTPTransportMiddleware called")
+			// Modify request headers/body via ctx.Request before calling next
+			// Call next handler in the chain
+			next(ctx)
+			// Can also modify response via ctx.Response after next returns
+		}
+	}
+}
+
+// PreHook is called before the request is sent to the provider
+// This is where you can modify requests or short-circuit the flow
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+	fmt.Println("PreHook called")
+	// Modify the request or return a short-circuit to skip provider call
+	return req, nil, nil
+}
+
+// PostHook is called after receiving a response from the provider
+// This is where you can modify responses or handle errors
+func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostHook called")
+	// Modify the response or error before returning to caller
+	return resp, bifrostErr, nil
+}
+
+// Cleanup is called when Bifrost shuts down
+func Cleanup() error {
+	fmt.Println("Cleanup called")
+	// Clean up resources (close connections, flush buffers, etc.)
+	return nil
+}
+```
+  </Tab>
+  <Tab title="v1.3.x">
 ```go
 package main
 
@@ -115,6 +179,8 @@ func Cleanup() error {
 	return nil
 }
 ```
+  </Tab>
+</Tabs>
 
 ### Understanding Each Function
 
@@ -144,6 +210,23 @@ func Init(config any) error {
 
 Returns a unique identifier for your plugin. This name appears in logs and status reports.
 
+<Tabs>
+  <Tab title="v1.4.x+">
+#### `HTTPTransportMiddleware()`
+
+**HTTP transport only.** Returns a middleware that wraps the HTTP request handler chain. Use this to:
+- Intercept and modify requests before they enter Bifrost core
+- Intercept and modify responses before they're returned to clients
+- Implement authentication or logging at the transport layer
+- Access raw `*fasthttp.RequestCtx` for full HTTP control
+
+The middleware pattern requires calling `next(ctx)` to pass control to subsequent handlers.
+
+<Warning>
+This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.
+</Warning>
+  </Tab>
+  <Tab title="v1.3.x">
 #### `TransportInterceptor(...)`
 
 **HTTP transport only.** Called before requests enter Bifrost core. Use this to:
@@ -154,6 +237,8 @@ Returns a unique identifier for your plugin. This name appears in logs and statu
 <Warning>
 This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.
 </Warning>
+  </Tab>
+</Tabs>
 
 #### `PreHook(...)`
 
@@ -341,11 +426,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 Check the logs for plugin hook calls:
 
+<Tabs>
+  <Tab title="v1.4.x+">
+```
+HTTPTransportMiddleware called
+PreHook called
+PostHook called
+```
+  </Tab>
+  <Tab title="v1.3.x">
 ```
 TransportInterceptor called
 PreHook called
 PostHook called
 ```
+  </Tab>
+</Tabs>
 
 ## Advanced Plugin Patterns
 
@@ -442,11 +538,57 @@ go build -buildmode=plugin -o plugin.so main.go
 
 **Error**: `plugin was built with a different version of package`
 
-**Solution**: Rebuild your plugin with the exact same Go version as Bifrost:
+**Why this happens**: Go's plugin system requires **exact version matching** for:
+- The Go compiler version
+- **All shared packages** (especially `github.com/maximhq/bifrost/core`)
+- **Transitive dependencies** (packages that your dependencies depend on)
+
+This is more strict than typical Go builds. Even if only one transitive dependency differs by a patch version, the plugin will fail to load.
+
+**Solution**: Ensure your plugin is built with the exact same versions as Bifrost.
+
+**Step 1: Diagnose the mismatch**
+
+Use `go version -m` to inspect the build info of both your plugin and the Bifrost binary:
+
 ```bash
-go version  # Check your Go version
-# Rebuild with matching version
+# Check what versions your plugin was built with:
+$ go version -m my-plugin.so
+my-plugin.so: go1.25.5
+  dep  github.com/maximhq/bifrost/core  v1.3.50
+  dep  github.com/valyala/fasthttp      v1.51.0
+
+# Check what versions Bifrost was built with:
+$ go version -m bifrost-http
+bifrost-http: go1.25.5
+  dep  github.com/maximhq/bifrost/core  v1.3.54   # <-- MISMATCH!
+  dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
+
+Notice that even though the Go version matches (`go1.25.5`), the **package versions** are different — this causes the error.
+
+**Step 2: Update your plugin dependencies**
+
+```bash
+# Update to match Bifrost's core version
+go get github.com/maximhq/bifrost/core@v1.3.54
+go mod tidy
+
+# Rebuild the plugin
+go build -buildmode=plugin -o my-plugin.so main.go
+```
+
+**Step 3: Verify the fix**
+
+```bash
+# Confirm versions now match
+$ go version -m my-plugin.so | grep bifrost
+  dep  github.com/maximhq/bifrost/core  v1.3.54  # Now matches!
+```
+
+<Tip>
+**Pro tip**: Pin exact versions in your `go.mod` and keep your plugin's dependencies in sync with the Bifrost version you're deploying. Consider building both Bifrost and your plugins in the same CI pipeline to guarantee version alignment.
+</Tip>
 
 ### Platform/Architecture Mismatch
 
@@ -531,7 +673,7 @@ jobs:
       # 2. Setup Go
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
+          go-version: '1.25.5'
       
       # 3. Build Bifrost
       - name: Build Bifrost
@@ -622,7 +764,7 @@ plugin: symbol Init not found in plugin github.com/you/plugin
 plugin was built with a different version of package github.com/maximhq/bifrost/core
 ```
 
-**Solution:** Rebuild the plugin with the correct core version.
+**Solution:** Rebuild the plugin with the correct core version. See the [Version Mismatch Errors](#version-mismatch-errors) troubleshooting section for detailed diagnosis steps using `go version -m`.
 
 ### How do I test plugins before production deployment?
 

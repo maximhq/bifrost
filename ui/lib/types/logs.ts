@@ -114,6 +114,14 @@ export interface ChatMessage {
 	tool_calls?: ToolCall[]; // For backward compatibility, tool calls are now in the content
 	reasoning?: string;
 	reasoning_details?: ReasoningDetails[];
+	audio?: ChatAudioMessageAudio;
+}
+
+export interface ChatAudioMessageAudio {
+	id: string;
+	data: string;
+	expires_at: number;
+	transcript: string;
 }
 
 export interface ReasoningDetails {
@@ -296,6 +304,7 @@ export interface LogFilters {
 	max_latency?: number;
 	min_tokens?: number;
 	max_tokens?: number;
+	missing_cost_only?: boolean;
 	content_search?: string;
 }
 
@@ -318,6 +327,13 @@ export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;
 	stats: LogStats;
+}
+
+export interface RecalculateCostResponse {
+	total_matched: number;
+	updated: number;
+	skipped: number;
+	remaining: number;
 }
 
 // Responses API types (for responses_output field)

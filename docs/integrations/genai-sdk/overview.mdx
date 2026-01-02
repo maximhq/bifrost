@@ -1,0 +1,317 @@
+---
+title: "Overview"
+description: "Use Bifrost as a drop-in replacement for Google GenAI API with full compatibility and enhanced features."
+icon: "book"
+---
+
+## Overview
+
+Bifrost provides complete Google GenAI API compatibility through protocol adaptation. The integration handles request transformation, response normalization, and error mapping between Google's GenAI API specification and Bifrost's internal processing pipeline.
+
+This integration enables you to utilize Bifrost's features like governance, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing Google GenAI SDK-based architecture.
+
+**Endpoint:** `/genai`
+
+---
+
+## Setup
+
+<Tabs group="genai-sdk">
+<Tab title="Python">
+
+```python {7}
+from google import genai
+from google.genai.types import HttpOptions
+
+# Configure client to use Bifrost
+client = genai.Client(
+    api_key="dummy-key",  # Keys handled by Bifrost
+    http_options=HttpOptions(base_url="http://localhost:8080/genai")
+)
+
+# Make requests as usual
+response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents="Hello!"
+)
+
+print(response.text)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {5}
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+// Configure client to use Bifrost
+const genAI = new GoogleGenerativeAI("dummy-key", {
+  baseUrl: "http://localhost:8080/genai", // Keys handled by Bifrost
+});
+
+// Make requests as usual
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const response = await model.generateContent("Hello!");
+
+console.log(response.response.text());
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Use multiple providers through the same GenAI SDK format by prefixing model names with the provider:
+
+<Tabs group="genai-sdk">
+<Tab title="Python">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="dummy-key",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai")
+)
+
+# Google Vertex models (default)
+vertex_response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents="Hello from Gemini!"
+)
+
+# OpenAI models via GenAI SDK format
+openai_response = client.models.generate_content(
+    model="openai/gpt-4o-mini",
+    contents="Hello from OpenAI!"
+)
+
+# Anthropic models via GenAI SDK format
+anthropic_response = client.models.generate_content(
+    model="anthropic/claude-3-sonnet-20240229",
+    contents="Hello from Claude!"
+)
+
+# Azure models
+azure_response = client.models.generate_content(
+    model="azure/gpt-4o",
+    contents="Hello from Azure!"
+)
+
+# Local Ollama models
+ollama_response = client.models.generate_content(
+    model="ollama/llama3.1:8b",
+    contents="Hello from Ollama!"
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI("dummy-key", {
+  baseUrl: "http://localhost:8080/genai",
+});
+
+// Google Vertex models (default)
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const vertexResponse = await geminiModel.generateContent("Hello from Gemini!");
+
+// OpenAI models via GenAI SDK format
+const openaiModel = genAI.getGenerativeModel({ model: "openai/gpt-4o-mini" });
+const openaiResponse = await openaiModel.generateContent("Hello from OpenAI!");
+
+// Anthropic models via GenAI SDK format
+const anthropicModel = genAI.getGenerativeModel({ model: "anthropic/claude-3-sonnet-20240229" });
+const anthropicResponse = await anthropicModel.generateContent("Hello from Claude!");
+
+// Azure models
+const azureModel = genAI.getGenerativeModel({ model: "azure/gpt-4o" });
+const azureResponse = await azureModel.generateContent("Hello from Azure!");
+
+// Local Ollama models
+const ollamaModel = genAI.getGenerativeModel({ model: "ollama/llama3.1:8b" });
+const ollamaResponse = await ollamaModel.generateContent("Hello from Ollama!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.):
+
+<Tabs group="genai-sdk">
+<Tab title="Python">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+# Configure client with custom headers
+client = genai.Client(
+    api_key="dummy-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={
+            "x-bf-vk": "vk_12345",  # Virtual key for governance
+        }
+    )
+)
+
+response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents="Hello with custom headers!"
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+// Configure client with custom headers
+const genAI = new GoogleGenerativeAI("dummy-key", {
+  baseUrl: "http://localhost:8080/genai",
+  customHeaders: {
+    "x-bf-vk": "vk_12345", // Virtual key for governance
+  },
+});
+
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const response = await model.generateContent("Hello with custom headers!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly in requests to bypass Bifrost's load balancing. You can pass any provider's API key (OpenAI, Anthropic, Mistral, etc.) since Bifrost only looks for `Authorization`, `x-api-key` and `x-goog-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+<Tabs group="genai-sdk">
+<Tab title="Python">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+# Pass different provider keys per request using headers
+client = genai.Client(
+    api_key="gemini-key",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai")
+)
+
+# Use Gemini key directly
+gemini_response = client.models.generate_content(
+    model="gemini-1.5-flash",
+    contents="Hello Gemini!"
+)
+
+# Use Anthropic key for Claude models
+anthropic_response = client.models.generate_content(
+    model="anthropic/claude-3-sonnet-20240229",
+    contents="Hello Claude!",
+    request_options={
+        "headers": {"x-api-key": "your-anthropic-api-key"}
+    }
+)
+
+# Use OpenAI key for GPT models
+openai_response = client.models.generate_content(
+    model="openai/gpt-4o-mini",
+    contents="Hello GPT!",
+    request_options={
+        "headers": {"Authorization": "Bearer sk-your-openai-key"}
+    }
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+// Pass different provider keys per request using headers
+const genAI = new GoogleGenerativeAI("gemini-key", {
+  baseUrl: "http://localhost:8080/genai",
+});
+
+// Use Gemini key directly
+const geminiModel = genAI.getGenerativeModel({ 
+  model: "gemini-1.5-flash"
+});
+const geminiResponse = await geminiModel.generateContent("Hello Gemini!");
+
+// Use Anthropic key for Claude models
+const anthropicModel = genAI.getGenerativeModel({ 
+  model: "anthropic/claude-3-sonnet-20240229",
+  requestOptions: {
+    customHeaders: { "x-api-key": "your-anthropic-api-key" }
+  }
+});
+const anthropicResponse = await anthropicModel.generateContent("Hello Claude!");
+
+// Use OpenAI key for GPT models
+const gptModel = genAI.getGenerativeModel({ 
+  model: "openai/gpt-4o-mini",
+  requestOptions: {
+    customHeaders: { "Authorization": "Bearer sk-your-openai-key" }
+  }
+});
+const gptResponse = await gptModel.generateContent("Hello GPT!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Dynamic Thinking Budget
+
+When `thinkingConfig.thinkingBudget` is set to `-1`, Bifrost handles it differently per provider:
+
+- **Gemini**: Preserves `-1` for native dynamic thinking support
+- **Anthropic**, **Bedrock**, **Cohere**: Converts to minimum reasoning budget value (1024)
+- **OpenAI**: Converts to medium reasoning effort
+
+```python
+response = client.models.glenerate_content(
+    model="gemini-2.5-flash",
+    contents="Complex reasoning task",
+    config={
+        "thinking_config": {
+            "include_thoughts": true,
+            "thinking_budget": -1  # Dynamic thinking
+        }
+    }
+)
+```
+
+---
+
+## Supported Features
+
+The Google GenAI integration supports all features that are available in both the Google GenAI SDK and Bifrost core functionality. If the Google GenAI SDK supports a feature and Bifrost supports it, the integration will work seamlessly.
+
+---
+
+## Next Steps
+
+- **[OpenAI SDK](../openai-sdk/overview)** - GPT integration patterns
+- **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+

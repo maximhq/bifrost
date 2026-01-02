@@ -1,0 +1,51 @@
+# OpenAI Integration Common Types
+
+OpenAIError:
+  type: object
+  properties:
+    error:
+      type: object
+      properties:
+        message:
+          type: string
+        type:
+          type: string
+        param:
+          type: string
+          nullable: true
+        code:
+          type: string
+          nullable: true
+
+# OpenAI uses the same model format but without provider prefix
+OpenAIModel:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Model identifier
+    object:
+      type: string
+      default: model
+    owned_by:
+      type: string
+    created:
+      type: integer
+      format: int64
+    active:
+      type: boolean
+      description: GROQ-specific field
+    context_window:
+      type: integer
+      description: GROQ-specific field
+
+OpenAIListModelsResponse:
+  type: object
+  properties:
+    object:
+      type: string
+      default: list
+    data:
+      type: array
+      items:
+        $ref: '#/OpenAIModel'

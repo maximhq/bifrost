@@ -33,88 +33,109 @@ Tests all core scenarios using Google GenAI SDK directly:
 23. Speech generation - multi speaker
 24. Speech generation - different voices
 25. Speech generation - language support
-26. Speech generation - streaming (if supported)
-27. Extended thinking/reasoning (non-streaming)
-28. Extended thinking/reasoning (streaming)
+26. Extended thinking/reasoning (non-streaming)
+27. Extended thinking/reasoning (streaming)
+28. Gemini 3 Pro Preview - Thought signature handling with tool calling (multi-turn)
+29. Structured outputs with thinking_budget enabled
+30. Files API - file upload
+31. Files API - file list
+32. Files API - file retrieve
+33. Files API - file delete
+34. Batch API - batch create with file
+35. Batch API - batch create inline
+36. Batch API - batch list
+37. Batch API - batch retrieve
+38. Batch API - batch cancel
+39. Batch API - end-to-end with Files API
+40. Count tokens (Cross-Provider)
 """
 
-import pytest
-import base64
-import requests
-from PIL import Image
 import io
+import json
+import os
+import tempfile
 import wave
+from typing import Any, Dict, List
+
+import pytest
+import requests
 from google import genai
-from google.genai.types import HttpOptions
 from google.genai import types
-from typing import List, Dict, Any
+from google.genai.types import HttpOptions
+from PIL import Image
 
 from .utils.common import (
-    Config,
-    SIMPLE_CHAT_MESSAGES,
-    SINGLE_TOOL_CALL_MESSAGES,
-    MULTIPLE_TOOL_CALL_MESSAGES,
-    IMAGE_URL_SECONDARY,
     BASE64_IMAGE,
-    INVALID_ROLE_MESSAGES,
-    STREAMING_CHAT_MESSAGES,
-    STREAMING_TOOL_CALL_MESSAGES,
-    WEATHER_TOOL,
+    # Batch API utilities
+    BATCH_INLINE_PROMPTS,
     CALCULATOR_TOOL,
-    assert_valid_chat_response,
-    assert_valid_embedding_response,
-    assert_valid_image_response,
-    assert_valid_error_response,
-    assert_error_propagation,
-    assert_valid_streaming_response,
-    assert_valid_transcription_response,
-    assert_valid_streaming_transcription_response,
-    assert_valid_speech_response,
-    collect_streaming_content,
-    collect_streaming_transcription_content,
-    generate_test_audio,
-    get_provider_voice,
-    get_provider_voices,
-    get_api_key,
-    skip_if_no_api_key,
     COMPARISON_KEYWORDS,
-    WEATHER_KEYWORDS,
-    LOCATION_KEYWORDS,
-    GENAI_INVALID_ROLE_CONTENT,
     EMBEDDINGS_SINGLE_TEXT,
-    SPEECH_TEST_INPUT,
     # Gemini-specific test data
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
+    GENAI_INVALID_ROLE_CONTENT,
+    IMAGE_URL_SECONDARY,
+    INPUT_TOKENS_LONG_TEXT,
+    INPUT_TOKENS_SIMPLE_TEXT,
+    INPUT_TOKENS_WITH_SYSTEM,
+    LOCATION_KEYWORDS,
+    MULTIPLE_TOOL_CALL_MESSAGES,
+    SIMPLE_CHAT_MESSAGES,
+    SINGLE_TOOL_CALL_MESSAGES,
+    WEATHER_KEYWORDS,
+    WEATHER_TOOL,
+    Config,
+    assert_valid_chat_response,
+    assert_valid_embedding_response,
+    assert_valid_image_response,
+    assert_valid_input_tokens_response,
+    assert_valid_speech_response,
+    assert_valid_transcription_response,
+    generate_test_audio,
+    get_api_key,
+    get_provider_voice,
+    get_provider_voices,
+    skip_if_no_api_key,
 )
 from .utils.config_loader import get_model
 from .utils.parametrize import (
-    get_cross_provider_params_for_scenario,
     format_provider_model,
+    get_cross_provider_params_for_scenario,
 )
 
 
-@pytest.fixture
-def google_client():
-    """Configure Google GenAI client for testing"""
-    from .utils.config_loader import get_integration_url
+def get_provider_google_client(provider: str = "gemini"):
+    """Create Google GenAI client with x-model-provider header for given provider"""
+    from .utils.config_loader import get_config, get_integration_url
 
-    api_key = get_api_key("google")
+    api_key = get_api_key(provider)
     base_url = get_integration_url("google")
+    config = get_config()
+    api_config = config.get_api_config()
 
     client_kwargs = {
         "api_key": api_key,
     }
 
-    # Add base URL support and timeout through HttpOptions
-    http_options_kwargs = {}
+    # Add base URL support, timeout, and x-model-provider header through HttpOptions
+    http_options_kwargs = {
+        "headers": {"x-model-provider": provider},
+    }
     if base_url:
         http_options_kwargs["base_url"] = base_url
+    if api_config.get("timeout"):
+        http_options_kwargs["timeout"] = 30000
 
-    if http_options_kwargs:
-        client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
+    client_kwargs["http_options"] = HttpOptions(**http_options_kwargs)
 
     return genai.Client(**client_kwargs)
+
+
+@pytest.fixture
+def google_client():
+    """Configure Google GenAI client for testing with default gemini provider"""
+    return get_provider_google_client(provider="gemini")
 
 
 @pytest.fixture
@@ -173,9 +194,10 @@ def convert_to_google_tools(tools: List[Dict[str, Any]]) -> List[Any]:
 
 def load_image_from_url(url: str):
     """Load image from URL for Google GenAI"""
-    from google.genai import types
-    import io
     import base64
+    import io
+
+    from google.genai import types
 
     if url.startswith("data:image"):
         # Base64 image - extract the base64 data part
@@ -226,6 +248,164 @@ def convert_pcm_to_wav(pcm_data: bytes, channels: int = 1, sample_rate: int = 24
         wav_file.writeframes(pcm_data)
     wav_buffer.seek(0)
     return wav_buffer.read()
+
+
+# =============================================================================
+# Google GenAI Files and Batch API Helper Functions
+# =============================================================================
+
+def create_google_batch_json_content(model: str, num_requests: int = 2) -> str:
+    """
+    Create JSON content for Google GenAI batch API.
+    
+    Google batch format uses newline-delimited JSON with 'key' and 'request' fields:
+    {"key":"request_1", "request": {"contents": [{"parts": [{"text": "..."}]}]}}
+    
+    Args:
+        model: The model to use (not included in request, passed to batches.create)
+        num_requests: Number of requests to include
+        
+    Returns:
+        Newline-delimited JSON string
+    """
+    requests_list = []
+    
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+        request = {
+            "key": f"request_{i+1}",
+            "request": {
+                "contents": [
+                    {
+                        "parts": [{"text": prompt}],
+                        "role": "user"
+                    }
+                ]
+            }
+        }
+        requests_list.append(json.dumps(request))
+    
+    return "\n".join(requests_list)
+
+
+def create_google_batch_inline_requests(num_requests: int = 2) -> List[Dict[str, Any]]:
+    """
+    Create inline requests for Google GenAI batch API.
+    
+    Args:
+        num_requests: Number of requests to include
+        
+    Returns:
+        List of inline request dictionaries
+    """
+    requests_list = []
+    
+    for i in range(num_requests):
+        prompt = BATCH_INLINE_PROMPTS[i % len(BATCH_INLINE_PROMPTS)]
+        request = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}],
+                    "role": "user"
+                }
+            ],
+            "config": {"response_modalities": ["TEXT"]}
+        }
+        requests_list.append(request)
+    
+    return requests_list
+
+
+# Google GenAI batch job states
+GOOGLE_BATCH_VALID_STATES = [
+    "JOB_STATE_UNSPECIFIED",
+    "JOB_STATE_QUEUED",
+    "JOB_STATE_PENDING",
+    "JOB_STATE_RUNNING",
+    "JOB_STATE_SUCCEEDED",
+    "JOB_STATE_FAILED",
+    "JOB_STATE_CANCELLING",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_PAUSED",
+]
+
+GOOGLE_BATCH_TERMINAL_STATES = [
+    "JOB_STATE_SUCCEEDED",
+    "JOB_STATE_FAILED",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_PAUSED",
+]
+
+
+def assert_valid_google_file_response(response, expected_display_name: str | None = None) -> None:
+    """
+    Assert that a Google GenAI file upload/retrieve response is valid.
+    
+    Args:
+        response: The file response object
+        expected_display_name: Expected display_name field (optional)
+    """
+    assert response is not None, "File response should not be None"
+    assert hasattr(response, "name"), "File response should have 'name' attribute"
+    assert response.name is not None, "File name should not be None"
+    assert len(response.name) > 0, "File name should not be empty"
+    
+    # Google files have display_name instead of filename
+    if hasattr(response, "display_name") and expected_display_name:
+        assert response.display_name == expected_display_name, (
+            f"Display name should be '{expected_display_name}', got {response.display_name}"
+        )
+    
+    # Check for size_bytes if available
+    if hasattr(response, "size_bytes"):
+        assert response.size_bytes >= 0, "File size_bytes should be non-negative"
+
+
+def assert_valid_google_batch_response(response, expected_state: str | None = None) -> None:
+    """
+    Assert that a Google GenAI batch create/retrieve response is valid.
+    
+    Args:
+        response: The batch job response object
+        expected_state: Expected state (optional)
+    """
+    assert response is not None, "Batch response should not be None"
+    assert hasattr(response, "name"), "Batch response should have 'name' attribute"
+    assert response.name is not None, "Batch job name should not be None"
+    assert len(response.name) > 0, "Batch job name should not be empty"
+    
+    # Google uses 'state' instead of 'status'
+    if hasattr(response, "state"):
+        assert response.state in GOOGLE_BATCH_VALID_STATES, (
+            f"State should be one of {GOOGLE_BATCH_VALID_STATES}, got {response.state}"
+        )
+        
+        if expected_state:
+            assert response.state == expected_state, (
+                f"State should be '{expected_state}', got {response.state}"
+            )
+
+
+def assert_valid_google_batch_list_response(pager, min_count: int = 0) -> None:
+    """
+    Assert that a Google GenAI batch list response is valid.
+    
+    Args:
+        pager: The batch list pager/iterator
+        min_count: Minimum expected number of batches
+    """
+    assert pager is not None, "Batch list response should not be None"
+    
+    # Google returns a pager object, count items
+    count = 0
+    for job in pager:
+        count += 1
+        # Each job should have a name
+        assert hasattr(job, "name"), "Each batch job should have 'name' attribute"
+    
+    assert count >= min_count, (
+        f"Should have at least {min_count} batches, got {count}"
+    )
 
 
 class TestGoogleIntegration:
@@ -1050,6 +1230,842 @@ Joe: Pretty good, thanks for asking."""
         
         print(f"✓ Streamed response ({len(text_parts)} chunks): {complete_text[:150]}...")
 
+    @skip_if_no_api_key("gemini")
+    def test_28_gemini_3_pro_thought_signatures_multi_turn(self, test_config):
+        """Test Case 28: Gemini 3 Pro Preview - Thought Signature Handling with Tool Calling (Multi-turn)"""
+        from google.genai import types
+        
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-pro-preview"
+        
+        calculator_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "calculate",
+                    "description": "Perform a mathematical calculation",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {
+                                "type": "string",
+                                "description": "The mathematical expression to evaluate"
+                            },
+                            "operation": {
+                                "type": "string",
+                                "description": "Type of operation: add, subtract, multiply, divide"
+                            }
+                        },
+                        "required": ["expression", "operation"]
+                    }
+                }
+            ]
+        )
+        
+        weather_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "get_weather",
+                    "description": "Get current weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "City name or location"
+                            },
+                            "unit": {
+                                "type": "string",
+                                "description": "Temperature unit: celsius or fahrenheit"
+                            }
+                        },
+                        "required": ["location"]
+                    }
+                }
+            ]
+        )
+        
+        print("\n=== TURN 1: Initial message with thinking ===")
+        # Turn 1: Initial message with thinking enabled
+        response_1 = client.models.generate_content(
+            model=model,
+            contents="If I have 15 apples and give away 7, then buy 10 more, how many do I have? Think through this step by step.",
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="high"
+                )
+            )
+        )
+        
+        # Validate Turn 1: Should have thinking content
+        assert response_1.candidates, "Response should have candidates"
+        assert response_1.candidates[0].content, "Candidate should have content"
+        
+        # Check for thought parts in the response
+        has_thought = False
+        has_text = False
+        thought_signature_count = 0
+        
+        for part in response_1.candidates[0].content.parts:
+            if hasattr(part, 'thought') and part.thought:
+                has_thought = True
+                part_text = getattr(part, 'text', None)
+                print(f"  [THOUGHT] {part_text[:100] if part_text else '(no text)'}...")
+            elif hasattr(part, 'text') and part.text:
+                has_text = True
+                print(f"  [TEXT] {part.text[:100]}...")
+            if hasattr(part, 'thought_signature') and part.thought_signature:
+                thought_signature_count += 1
+                print(f"  [SIGNATURE] Found thought signature ({len(part.thought_signature)} bytes)")
+        
+        print(f"  Turn 1 Summary: thought={has_thought}, text={has_text}, signatures={thought_signature_count}")
+        
+        # Assert that thought signatures are present when using Gemini with thinking enabled
+        assert has_thought or has_text, "Response should have either thought or text content"
+        assert thought_signature_count > 0, "Response should have at least one thought signature with thinking enabled"
+        
+        print("\n=== TURN 2: Tool call with thinking ===")
+        # Turn 2: Ask a question that requires tool use
+        response_2 = client.models.generate_content(
+            model=model,
+            contents="What's 25 multiplied by 4? Use the calculator tool to compute this.",
+            config=types.GenerateContentConfig(
+                tools=[calculator_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="high"
+                )
+            )
+        )
+        
+        # Validate Turn 2: Should have function call with thought signature
+        assert response_2.candidates, "Response should have candidates"
+        function_calls = []
+        tool_thought_signatures = []
+        
+        for part in response_2.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                function_calls.append(part.function_call)
+                print(f"  [FUNCTION_CALL] {part.function_call.name}({part.function_call.args})")
+                
+                # Check for thought signature on the function call
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    tool_thought_signatures.append(part.thought_signature)
+                    print(f"    [SIGNATURE] Tool call has thought signature ({len(part.thought_signature)} bytes)")
+        
+        assert len(function_calls) > 0, "Should have at least one function call"
+        assert len(tool_thought_signatures) > 0, "Function calls should have thought signatures when thinking is enabled"
+        print(f"  Turn 2 Summary: function_calls={len(function_calls)}, tool_signatures={len(tool_thought_signatures)}")
+        
+        print("\n=== TURN 3: Multi-turn with tool result ===")
+        # Turn 3: Continue conversation with tool result
+        conversation = [
+            types.Content(
+                role="user",
+                parts=[types.Part(text="What's 25 multiplied by 4? Use the calculator tool.")]
+            ),
+            types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name="calculate",
+                            args={"expression": "25 * 4", "operation": "multiply"}
+                        ),
+                        thought_signature=tool_thought_signatures[0] if tool_thought_signatures else None
+                    )
+                ]
+            ),
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name="calculate",
+                            response={"result": "100"}
+                        )
+                    )
+                ]
+            )
+        ]
+        
+        response_3 = client.models.generate_content(
+            model=model,
+            contents=conversation,
+            config=types.GenerateContentConfig(
+                tools=[calculator_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="high"
+                )
+            )
+        )
+        
+        # Validate Turn 3: Should have text response after tool result
+        assert response_3.candidates, "Response should have candidates"
+        turn3_text = ""
+        turn3_thoughts = 0
+        
+        for part in response_3.candidates[0].content.parts:
+            if hasattr(part, 'text') and part.text:
+                turn3_text += part.text
+                if hasattr(part, 'thought') and part.thought:
+                    turn3_thoughts += 1
+                    part_text = getattr(part, 'text', None)
+                    print(f"  [THOUGHT] {part_text[:100] if part_text else '(no text)'}...")
+                else:
+                    print(f"  [TEXT] {part.text[:100]}...")
+        
+        assert len(turn3_text) > 0, "Should have text response after tool result"
+        print(f"  Turn 3 Summary: text_length={len(turn3_text)}, thoughts={turn3_thoughts}")
+        
+        print("\n=== TURN 4: Multiple tool calls in parallel ===")
+        # Turn 4: Request multiple tool calls
+        response_4 = client.models.generate_content(
+            model=model,
+            contents="Calculate 50 + 30 and also get the weather in Tokyo. Use the appropriate tools.",
+            config=types.GenerateContentConfig(
+                tools=[calculator_tool, weather_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="low"
+                )
+            )
+        )
+        
+        # Validate Turn 4: Should have multiple function calls
+        assert response_4.candidates, "Response should have candidates"
+        multi_function_calls = []
+        multi_signatures = []
+        
+        for part in response_4.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                multi_function_calls.append(part.function_call)
+                print(f"  [FUNCTION_CALL] {part.function_call.name}")
+                
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    multi_signatures.append(part.thought_signature)
+                    print(f"    [SIGNATURE] Present ({len(part.thought_signature)} bytes)")
+        
+        print(f"  Turn 4 Summary: function_calls={len(multi_function_calls)}, signatures={len(multi_signatures)}")
+        
+        # Assert that multiple tool calls also get thought signatures
+        # Note: Using thinking_level="low" here, so signatures may be optional depending on model behavior
+        # but if any function calls are made with thinking enabled, they should have signatures
+        if len(multi_function_calls) > 0:
+            assert len(multi_signatures) > 0, "Function calls should have thought signatures when thinking is enabled (even at low level)"
+        
+        if hasattr(response_1, 'usage_metadata') and response_1.usage_metadata:
+            if hasattr(response_1.usage_metadata, 'thoughts_token_count'):
+                print(f"\n=== Token Usage ===")
+                print(f"  Thinking tokens: {response_1.usage_metadata.thoughts_token_count}")
+                assert response_1.usage_metadata.thoughts_token_count > 0, "Should have thinking token usage"
+        
+        print("\n✓ Gemini 3 Pro Preview thought signature handling test completed successfully!")
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("thinking"))
+    def test_29_structured_output_with_thinking(self, google_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        """Test Case 29: Structured outputs with thinking_budget enabled
+        """
+        from google.genai import types
+        from pydantic import BaseModel
+        
+        # Define a Pydantic model for structured output
+        class MathProblem(BaseModel):
+            problem_statement: str
+            reasoning_steps: list[str]
+            final_answer: int
+            confidence: str
+        
+        messages = "A farmer sells eggs at $3 per dozen and milk at $5 per gallon. " \
+                   "In a week, she sells 20 dozen eggs and 15 gallons of milk. " \
+                   "Calculate her total weekly revenue. Show your reasoning steps."
+        
+        response = google_client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents=messages,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MathProblem,
+                thinking_config=types.ThinkingConfig(
+                    include_thoughts=True,
+                    thinking_budget=2400,
+                ),
+                max_output_tokens=3000,
+            ),
+        )
+
+        # Validate response structure
+        assert response is not None, "Response should not be None"
+        
+        assert hasattr(response, "parsed"), "Response should have 'parsed' attribute"
+        
+        parsed = response.parsed
+        assert parsed is not None, (
+            "The response returned narrative text instead of JSON matching the schema. "
+            "Check the raw response text to confirm."
+        )
+        
+        # Validate it's an instance of our Pydantic model
+        assert isinstance(parsed, MathProblem), (
+            f"response.parsed should be a MathProblem instance, got {type(parsed)}"
+        )
+        
+        # Validate the fields exist and have correct types
+        assert hasattr(parsed, "problem_statement"), "Should have problem_statement field"
+        assert hasattr(parsed, "reasoning_steps"), "Should have reasoning_steps field"
+        assert hasattr(parsed, "final_answer"), "Should have final_answer field"
+        assert hasattr(parsed, "confidence"), "Should have confidence field"
+        
+        assert isinstance(parsed.problem_statement, str), "problem_statement should be string"
+        assert isinstance(parsed.reasoning_steps, list), "reasoning_steps should be list"
+        assert isinstance(parsed.final_answer, int), "final_answer should be int"
+        assert isinstance(parsed.confidence, str), "confidence should be string"
+        
+        # Check that reasoning steps were provided
+        assert len(parsed.reasoning_steps) > 0, "Should have at least one reasoning step"
+        
+        # Verify thinking tokens were counted (Gemini only)
+        if provider == "gemini" and hasattr(response, "usage_metadata"):
+            usage = response.usage_metadata
+            if hasattr(usage, "thoughts_token_count"):
+                thoughts_token_count = usage.thoughts_token_count
+                print(f"✓ Thinking tokens used: {thoughts_token_count}")
+        
+        print("✓ Structured output with thinking works correctly!")
+        print(f"  Problem: {parsed.problem_statement[:80]}...")
+        print(f"  Steps: {len(parsed.reasoning_steps)} reasoning steps")
+        print(f"  Answer: {parsed.final_answer}")
+        print(f"  Confidence: {parsed.confidence}")
+
+
+    # =========================================================================
+    # FILES API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_30_file_upload(self, test_config, provider, model):
+        """Test Case 30: Upload a file for batch processing"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        response = None
+        try:
+            print(f"Uploading file to {temp_file_path}")
+            # Upload the file
+            response = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_test_{provider}')
+            )
+            
+            print(f"Response: {response}")
+            # Validate response
+            assert_valid_google_file_response(response)
+            
+            print(f"Success: Uploaded file with name: {response.name} for provider {provider}")
+            
+            # Verify file exists in list
+            found = False
+            for f in client.files.list(config={'page_size': 50}):
+                if f.name == response.name:
+                    found = True
+                    break
+            
+            assert found, f"Uploaded file {response.name} should be in file list"
+            print(f"Success: Verified file {response.name} exists in file list")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up uploaded file
+            if response is not None:
+                try:
+                    client.files.delete(name=response.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_list"))
+    def test_31_file_list(self, test_config, provider, model):
+        """Test Case 31: List uploaded files"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_list scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file to ensure we have at least one
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'list_test_{provider}')
+            )
+            
+            # List files
+            file_count = 0
+            found_uploaded = False
+            
+            for f in client.files.list(config={'page_size': 50}):
+                file_count += 1
+                if f.name == uploaded_file.name:
+                    found_uploaded = True
+            
+            assert file_count >= 1, "Should have at least one file"
+            assert found_uploaded, f"Uploaded file {uploaded_file.name} should be in file list"
+            
+            print(f"Success: Listed {file_count} files for provider {provider}")
+            
+        finally:
+            # Clean up
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            if uploaded_file is not None:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_retrieve"))
+    def test_32_file_retrieve(self, test_config, provider, model):
+        """Test Case 32: Retrieve file metadata by name"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_retrieve scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'retrieve_test_{provider}')
+            )
+            
+            # Retrieve file metadata
+            response = client.files.get(name=uploaded_file.name)
+            
+            # Validate response
+            assert_valid_google_file_response(response)
+            assert response.name == uploaded_file.name, (
+                f"Retrieved file name should match: expected {uploaded_file.name}, got {response.name}"
+            )
+            
+            print(f"Success: Retrieved file metadata for {response.name}")
+            
+        finally:
+            # Clean up
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            if uploaded_file is not None:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("file_delete"))
+    def test_33_file_delete(self, test_config, provider, model):
+        """Test Case 33: Delete an uploaded file"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # First upload a file
+        json_content = create_google_batch_json_content(model=model, num_requests=1)
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        uploaded_file = None
+        try:
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'delete_test_{provider}')
+            )
+            
+            file_name = uploaded_file.name
+            
+            # Delete the file
+            client.files.delete(name=file_name)
+            
+            print(f"Success: Deleted file {file_name}")
+            
+            # Verify file is no longer retrievable
+            with pytest.raises(RuntimeError):
+                client.files.get(name=file_name)
+            
+            print(f"Success: Verified file {file_name} no longer exists")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+    # =========================================================================
+    # BATCH API TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_34_batch_create_with_file(self, test_config, provider, model):
+        """Test Case 34: Create a batch job using uploaded file
+        
+        This test uploads a JSON file first, then creates a batch using the file reference.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        batch_job = None
+        uploaded_file = None
+        
+        try:
+            # Upload the file
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_file_test_{provider}')
+            )
+            
+            # Create batch job using file reference
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=uploaded_file.name,
+            )
+            
+            # Validate response
+            assert_valid_google_batch_response(batch_job)
+            
+            print(f"Success: Created file-based batch with name: {batch_job.name}, state: {batch_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+            
+            # Clean up uploaded file
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_inline"))
+    def test_35_batch_create_inline(self, test_config, provider, model):
+        """Test Case 35: Create a batch job with inline requests"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_inline scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests
+            inline_requests = create_google_batch_inline_requests(num_requests=2)
+            
+            # Create batch job with inline requests
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Validate response
+            assert_valid_google_batch_response(batch_job)
+            
+            print(f"Success: Created inline batch with name: {batch_job.name}, state: {batch_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_list"))
+    def test_36_batch_list(self, test_config, provider, model):
+        """Test Case 36: List batch jobs"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_list scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # List batch jobs
+        batch_count = 0
+        for job in client.batches.list(config=types.ListBatchJobsConfig(page_size=10)):
+            batch_count += 1
+            # Each job should have a name and state
+            assert hasattr(job, "name"), "Batch job should have 'name' attribute"
+            if batch_count >= 10:  # Limit iteration for the test
+                break
+        
+        print(f"Success: Listed {batch_count} batches for provider {provider}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_retrieve"))
+    def test_37_batch_retrieve(self, test_config, provider, model):
+        """Test Case 37: Retrieve batch status by name"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_retrieve scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests for batch
+            inline_requests = create_google_batch_inline_requests(num_requests=1)
+            
+            # Create batch job
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Retrieve batch job by name
+            retrieved_job = client.batches.get(name=batch_job.name)
+            
+            # Validate response
+            assert_valid_google_batch_response(retrieved_job)
+            assert retrieved_job.name == batch_job.name, (
+                f"Retrieved batch name should match: expected {batch_job.name}, got {retrieved_job.name}"
+            )
+            
+            print(f"Success: Retrieved batch {batch_job.name}, state: {retrieved_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_cancel"))
+    def test_38_batch_cancel(self, test_config, provider, model):
+        """Test Case 38: Cancel a batch job"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_cancel scenario")
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        batch_job = None
+        
+        try:
+            # Create inline requests for batch
+            inline_requests = create_google_batch_inline_requests(num_requests=2)
+            
+            # Create batch job
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=inline_requests,
+            )
+            
+            # Cancel the batch job
+            cancelled_job = client.batches.cancel(name=batch_job.name)
+            
+            # Validate response - job should be cancelling or cancelled
+            assert cancelled_job is not None, "Cancel should return a response"
+            
+            # Check state after cancel
+            retrieved_job = client.batches.get(name=batch_job.name)
+            assert retrieved_job.state in ["JOB_STATE_CANCELLING", "JOB_STATE_CANCELLED"], (
+                f"Job state should be cancelling or cancelled, got {retrieved_job.state}"
+            )
+            
+            print(f"Success: Cancelled batch {batch_job.name}, state: {retrieved_job.state} for provider {provider}")
+            
+        finally:
+            # Clean up
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                except Exception as e:
+                    print(f"Info: Could not delete batch: {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("batch_file_upload"))
+    def test_39_batch_e2e_file_api(self, test_config, provider, model):
+        """Test Case 39: End-to-end batch workflow using Files API
+        
+        Complete workflow: upload file -> create batch -> poll status -> verify in list.
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+        
+        import time
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Create JSON content for batch
+        json_content = create_google_batch_json_content(model=model, num_requests=2)
+        
+        # Write to a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(json_content)
+            temp_file_path = f.name
+        
+        batch_job = None
+        uploaded_file = None
+        
+        try:
+            # Step 1: Upload batch input file
+            print(f"Step 1: Uploading batch input file for provider {provider}...")
+            uploaded_file = client.files.upload(
+                file=temp_file_path,
+                config=types.UploadFileConfig(display_name=f'batch_e2e_test_{provider}')
+            )
+            assert_valid_google_file_response(uploaded_file)
+            print(f"  Uploaded file: {uploaded_file.name}")
+            
+            # Step 2: Create batch job using file
+            print("Step 2: Creating batch job with file...")
+            batch_job = client.batches.create(
+                model=format_provider_model(provider, model),
+                src=uploaded_file.name,
+            )
+            assert_valid_google_batch_response(batch_job)
+            print(f"  Created batch: {batch_job.name}, state: {batch_job.state}")
+            
+            # Step 3: Poll batch status (with timeout)
+            print("Step 3: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+            
+            for i in range(max_polls):
+                retrieved_job = client.batches.get(name=batch_job.name)
+                print(f"  Poll {i+1}: state = {retrieved_job.state}")
+                
+                if retrieved_job.state in GOOGLE_BATCH_TERMINAL_STATES:
+                    print(f"  Batch reached terminal state: {retrieved_job.state}")
+                    break
+                
+                time.sleep(poll_interval)
+            
+            # Step 4: Verify batch is in the list
+            print("Step 4: Verifying batch in list...")
+            found_in_list = False
+            for job in client.batches.list(config=types.ListBatchJobsConfig(page_size=20)):
+                if job.name == batch_job.name:
+                    found_in_list = True
+                    break
+            
+            assert found_in_list, f"Batch {batch_job.name} should be in the batch list"
+            print(f"  Verified batch {batch_job.name} is in list")
+            
+            print(f"Success: File API E2E completed for batch {batch_job.name} (provider: {provider})")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            
+            # Clean up batch job
+            if batch_job:
+                try:
+                    client.batches.delete(name=batch_job.name)
+                    print(f"Cleanup: Deleted batch {batch_job.name}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not delete batch: {e}")
+            
+            # Clean up uploaded file
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                    print(f"Cleanup: Deleted file {uploaded_file.name}")
+                except Exception as e:
+                    print(f"Cleanup warning: Failed to delete file: {e}")
+
+    # =========================================================================
+    # INPUT TOKENS / TOKEN COUNTING TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_40a_input_tokens_simple_text(self, google_client, test_config, provider, model):
+        """Test Case 40a: Input tokens count with simple text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"Testing input tokens for provider {provider}, model {model}...")
+        response =  google_client.models.count_tokens(
+            model=format_provider_model(provider, model),
+            contents=[{"role": "user", "parts": [{"text": INPUT_TOKENS_SIMPLE_TEXT}]}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response, "google")
+
+        # Simple text should have a reasonable token count (between 3-20 tokens)
+        assert 3 <= response.total_tokens <= 20, (
+            f"Simple text should have 3-20 tokens, got {response.total_tokens}"
+        )
+
+    # Google does not support counting token request with system message so this test has only 2 parts
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("count_tokens"))
+    def test_40b_input_tokens_long_text(self, google_client, test_config, provider, model):
+        """Test Case 40b: Input tokens count with long text"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        response = google_client.models.count_tokens(
+            model=format_provider_model(provider, model),
+            contents=[{"role": "user", "parts": [{"text": INPUT_TOKENS_LONG_TEXT}]}],
+        )
+
+        # Validate response structure
+        assert_valid_input_tokens_response(response,"google")
+
+        # Long text should have significantly more tokens
+        assert response.total_tokens > 100, (
+            f"Long text should have >100 tokens, got {response.total_tokens}"
+        )
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

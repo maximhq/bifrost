@@ -1,0 +1,61 @@
+speech:
+  post:
+    operationId: createSpeech
+    summary: Create speech
+    description: |
+      Generates audio from the input text. Returns audio data or streams via SSE.
+    tags:
+      - Audio
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/speech.yaml#/SpeechRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/speech.yaml#/SpeechResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/speech.yaml#/SpeechStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+transcriptions:
+  post:
+    operationId: createTranscription
+    summary: Create transcription
+    description: |
+      Transcribes audio into text in the input language.
+    tags:
+      - Audio
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/transcription.yaml#/TranscriptionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/transcription.yaml#/TranscriptionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/transcription.yaml#/TranscriptionStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

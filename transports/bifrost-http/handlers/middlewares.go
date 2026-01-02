@@ -21,13 +21,14 @@ import (
 func CorsMiddleware(config *lib.Config) lib.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			logger.Debug("CorsMiddleware: %s", string(ctx.Path()))
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
 			// Check if origin is allowed (localhost always allowed + configured origins)
 			if allowed {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
-				ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
+				ctx.Response.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout")
 				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
 			}
@@ -78,67 +79,73 @@ func TransportInterceptorMiddleware(config *lib.Config) lib.BifrostHTTPMiddlewar
 
 				return true
 			})
-
-			// Unmarshal request body
 			requestBody := make(map[string]any)
-			bodyBytes := ctx.Request.Body()
-			if len(bodyBytes) > 0 {
-				if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
-					// If body is not valid JSON, log warning and continue without interception
-					logger.Warn(fmt.Sprintf("TransportInterceptor: Failed to unmarshal request body: %v, skipping interceptor", err))
-					next(ctx)
+			// Only read body if Content-Type is JSON to avoid consuming multipart/form-data streams
+			contentType := string(ctx.Request.Header.Peek("Content-Type"))
+			isJSONRequest := strings.HasPrefix(contentType, "application/json")
+
+			// Only run interceptors for JSON requests
+			if isJSONRequest {
+				bodyBytes := ctx.Request.Body()
+				if len(bodyBytes) > 0 {
+					if err := json.Unmarshal(bodyBytes, &requestBody); err != nil {
+						// If body is not valid JSON, log warning and continue without interception
+						logger.Warn(fmt.Sprintf("[transportInterceptor]: Failed to unmarshal request body: %v, skipping interceptor", err))
+						next(ctx)
+						return
+					}
+				}
+				for _, plugin := range plugins {
+					// Call TransportInterceptor on all plugins
+					pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
+					modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
+					cancel()
+					if err != nil {
+						logger.Warn(fmt.Sprintf("TransportInterceptor: Plugin '%s' returned error: %v", plugin.GetName(), err))
+						// Continue with unmodified headers/body
+						continue
+					}
+					// Update headers and body with modifications
+					if modifiedHeaders != nil {
+						headers = modifiedHeaders
+					}
+					if modifiedBody != nil {
+						requestBody = modifiedBody
+					}
+					// Capturing plugin ctx values and putting them in the request context
+					for k, v := range pluginCtx.GetUserValues() {
+						ctx.SetUserValue(k, v)
+					}
+				}
+
+				// Marshal the body back to JSON
+				updatedBody, err := json.Marshal(requestBody)
+				if err != nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("TransportInterceptor: Failed to marshal request body: %v", err))
 					return
 				}
-			}
-			for _, plugin := range plugins {
-				// Call TransportInterceptor on all plugins
-				pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
-				modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, string(ctx.Request.URI().RequestURI()), headers, requestBody)
-				cancel()
-				if err != nil {
-					logger.Warn(fmt.Sprintf("TransportInterceptor: Plugin '%s' returned error: %v", plugin.GetName(), err))
-					// Continue with unmodified headers/body
-					continue
+				ctx.Request.SetBody(updatedBody)
+
+				// Remove headers that were present originally but removed by plugins
+				for _, name := range originalHeaderNames {
+					if _, exists := headers[name]; !exists {
+						ctx.Request.Header.Del(name)
+					}
 				}
-				// Update headers and body with modifications
-				if modifiedHeaders != nil {
-					headers = modifiedHeaders
-				}
-				if modifiedBody != nil {
-					requestBody = modifiedBody
-				}
-				// Capturing plugin ctx values and putting them in the request context
-				for k, v := range pluginCtx.GetUserValues() {
-					ctx.SetUserValue(k, v)
+
+				// Set modified headers back on the request
+				for key, value := range headers {
+					ctx.Request.Header.Set(key, value)
 				}
 			}
 
-			// Marshal the body back to JSON
-			updatedBody, err := json.Marshal(requestBody)
-			if err != nil {
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("TransportInterceptor: Failed to marshal request body: %v", err))
-				return
-			}
-			ctx.Request.SetBody(updatedBody)
-
-			// Remove headers that were present originally but removed by plugins
-			for _, name := range originalHeaderNames {
-				if _, exists := headers[name]; !exists {
-					ctx.Request.Header.Del(name)
-				}
-			}
-
-			// Set modified headers back on the request
-			for key, value := range headers {
-				ctx.Request.Header.Set(key, value)
-			}
 			next(ctx)
 		}
 	}
 }
 
 // validateSession checks if a session token is valid
-func validateSession(ctx *fasthttp.RequestCtx, store configstore.ConfigStore, token string) bool {
+func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, token string) bool {
 	session, err := store.GetSession(context.Background(), token)
 	if err != nil || session == nil {
 		return false

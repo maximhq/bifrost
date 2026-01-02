@@ -1,0 +1,431 @@
+# Virtual Keys CRUD
+
+virtual-keys:
+  get:
+    operationId: listVirtualKeys
+    summary: List virtual keys
+    description: Returns a list of all virtual keys with their configurations.
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListVirtualKeysResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createVirtualKey
+    summary: Create virtual key
+    description: Creates a new virtual key with the specified configuration.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateVirtualKeyRequest'
+    responses:
+      '200':
+        description: Virtual key created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/VirtualKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+virtual-keys-by-id:
+  get:
+    operationId: getVirtualKey
+    summary: Get virtual key
+    description: Returns a specific virtual key by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                virtual_key:
+                  $ref: '../../schemas/management/governance.yaml#/VirtualKey'
+      '404':
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateVirtualKey
+    summary: Update virtual key
+    description: Updates an existing virtual key's configuration.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+    responses:
+      '200':
+        description: Virtual key updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/VirtualKeyResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteVirtualKey
+    summary: Delete virtual key
+    description: Deletes a virtual key.
+    tags:
+      - Governance
+    parameters:
+      - name: vk_id
+        in: path
+        required: true
+        description: Virtual key ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Virtual key deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Virtual key not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Teams CRUD
+
+teams:
+  get:
+    operationId: listTeams
+    summary: List teams
+    description: Returns a list of all teams.
+    tags:
+      - Governance
+    parameters:
+      - name: customer_id
+        in: query
+        description: Filter teams by customer ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListTeamsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createTeam
+    summary: Create team
+    description: Creates a new team.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateTeamRequest'
+    responses:
+      '200':
+        description: Team created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/TeamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+teams-by-id:
+  get:
+    operationId: getTeam
+    summary: Get team
+    description: Returns a specific team by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: Team ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                team:
+                  $ref: '../../schemas/management/governance.yaml#/Team'
+      '404':
+        description: Team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateTeam
+    summary: Update team
+    description: Updates an existing team.
+    tags:
+      - Governance
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: Team ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateTeamRequest'
+    responses:
+      '200':
+        description: Team updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/TeamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteTeam
+    summary: Delete team
+    description: Deletes a team.
+    tags:
+      - Governance
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: Team ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Team deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Team not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Customers CRUD
+
+customers:
+  get:
+    operationId: listCustomers
+    summary: List customers
+    description: Returns a list of all customers.
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListCustomersResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createCustomer
+    summary: Create customer
+    description: Creates a new customer.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateCustomerRequest'
+    responses:
+      '200':
+        description: Customer created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/CustomerResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+customers-by-id:
+  get:
+    operationId: getCustomer
+    summary: Get customer
+    description: Returns a specific customer by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        description: Customer ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer:
+                  $ref: '../../schemas/management/governance.yaml#/Customer'
+      '404':
+        description: Customer not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateCustomer
+    summary: Update customer
+    description: Updates an existing customer.
+    tags:
+      - Governance
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        description: Customer ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateCustomerRequest'
+    responses:
+      '200':
+        description: Customer updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/CustomerResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Customer not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteCustomer
+    summary: Delete customer
+    description: Deletes a customer.
+    tags:
+      - Governance
+    parameters:
+      - name: customer_id
+        in: path
+        required: true
+        description: Customer ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Customer deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Customer not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

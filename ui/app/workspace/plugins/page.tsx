@@ -121,7 +121,13 @@ export default function PluginsPage() {
 					}}
 				/>
 			</div>
-			<AddNewPluginSheet open={isSheetOpen} onClose={handleCloseSheet} />
+			<AddNewPluginSheet
+			open={isSheetOpen}
+			onClose={handleCloseSheet}
+			onCreate={(pluginName) => {
+				setSelectedPluginId(pluginName);
+			}}
+		/>
 		</div>
 	);
 }

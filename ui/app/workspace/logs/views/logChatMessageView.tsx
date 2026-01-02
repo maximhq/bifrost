@@ -1,9 +1,11 @@
 import { ChatMessage, ContentBlock } from "@/lib/types/logs";
 import { CodeEditor } from "./codeEditor";
 import { isJson, cleanJson } from "@/lib/utils/validation";
+import AudioPlayer from "./audioPlayer";
 
 interface LogChatMessageViewProps {
 	message: ChatMessage;
+	audioFormat?: string; // Optional audio format from request params
 }
 
 const renderContentBlock = (block: ContentBlock, index: number) => {
@@ -62,7 +64,7 @@ const renderContentBlock = (block: ContentBlock, index: number) => {
 	);
 };
 
-export default function LogChatMessageView({ message }: LogChatMessageViewProps) {
+export default function LogChatMessageView({ message, audioFormat }: LogChatMessageViewProps) {
 	return (
 		<div className="w-full rounded-sm border">
 			<div className="border-b px-6 py-2 text-sm font-medium">
@@ -176,6 +178,35 @@ export default function LogChatMessageView({ message }: LogChatMessageViewProps)
 						readonly={true}
 						options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 					/>
+				</div>
+			)}
+
+			{/* Handle audio output */}
+			{message.audio && (
+				<div className="border-b last:border-b-0">
+					<div className="bg-muted/50 text-muted-foreground px-6 py-2 text-xs font-medium">Audio Output</div>
+					<div className="space-y-4 px-6 py-4">
+						{message.audio.transcript && (
+							<div className="space-y-2">
+								<div className="text-muted-foreground text-xs font-medium">Transcript:</div>
+								<div className="font-mono text-xs break-words whitespace-pre-wrap">{message.audio.transcript}</div>
+							</div>
+						)}
+						{message.audio.data && (
+							<div className="space-y-2">
+								<div className="text-muted-foreground text-xs font-medium">Audio:</div>
+								<AudioPlayer src={message.audio.data} format={audioFormat} />
+							</div>
+						)}
+						{message.audio.id && (
+							<div className="text-muted-foreground text-xs">
+								ID: {message.audio.id} | Expires:{" "}
+								{message.audio.expires_at && Number.isFinite(message.audio.expires_at)
+									? new Date(message.audio.expires_at * 1000).toLocaleString()
+									: "N/A"}
+							</div>
+						)}
+					</div>
 				</div>
 			)}
 		</div>

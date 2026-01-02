@@ -1,0 +1,57 @@
+# OpenAI Integration Batch API Schemas
+# Reuses inference batch schemas since OpenAI integration uses Bifrost format
+
+# Batch Create Request - uses Bifrost format with provider field
+OpenAIBatchCreateRequest:
+  $ref: '../../inference/batch.yaml#/BatchCreateRequest'
+
+OpenAIBatchCreateResponse:
+  $ref: '../../inference/batch.yaml#/BatchCreateResponse'
+
+OpenAIBatchListRequest:
+  type: object
+  properties:
+    limit:
+      type: integer
+      description: Maximum number of batches to return
+      default: 30
+    after:
+      type: string
+      description: Cursor for pagination
+    provider:
+      type: string
+      description: Filter by provider
+      example: openai
+
+OpenAIBatchListResponse:
+  $ref: '../../inference/batch.yaml#/BatchListResponse'
+
+OpenAIBatchRetrieveRequest:
+  type: object
+  required:
+    - batch_id
+  properties:
+    batch_id:
+      type: string
+      description: Batch ID to retrieve
+    provider:
+      type: string
+      description: Provider for the batch
+
+OpenAIBatchRetrieveResponse:
+  $ref: '../../inference/batch.yaml#/BatchRetrieveResponse'
+
+OpenAIBatchCancelRequest:
+  type: object
+  required:
+    - batch_id
+  properties:
+    batch_id:
+      type: string
+      description: Batch ID to cancel
+    provider:
+      type: string
+      description: Provider for the batch
+
+OpenAIBatchCancelResponse:
+  $ref: '../../inference/batch.yaml#/BatchCancelResponse'

@@ -1,0 +1,165 @@
+batches:
+  post:
+    operationId: createBatch
+    summary: Create a batch job
+    description: |
+      Creates a batch job for asynchronous processing.
+    tags:
+      - Batch
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/batch.yaml#/BatchCreateRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchCreateResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  get:
+    operationId: listBatches
+    summary: List batch jobs
+    description: |
+      Lists batch jobs for a provider.
+    tags:
+      - Batch
+    parameters:
+      - name: provider
+        in: query
+        required: true
+        description: Provider to list batches for
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+      - name: limit
+        in: query
+        description: Maximum number of batches to return
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        description: Cursor for pagination
+        schema:
+          type: string
+      - name: before
+        in: query
+        description: Cursor for pagination
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+batches-by-id:
+  get:
+    operationId: retrieveBatch
+    summary: Retrieve a batch job
+    description: |
+      Retrieves a specific batch job by ID.
+    tags:
+      - Batch
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        description: The ID of the batch to retrieve
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the batch
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchRetrieveResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+batches-cancel:
+  post:
+    operationId: cancelBatch
+    summary: Cancel a batch job
+    description: |
+      Cancels a batch job.
+    tags:
+      - Batch
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        description: The ID of the batch to cancel
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the batch
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchCancelResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+batches-results:
+  get:
+    operationId: getBatchResults
+    summary: Get batch results
+    description: |
+      Retrieves results from a completed batch job.
+    tags:
+      - Batch
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        description: The ID of the batch
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the batch
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/batch.yaml#/BatchResultsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

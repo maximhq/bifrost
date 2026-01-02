@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -24,7 +25,7 @@ type TableVirtualKeyProviderConfig struct {
 	ID            uint     `gorm:"primaryKey;autoIncrement" json:"id"`
 	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
 	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        float64  `gorm:"default:1.0" json:"weight"`
+	Weight        *float64 `json:"weight"`
 	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
 	BudgetID      *string  `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID   *string  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
@@ -38,6 +39,35 @@ type TableVirtualKeyProviderConfig struct {
 // TableName sets the table name for each model
 func (TableVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
+}
+
+// UnmarshalJSON custom unmarshaller to handle both "keys" ([]TableKey) and "allowed_keys" ([]string) formats
+func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
+	// Temporary struct to capture all fields including allowed_keys
+	type Alias TableVirtualKeyProviderConfig
+	type TempProviderConfig struct {
+		Alias
+		AllowedKeys []string `json:"allowed_keys"` // Config file format: array of key names
+	}
+
+	var temp TempProviderConfig
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	// Copy all standard fields
+	*pc = TableVirtualKeyProviderConfig(temp.Alias)
+
+	// If allowed_keys is provided (config file format), convert to Keys
+	// This takes precedence if Keys is empty but allowed_keys has values
+	if len(temp.AllowedKeys) > 0 && len(pc.Keys) == 0 {
+		pc.Keys = make([]TableKey, len(temp.AllowedKeys))
+		for i, keyName := range temp.AllowedKeys {
+			pc.Keys[i] = TableKey{Name: keyName}
+		}
+	}
+
+	return nil
 }
 
 // AfterFind hook for TableVirtualKeyProviderConfig to clear sensitive data from associated keys

@@ -8,12 +8,14 @@ package lib
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -46,6 +48,7 @@ import (
 //   - Authorization: Bearer token format only (e.g., "Bearer sk-...") - OpenAI style
 //   - x-api-key: Direct API key value - Anthropic style
 //   - x-goog-api-key: Direct API key value - Google Gemini style
+// 	 - x-bf-api-key references a stored API key name rather than the raw secret.
 //   - Keys are extracted and stored in the context using schemas.BifrostContextKey
 //   - This enables explicit key usage for requests via headers
 //
@@ -53,6 +56,11 @@ import (
 //   - Creates a cancellable context that can be used to cancel upstream requests when clients disconnect
 //   - This is critical for streaming requests where write errors indicate client disconnects
 //   - Also useful for non-streaming requests to allow provider-level cancellation
+//
+// 7. Extra Headers (x-bf-eh-*):
+//   - Any header starting with 'x-bf-eh-' is collected and added to the map stored under schemas.BifrostContextKeyExtraHeaders
+//   - The prefix is stripped, the remainder is lower-cased, and duplicate names append values
+//   - This allows callers to send arbitrary context metadata without needing to extend the public schema
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -69,7 +77,7 @@ import (
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains any prometheus and maxim header values
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*context.Context, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*context.Context, context.CancelFunc) {
 	// Create cancellable context for all requests
 	// This enables proper cleanup when clients disconnect or requests are cancelled
 	baseCtx := context.Background()
@@ -87,6 +95,65 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	})
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
+	// Initialize extra headers map for headers prefixed with x-bf-eh-
+	extraHeaders := make(map[string][]string)
+	// Security denylist of header names that should never be accepted (case-insensitive)
+	// This denylist is always enforced regardless of user configuration
+	securityDenylist := map[string]bool{
+		"authorization":       true,
+		"proxy-authorization": true,
+		"cookie":              true,
+		"host":                true,
+		"content-length":      true,
+		"connection":          true,
+		"transfer-encoding":   true,
+
+		// prevent auth/key overrides via x-bf-eh-*
+		"x-api-key":      true,
+		"x-goog-api-key": true,
+		"x-bf-api-key":   true,
+		"x-bf-vk":        true,
+	}
+
+	// shouldAllowHeader determines if a header should be forwarded based on
+	// the configurable header filter config (separate from security denylist)
+	// Filter logic:
+	// 1. If allowlist is non-empty, header must be in allowlist
+	// 2. If denylist is non-empty, header must not be in denylist
+	// 3. If both are non-empty, allowlist takes precedence first, then denylist filters
+	// 4. If both are empty, header is allowed
+	shouldAllowHeader := func(headerName string) bool {
+		if headerFilterConfig == nil {
+			return true
+		}
+		hasAllowlist := len(headerFilterConfig.Allowlist) > 0
+		hasDenylist := len(headerFilterConfig.Denylist) > 0
+		// If allowlist is non-empty, header must be in allowlist
+		if hasAllowlist {
+			if !slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
+				return strings.EqualFold(s, headerName)
+			}) {
+				return false
+			}
+		}
+		// If denylist is non-empty, header must not be in denylist
+		if hasDenylist {
+			if slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
+				return strings.EqualFold(s, headerName)
+			}) {
+				return false
+				
+			}
+		}
+		return true
+	}
+
+	// Debug: Log header filter config
+	if headerFilterConfig != nil {
+		logger.Debug("headerFilterConfig allowlist: %v, denylist: %v", headerFilterConfig.Allowlist, headerFilterConfig.Denylist)
+	} else {
+		logger.Debug("headerFilterConfig is nil")
+	}
 
 	// Then process other headers
 	ctx.Request.Header.All()(func(key, value []byte) bool {
@@ -162,6 +229,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
+		if keyStr == "x-bf-api-key" {
+			if keyName := strings.TrimSpace(string(value)); keyName != "" {
+				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyAPIKeyName, keyName)
+			}
+			return true
+		}
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
 			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheKey, string(value))
@@ -215,6 +288,54 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 			}
 			return true
 		}
+		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-eh-"); ok {
+			// Skip empty header names after prefix removal
+			if labelName == "" {
+				return true
+			}
+			// Normalize header name to lowercase
+			labelName = strings.ToLower(labelName)
+			// Validate against security denylist (always enforced)
+			if securityDenylist[labelName] {
+				return true
+			}
+			// Apply configurable header filter
+			if !shouldAllowHeader(labelName) {
+				return true
+			}
+			// Append header value (allow multiple values for the same header)
+			extraHeaders[labelName] = append(extraHeaders[labelName], string(value))
+			return true
+		}
+		// Direct header forwarding: when allowlist is configured, any header explicitly
+		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
+		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
+		// Only applies when allowlist is non-empty (backward compatible).
+		if headerFilterConfig != nil && len(headerFilterConfig.Allowlist) > 0 {
+			// Check if this header is explicitly in the allowlist (case-insensitive)
+			if slices.ContainsFunc(headerFilterConfig.Allowlist, func(s string) bool {
+				return strings.EqualFold(s, keyStr)
+			}) {
+				// Skip reserved x-bf-* headers (handled separately)
+				if strings.HasPrefix(keyStr, "x-bf-") {
+					return true
+				}
+				// Validate against security denylist (always enforced)
+				if securityDenylist[keyStr] {
+					return true
+				}
+				// Check denylist (allowlist check already passed by being in allowlist, case-insensitive)
+				if len(headerFilterConfig.Denylist) > 0 && slices.ContainsFunc(headerFilterConfig.Denylist, func(s string) bool {
+					return strings.EqualFold(s, keyStr)
+				}) {
+					return true
+				}
+				// Forward the header directly with its original name
+				logger.Debug("forwarding header via allowlist: %s = %s", keyStr, string(value))
+				extraHeaders[keyStr] = append(extraHeaders[keyStr], string(value))
+				return true
+			}
+		}
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
 			if valueStr := string(value); valueStr == "true" {
@@ -228,6 +349,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool) (*c
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
 		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(maxim.TagsKey), maximTags)
+	}
+
+	// Store collected extra headers in the context if any were found
+	if len(extraHeaders) > 0 {
+		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
 	if allowDirectKeys {

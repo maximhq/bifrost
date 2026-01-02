@@ -1,0 +1,123 @@
+# LangChain - GenAI (Gemini) compatible Endpoints
+# Reuses GenAI integration schemas
+
+models:
+  get:
+    operationId: langchainGeminiListModels
+    summary: List models (LangChain - Gemini format)
+    description: |
+      Lists available models in Google Gemini API format via LangChain.
+    tags:
+      - LangChain Integration
+    parameters:
+      - name: pageSize
+        in: query
+        schema:
+          type: integer
+        description: Maximum number of models to return
+      - name: pageToken
+        in: query
+        schema:
+          type: string
+        description: Page token for pagination
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiListModelsResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+generate-content:
+  post:
+    operationId: langchainGeminiGenerateContent
+    summary: Generate content (LangChain - Gemini format)
+    description: |
+      Generates content using Google Gemini-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+stream-generate-content:
+  post:
+    operationId: langchainGeminiStreamGenerateContent
+    summary: Stream generate content (LangChain - Gemini format)
+    description: |
+      Streams content generation using Google Gemini-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful streaming response
+        content:
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'

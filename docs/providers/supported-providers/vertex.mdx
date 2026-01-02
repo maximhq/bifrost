@@ -1,0 +1,417 @@
+---
+title: "Vertex AI"
+description: "Google Vertex AI API conversion guide - multi-model support, OAuth2 authentication, project/region configuration"
+icon: "v"
+---
+
+## Overview
+
+Vertex AI is Google's unified ML platform providing access to Google's Gemini models, Anthropic Claude models, and other third-party LLMs through a single API. Bifrost performs conversions including:
+- **Multi-model support** - Unified interface for Gemini, Anthropic, and third-party models
+- **OAuth2 authentication** - Service account credentials with automatic token refresh
+- **Project and region management** - Automatic endpoint construction from GCP project/region
+- **Model routing** - Automatic provider detection (Gemini vs Anthropic) based on model name
+- **Request conversion** - Conversion to underlying provider format (Gemini or Anthropic)
+- **Embeddings support** - Vector generation with task type and truncation options
+- **Model discovery** - Paginated model listing with deployment information
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/generate` |
+| Responses API | ✅ | ✅ | `/messages` |
+| Embeddings | ✅ | - | `/embeddings` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
+
+**Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Vertex Handling | Notes |
+|-----------|---|-------|
+| `model` | Maps to Vertex model ID | Region-specific endpoint constructed automatically |
+| All other params | Model-specific conversion | Converted per underlying provider (Gemini/Anthropic) |
+
+### Key Configuration
+
+The key configuration for Vertex requires Google Cloud credentials:
+
+```json
+{
+  "vertex_key_config": {
+    "project_id": "my-gcp-project",
+    "region": "us-central1",
+    "auth_credentials": "{service-account-json}"
+  }
+}
+```
+
+**Configuration Details**:
+- `project_id` - GCP project ID (required)
+- `region` - GCP region for API endpoints (required)
+  - Examples: `us-central1`, `us-west1`, `eu-west1`, `global`
+- `auth_credentials` - Service account JSON credentials (optional if using default credentials)
+
+### Authentication Methods
+
+1. **Service Account JSON** (recommended for production)
+   ```json
+   {"auth_credentials": "{full-service-account-json}"}
+   ```
+
+2. **Application Default Credentials** (for local development)
+   - Requires `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+   - Leave `auth_credentials` empty
+
+## Gemini Models
+
+When using Google's Gemini models, Bifrost converts requests to Gemini's API format.
+
+### Parameter Mapping for Gemini
+
+All Gemini-compatible parameters are supported. Special handling includes:
+
+- **System prompts**: Converted to Gemini's system message format
+- **Tool usage**: Mapped to Gemini's function calling format
+- **Streaming**: Uses Gemini's streaming protocol
+
+Refer to [Gemini documentation](/providers/supported-providers/gemini) for detailed conversion details.
+
+## Anthropic Models (Claude)
+
+When using Anthropic models through Vertex AI, Bifrost converts requests to Anthropic's message format.
+
+### Parameter Mapping for Anthropic
+
+All Anthropic-standard parameters are supported:
+
+- **Reasoning/Thinking**: `reasoning` parameters converted to `thinking` structure
+- **System messages**: Extracted and placed in separate `system` field
+- **Tool message grouping**: Consecutive tool messages merged
+- **API version**: Automatically set to `vertex-2023-10-16` for Anthropic models
+
+Refer to [Anthropic documentation](/providers/supported-providers/anthropic) for detailed conversion details.
+
+### Special Notes for Vertex + Anthropic
+
+- Responses API uses special `/v1/messages` endpoint
+- `anthropic_version` automatically set to `vertex-2023-10-16`
+- Minimum reasoning budget: 1024 tokens
+- Model field removed from request (Vertex uses different identification)
+
+## Region Selection
+
+The region determines the API endpoint:
+
+| Region | Endpoint | Purpose |
+|--------|----------|---------|
+| `us-central1` | `us-central1-aiplatform.googleapis.com` | US Central |
+| `us-west1` | `us-west1-aiplatform.googleapis.com` | US West |
+| `eu-west1` | `eu-west1-aiplatform.googleapis.com` | Europe West |
+| `global` | `aiplatform.googleapis.com` | Global (no region prefix) |
+
+Availability varies by region. Check [GCP documentation](https://cloud.google.com/vertex-ai/docs/general/locations) for model availability.
+
+## Streaming
+
+Streaming format depends on model type:
+
+- **Gemini models**: Standard Gemini streaming with server-sent events
+- **Anthropic models**: Anthropic message streaming format
+
+---
+
+# 2. Responses API
+
+The Responses API is available for both Anthropic (Claude) and Gemini models on Vertex AI.
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Vertex Handling | Notes |
+|-----------|---|-------|
+| `instructions` | Becomes system message | Model-specific conversion |
+| `input` | Converted to messages | String or array support |
+| `max_output_tokens` | Model-specific field mapping | Gemini vs Anthropic conversion |
+| All other params | Model-specific conversion | Converted per underlying provider |
+
+### Gemini Models
+
+For Gemini models, conversion follows Gemini's Responses API format.
+
+### Anthropic Models (Claude)
+
+For Anthropic models, conversion follows Anthropic's message format:
+- `instructions` becomes system message
+- `reasoning` mapped to `thinking` structure
+
+### Configuration
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/claude-3-5-sonnet",
+    "input": "What is AI?",
+    "instructions": "You are a helpful assistant",
+    "project_id": "my-gcp-project",
+    "region": "us-central1"
+  }' \
+  -H "X-Goog-Authorization: Bearer {token}"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+    Provider: schemas.Vertex,
+    Model:    "claude-3-5-sonnet",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        Instructions: schemas.Ptr("You are a helpful assistant"),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Special Handling
+
+- Endpoint: `/v1/messages` (Anthropic format)
+- `anthropic_version` set to `vertex-2023-10-16` automatically
+- Model and region fields removed from request
+- Raw request body passthrough supported
+
+Refer to [Anthropic Responses API](/providers/supported-providers/anthropic#2-responses-api) for parameter details.
+
+---
+
+# 3. Embeddings
+
+Embeddings are supported for Gemini and other models that support embedding generation.
+
+## Request Parameters
+
+### Core Parameters
+
+| Parameter | Vertex Mapping | Notes |
+|-----------|---|-------|
+| `input` | `instances[].content` | Text to embed |
+| `dimensions` | `parameters.outputDimensionality` | Optional output size |
+
+### Advanced Parameters
+
+Use `extra_params` for embedding-specific options:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "text-embedding-004",
+    "input": ["text to embed"],
+    "dimensions": 256,
+    "task_type": "RETRIEVAL_DOCUMENT",
+    "title": "Document title",
+    "project_id": "my-gcp-project",
+    "region": "us-central1",
+    "autoTruncate": true
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Vertex,
+    Model:    "text-embedding-004",
+    Input: &schemas.EmbeddingInput{
+        Texts: []string{"text to embed"},
+    },
+    Params: &schemas.EmbeddingParameters{
+        Dimensions: schemas.Ptr(256),
+        ExtraParams: map[string]interface{}{
+            "task_type": "RETRIEVAL_DOCUMENT",
+            "title": "Document title",
+            "autoTruncate": true,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+#### Embedding Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task_type` | string | Task type hint: `RETRIEVAL_QUERY`, `RETRIEVAL_DOCUMENT`, `SEMANTIC_SIMILARITY`, `CLASSIFICATION`, `CLUSTERING` (optional) |
+| `title` | string | Optional title to help model produce better embeddings (used with task_type) |
+| `autoTruncate` | boolean | Auto-truncate input to max tokens (defaults to true) |
+
+### Task Type Effects
+
+Different task types optimize embeddings for specific use cases:
+
+- `RETRIEVAL_DOCUMENT` - Optimized for documents in retrieval systems
+- `RETRIEVAL_QUERY` - Optimized for queries searching documents
+- `SEMANTIC_SIMILARITY` - Optimized for semantic similarity tasks
+- `CLASSIFICATION` - For classification tasks
+- `CLUSTERING` - For clustering tasks
+
+## Response Conversion
+
+Embeddings response includes vectors and truncation information:
+
+```json
+{
+  "embeddings": [
+    {
+      "values": [0.1234, -0.5678, ...],
+      "statistics": {
+        "token_count": 15,
+        "truncated": false
+      }
+    }
+  ]
+}
+```
+
+**Response Fields**:
+- `values` - Embedding vector as floats
+- `statistics.token_count` - Input token count
+- `statistics.truncated` - Whether input was truncated due to length
+
+---
+
+# 4. List Models
+
+## Request Parameters
+
+None required. Automatically uses project_id and region from key config.
+
+## Response Conversion
+
+Lists models available in the specified project and region with metadata and deployment information:
+
+```json
+{
+  "models": [
+    {
+      "name": "projects/{project}/locations/{region}/models/gemini-2.0-flash",
+      "display_name": "Gemini 2.0 Flash",
+      "description": "Fast multimodal model",
+      "version_id": "1",
+      "version_aliases": ["latest", "stable"],
+      "capabilities": [...],
+      "deployed_models": [...]
+    }
+  ],
+  "next_page_token": "..."
+}
+```
+
+### Pagination
+
+Model listing is paginated automatically. If more than 100 models exist, `next_page_token` will be present. Bifrost handles pagination internally.
+
+---
+
+## Caveats
+
+<Accordion title="Project ID and Region Required">
+**Severity**: High
+**Behavior**: Both project_id and region required for all operations
+**Impact**: Request fails without valid GCP project/region configuration
+**Code**: `vertex.go:127-138`
+</Accordion>
+
+<Accordion title="OAuth2 Token Management">
+**Severity**: Medium
+**Behavior**: Tokens cached and automatically refreshed when expired
+**Impact**: First request slightly slower due to auth; cached for subsequent requests
+**Code**: `vertex.go:34-55`
+</Accordion>
+
+<Accordion title="Anthropic Model Detection">
+**Severity**: Medium
+**Behavior**: Automatic detection of Anthropic vs Gemini models
+**Impact**: Different conversion logic applied transparently
+**Code**: `vertex.go` chat/responses endpoints
+</Accordion>
+
+<Accordion title="Model-Specific Responses API Handling">
+**Severity**: Low
+**Behavior**: Responses API automatically routes to Anthropic or Gemini implementation based on model
+**Impact**: Different conversion logic applied transparently per model
+**Code**: `vertex.go:836-1080`
+</Accordion>
+
+<Accordion title="Anthropic Version Lock">
+**Severity**: Low
+**Behavior**: `anthropic_version` always set to `vertex-2023-10-16` for Claude
+**Impact**: Cannot override Anthropic version for Claude on Vertex
+**Code**: `utils.go:33, 71`
+</Accordion>
+
+<Accordion title="Embeddings Float64 Conversion">
+**Severity**: Low
+**Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
+**Impact**: Minor precision loss (expected for embeddings)
+**Code**: `embedding.go:84-87`
+</Accordion>
+
+---
+
+## Configuration
+
+**HTTP Settings**: OAuth2 authentication with automatic token refresh | Region-specific endpoints | Max Connections 5000 | Max Idle 60 seconds
+
+**Scope**: `https://www.googleapis.com/auth/cloud-platform`
+
+**Endpoint Format**: `https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/{resource}`
+
+**Note**: For `global` region, endpoint is `https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/{resource}`
+
+## Setup & Configuration
+
+Vertex AI requires project configuration, region selection, and Google Cloud authentication. For detailed instructions on setting up Vertex AI, see the quickstart guides:
+
+<Tabs>
+<Tab title="Gateway">
+
+See **[Provider-Specific Authentication - Google Vertex](../../quickstart/gateway/provider-configuration#google-vertex)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
+
+</Tab>
+<Tab title="Go SDK">
+
+See **[Provider-Specific Authentication - Google Vertex](../../quickstart/go-sdk/provider-configuration#google-vertex)** in the Go SDK Quickstart for programmatic configuration examples.
+
+</Tab>
+</Tabs>

@@ -112,6 +112,20 @@ func EmbeddingExpectations(expectedTexts []string) ResponseExpectations {
 	}
 }
 
+// CountTokensExpectations returns validation expectations for count tokens scenarios
+func CountTokensExpectations() ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:    false, // CountTokens doesn't return text content
+		ExpectedChoiceCount:  0,
+		ShouldHaveUsageStats: true,
+		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true,
+		ProviderSpecific: map[string]interface{}{
+			"response_type": "count_tokens",
+		},
+	}
+}
+
 // StreamingExpectations returns validation expectations for streaming scenarios
 func StreamingExpectations() ResponseExpectations {
 	expectations := BasicChatExpectations()
@@ -216,6 +230,21 @@ func ReasoningExpectations() ResponseExpectations {
 	}
 }
 
+// ChatAudioExpectations returns validation expectations for chat audio scenarios
+func ChatAudioExpectations() ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:    false, // Chat audio responses may have audio/transcript but not text content
+		ExpectedChoiceCount:  1,     // Should have one choice with audio data
+		ShouldHaveUsageStats: true,
+		ShouldHaveTimestamps: true,
+		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true, // Global expectation: latency should always be present
+		ProviderSpecific: map[string]interface{}{
+			"response_type": "chat_audio",
+		},
+	}
+}
+
 // =============================================================================
 // SCENARIO-SPECIFIC EXPECTATION BUILDERS
 // =============================================================================
@@ -278,6 +307,9 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 		}
 		return EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
 
+	case "CountTokens":
+		return CountTokensExpectations()
+
 	case "CompleteEnd2End":
 		return ConversationExpectations([]string{"complete", "comprehensive", "full"})
 
@@ -296,6 +328,9 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 	case "Reasoning":
 		expectations := ReasoningExpectations()
 		return expectations
+
+	case "ChatAudio":
+		return ChatAudioExpectations()
 
 	case "ProviderSpecific":
 		expectations := BasicChatExpectations()

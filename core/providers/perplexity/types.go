@@ -12,7 +12,7 @@ type PerplexityChatRequest struct {
 	Temperature             *float64              `json:"temperature,omitempty"`                // Optional: Sampling temperature
 	TopP                    *float64              `json:"top_p,omitempty"`                      // Optional: Top-p sampling
 	LanguagePreference      *string               `json:"language_preference,omitempty"`        // Optional: Language preference
-	SearchDomainFilters     []string              `json:"search_domain_filters,omitempty"`      // Optional: Search domain filters
+	SearchDomainFilter      []string              `json:"search_domain_filter,omitempty"`       // Optional: Search domain filter
 	ReturnImages            *bool                 `json:"return_images,omitempty"`              // Optional: Return images
 	ReturnRelatedQuestions  *bool                 `json:"return_related_questions,omitempty"`   // Optional: Return related questions
 	SearchRecencyFilter     *string               `json:"search_recency_filter,omitempty"`      // Optional: Search recency filter

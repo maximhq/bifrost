@@ -66,7 +66,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 				onChange={handleInputChange}
 				onKeyDown={handleKeyDown}
 				onBlur={handleBlur}
-				className={cn("dark:bg-accent h-6 min-w-32 flex-1 border-0 p-0 text-xs shadow-none focus-visible:ring-0")}
+				className={cn("dark:bg-accent h-7 min-w-32 flex-1 border-0 py-0 px-2 text-xs shadow-none focus-visible:ring-0")}
 				{...props}
 			/>
 		</div>

@@ -1,0 +1,132 @@
+# Speech API schemas
+
+SpeechRequest:
+  type: object
+  required:
+    - model
+    - input
+    - voice
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    input:
+      type: string
+      description: Text to convert to speech
+    fallbacks:
+      type: array
+      items:
+        type: string
+    stream_format:
+      type: string
+      enum: [sse]
+      description: Set to "sse" to enable streaming
+    voice:
+      $ref: '#/SpeechVoiceInput'
+    instructions:
+      type: string
+    response_format:
+      type: string
+      enum: [mp3, opus, aac, flac, wav, pcm]
+    speed:
+      type: number
+      minimum: 0.25
+      maximum: 4.0
+    language_code:
+      type: string
+    pronunciation_dictionary_locators:
+      type: array
+      items:
+        $ref: '#/SpeechPronunciationDictionaryLocator'
+    enable_logging:
+      type: boolean
+    optimize_streaming_latency:
+      type: boolean
+    with_timestamps:
+      type: boolean
+
+SpeechVoiceInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '#/VoiceConfig'
+
+VoiceConfig:
+  type: object
+  required:
+    - speaker
+    - voice
+  properties:
+    speaker:
+      type: string
+    voice:
+      type: string
+
+SpeechPronunciationDictionaryLocator:
+  type: object
+  required:
+    - pronunciation_dictionary_id
+  properties:
+    pronunciation_dictionary_id:
+      type: string
+    version_id:
+      type: string
+
+SpeechResponse:
+  type: object
+  properties:
+    audio:
+      type: string
+      format: byte
+      description: Audio data (binary)
+    usage:
+      $ref: '#/SpeechUsage'
+    alignment:
+      $ref: '#/SpeechAlignment'
+    normalized_alignment:
+      $ref: '#/SpeechAlignment'
+    audio_base64:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+SpeechUsage:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+    output_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+
+SpeechAlignment:
+  type: object
+  properties:
+    char_start_times_ms:
+      type: array
+      items:
+        type: number
+    char_end_times_ms:
+      type: array
+      items:
+        type: number
+    characters:
+      type: array
+      items:
+        type: string
+
+SpeechStreamResponse:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [speech.audio.delta, speech.audio.done]
+    audio:
+      type: string
+      format: byte
+    usage:
+      $ref: '#/SpeechUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

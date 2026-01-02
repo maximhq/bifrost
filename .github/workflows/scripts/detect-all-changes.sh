@@ -33,16 +33,21 @@ CORE_TAG="core/v${CORE_VERSION}"
 if git rev-parse --verify "$CORE_TAG" >/dev/null 2>&1; then
   echo "   ⏭️ Tag $CORE_TAG already exists"
 else
-  # Get previous version
-  LATEST_CORE_TAG=$(git tag -l "core/v*" | sort -V | tail -1)
-  echo "🏷️ Latest core tag $LATEST_CORE_TAG"
+  # Extract major.minor track from version (e.g., "1.3.55" -> "1.3", "1.4.0-prerelease1" -> "1.4")
+  CORE_BASE_VERSION=$(echo "$CORE_VERSION" | sed 's/-.*$//')
+  CORE_MAJOR_MINOR=$(echo "$CORE_BASE_VERSION" | cut -d. -f1,2)
+  echo "   🔍 Checking track: ${CORE_MAJOR_MINOR}.x"
+  
+  # Get previous version in the same track
+  LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V | tail -1)
+  echo "🏷️ Latest core tag in track ${CORE_MAJOR_MINOR}.x: $LATEST_CORE_TAG"
   if [ -z "$LATEST_CORE_TAG" ]; then
-    echo "   ✅ First core release: $CORE_VERSION"
+    echo "   ✅ First core release in track ${CORE_MAJOR_MINOR}.x: $CORE_VERSION"
     CORE_NEEDS_RELEASE="true"
   else
     if [[ "$CORE_VERSION" == *"-"* ]]; then
       # current_version has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "core/v*" | sort -V)      
+      ALL_TAGS=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | sort -V)      
       STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')      
       PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
       if [ -n "$STABLE_TAGS" ]; then
@@ -55,8 +60,8 @@ else
         echo "latest core tag (prerelease only): $LATEST_CORE_TAG"
       fi
     else
-      # VERSION has no prerelease, so only consider stable releases
-      LATEST_CORE_TAG=$(git tag -l "core/v*" | grep -v '\-' | sort -V | tail -1)
+      # VERSION has no prerelease, so only consider stable releases in same track
+      LATEST_CORE_TAG=$(git tag -l "core/v${CORE_MAJOR_MINOR}.*" | grep -v '\-' | sort -V | tail -1)
       echo "latest core tag (stable only): $LATEST_CORE_TAG"
     fi
     PREVIOUS_CORE_VERSION=${LATEST_CORE_TAG#core/v}
@@ -78,7 +83,12 @@ FRAMEWORK_TAG="framework/v${FRAMEWORK_VERSION}"
 if git rev-parse --verify "$FRAMEWORK_TAG" >/dev/null 2>&1; then
   echo "   ⏭️ Tag $FRAMEWORK_TAG already exists"
 else
-  ALL_TAGS=$(git tag -l "framework/v*" | sort -V)
+  # Extract major.minor track from version (e.g., "1.3.55" -> "1.3", "1.4.0-prerelease1" -> "1.4")
+  FRAMEWORK_BASE_VERSION=$(echo "$FRAMEWORK_VERSION" | sed 's/-.*$//')
+  FRAMEWORK_MAJOR_MINOR=$(echo "$FRAMEWORK_BASE_VERSION" | cut -d. -f1,2)
+  echo "   🔍 Checking track: ${FRAMEWORK_MAJOR_MINOR}.x"
+  
+  ALL_TAGS=$(git tag -l "framework/v${FRAMEWORK_MAJOR_MINOR}.*" | sort -V)
   STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-')
   PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
   LATEST_FRAMEWORK_TAG=""
@@ -90,7 +100,7 @@ else
     echo "latest framework tag (prerelease only): $LATEST_FRAMEWORK_TAG"  
   fi      
   if [ -z "$LATEST_FRAMEWORK_TAG" ]; then
-    echo "   ✅ First framework release: $FRAMEWORK_VERSION"
+    echo "   ✅ First framework release in track ${FRAMEWORK_MAJOR_MINOR}.x: $FRAMEWORK_VERSION"
     FRAMEWORK_NEEDS_RELEASE="true"
   else
     PREVIOUS_FRAMEWORK_VERSION=${LATEST_FRAMEWORK_TAG#framework/v}
@@ -137,9 +147,14 @@ for plugin_dir in plugins/*/; do
     continue
   fi
 
+  # Extract major.minor track from version (e.g., "1.3.55" -> "1.3", "1.4.0-prerelease1" -> "1.4")
+  plugin_base_version=$(echo "$current_version" | sed 's/-.*$//')
+  plugin_major_minor=$(echo "$plugin_base_version" | cut -d. -f1,2)
+  echo "      🔍 Checking track: ${plugin_major_minor}.x"
+
   if [[ "$current_version" == *"-"* ]]; then
       # current_version has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v*" | sort -V)
+      ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v${plugin_major_minor}.*" | sort -V)
       STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
       PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
       
@@ -153,14 +168,14 @@ for plugin_dir in plugins/*/; do
         echo "latest plugin tag (prerelease only): $LATEST_PLUGIN_TAG"
       fi
   else
-    # VERSION has no prerelease, so only consider stable releases
-    LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v*" | grep -v '\-' | sort -V | tail -1 || true)
+    # VERSION has no prerelease, so only consider stable releases in same track
+    LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v${plugin_major_minor}.*" | grep -v '\-' | sort -V | tail -1 || true)
     echo "latest plugin tag (stable only): $LATEST_PLUGIN_TAG"
   fi
 
   latest_tag=$LATEST_PLUGIN_TAG
   if [ -z "$latest_tag" ]; then
-    echo "      ✅ First release"
+    echo "      ✅ First release in track ${plugin_major_minor}.x"
     PLUGIN_CHANGES+=("$plugin_name")
   else
     previous_version=${latest_tag#plugins/${plugin_name}/v}
@@ -210,8 +225,13 @@ fi
 if [ "$GIT_TAG_EXISTS" = "true" ] && [ "$DOCKER_TAG_EXISTS" = "true" ]; then
   echo "   ⏭️ Both Git tag and Docker image exist - no release needed"
 else
-  # Get all transport tags, prioritize stable over prerelease for same base version
-  ALL_TRANSPORT_TAGS=$(git tag -l "transports/v*" | sort -V)
+  # Extract major.minor track from version (e.g., "1.3.55" -> "1.3", "1.4.0-prerelease1" -> "1.4")
+  TRANSPORT_BASE_VERSION=$(echo "$TRANSPORT_VERSION" | sed 's/-.*$//')
+  TRANSPORT_MAJOR_MINOR=$(echo "$TRANSPORT_BASE_VERSION" | cut -d. -f1,2)
+  echo "   🔍 Checking track: ${TRANSPORT_MAJOR_MINOR}.x"
+  
+  # Get all transport tags in the same track, prioritize stable over prerelease for same base version
+  ALL_TRANSPORT_TAGS=$(git tag -l "transports/v${TRANSPORT_MAJOR_MINOR}.*" | sort -V)
   
   # Function to get base version (remove prerelease suffix)
   get_base_version() {
@@ -251,7 +271,7 @@ else
     echo "   🏷️ Latest transport tag: $LATEST_TRANSPORT_TAG"
   fi
   if [ -z "$LATEST_TRANSPORT_TAG" ]; then
-    echo "   ✅ First transport release: $TRANSPORT_VERSION"
+    echo "   ✅ First transport release in track ${TRANSPORT_MAJOR_MINOR}.x: $TRANSPORT_VERSION"
     if [ "$GIT_TAG_EXISTS" = "false" ]; then
       echo "   🏷️  Git tag missing - transport release needed"
       BIFROST_HTTP_NEEDS_RELEASE="true"

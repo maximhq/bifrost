@@ -26,70 +26,25 @@ TAG_NAME="transports/v${VERSION}"
 
 echo "🚀 Releasing bifrost-http v$VERSION..."
 
-# Ensure tags are available (CI often does shallow clones)
-git fetch --tags --force >/dev/null 2>&1 || true
-LATEST_CORE_TAG=$(git tag -l "core/v*" | sort -V | tail -1)
-LATEST_FRAMEWORK_TAG=$(git tag -l "framework/v*" | sort -V | tail -1)
+# Get core and framework versions from version files
+CORE_VERSION="v$(tr -d '\n\r' < core/version)"
+FRAMEWORK_VERSION="v$(tr -d '\n\r' < framework/version)"
 
-if [ -z "$LATEST_CORE_TAG" ]; then
-  CORE_VERSION="v$(tr -d '\n\r' < core/version)"
-else
-  CORE_VERSION=${LATEST_CORE_TAG#core/}
-fi
-
-if [ -z "$LATEST_FRAMEWORK_TAG" ]; then
-  FRAMEWORK_VERSION="v$(tr -d '\n\r' < framework/version)"
-else
-  FRAMEWORK_VERSION=${LATEST_FRAMEWORK_TAG#framework/}
-fi
-
-echo "🔍 DEBUG: LATEST_CORE_TAG: $LATEST_CORE_TAG"
 echo "🔍 DEBUG: CORE_VERSION: $CORE_VERSION"
-echo "🔍 DEBUG: LATEST_FRAMEWORK_TAG: $LATEST_FRAMEWORK_TAG"
 echo "🔍 DEBUG: FRAMEWORK_VERSION: $FRAMEWORK_VERSION"
 
 
-# Get latest plugin versions
-echo "🔌 Getting latest plugin release versions..."
+# Get plugin versions from version files
+echo "🔌 Getting plugin versions from version files..."
 declare -A PLUGIN_VERSIONS
 
-# First, get versions for plugins that exist in the plugins/ directory
+# Get versions for plugins that exist in the plugins/ directory
 for plugin_dir in plugins/*/; do
   if [ -d "$plugin_dir" ]; then
     plugin_name=$(basename "$plugin_dir")
-
-    # Check if VERSION parameter contains prerelease suffix
-    if [[ "$VERSION" == *"-"* ]]; then
-      # VERSION has prerelease, so include all versions but prefer stable
-      ALL_TAGS=$(git tag -l "plugins/${plugin_name}/v*" | sort -V)
-      STABLE_TAGS=$(echo "$ALL_TAGS" | grep -v '\-' || true)
-      PRERELEASE_TAGS=$(echo "$ALL_TAGS" | grep '\-' || true)
-
-      if [ -n "$STABLE_TAGS" ]; then
-        # Get the highest stable version
-        LATEST_PLUGIN_TAG=$(echo "$STABLE_TAGS" | tail -1)
-        echo "latest plugin tag (stable preferred): $LATEST_PLUGIN_TAG"
-      else
-        # No stable versions, get highest prerelease
-        LATEST_PLUGIN_TAG=$(echo "$PRERELEASE_TAGS" | tail -1)
-        echo "latest plugin tag (prerelease only): $LATEST_PLUGIN_TAG"
-      fi
-    else
-      # VERSION has no prerelease, so only consider stable releases
-      LATEST_PLUGIN_TAG=$(git tag -l "plugins/${plugin_name}/v*" | grep -v '\-' | sort -V | tail -1 || true)
-      echo "latest plugin tag (stable only): $LATEST_PLUGIN_TAG"
-    fi
-
-    if [ -z "$LATEST_PLUGIN_TAG" ]; then
-      # No matching release found, use version from file
-      PLUGIN_VERSION="v$(tr -d '\n\r' < "${plugin_dir}version")"
-      echo "   📦 $plugin_name: $PLUGIN_VERSION (from version file - not yet released)"
-    else
-      PLUGIN_VERSION=${LATEST_PLUGIN_TAG#plugins/${plugin_name}/}
-      echo "   📦 $plugin_name: $PLUGIN_VERSION (latest release)"
-    fi
-
+    PLUGIN_VERSION="v$(tr -d '\n\r' < "${plugin_dir}version")"
     PLUGIN_VERSIONS["$plugin_name"]="$PLUGIN_VERSION"
+    echo "   📦 $plugin_name: $PLUGIN_VERSION (from version file)"
   fi
 done
 
@@ -117,8 +72,8 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   echo "     - $plugin_name: ${PLUGIN_VERSIONS[$plugin_name]}"
 done
 
-# Update transport dependencies to use latest plugin releases
-echo "🔧 Using latest plugin release versions for transport..."
+# Update transport dependencies to use plugin versions from version files
+echo "🔧 Using plugin versions from version files for transport..."
 PLUGINS_USED=()
 
 # Track which plugins are actually used by the transport

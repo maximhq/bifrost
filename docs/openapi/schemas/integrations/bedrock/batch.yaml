@@ -1,0 +1,153 @@
+# AWS Bedrock Batch API Schemas
+
+BedrockBatchJobRequest:
+  type: object
+  required:
+    - roleArn
+    - inputDataConfig
+    - outputDataConfig
+  properties:
+    modelId:
+      type: string
+      description: Model ID for the batch job (optional, can be specified in request)
+    jobName:
+      type: string
+      description: Name for the batch job
+    roleArn:
+      type: string
+      description: IAM role ARN for the job
+    inputDataConfig:
+      type: object
+      properties:
+        s3InputDataConfig:
+          type: object
+          properties:
+            s3Uri:
+              type: string
+              description: S3 URI for input data
+    outputDataConfig:
+      type: object
+      properties:
+        s3OutputDataConfig:
+          type: object
+          properties:
+            s3Uri:
+              type: string
+              description: S3 URI for output data
+    timeoutDurationInHours:
+      type: integer
+      description: Timeout in hours
+    tags:
+      type: array
+      items:
+        type: object
+        properties:
+          key:
+            type: string
+          value:
+            type: string
+
+BedrockBatchJobResponse:
+  type: object
+  properties:
+    jobArn:
+      type: string
+    status:
+      type: string
+      enum: [Submitted, InProgress, Completed, Failed, Stopping, Stopped, PartiallyCompleted, Expired, Validating, Scheduled]
+    jobName:
+      type: string
+    modelId:
+      type: string
+    roleArn:
+      type: string
+    inputDataConfig:
+      type: object
+    outputDataConfig:
+      type: object
+    vpcConfig:
+      type: object
+      properties:
+        securityGroupIds:
+          type: array
+          items:
+            type: string
+        subnetIds:
+          type: array
+          items:
+            type: string
+    submitTime:
+      type: string
+      format: date-time
+    lastModifiedTime:
+      type: string
+      format: date-time
+    endTime:
+      type: string
+      format: date-time
+    message:
+      type: string
+    clientRequestToken:
+      type: string
+    jobExpirationTime:
+      type: string
+      format: date-time
+    timeoutDurationInHours:
+      type: integer
+
+BedrockBatchListRequest:
+  type: object
+  properties:
+    maxResults:
+      type: integer
+    nextToken:
+      type: string
+    statusEquals:
+      type: string
+    nameContains:
+      type: string
+
+BedrockBatchListResponse:
+  type: object
+  properties:
+    invocationJobSummaries:
+      type: array
+      items:
+        $ref: '#/BedrockBatchJobSummary'
+    nextToken:
+      type: string
+
+BedrockBatchJobSummary:
+  type: object
+  properties:
+    jobArn:
+      type: string
+    jobName:
+      type: string
+    modelId:
+      type: string
+    status:
+      type: string
+    submitTime:
+      type: string
+      format: date-time
+    lastModifiedTime:
+      type: string
+      format: date-time
+    endTime:
+      type: string
+      format: date-time
+    message:
+      type: string
+
+BedrockBatchRetrieveResponse:
+  description: Uses same structure as BedrockBatchJobResponse
+  $ref: '#/BedrockBatchJobResponse'
+
+BedrockBatchCancelResponse:
+  type: object
+  properties:
+    jobArn:
+      type: string
+    status:
+      type: string

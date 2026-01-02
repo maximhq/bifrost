@@ -1,0 +1,10 @@
+# Health API schemas
+
+HealthResponse:
+  type: object
+  description: Health check response
+  properties:
+    status:
+      type: string
+      enum: [ok]
+      example: ok

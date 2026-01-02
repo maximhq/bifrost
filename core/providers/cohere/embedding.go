@@ -167,6 +167,15 @@ func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 				bifrostResponse.Usage.CompletionTokens = int(*response.Meta.Tokens.OutputTokens)
 			}
 			bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
+		} else if response.Meta.BilledUnits != nil {
+			bifrostResponse.Usage = &schemas.BifrostLLMUsage{}
+			if response.Meta.BilledUnits.InputTokens != nil {
+				bifrostResponse.Usage.PromptTokens = int(*response.Meta.BilledUnits.InputTokens)
+			}
+			if response.Meta.BilledUnits.OutputTokens != nil {
+				bifrostResponse.Usage.CompletionTokens = int(*response.Meta.BilledUnits.OutputTokens)
+			}
+			bifrostResponse.Usage.TotalTokens = bifrostResponse.Usage.PromptTokens + bifrostResponse.Usage.CompletionTokens
 		}
 	}
 

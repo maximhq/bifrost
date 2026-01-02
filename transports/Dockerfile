@@ -15,7 +15,7 @@ RUN node scripts/fix-paths.js
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.24.3-alpine3.22 AS builder
+FROM golang:1.25.5-alpine3.22 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite

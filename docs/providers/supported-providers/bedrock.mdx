@@ -1,0 +1,716 @@
+---
+title: "AWS Bedrock"
+description: "AWS Bedrock API conversion guide - model families, parameter mapping, message handling, reasoning/thinking, tool conversion, and AWS authentication"
+icon: "aws"
+---
+
+## Overview
+
+AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohere, Titan) with significant structural differences from OpenAI's format. Bifrost performs extensive conversion including:
+- **Model family detection** - Automatic routing based on model ID to handle family-specific parameters
+- **Parameter renaming** - e.g., `max_completion_tokens` → `maxTokens`, `stop` → `stopSequences`
+- **Reasoning transformation** - `reasoning` parameters mapped to model-specific thinking/reasoning structures (Anthropic, Nova)
+- **Tool restructuring** - Function definitions converted to Bedrock's ToolConfig format
+- **Message conversion** - System message extraction, tool message grouping, image format adaptation (base64 only)
+- **AWS authentication** - Automatic SigV4 request signing with credential chain support
+- **Structured output** - `response_format` converted to specialized tool definitions
+- **Service tier & guardrails** - Support for Bedrock-specific performance and safety configurations
+
+### Model Family Support
+
+| Family | Chat | Responses | Text | Embeddings |
+|--------|------|-----------|------|------------|
+| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ |
+| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ |
+| **Mistral** | ✅ | ✅ | ✅ | ❌ |
+| **Llama** | ✅ | ✅ | ❌ | ❌ |
+| **Cohere** | ✅ | ✅ | ❌ | ✅ |
+| **Titan** | ✅ | ✅ | ❌ | ✅ |
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `converse` |
+| Responses API | ✅ | ✅ | `converse` |
+| Text Completions | ✅ | ❌ | `invoke` |
+| Embeddings | ✅ | - | `invoke` |
+| Files | ✅ | - | S3 (via SDK) |
+| Batch | ✅ | - | `batch` |
+| List Models | ✅ | - | `listFoundationModels` |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Speech (TTS) and Transcriptions (STT) are not supported by the upstream AWS Bedrock API. These return `UnsupportedOperationError`.
+
+**Limitations**: Images must be in base64 or data URI format (remote URLs not supported). Text completion streaming is not supported.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation | Notes |
+|-----------|----------------|-------|
+| `max_completion_tokens` | → `inferenceConfig.maxTokens` | Required field in Bedrock |
+| `temperature`, `top_p` | Direct pass-through to `inferenceConfig` | |
+| `stop` | → `inferenceConfig.stopSequences` | Array of strings |
+| `response_format` | → Structured output tool (see [Structured Output](#structured-output)) | Creates `bf_so_*` tool |
+| `tools` | Schema restructured (see [Tool Conversion](#tool-conversion)) | |
+| `tool_choice` | Type mapped (see [Tool Conversion](#tool-conversion)) | |
+| `reasoning` | Model-specific thinking config (see [Reasoning / Thinking](#reasoning--thinking)) | |
+| `user` | → `metadata.userID` (if provided) | Bedrock-specific metadata |
+| `service_tier` | → `serviceModelTier` (if provided) | Performance tier selection |
+| `top_k` | Via `extra_params` (model-specific) | Bedrock-specific sampling |
+
+### Dropped Parameters
+
+The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway) for Bedrock-specific fields:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "guardrailConfig": {
+      "guardrailIdentifier": "guardrail-id",
+      "guardrailVersion": "1",
+      "trace": "enabled"
+    },
+    "performanceConfig": {
+      "latency": "optimized"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "guardrailConfig": map[string]interface{}{
+                "guardrailIdentifier": "guardrail-id",
+                "guardrailVersion": "1",
+                "trace": "enabled",
+            },
+            "performanceConfig": map[string]interface{}{
+                "latency": "optimized",
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+**Available Extra Parameters:**
+- `guardrailConfig` - Bedrock guardrail configuration with `guardrailIdentifier`, `guardrailVersion`, `trace`
+- `performanceConfig` - Performance optimization with `latency` ("optimized" or "standard")
+- `additionalModelRequestFieldPaths` - Pass-through for model-specific fields not in standard schema
+- `promptVariables` - Variables for prompt templates (if using prompt caching)
+- `requestMetadata` - Custom metadata for request tracking
+
+### Cache Control
+
+Prompt caching is supported via cache control directives:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "This context will be cached",
+            "cache_control": {"type": "ephemeral"}
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "type": "text",
+        "text": "You are a helpful assistant",
+        "cache_control": {"type": "ephemeral"}
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatMessageContentBlock{
+                    {
+                        Text: schemas.Ptr("This context will be cached"),
+                        CacheControl: &schemas.CacheControl{
+                            Type: schemas.Ptr("ephemeral"),
+                        },
+                    },
+                },
+            },
+        },
+    },
+    SystemMessages: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleSystem,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatMessageContentBlock{
+                    {
+                        Text: schemas.Ptr("You are a helpful assistant"),
+                        CacheControl: &schemas.CacheControl{
+                            Type: schemas.Ptr("ephemeral"),
+                        },
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Reasoning / Thinking
+
+**Documentation**: See [Bifrost Reasoning Reference](/providers/reasoning)
+
+Reasoning/thinking support varies by model family:
+
+### Anthropic Claude Models
+
+**Parameter Mapping:**
+- `reasoning.effort` → `thinkingConfig.type = "enabled"` (always enabled when reasoning present)
+- `reasoning.max_tokens` → `thinkingConfig.budgetTokens` (token budget for thinking)
+
+**Critical Constraints:**
+- **Minimum budget**: 1024 tokens required; requests below this **fail with error**
+- **Dynamic budget**: `-1` is converted to `1024` automatically
+
+```json
+// Request
+{"reasoning": {"effort": "high", "max_tokens": 2048}}
+
+// Bedrock conversion
+{"thinkingConfig": {"type": "enabled", "budgetTokens": 2048}}
+```
+
+### Anthropic Nova Models
+
+**Parameter Mapping:**
+- `reasoning.effort` → `reasoningConfig.thinkingLevel` ("low" → `low`, "high" → `high`)
+- `reasoning.max_tokens` → Max reasoning tokens (affects inference configuration)
+
+```json
+// Request
+{"reasoning": {"effort": "high", "max_tokens": 10000}}
+
+// Bedrock conversion
+{"reasoningConfig": {"type": "enabled", "thinkingLevel": "high"}}
+```
+
+## Message Conversion
+
+### Critical Caveats
+
+- **System message extraction**: System messages are **removed from messages array** and placed in separate `system` field
+- **Tool message grouping**: Consecutive tool messages are **merged into single user message** with tool result content blocks
+- **Image format**: **Only base64/data URI supported**; remote image URLs are **not supported** by Bedrock Converse API
+- **Document support**: PDF, CSV, DOC, DOCX, XLS, XLSX, HTML, TXT, MD formats supported
+
+### Image Conversion
+
+- **Base64 images**: Data URL → `{type: "image", source: {type: "base64", mediaType: "image/png", data: "..."}}`
+- **URL images**: ❌ **Not supported** - Will fail if attempted
+- **Documents**: Converted to document content blocks with MIME types
+
+### Cache Control Locations
+
+Cache directives supported on:
+- System content blocks (entire system message)
+- User message content blocks (specific parts)
+- Tool definitions within tool configuration
+
+## Tool Conversion
+
+Tool definitions are restructured:
+- `function.name` → `name` (preserved)
+- `function.parameters` → `inputSchema` (Schema format)
+- `function.strict` → Dropped (not supported by Bedrock)
+
+### Tool Choice Mapping
+
+| OpenAI | Bedrock |
+|--------|---------|
+| `"auto"` | `auto` (default) |
+| `"none"` | Omitted (not explicitly supported) |
+| `"required"` | `any` |
+| Specific tool | `{type: "tool", name: "X"}` |
+
+### Tool Call Handling
+
+Tool calls are converted between formats:
+- **Bifrost → Bedrock**: Tool call arguments converted from JSON object to `input` field
+- **Bedrock → Bifrost**: Tool use results with `toolUseId`, converted back to Bifrost format
+- **Tool results**: Merged consecutive tool messages into single user message
+
+## Structured Output
+
+Structured output uses a special tool-based approach:
+
+```json
+// Request with structured output
+{
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "response",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "age": {"type": "number"}
+        }
+      }
+    }
+  }
+}
+
+// Bedrock conversion (internal)
+{
+  "tools": [{
+    "name": "bf_so_response",
+    "description": "Structured output tool",
+    "inputSchema": {
+      "type": "object",
+      "properties": {...}
+    }
+  }],
+  "toolChoice": {"type": "tool", "name": "bf_so_response"}
+}
+
+// Response extraction
+// Tool use input is extracted and returned as contentStr
+```
+
+## Response Conversion
+
+### Field Mapping
+
+- `stopReason` → `finish_reason`: `endTurn`/`stopSequence` → `stop`, `maxTokens` → `length`, `toolUse` → `tool_calls`
+- `usage.inputTokens` → `prompt_tokens` | `usage.outputTokens` → `completion_tokens`
+- Cache tokens: `cacheReadInputTokens`, `cacheWriteInputTokens` → `prompt_tokens_details`/`completion_tokens_details`
+- `reasoning`/`thinking` blocks → `reasoning_details` with index, type, text, and signature
+- Tool call `input` (object) → `arguments` (JSON string)
+
+### Structured Output Response
+
+When structured output is detected:
+- Tool call with name `bf_so_*` is treated as structured output
+- `input` object is extracted and returned as `contentStr`
+- Removed from `toolCalls` array
+
+## Streaming
+
+### Chat Completions Streaming
+
+Event sequence from Bedrock Converse Stream API:
+
+1. **Initial message role**: `contentBlockIndex` and role information
+2. **Content block starts**: `toolUse` blocks with `toolUseId`, `name`
+3. **Content block deltas**:
+   - Text delta: Incremental text content
+   - Tool use delta: Accumulated tool call arguments (JSON)
+   - Reasoning delta: Reasoning text and optional signature
+4. **Message completion**: `stopReason` and final token counts
+5. **Usage metrics**: Token counts, cached tokens, performance metrics
+
+**Streaming event conversion**:
+- Each Bedrock streaming event → Multiple Bifrost chunks as needed
+- Tool arguments accumulated across deltas and emitted on block end
+- Reasoning content emitted with signature if present
+
+### Text Completion Streaming
+
+❌ **Not supported** - AWS Bedrock's text completion API does not support streaming.
+
+### Responses API Streaming
+
+Streaming responses use OpenAI-compatible lifecycle events:
+- `response.created`
+- `response.in_progress`
+- `content_part.start`
+- `content_part.delta`
+- `content_part.done`
+- `function_call_arguments.delta`
+- `function_call_arguments.done`
+- `output_item.done`
+
+Special handling:
+- Tool arguments accumulated across deltas
+- Content block indices mapped to output indices
+- Synthetic events emitted for text/reasoning content
+
+---
+
+# 2. Responses API
+
+The Responses API uses the same underlying `converse` endpoint but converts between OpenAI's Responses format and Bedrock's Messages format.
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `max_output_tokens` | Renamed to `maxTokens` (via `inferenceConfig`) |
+| `temperature`, `top_p` | Direct pass-through |
+| `instructions` | Becomes system message |
+| `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
+| `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
+| `reasoning` | Mapped to thinking/reasoning config (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `text` | Converted to `output_format` (Bedrock-specific) |
+| `include` | Via `extra_params` (Bedrock-specific) |
+| `stop` | Via `extra_params`, renamed to `stopSequences` |
+| `truncation` | Auto-set to `"auto"` for computer tools |
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway):
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "input": "Hello, how are you?",
+    "stop": ["###"]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        ExtraParams: map[string]interface{}{
+            "stop": []string{"###"},
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Input & Instructions
+
+- **Input**: String wrapped as user message or array converted to messages
+- **Instructions**: Becomes system message (same extraction as [Chat Completions](#1-chat-completions))
+- **Cache control**: Supported on instructions (system) and input messages
+
+## Response Conversion
+
+- `stopReason` → `status`: `endTurn`/`stopSequence` → `completed`, `maxTokens` → `incomplete`
+- `usage.inputTokens`/`usage.outputTokens` preserved with cache tokens → `*_tokens_details.cached_tokens`
+- Output items: `text` → `message` | `toolUse` → `function_call` | `thinking` → `reasoning`
+
+## Streaming
+
+Event sequence: `response.created` → `response.in_progress` → `content_part.start` → `content_part.delta` → `content_part.done` → `output_item.done`
+
+---
+
+# 3. Text Completions (Legacy)
+
+<Warning>
+Legacy API using `invoke` endpoint. Streaming not supported. Only Claude (Anthropic) and Mistral models supported.
+</Warning>
+
+**Request conversion**:
+- **Claude models**: Uses Anthropic's `/v1/complete` format with prompt wrapping
+  - `prompt` auto-wrapped with `\n\nHuman: {prompt}\n\nAssistant:`
+  - `max_tokens` → `max_tokens_to_sample`
+  - `temperature`, `top_p` direct pass-through
+  - `top_k`, `stop` via `extra_params`
+
+- **Mistral models**: Uses standard format
+  - `max_tokens` → `max_tokens`
+  - `temperature`, `top_p` direct pass-through
+  - `stop` → `stop`
+
+**Response conversion**:
+- **Claude**: `completion` → `choices[0].text`
+- **Mistral**: `outputs[].text` → `choices[]` (supports multiple)
+- `stopReason` → `finish_reason`
+
+---
+
+# 4. Embeddings
+
+Supported embedding models: **Titan**, **Cohere**
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation | Notes |
+|-----------|----------------|-------|
+| `input` | Direct pass-through | Text or array of texts |
+| `dimensions` | ⚠️ Not supported | Titan has fixed dimensions per model |
+| `encoding_format` | Via `extra_params` | "base64" or "float" |
+
+**Titan-specific**:
+- No dimension customization
+- Fixed output size per model version
+
+**Cohere-specific**:
+- Reuses Cohere format conversion
+- Similar parameter mapping to standard Cohere
+
+## Response Conversion
+
+- **Titan**: `embedding` → single embedding vector
+- **Cohere**: Reuses Cohere response format with `embeddings` array
+- `usage.inputTokens` → `usage.prompt_tokens`
+
+---
+
+# 5. Batch API
+
+**Request formats**: `requests` array (CustomID + Params) or `input_file_id`
+
+**Pagination**: Cursor-based with `afterId`, `beforeId`, `limit`
+
+**Endpoints**:
+- POST `/batch` - Create batch
+- GET `/batch` - List batches
+- GET `/batch/{batch_id}` - Retrieve batch
+- POST `/batch/{batch_id}/cancel` - Cancel batch
+
+**Response**: JSONL format with `{recordId, modelOutput: {...}}` or `{recordId, error: {...}}`
+
+**Status mapping**:
+| Bedrock Status | Bifrost Mapping |
+|---|---|
+| `Submitted`, `Validating` | `Validating` |
+| `InProgress` | `InProgress` |
+| `Completed` | `Completed` |
+| `Failed`, `PartiallyCompleted` | `Failed` |
+| `Stopping` | `Cancelling` |
+| `Stopped` | `Cancelled` |
+| `Expired` | `Expired` |
+
+**Note**: RFC3339Nano timestamps converted to Unix timestamps, multi-key retry supported
+
+---
+
+# 6. Files API
+
+<Note>
+S3-backed file operations. Files are stored in S3 buckets integrated with Bedrock.
+</Note>
+
+**Upload**: Multipart/form-data with `file` (required) and `filename` (optional)
+
+**Field mapping**:
+- `id` (file ID)
+- `filename`
+- `size_bytes` (from S3 object size)
+- `created_at` (Unix timestamp from S3 LastModified)
+- `mime_type` (derived from content or explicitly set)
+
+**Endpoints**:
+- POST `/v1/files` - Upload
+- GET `/v1/files` - List (cursor pagination)
+- GET `/v1/files/{file_id}` - Retrieve metadata
+- DELETE `/v1/files/{file_id}` - Delete
+- GET `/v1/files/{file_id}/content` - Download content
+
+**Note**: File purpose always `"batch"`, status always `"processed"`
+
+---
+
+# 7. List Models
+
+**Request**: GET `/v1/models` (no body)
+
+**Field mapping**:
+- `id` (model name with deployment prefix if applicable)
+- `display_name` → `name`
+- `created_at` (Unix timestamp)
+
+**Pagination**: Token-based with `NextPageToken`, `FirstID`, `LastID`
+
+**Filtering**:
+- Region-based model filtering
+- Deployment mapping from configuration
+- Model allowlist support (`allowed_models` config)
+
+**Multi-key support**: Results aggregated from all keys, filtered by `allowedModels` if configured
+
+---
+
+# 8. AWS Authentication & Configuration
+
+Bifrost automatically handles AWS Bedrock authentication via multiple methods including explicit credentials, IAM roles, and bearer tokens with automatic Signature Version 4 (SigV4) signing.
+
+## Setup & Configuration
+
+For detailed instructions on setting up AWS Bedrock authentication including credentials, IAM roles, regions, and deployment mapping, see the quickstart guides:
+
+<Tabs>
+<Tab title="Gateway">
+
+See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/gateway/provider-configuration#aws-bedrock)** in the Gateway Quickstart for configuration steps using Web UI, API, or config.json.
+
+</Tab>
+<Tab title="Go SDK">
+
+See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/go-sdk/provider-configuration#aws-bedrock)** in the Go SDK Quickstart for programmatic configuration examples.
+
+</Tab>
+</Tabs>
+
+### Endpoints
+
+- **Runtime API**: `bedrock-runtime.{region}.amazonaws.com/model/{path}`
+- **Control Plane**: `bedrock.{region}.amazonaws.com` (list models)
+- **Batch API**: Via bedrock-runtime
+
+---
+
+# 9. Error Handling
+
+**HTTP Status Mapping**:
+
+| Status | Bifrost Error Type | Notes |
+|---|---|---|
+| 400 | `invalid_request_error` | Bad request parameters |
+| 401 | `authentication_error` | Invalid/expired credentials |
+| 403 | `permission_denied_error` | Access denied to model/resource |
+| 404 | `not_found_error` | Model or resource not found |
+| 429 | `rate_limit_error` | Rate limit exceeded |
+| 500 | `api_error` | Server error |
+| 529 | `overloaded_error` | Service overloaded |
+
+**Error Response Structure**:
+```go
+type BifrostError struct {
+    IsBifrostError bool
+    StatusCode     *int
+    Error: {
+        Type:    string    // Error classification
+        Message: string    // Human-readable message
+        Error:   error     // Underlying error
+    }
+}
+```
+
+**Special Cases**:
+- Context cancellation → `RequestCancelled`
+- Request timeout → `ErrProviderRequestTimedOut`
+- Streaming errors → Sent via channel with stream end indicator
+- Response unmarshalling → `ErrProviderResponseUnmarshal`
+
+---
+
+## Caveats
+
+<Accordion title="Image Format Restriction">
+**Severity**: High
+**Behavior**: Only base64/data URI images supported; remote URLs not supported
+**Impact**: Requests with URL-based images fail
+**Code**: `chat.go:image handling`
+</Accordion>
+
+<Accordion title="Minimum Reasoning Budget (Claude)">
+**Severity**: High
+**Behavior**: `reasoning.max_tokens` must be >= 1024
+**Impact**: Requests with lower values fail with error
+**Code**: `chat.go:reasoning validation`
+</Accordion>
+
+<Accordion title="System Message Extraction">
+**Severity**: High
+**Behavior**: System messages removed from array, placed in separate `system` field
+**Impact**: Message array structure differs from input
+**Code**: `chat.go:message conversion`
+</Accordion>
+
+<Accordion title="Tool Message Grouping">
+**Severity**: High
+**Behavior**: Consecutive tool messages merged into single user message
+**Impact**: Message count and structure changes
+**Code**: `chat.go:tool message handling`
+</Accordion>
+
+<Accordion title="Model Family-Specific Parameters">
+**Severity**: Medium
+**Behavior**: Reasoning/thinking config varies significantly by model family
+**Impact**: Parameter mapping differs for Claude vs Nova vs other families
+**Code**: `chat.go, utils.go:model detection`
+</Accordion>
+
+<Accordion title="Text Completion Streaming Not Supported">
+**Severity**: Medium
+**Behavior**: Text completion streaming returns error
+**Impact**: Streaming not available for legacy completions API
+**Code**: `text.go:streaming`
+</Accordion>
+
+<Accordion title="Structured Output via Tool">
+**Severity**: Low
+**Behavior**: `response_format` converted to special `bf_so_*` tool
+**Impact**: Tool call count and structure changes internally
+**Code**: `chat.go:structured output handling`
+</Accordion>
+
+<Accordion title="Deployment Region Prefix Handling">
+**Severity**: Low
+**Behavior**: Model IDs with region prefixes matched against deployment config
+**Impact**: Model availability depends on deployment configuration
+**Code**: `models.go:deployment matching`
+</Accordion>

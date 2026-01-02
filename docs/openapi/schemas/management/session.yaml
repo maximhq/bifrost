@@ -1,0 +1,41 @@
+# Session API schemas
+
+LoginRequest:
+  type: object
+  description: Login request
+  required:
+    - username
+    - password
+  properties:
+    username:
+      type: string
+    password:
+      type: string
+
+LoginResponse:
+  type: object
+  description: Login response
+  properties:
+    message:
+      type: string
+      example: Login successful
+    token:
+      type: string
+      description: Session token
+
+IsAuthEnabledResponse:
+  type: object
+  description: Auth enabled status response
+  properties:
+    is_auth_enabled:
+      type: boolean
+    has_valid_token:
+      type: boolean
+
+LogoutResponse:
+  type: object
+  description: Logout response
+  properties:
+    message:
+      type: string
+      example: Logout successful

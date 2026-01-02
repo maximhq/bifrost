@@ -1,0 +1,306 @@
+---
+title: "OpenAI"
+description: "OpenAI API conversion guide - what to know when using OpenAI through Bifrost"
+icon: "openai"
+---
+
+## Overview
+
+OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, parameters are passed through with minimal conversion - mostly validation and filtering of OpenAI-specific features.
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
+| Files | ✅ | - | `/v1/files` |
+| Batch | ✅ | - | `/v1/batches` |
+| List Models | ✅ | - | `/v1/models` |
+
+---
+
+# 1. Chat Completions
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `messages` | [array](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L15) | ✅ | [`ChatMessage`](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L370) array with roles ([docs](https://platform.openai.com/docs/api-reference/chat/create#chat-create-messages)) |
+| `temperature` | float | ❌ | Sampling temperature (0-2) |
+| `top_p` | float | ❌ | Nucleus sampling parameter |
+| `stop` | string/array | ❌ | Stop sequences |
+| `max_completion_tokens` | int | ❌ | Min 16, max output tokens |
+| `frequency_penalty` | float | ❌ | Frequency penalty (-2 to 2) |
+| `presence_penalty` | float | ❌ | Presence penalty (-2 to 2) |
+| `logit_bias` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L25) | ❌ | Token logit adjustments |
+| `logprobs` | bool | ❌ | Include log probabilities |
+| `top_logprobs` | int | ❌ | Number of log probabilities per token |
+| `seed` | int | ❌ | Reproducibility seed |
+| `response_format` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L23) | ❌ | Output format ([docs](https://platform.openai.com/docs/api-reference/chat/create#chat-create-response_format)) |
+| `tools` | [array](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L21) | ❌ | [`Tool`](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L600) objects ([docs](https://platform.openai.com/docs/api-reference/chat/create#chat-create-tools)) |
+| `tool_choice` | string/[object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L22) | ❌ | `"auto"`, `"none"`, `"required"`, or specific tool |
+| `parallel_tool_calls` | bool | ❌ | Allow multiple simultaneous tool calls |
+| `stream_options` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L26) | ❌ | Streaming options ([docs](https://platform.openai.com/docs/api-reference/chat/create#chat-create-stream_options)) |
+| `reasoning` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L24) | ❌ | Reasoning parameters ([Bifrost docs](/providers/reasoning), [OpenAI docs](https://platform.openai.com/docs/api-reference/chat/create#chat-create-reasoning)) |
+| `user` | string | ❌ | **Truncated to 64 chars** |
+| `metadata` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L27) | ❌ | Custom metadata |
+| `store` | bool | ❌ | **Filtered for non-OpenAI routing** |
+| `service_tier` | string | ❌ | **Filtered for non-OpenAI routing** |
+| `prompt_cache_key` | string | ❌ | **Filtered for non-OpenAI routing** |
+| `prediction` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L28) | ❌ | Predicted output for acceleration |
+| `audio` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L29) | ❌ | Audio output config |
+| `modalities` | [array](https://github.com/maximhq/bifrost/blob/main/core/schemas/chatcompletions.go#L30) | ❌ | Response modalities (text, audio) |
+
+---
+
+- **Reasoning:** OpenAI supports `reasoning.effort` (`minimal`, `low`, `medium`, `high`) and `reasoning.max_tokens` - both passed through directly. When routing to other providers, `"minimal"` effort is converted to `"low"` for compatibility. See [Bifrost reasoning docs](/providers/reasoning).
+- **Messages:** All message roles are supported: `system`, `user`, `assistant`, `tool`, `developer` (treated as system). Content types: text, images via URL (`image_url`), audio input (`input_audio`). Tool messages include a `tool_call_id`.
+- **Tools:** Standard OpenAI tool format with strict mode support. Tool choice: `"auto"`, `"none"`, `"required"`, or specific tool by name.
+- **Responses:** Passed through in standard OpenAI format. Finish reasons: `stop`, `length`, `tool_calls`, `content_filter`. Usage includes token counts and optionally cached/reasoning token details.
+- **Streaming:** Server-Sent Events format with `delta.content`, `delta.tool_calls`, `finish_reason`, and `usage` (final chunk only, automatically included by Bifrost). `stream_options: { include_usage: true }` is set by default for all streaming calls.
+- **Cache Control:** `cache_control` fields are stripped from messages, their content blocks, and tools before sending.
+- **Token Enforcement:** `max_completion_tokens` is enforced to have a minimum of 16. Values below 16 are automatically set to 16.
+- **Special handling:** `user` field is truncated to 64 characters; `prompt_cache_key`, `store`, `service_tier` are filtered when routing to non-OpenAI providers
+
+---
+
+# 2. Responses API
+
+The Responses API is OpenAI's structured output API.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `input` | string/[array](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L40) | ✅ | Text or [`ContentBlock`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L500) array ([docs](https://platform.openai.com/docs/api-reference/responses/create#responses-create-input)) |
+| `max_output_tokens` | int | ✅ | Maximum output length |
+| `background` | bool | ❌ | Run request in background mode |
+| `conversation` | string | ❌ | Conversation ID for continuing a conversation |
+| `include` | array | ❌ | Array of fields to include in response (e.g., `"web_search_call.action.sources"`) |
+| `instructions` | string | ❌ | System instructions |
+| `max_tool_calls` | int | ❌ | Maximum number of tool calls |
+| `metadata` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L94) | ❌ | Custom metadata |
+| `parallel_tool_calls` | bool | ❌ | Allow multiple simultaneous tool calls |
+| `previous_response_id` | string | ❌ | ID of previous response to continue from |
+| `prompt_cache_key` | string | ❌ | Prompt caching key |
+| `reasoning` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L238) | ❌ | [`ResponsesParametersReasoning`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L238) configuration ([Bifrost docs](/providers/reasoning)) |
+| `safety_identifier` | string | ❌ | Safety identifier for content filtering |
+| `service_tier` | string | ❌ | Service tier for the request |
+| `stream_options` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L116) | ❌ | [`ResponsesStreamOptions`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L116) configuration |
+| `store` | bool | ❌ | Store the response for later retrieval |
+| `temperature` | float | ❌ | Sampling temperature |
+| `text` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L120) | ❌ | [`ResponsesTextConfig`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L120) for output formatting |
+| `top_logprobs` | int | ❌ | Number of log probabilities to return per token |
+| `top_p` | float | ❌ | Nucleus sampling parameter |
+| `tool_choice` | string/[object](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L969) | ❌ | [`ResponsesToolChoice`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L969) strategy |
+| `tools` | [array](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L1050) | ❌ | [`ResponsesTool`](https://github.com/maximhq/bifrost/blob/main/core/schemas/responses.go#L1050) objects ([docs](https://platform.openai.com/docs/api-reference/responses/create#responses-create-tools)) |
+| `truncation` | string | ❌ | Truncation strategy (`auto` or `off`) |
+| `user` | string | ❌ | **Truncated to 64 chars** |
+
+---
+
+**Special Message Handling (gpt-oss vs other models):**
+
+OpenAI models handle reasoning differently depending on the model family:
+- **Non-gpt-oss models** (GPT-4o, o1, etc.): Send reasoning as **summaries**. Reasoning-only messages (with no summary and only content blocks) are filtered out since these models don't support reasoning content blocks in the request format.
+- **gpt-oss models**: Send reasoning as **content blocks**. Reasoning summaries in the request are converted to content blocks since gpt-oss expects reasoning as structured blocks, not summaries.
+
+This conversion ensures compatibility across different model architectures for the structured Responses API. See [Bifrost reasoning docs](/providers/reasoning) for detailed reasoning handling.
+
+**Token & Parameter Enforcement:**
+- `max_output_tokens` is enforced to have a minimum of 16. Values below 16 are automatically set to 16.
+- `reasoning.max_tokens` field is automatically removed from JSON output (OpenAI Responses API doesn't accept it).
+
+**Other conversions:**
+- Action types `zoom` and `region` are converted to `screenshot`
+- `cache_control` fields are stripped from messages and tools
+- Unsupported tool types are silently filtered (only these are supported: `function`, `file_search`, `computer_use_preview`, `web_search`, `mcp`, `code_interpreter`, `image_generation`, `local_shell`, `custom`, `web_search_preview`)
+
+**Response:** Includes `id`, `status` (`completed`, `incomplete`, `pending`, `error`), `output` array with message content, and token `usage`.
+
+**Streaming:** Server-Sent Events with types: `response.created`, `response.in_progress`, `response.output_item.added`, `response.content_part.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, `response.completed`, `response.incomplete`. `stream_options: { include_usage: true }` is set by default for all streaming calls.
+
+---
+
+# 3. Text Completions (Legacy)
+
+<Warning>
+Text Completions is a legacy API. Use Chat Completions for new implementations.
+</Warning>
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `prompt` | string/array | ✅ | Completion prompt(s) |
+| `max_tokens` | int | ❌ | Maximum output tokens |
+| `temperature` | float | ❌ | Sampling temperature |
+| `top_p` | float | ❌ | Nucleus sampling |
+| `stop` | string/array | ❌ | Stop sequences |
+| `user` | string | ❌ | **Truncated to 64 chars** |
+
+---
+
+- Array prompts generate multiple completions. Finish reasons: `stop` or `length`. Streaming uses SSE format. `stream_options: { include_usage: true }` is set by default for streaming calls.
+- `user` field is truncated to 64 characters or set to nil if it exceeds the limit.
+
+---
+
+# 4. Embeddings
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `input` | string/[array](https://github.com/maximhq/bifrost/blob/main/core/schemas/embedding.go#L12) | ✅ | Text(s) to embed ([docs](https://platform.openai.com/docs/api-reference/embeddings/create#embeddings-create-input)) |
+| `encoding_format` | string | ❌ | `float` or `base64` |
+| `dimensions` | int | ❌ | Output embedding dimensions |
+| `user` | string | ❌ | **NOT truncated** (unlike chat/text) |
+
+---
+
+- No streaming support. Returns [`embedding`](https://github.com/maximhq/bifrost/blob/main/core/schemas/embedding.go#L30) array with usage counts.
+
+---
+
+# 5. Speech (Text-to-Speech)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | `tts-1` or `tts-1-hd` |
+| `input` | string | ✅ | Text to convert to speech |
+| `voice` | string | ✅ | alloy, echo, fable, onyx, nova, shimmer |
+| `response_format` | string | ❌ | mp3, opus, aac, flac, wav, pcm |
+| `speed` | float | ❌ | 0.25 to 4.0 (default 1.0) |
+
+---
+
+- Returns raw binary audio. Streaming supported in SSE format (base64 chunks), but not all models support streaming. `stream_options: { include_usage: true }` is set by default for streaming calls.
+
+---
+
+# 6. Transcriptions (Speech-to-Text)
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `file` | binary | ✅ | Audio file (multipart form-data) |
+| `model` | string | ✅ | `whisper-1` |
+| `language` | string | ❌ | ISO-639-1 language code |
+| `prompt` | string | ❌ | Optional prompt for context |
+| `temperature` | float | ❌ | Sampling temperature |
+| `response_format` | string | ❌ | json, text, srt, vtt, verbose_json |
+
+---
+
+- **Supported audio formats:** mp3, mp4, mpeg, mpga, m4a, wav, webm
+- **Response:** Includes `text`, `task`, `language`, `duration`, and optionally word-level timing. Streaming supported in SSE format. `stream_options: { include_usage: true }` is set by default for streaming calls.
+
+---
+
+# 7. Files API
+
+## Upload
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `file` | binary | ✅ | File to upload (multipart form-data) |
+| `purpose` | string | ✅ | batch, fine-tune, or assistants |
+| `filename` | string | ❌ | Custom filename (defaults to file.jsonl) |
+
+Response: [`FileObject`](https://github.com/maximhq/bifrost/blob/main/core/schemas/files.go#L40) with `id`, `bytes`, `created_at`, `filename`, `purpose`, `status` ([docs](https://platform.openai.com/docs/api-reference/files/create))
+
+## List Files
+
+**Query Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `purpose` | string | ❌ | Filter by purpose |
+| `limit` | int | ❌ | Results per page |
+| `after` | string | ❌ | Pagination cursor |
+| `order` | string | ❌ | asc or desc |
+
+Cursor-based pagination with `has_more` flag.
+
+## Retrieve / Delete / Content
+
+Operations:
+- GET `/v1/files/{file_id}` - Retrieve file metadata
+- DELETE `/v1/files/{file_id}` - Delete file
+- GET `/v1/files/{file_id}/content` - Download file content
+
+---
+
+# 8. Batch API
+
+## Create Batch
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `input_file_id` | string | Conditional | File ID OR requests array (not both) |
+| `requests` | [array](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L75) | Conditional | [`BatchRequestItem`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L31) objects (converted to JSONL) |
+| `endpoint` | string | ✅ | Target endpoint (e.g., /v1/chat/completions) |
+| `completion_window` | string | ❌ | 24h (default) |
+| `metadata` | [object](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L89) | ❌ | Custom metadata |
+
+**Response:** [`BifrostBatchCreateResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L91) with `id`, `endpoint`, `input_file_id`, `status`, `created_at`, `request_counts` ([docs](https://platform.openai.com/docs/api-reference/batch/create)). Statuses: [`BatchStatus`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L5) (validating, failed, in_progress, finalizing, completed, expired, cancelling, cancelled)
+
+## List Batches
+
+**Query Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `limit` | int | ❌ | Results per page |
+| `after` | string | ❌ | Pagination cursor |
+
+## Retrieve / Cancel Batch
+
+Operations:
+- GET `/v1/batches/{batch_id}` - Get batch [`BifrostBatchRetrieveResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L167) ([docs](https://platform.openai.com/docs/api-reference/batch/retrieve))
+- POST `/v1/batches/{batch_id}/cancel` - Cancel batch ([docs](https://platform.openai.com/docs/api-reference/batch/cancel))
+
+## Get Results
+
+1. Batch must be `completed` (has `output_file_id`)
+2. Download output file via Files API
+3. Parse JSONL - each [`BatchResultItem`](https://github.com/maximhq/bifrost/blob/main/core/schemas/batch.go#L254): `{id, custom_id, response: {status_code, body}}`
+
+---
+
+# 9. List Models
+
+GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost responses are prefixed with `openai/` (e.g., `openai/gpt-4o`). Results are aggregated from all configured API keys. No request body or parameters required.
+
+---
+
+## Common Error Codes
+
+HTTP Status → Error Type mapping:
+- `400` - `invalid_request_error`
+- `401` - `authentication_error`
+- `403` - `permission_error`
+- `404` - `not_found_error`
+- `429` - `rate_limit_error`
+- `500` - `api_error`

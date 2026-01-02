@@ -7,7 +7,7 @@ export default function CachingView() {
 	const { data: bifrostConfig, isLoading, error: configError } = useGetCoreConfigQuery({ fromDB: true });
 
 	return (
-		<div className="space-y-4">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
 				<h2 className="text-2xl font-semibold tracking-tight">Caching</h2>
 				<p className="text-muted-foreground text-sm">Configure semantic caching for requests.</p>

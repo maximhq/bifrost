@@ -1,0 +1,167 @@
+# Google GenAI (Gemini) - Generation Endpoints
+
+generate-content:
+  post:
+    operationId: geminiGenerateContent
+    summary: Generate content (Gemini format)
+    description: |
+      Generates content using Google Gemini API format.
+      The model is specified in the URL path.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action (e.g., gemini-pro:generateContent)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+stream-generate-content:
+  post:
+    operationId: geminiStreamGenerateContent
+    summary: Stream generate content (Gemini format)
+    description: |
+      Streams content generation using Google Gemini API format.
+      The model is specified in the URL path.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action (e.g., gemini-pro:streamGenerateContent)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful streaming response
+        content:
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+embed-content:
+  post:
+    operationId: geminiEmbedContent
+    summary: Embed content (Gemini format)
+    description: |
+      Creates embeddings using Google Gemini API format.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action (e.g., embedding-001:embedContent)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiEmbeddingResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+count-tokens:
+  post:
+    operationId: geminiCountTokens
+    summary: Count tokens (Gemini format)
+    description: |
+      Counts tokens using Google Gemini API format.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action (e.g., gemini-pro:countTokens)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiCountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiCountTokensResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'

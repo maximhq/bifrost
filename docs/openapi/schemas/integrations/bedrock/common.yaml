@@ -1,0 +1,15 @@
+# AWS Bedrock Integration Common Types
+
+BedrockError:
+  type: object
+  properties:
+    message:
+      type: string
+    type:
+      type: string
+
+BedrockMessageRole:
+  type: string
+  enum:
+    - user
+    - assistant

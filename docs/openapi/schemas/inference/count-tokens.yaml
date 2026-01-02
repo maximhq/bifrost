@@ -1,0 +1,53 @@
+# Count Tokens API schemas
+
+CountTokensRequest:
+  type: object
+  required:
+    - model
+    - messages
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    messages:
+      type: array
+      items:
+        $ref: './responses.yaml#/ResponsesMessage'
+    fallbacks:
+      type: array
+      items:
+        type: string
+    tools:
+      type: array
+      items:
+        $ref: './responses.yaml#/ResponsesTool'
+    instructions:
+      type: string
+    text:
+      type: string
+
+CountTokensResponse:
+  type: object
+  properties:
+    object:
+      type: string
+    model:
+      type: string
+    input_tokens:
+      type: integer
+    input_tokens_details:
+      $ref: './responses.yaml#/ResponsesResponseInputTokens'
+    tokens:
+      type: array
+      items:
+        type: integer
+    token_strings:
+      type: array
+      items:
+        type: string
+    output_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

@@ -82,13 +82,13 @@ func (gs *GovernanceStore) GetAllBudgets() map[string]*configstoreTables.TableBu
 }
 
 // CheckBudget performs budget checking using in-memory store data (lock-free for high performance)
-func (gs *GovernanceStore) CheckBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey) error {
+func (gs *GovernanceStore) CheckBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) error {
 	if vk == nil {
 		return fmt.Errorf("virtual key cannot be nil")
 	}
 
 	// Use helper to collect budgets and their names (lock-free)
-	budgetsToCheck, budgetNames := gs.collectBudgetsFromHierarchy(ctx, vk)
+	budgetsToCheck, budgetNames := gs.collectBudgetsFromHierarchy(ctx, vk, provider)
 
 	// Check each budget in hierarchy order using in-memory data
 	for i, budget := range budgetsToCheck {
@@ -114,13 +114,13 @@ func (gs *GovernanceStore) CheckBudget(ctx context.Context, vk *configstoreTable
 }
 
 // UpdateBudget performs atomic budget updates across the hierarchy (both in memory and in database)
-func (gs *GovernanceStore) UpdateBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, cost float64) error {
+func (gs *GovernanceStore) UpdateBudget(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, cost float64) error {
 	if vk == nil {
 		return fmt.Errorf("virtual key cannot be nil")
 	}
 
 	// Collect budget IDs using fast in-memory lookup instead of DB queries
-	budgetIDs := gs.collectBudgetIDsFromMemory(ctx, vk)
+	budgetIDs := gs.collectBudgetIDsFromMemory(ctx, vk, provider)
 
 	if gs.configStore == nil {
 		for _, budgetID := range budgetIDs {
@@ -501,7 +501,7 @@ func (gs *GovernanceStore) rebuildInMemoryStructures(ctx context.Context, custom
 // UTILITY FUNCTIONS
 
 // collectBudgetsFromHierarchy collects budgets and their metadata from the hierarchy (Provider Configs → VK → Team → Customer)
-func (gs *GovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey) ([]*configstoreTables.TableBudget, []string) {
+func (gs *GovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) ([]*configstoreTables.TableBudget, []string) {
 	if vk == nil {
 		return nil, nil
 	}
@@ -511,7 +511,7 @@ func (gs *GovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *
 
 	// Collect all budgets in hierarchy order using lock-free sync.Map access (Provider Configs → VK → Team → Customer)
 	for _, pc := range vk.ProviderConfigs {
-		if pc.BudgetID != nil {
+		if pc.BudgetID != nil && pc.Provider == string(provider) {
 			if budgetValue, exists := gs.budgets.Load(*pc.BudgetID); exists && budgetValue != nil {
 				if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
 					budgets = append(budgets, budget)
@@ -580,8 +580,8 @@ func (gs *GovernanceStore) collectBudgetsFromHierarchy(ctx context.Context, vk *
 }
 
 // collectBudgetIDsFromMemory collects budget IDs from in-memory store data (lock-free)
-func (gs *GovernanceStore) collectBudgetIDsFromMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey) []string {
-	budgets, _ := gs.collectBudgetsFromHierarchy(ctx, vk)
+func (gs *GovernanceStore) collectBudgetIDsFromMemory(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) []string {
+	budgets, _ := gs.collectBudgetsFromHierarchy(ctx, vk, provider)
 
 	budgetIDs := make([]string, len(budgets))
 	for i, budget := range budgets {

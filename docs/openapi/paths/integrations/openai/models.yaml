@@ -1,0 +1,53 @@
+# OpenAI Integration - Models Endpoints
+
+models:
+  get:
+    operationId: openaiListModels
+    summary: List models (OpenAI format)
+    description: |
+      Lists available models in OpenAI format.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/models`).
+    tags:
+      - OpenAI Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-models:
+  get:
+    operationId: azureListModels
+    summary: List models (Azure OpenAI)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

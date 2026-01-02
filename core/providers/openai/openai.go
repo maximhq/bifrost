@@ -10,6 +10,7 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1044,10 +1045,13 @@ func HandleOpenAIChatCompletionStreaming(
 					messageID = response.ID
 				}
 
-				// Handle regular content chunks
+				// Handle regular content chunks, including reasoning
 				if choice.ChatStreamResponseChoice != nil &&
 					choice.ChatStreamResponseChoice.Delta != nil &&
 					(choice.ChatStreamResponseChoice.Delta.Content != nil ||
+						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
+						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
+						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
 					chunkIndex++
 
@@ -1549,7 +1553,7 @@ func HandleOpenAIEmbeddingRequest(
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+	if sendBackRawRequest {
 		response.ExtraFields.RawRequest = rawRequest
 	}
 
@@ -1569,8 +1573,32 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
+	return HandleOpenAISpeechRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		provider.logger,
+	)
+}
 
+// HandleOpenAISpeechRequest handles speech requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same speech request format.
+func HandleOpenAISpeechRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostSpeechRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	logger schemas.Logger,
+) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1578,9 +1606,9 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechRequest))
+	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value != "" {
@@ -1599,14 +1627,14 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
 	}
 
@@ -1629,6 +1657,10 @@ func (provider *OpenAIProvider) Speech(ctx context.Context, key schemas.Key, req
 		},
 	}
 
+	if sendBackRawRequest {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
 	return bifrostResponse, nil
 }
 
@@ -1646,29 +1678,45 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		}
 	}
 
-	providerName := provider.GetProviderKey()
-	// Use centralized converter
-	reqBody := ToOpenAISpeechRequest(request)
-	if reqBody == nil {
-		return nil, providerUtils.NewBifrostOperationError("speech input is not provided", nil, providerName)
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
 	}
-	reqBody.StreamFormat = schemas.Ptr("sse")
 
-	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+	return HandleOpenAISpeechStreamRequest(
 		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechStreamRequest),
 		request,
-		func() (any, error) {
-			reqBody := ToOpenAISpeechRequest(request)
-			if reqBody != nil {
-				reqBody.StreamFormat = schemas.Ptr("sse")
-			}
-			return reqBody, nil
-		},
-		providerName)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		provider.logger,
+	)
+}
 
+// HandleOpenAISpeechStreamRequest handles speech stream requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same speech stream request format.
+func HandleOpenAISpeechStreamRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostSpeechRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	postHookRunner schemas.PostHookRunner,
+	postRequestConverter func(*OpenAISpeechRequest) *OpenAISpeechRequest,
+	postResponseConverter func(*schemas.BifrostSpeechStreamResponse) *schemas.BifrostSpeechStreamResponse,
+	logger schemas.Logger,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1682,15 +1730,15 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		"Cache-Control": "no-cache",
 	}
 
-	if key.Value != "" {
-		headers["Authorization"] = "Bearer " + key.Value
+	if authHeader != nil {
+		maps.Copy(headers, authHeader)
 	}
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/audio/speech", schemas.SpeechStreamRequest))
+	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
 	// Set any extra headers from network config
 	// Set headers
@@ -1698,10 +1746,29 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 		req.Header.Set(key, value)
 	}
 
+	// Use centralized converter
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			reqBody := ToOpenAISpeechRequest(request)
+			if reqBody != nil {
+				reqBody.StreamFormat = schemas.Ptr("sse")
+				if postRequestConverter != nil {
+					reqBody = postRequestConverter(reqBody)
+				}
+			}
+			return reqBody, nil
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	req.SetBody(jsonBody)
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	err := client.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1785,7 +1852,7 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 						RequestType:    schemas.SpeechStreamRequest,
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
 					return
 				}
 			}
@@ -1793,8 +1860,16 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			// Parse into bifrost response
 			var response schemas.BifrostSpeechStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
+			}
+
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
 			}
 
 			chunkIndex++
@@ -1808,12 +1883,15 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 			}
 			lastChunkTime = time.Now()
 
-			if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			if sendBackRawResponse {
 				response.ExtraFields.RawResponse = jsonData
 			}
 
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+				}
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				return
@@ -1824,8 +1902,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx context.Context, postHookRunner
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
-			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
+			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, logger)
 		}
 	}()
 
@@ -1840,7 +1918,44 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
+	return HandleOpenAITranscriptionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+}
+
+func HandleOpenAITranscriptionRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostTranscriptionRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
 
 	// Use centralized converter
 	reqBody := ToOpenAITranscriptionRequest(request)
@@ -1855,33 +1970,18 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, err
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionRequest))
-	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType()) // This sets multipart/form-data with boundary
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
-	}
-
 	req.SetBody(body.Bytes())
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
@@ -1890,17 +1990,40 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
+	// Check for empty response
+	trimmed := strings.TrimSpace(string(responseBody))
+	if len(trimmed) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderResponseEmpty,
+			},
+		}
+	}
+
+	copiedResponseBody := append([]byte(nil), responseBody...)
+
 	// Parse OpenAI's transcription response directly into BifrostTranscribe
 	response := &schemas.BifrostTranscriptionResponse{}
 
-	if err := sonic.Unmarshal(responseBody, response); err != nil {
+	if err := sonic.Unmarshal(copiedResponseBody, response); err != nil {
+		// Check if it's an HTML response
+		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderResponseHTML,
+					Error:   errors.New(string(copiedResponseBody)),
+				},
+			}
+		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
 	// Parse raw response for RawResponse field
 	var rawResponse interface{}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+	if sendBackRawResponse {
+		if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
 		}
 	}
@@ -1912,12 +2035,11 @@ func (provider *OpenAIProvider) Transcription(ctx context.Context, key schemas.K
 		Latency:        latency.Milliseconds(),
 	}
 
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+	if sendBackRawResponse {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
 	return response, nil
-
 }
 
 // TranscriptionStream performs a streaming transcription request to the OpenAI API.
@@ -1926,14 +2048,52 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		return nil, err
 	}
 
-	providerName := provider.GetProviderKey()
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
 
+	return HandleOpenAITranscriptionStreamRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionStreamRequest),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		provider.logger,
+	)
+}
+
+// HandleOpenAITranscriptionStreamRequest handles transcription stream requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same transcription stream request format.
+func HandleOpenAITranscriptionStreamRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostTranscriptionRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	postHookRunner schemas.PostHookRunner,
+	postRequestConverter func(*OpenAITranscriptionRequest) *OpenAITranscriptionRequest,
+	postResponseConverter func(*schemas.BifrostTranscriptionStreamResponse) *schemas.BifrostTranscriptionStreamResponse,
+	logger schemas.Logger,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := ToOpenAITranscriptionRequest(request)
 	if reqBody == nil {
 		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
 	}
 	reqBody.Stream = schemas.Ptr(true)
+	if postRequestConverter != nil {
+		reqBody = postRequestConverter(reqBody)
+	}
 
 	// Create multipart form
 	var body bytes.Buffer
@@ -1950,8 +2110,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 		"Cache-Control": "no-cache",
 	}
 
-	if key.Value != "" {
-		headers["Authorization"] = "Bearer " + key.Value
+	if authHeader != nil {
+		maps.Copy(headers, authHeader)
 	}
 
 	// Create HTTP request for streaming
@@ -1961,10 +2121,10 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	defer fasthttp.ReleaseRequest(req)
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
 	req.Header.SetMethod(http.MethodPost)
-	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/audio/transcriptions", schemas.TranscriptionStreamRequest))
+	req.SetRequestURI(url)
 	req.Header.SetContentType("application/json")
 
 	// Set headers
@@ -1975,7 +2135,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 	req.SetBody(body.Bytes())
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	err := client.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -2058,15 +2218,23 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 						RequestType:    schemas.TranscriptionStreamRequest,
 					}
 					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
 					return
 				}
 			}
 
 			var response schemas.BifrostTranscriptionStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
+			}
+
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(&response); converted != nil {
+					response = *converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
 			}
 
 			chunkIndex++
@@ -2080,7 +2248,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 			}
 			lastChunkTime = time.Now()
 
-			if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			if sendBackRawResponse {
 				response.ExtraFields.RawResponse = jsonData
 			}
 
@@ -2096,61 +2264,1080 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx context.Context, postHoo
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
-			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
+			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
 		}
 	}()
 
 	return responseChan, nil
 }
 
-// parseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
-func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
-	// Add file field
-	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
+// CountTokens performs a count tokens request to the OpenAI API.
+func (provider *OpenAIProvider) CountTokens(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAICountTokensRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/responses/input_tokens", schemas.CountTokensRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		provider.logger,
+	)
+}
+
+// HandleOpenAICountTokensRequest handles a count tokens request to OpenAI's API.
+func HandleOpenAICountTokensRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostResponsesRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	logger schemas.Logger,
+) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToOpenAIResponsesRequest(request), nil },
+		providerName,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseOpenAIError(resp, schemas.CountTokensRequest, providerName, request.Model)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
-	}
-	if _, err := fileWriter.Write(openaiReq.File); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write file data", err, providerName)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	// Add model field
-	if err := writer.WriteField("model", openaiReq.Model); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to write model field", err, providerName)
+	response := &schemas.BifrostCountTokensResponse{}
+
+	// Use enhanced response handler with pre-allocated response
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	// Add optional fields
-	if openaiReq.Language != nil {
-		if err := writer.WriteField("language", *openaiReq.Language); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write language field", err, providerName)
-		}
+	response.Model = request.Model
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.RequestType = schemas.CountTokensRequest
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
 	}
 
-	if openaiReq.Prompt != nil {
-		if err := writer.WriteField("prompt", *openaiReq.Prompt); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write prompt field", err, providerName)
-		}
+	if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	if openaiReq.ResponseFormat != nil {
-		if err := writer.WriteField("response_format", *openaiReq.ResponseFormat); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write response_format field", err, providerName)
-		}
+	return response, nil
+}
+
+// FileUpload uploads a file to OpenAI.
+func (provider *OpenAIProvider) FileUpload(ctx context.Context, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
 	}
 
-	if openaiReq.Stream != nil && *openaiReq.Stream {
-		if err := writer.WriteField("stream", "true"); err != nil {
-			return providerUtils.NewBifrostOperationError("failed to write stream field", err, providerName)
-		}
+	providerName := provider.GetProviderKey()
+
+	if len(request.File) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("file content is required", nil, providerName)
 	}
 
-	// Close the multipart writer
+	if request.Purpose == "" {
+		return nil, providerUtils.NewBifrostOperationError("purpose is required", nil, providerName)
+	}
+
+	// Create multipart form data
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Add purpose field
+	if err := writer.WriteField("purpose", string(request.Purpose)); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err, providerName)
+	}
+
+	// Add file field
+	filename := request.Filename
+	if filename == "" {
+		filename = "file.jsonl"
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
+	}
+	if _, err := part.Write(request.File); err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to write file content", err, providerName)
+	}
+
 	if err := writer.Close(); err != nil {
-		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
+		return nil, providerUtils.NewBifrostOperationError("failed to close multipart writer", err, providerName)
 	}
 
-	return nil
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/files", schemas.FileUploadRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(writer.FormDataContentType())
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	req.SetBody(buf.Bytes())
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseOpenAIError(resp, schemas.FileUploadRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var openAIResp OpenAIFileResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openAIResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+}
+
+// FileList lists files using serial pagination across keys.
+// Exhausts all pages from one key before moving to the next.
+func (provider *OpenAIProvider) FileList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+
+	// Initialize serial pagination helper
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err, providerName)
+	}
+
+	// Get current key to query
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		// All keys exhausted
+		return &schemas.BifrostFileListResponse{
+			Object:  "list",
+			Data:    []schemas.FileObject{},
+			HasMore: false,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileListRequest,
+				Provider:    providerName,
+			},
+		}, nil
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL with query params
+	requestURL := provider.buildRequestURL(ctx, "/v1/files", schemas.FileListRequest)
+	values := url.Values{}
+	if request.Purpose != "" {
+		values.Set("purpose", string(request.Purpose))
+	}
+	if request.Limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", request.Limit))
+	}
+	// Use native cursor from serial helper instead of request.After
+	if nativeCursor != "" {
+		values.Set("after", nativeCursor)
+	}
+	if request.Order != nil && *request.Order != "" {
+		values.Set("order", *request.Order)
+	}
+	if encoded := values.Encode(); encoded != "" {
+		requestURL += "?" + encoded
+	}
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseOpenAIError(resp, schemas.FileListRequest, providerName, "")
+	}
+
+	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr, providerName)
+	}
+
+	var openAIResp OpenAIFileListResponse
+	_, _, bifrostErr = providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert files to Bifrost format
+	files := make([]schemas.FileObject, 0, len(openAIResp.Data))
+	var lastFileID string
+	for _, file := range openAIResp.Data {
+		files = append(files, schemas.FileObject{
+			ID:            file.ID,
+			Object:        file.Object,
+			Bytes:         file.Bytes,
+			CreatedAt:     file.CreatedAt,
+			Filename:      file.Filename,
+			Purpose:       schemas.FilePurpose(file.Purpose),
+			Status:        ToBifrostFileStatus(file.Status),
+			StatusDetails: file.StatusDetails,
+		})
+		lastFileID = file.ID
+	}
+
+	// Build cursor for next request
+	// OpenAI uses LastID as the cursor for pagination
+	nextCursor, hasMore := helper.BuildNextCursor(openAIResp.HasMore, lastFileID)
+
+	// Convert to Bifrost response
+	bifrostResp := &schemas.BifrostFileListResponse{
+		Object:  "list",
+		Data:    files,
+		HasMore: hasMore,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileListRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+	if nextCursor != "" {
+		bifrostResp.After = &nextCursor
+	}
+
+	return bifrostResp, nil
+}
+
+// FileRetrieve retrieves file metadata from OpenAI by trying each key until found.
+func (provider *OpenAIProvider) FileRetrieve(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		// Create request
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.Header.SetMethod(http.MethodGet)
+		req.Header.SetContentType("application/json")
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			lastErr = ParseOpenAIError(resp, schemas.FileRetrieveRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		var openAIResp OpenAIFileResponse
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		return openAIResp.ToBifrostFileRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+	}
+
+	return nil, lastErr
+}
+
+// FileDelete deletes a file from OpenAI by trying each key until successful.
+func (provider *OpenAIProvider) FileDelete(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		// Create request
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID)
+		req.Header.SetMethod(http.MethodDelete)
+		req.Header.SetContentType("application/json")
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			lastErr = ParseOpenAIError(resp, schemas.FileDeleteRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		var openAIResp OpenAIFileDeleteResponse
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		result := &schemas.BifrostFileDeleteResponse{
+			ID:      openAIResp.ID,
+			Object:  openAIResp.Object,
+			Deleted: openAIResp.Deleted,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileDeleteRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			},
+		}
+
+		if sendBackRawRequest {
+			result.ExtraFields.RawRequest = rawRequest
+		}
+
+		if sendBackRawResponse {
+			result.ExtraFields.RawResponse = rawResponse
+		}
+
+		return result, nil
+	}
+
+	return nil, lastErr
+}
+
+// FileContent downloads file content from OpenAI by trying each key until found.
+func (provider *OpenAIProvider) FileContent(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileContentRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.FileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil, providerName)
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		// Create request
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
+		req.Header.SetMethod(http.MethodGet)
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			lastErr = ParseOpenAIError(resp, schemas.FileContentRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		// Get content type from response
+		contentType := string(resp.Header.ContentType())
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		content := append([]byte(nil), body...)
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		return &schemas.BifrostFileContentResponse{
+			FileID:      request.FileID,
+			Content:     content,
+			ContentType: contentType,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileContentRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			},
+		}, nil
+	}
+
+	return nil, lastErr
+}
+
+// BatchCreate creates a new batch job.
+func (provider *OpenAIProvider) BatchCreate(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	inputFileID := request.InputFileID
+
+	// If no file_id provided but inline requests are available, upload them first
+	if inputFileID == "" && len(request.Requests) > 0 {
+		// Convert inline requests to JSONL format
+		jsonlData, err := ConvertRequestsToJSONL(request.Requests)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to JSONL", err, providerName)
+		}
+
+		// Upload the file with purpose "batch"
+		uploadResp, bifrostErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
+			Provider: schemas.OpenAI,
+			File:     jsonlData,
+			Filename: "batch_requests.jsonl",
+			Purpose:  "batch",
+		})
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		inputFileID = uploadResp.ID
+	}
+
+	// Validate that we have a file ID (either provided or uploaded)
+	if inputFileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("either input_file_id or requests array is required for OpenAI batch API", nil, providerName)
+	}
+
+	// Validate that we have an endpoint
+	if request.Endpoint == "" {
+		return nil, providerUtils.NewBifrostOperationError("endpoint is required for OpenAI batch API", nil, providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/batches", schemas.BatchCreateRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	// Build request body
+	openAIReq := &OpenAIBatchRequest{
+		InputFileID:      inputFileID,
+		Endpoint:         string(request.Endpoint),
+		CompletionWindow: request.CompletionWindow,
+		Metadata:         request.Metadata,
+	}
+
+	// Set default completion window if not provided
+	if openAIReq.CompletionWindow == "" {
+		openAIReq.CompletionWindow = "24h"
+	}
+
+	jsonData, err := sonic.Marshal(openAIReq)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+	}
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, ParseOpenAIError(resp, schemas.BatchCreateRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	var openAIResp OpenAIBatchResponse
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return openAIResp.ToBifrostBatchCreateResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+}
+
+// BatchList lists batch jobs using serial pagination across keys.
+// Exhausts all pages from one key before moving to the next.
+func (provider *OpenAIProvider) BatchList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchListRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	// Initialize serial pagination helper
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err, providerName)
+	}
+
+	// Get current key to query
+	key, nativeCursor, ok := helper.GetCurrentKey()
+	if !ok {
+		// All keys exhausted
+		return &schemas.BifrostBatchListResponse{
+			Object:  "list",
+			Data:    []schemas.BifrostBatchRetrieveResponse{},
+			HasMore: false,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.BatchListRequest,
+				Provider:    providerName,
+			},
+		}, nil
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL with query params
+	baseURL := provider.buildRequestURL(ctx, "/v1/batches", schemas.BatchListRequest)
+	values := url.Values{}
+	if request.Limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", request.Limit))
+	}
+	// Use native cursor from serial helper instead of request.After
+	if nativeCursor != "" {
+		values.Set("after", nativeCursor)
+	}
+	requestURL := baseURL
+	if encodedValues := values.Encode(); encodedValues != "" {
+		requestURL += "?" + encodedValues
+	}
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, ParseOpenAIError(resp, schemas.BatchListRequest, providerName, "")
+	}
+
+	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	if decodeErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr, providerName)
+	}
+
+	var openAIResp OpenAIBatchListResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Convert batches to Bifrost format
+	batches := make([]schemas.BifrostBatchRetrieveResponse, 0, len(openAIResp.Data))
+	var lastBatchID string
+	for _, batch := range openAIResp.Data {
+		batches = append(batches, *batch.ToBifrostBatchRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse))
+		lastBatchID = batch.ID
+	}
+
+	// Build cursor for next request
+	// OpenAI uses LastID as the cursor for pagination
+	nextCursor, hasMore := helper.BuildNextCursor(openAIResp.HasMore, lastBatchID)
+
+	// Convert to Bifrost response
+	bifrostResp := &schemas.BifrostBatchListResponse{
+		Object:  "list",
+		Data:    batches,
+		HasMore: hasMore,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchListRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+	if nextCursor != "" {
+		bifrostResp.NextCursor = &nextCursor
+	}
+
+	return bifrostResp, nil
+}
+
+// BatchRetrieve retrieves a specific batch job by trying each key until found.
+func (provider *OpenAIProvider) BatchRetrieve(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, request.Provider)
+	}
+
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		// Create request
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID)
+		req.Header.SetMethod(http.MethodGet)
+		req.Header.SetContentType("application/json")
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			lastErr = ParseOpenAIError(resp, schemas.BatchRetrieveRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		var openAIResp OpenAIBatchResponse
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		result := openAIResp.ToBifrostBatchRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse)
+		result.ExtraFields.RequestType = schemas.BatchRetrieveRequest
+		return result, nil
+	}
+
+	return nil, lastErr
+}
+
+// BatchCancel cancels a batch job by trying each key until successful.
+func (provider *OpenAIProvider) BatchCancel(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCancelRequest); err != nil {
+		return nil, err
+	}
+
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, schemas.OpenAI)
+	}
+
+	providerName := provider.GetProviderKey()
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		// Create request
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + request.BatchID + "/cancel")
+		req.Header.SetMethod(http.MethodPost)
+		req.Header.SetContentType("application/json")
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			lastErr = ParseOpenAIError(resp, schemas.BatchCancelRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		var openAIResp OpenAIBatchResponse
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &openAIResp, nil, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		result := &schemas.BifrostBatchCancelResponse{
+			ID:           openAIResp.ID,
+			Object:       openAIResp.Object,
+			Status:       ToBifrostBatchStatus(openAIResp.Status),
+			CancellingAt: openAIResp.CancellingAt,
+			CancelledAt:  openAIResp.CancelledAt,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.BatchCancelRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			},
+		}
+
+		if openAIResp.RequestCounts != nil {
+			result.RequestCounts = schemas.BatchRequestCounts{
+				Total:     openAIResp.RequestCounts.Total,
+				Completed: openAIResp.RequestCounts.Completed,
+				Failed:    openAIResp.RequestCounts.Failed,
+			}
+		}
+
+		if sendBackRawRequest {
+			result.ExtraFields.RawRequest = rawRequest
+		}
+
+		if sendBackRawResponse {
+			result.ExtraFields.RawResponse = rawResponse
+		}
+
+		return result, nil
+	}
+
+	return nil, lastErr
+}
+
+// BatchResults retrieves batch results by trying each key until successful.
+// Note: For OpenAI, batch results are obtained by downloading the output_file_id.
+// This method returns the file content parsed as batch results.
+func (provider *OpenAIProvider) BatchResults(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
+		return nil, err
+	}
+
+	if request.BatchID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil, schemas.OpenAI)
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// First, retrieve the batch to get the output_file_id (this already iterates over keys)
+	batchResp, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{
+		Provider: request.Provider,
+		BatchID:  request.BatchID,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if batchResp.OutputFileID == nil || *batchResp.OutputFileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch results not available: output_file_id is empty (batch may not be completed)", nil, providerName)
+	}
+
+	// Download the output file - try each key
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+
+		// Set headers
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
+		req.Header.SetMethod(http.MethodGet)
+
+		if key.Value != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value)
+		}
+
+		// Make request
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = bifrostErr
+			continue
+		}
+
+		// Handle error response
+		if resp.StatusCode() != fasthttp.StatusOK {
+			lastErr = ParseOpenAIError(resp, schemas.BatchResultsRequest, providerName, "")
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			continue
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+			continue
+		}
+
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+
+		// Parse JSONL content - each line is a separate result
+		var results []schemas.BatchResultItem
+
+		parseResult := providerUtils.ParseJSONL(body, func(line []byte) error {
+			var resultItem schemas.BatchResultItem
+			if err := sonic.Unmarshal(line, &resultItem); err != nil {
+				provider.logger.Warn("failed to parse batch result line: %v", err)
+				return err
+			}
+			results = append(results, resultItem)
+			return nil
+		})
+
+		batchResultsResp := &schemas.BifrostBatchResultsResponse{
+			BatchID: request.BatchID,
+			Results: results,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			},
+		}
+
+		if len(parseResult.Errors) > 0 {
+			batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
+		}
+
+		return batchResultsResp, nil
+	}
+
+	return nil, lastErr
 }
 
 // ImageGeneration performs an Image Generation request to OpenAI's API.

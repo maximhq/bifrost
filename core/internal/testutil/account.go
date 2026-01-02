@@ -40,9 +40,23 @@ type TestScenarios struct {
 	TranscriptionStream   bool // Streaming speech-to-text functionality
 	Embedding             bool // Embedding functionality
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
+	PromptCaching         bool // Prompt caching functionality
 	ListModels            bool // List available models functionality
 	ImageGeneration       bool // Image generation functionality
 	ImageGenerationStream bool // Streaming image generation functionality
+	BatchCreate           bool // Batch API create functionality
+	BatchList             bool // Batch API list functionality
+	BatchRetrieve         bool // Batch API retrieve functionality
+	BatchCancel           bool // Batch API cancel functionality
+	BatchResults          bool // Batch API results functionality
+	FileUpload            bool // File API upload functionality
+	FileList              bool // File API list functionality
+	FileRetrieve          bool // File API retrieve functionality
+	FileDelete            bool // File API delete functionality
+	FileContent           bool // File API content download functionality
+	FileBatchInput        bool // Whether batch create supports file-based input (InputFileID)
+	CountTokens           bool // Count tokens functionality
+	ChatAudio             bool // Chat completion with audio input/output functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -56,15 +70,20 @@ type ComprehensiveTestConfig struct {
 	EmbeddingModel           string
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
+	ChatAudioModel           string
 	Scenarios                TestScenarios
-	Fallbacks                []schemas.Fallback // for chat, responses, image and reasoning tests
-	TextCompletionFallbacks  []schemas.Fallback // for text completion tests
-	TranscriptionFallbacks   []schemas.Fallback // for transcription tests
-	SpeechSynthesisFallbacks []schemas.Fallback // for speech synthesis tests
-	EmbeddingFallbacks       []schemas.Fallback // for embedding tests
-	SkipReason               string             // Reason to skip certain tests
-	ImageGenerationModel     string             // Model for image generation
-	ImageGenerationFallbacks []schemas.Fallback // Fallbacks for image generation
+	Fallbacks                []schemas.Fallback     // for chat, responses, image and reasoning tests
+	TextCompletionFallbacks  []schemas.Fallback     // for text completion tests
+	TranscriptionFallbacks   []schemas.Fallback     // for transcription tests
+	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
+	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
+	SkipReason               string                 // Reason to skip certain tests
+	ImageGenerationModel     string                 // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
+	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
+	ExternalTTSModel         string                 // External TTS model to use for testing
+	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
+	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -97,6 +116,8 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Cerebras,
 		schemas.Gemini,
 		schemas.OpenRouter,
+		schemas.HuggingFace,
+		schemas.Nebius,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -107,25 +128,28 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 	case schemas.OpenAI:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("OPENAI_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case ProviderOpenAICustom:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Anthropic:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("ANTHROPIC_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("ANTHROPIC_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Bedrock:
@@ -148,6 +172,25 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 				},
 			},
 			{
+				Models: []string{},
+				Weight: 1.0,
+				BedrockKeyConfig: &schemas.BedrockKeyConfig{
+					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
+					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
+					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
+					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					ARN:          bifrost.Ptr(os.Getenv("AWS_BEDROCK_ARN")),
+					Deployments: map[string]string{
+						"claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+						"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
+						"claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+						"claude-4.5-haiku":  "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+					},
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
 				Models: []string{"cohere.embed-v4:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
@@ -161,9 +204,10 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 	case schemas.Cohere:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("COHERE_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("COHERE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Azure:
@@ -182,6 +226,21 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
 				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Value:  os.Getenv("AZURE_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+				AzureKeyConfig: &schemas.AzureKeyConfig{
+					Endpoint:   os.Getenv("AZURE_ENDPOINT"),
+					APIVersion: bifrost.Ptr("2025-01-01-preview"),
+					Deployments: map[string]string{
+						"whisper":                   "whisper",
+						"gpt-4o-mini-tts":           "gpt-4o-mini-tts",
+						"gpt-4o-mini-audio-preview": "gpt-4o-mini-audio-preview",
+					},
+				},
 			},
 		}, nil
 	case schemas.Vertex:
@@ -195,70 +254,97 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 					Region:          getEnvWithDefault("VERTEX_REGION", "us-central1"),
 					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
 				},
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Mistral:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("MISTRAL_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("MISTRAL_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Groq:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("GROQ_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("GROQ_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Parasail:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("PARASAIL_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("PARASAIL_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Elevenlabs:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("ELEVENLABS_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("ELEVENLABS_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Perplexity:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("PERPLEXITY_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("PERPLEXITY_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Cerebras:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("CEREBRAS_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("CEREBRAS_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Gemini:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("GEMINI_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("GEMINI_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.OpenRouter:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("OPENROUTER_API_KEY"),
-				Models: []string{},
-				Weight: 1.0,
+				Value:          os.Getenv("OPENROUTER_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.HuggingFace:
+		return []schemas.Key{
+			{
+				Value:          os.Getenv("HUGGING_FACE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Nebius:
+		return []schemas.Key{
+			{
+				Value:          os.Getenv("NEBIUS_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	default:
@@ -506,6 +592,32 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.HuggingFace:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10, // HuggingFace can be variable
+				RetryBackoffInitial:            2 * time.Second,
+				RetryBackoffMax:                30 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Nebius:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -522,6 +634,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
 		ImageGenerationModel: "dall-e-2",
+		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			TextCompletionStream:  false, // Not supported
@@ -543,6 +656,17 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
 			ListModels:            true,
+			BatchCreate:           true, // OpenAI supports batch API
+			BatchList:             true, // OpenAI supports batch API
+			BatchRetrieve:         true, // OpenAI supports batch API
+			BatchCancel:           true, // OpenAI supports batch API
+			BatchResults:          true, // OpenAI supports batch API
+			FileUpload:            true, // OpenAI supports file API
+			FileList:              true, // OpenAI supports file API
+			FileRetrieve:          true, // OpenAI supports file API
+			FileDelete:            true, // OpenAI supports file API
+			FileContent:           true, // OpenAI supports file API
+			ChatAudio:             true, // OpenAI supports chat audio
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -565,12 +689,18 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			PromptCaching:         true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
 			ListModels:            true,
+			BatchCreate:           true, // Anthropic supports batch API
+			BatchList:             true, // Anthropic supports batch API
+			BatchRetrieve:         true, // Anthropic supports batch API
+			BatchCancel:           true, // Anthropic supports batch API
+			BatchResults:          true, // Anthropic supports batch API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -593,12 +723,23 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			PromptCaching:         true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Bedrock supports batch via Model Invocation Jobs (requires S3 config)
+			BatchList:             true, // Bedrock supports listing batch jobs
+			BatchRetrieve:         true, // Bedrock supports retrieving batch jobs
+			BatchCancel:           true, // Bedrock supports stopping batch jobs
+			BatchResults:          true, // Bedrock batch results via S3
+			FileUpload:            true, // Bedrock file upload to S3 (requires S3 config)
+			FileList:              true, // Bedrock file list from S3 (requires S3 config)
+			FileRetrieve:          true, // Bedrock file retrieve from S3 (requires S3 config)
+			FileDelete:            true, // Bedrock file delete from S3 (requires S3 config)
+			FileContent:           true, // Bedrock file content from S3 (requires S3 config)
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -633,9 +774,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Azure,
-		ChatModel: "gpt-4o",
-		TextModel: "", // Azure doesn't support text completion in newer models
+		Provider:             schemas.Azure,
+		ChatModel:            "gpt-4o",
+		TextModel:            "", // Azure doesn't support text completion in newer models
+		ChatAudioModel:       "gpt-4o-mini-audio-preview",
+		TranscriptionModel:   "whisper-1",
+		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -649,12 +793,23 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			SpeechSynthesis:       false, // Not supported yet
-			SpeechSynthesisStream: false, // Not supported yet
-			Transcription:         false, // Not supported yet
-			TranscriptionStream:   false, // Not supported yet
+			SpeechSynthesis:       true,  // Supported via gpt-4o-mini-tts
+			SpeechSynthesisStream: true,  // Supported via gpt-4o-mini-tts
+			Transcription:         true,  // Supported via whisper-1
+			TranscriptionStream:   false, // Not properly supported yet by Azure
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true, // Azure supports batch API
+			BatchList:             true, // Azure supports batch API
+			BatchRetrieve:         true, // Azure supports batch API
+			BatchCancel:           true, // Azure supports batch API
+			BatchResults:          true, // Azure supports batch API
+			FileUpload:            true, // Azure supports file API
+			FileList:              true, // Azure supports file API
+			FileRetrieve:          true, // Azure supports file API
+			FileDelete:            true, // Azure supports file API
+			FileContent:           true, // Azure supports file API
+			ChatAudio:             true, // Azure supports chat audio
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -689,9 +844,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Mistral,
-		ChatModel: "mistral-large-2411",
-		TextModel: "", // Mistral focuses on chat
+		Provider:           schemas.Mistral,
+		ChatModel:          "mistral-large-2411",
+		TextModel:          "", // Mistral focuses on chat
+		TranscriptionModel: "voxtral-mini-latest",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -706,8 +862,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompleteEnd2End:       true,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
-			Transcription:         false, // Not supported
-			TranscriptionStream:   false, // Not supported
+			Transcription:         true,  // Supported via voxtral-mini-latest
+			TranscriptionStream:   true,  // Supported via voxtral-mini-latest
 			Embedding:             true,
 			ListModels:            true,
 		},
@@ -825,6 +981,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   true,
 			Embedding:             true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false, // Gemini doesn't support direct content download
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
@@ -852,6 +1018,40 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false,
 			TranscriptionStream:   false,
 			Embedding:             false,
+			ListModels:            true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:             schemas.HuggingFace,
+		ChatModel:            "groq/openai/gpt-oss-120b",
+		VisionModel:          "novita/zai-org/GLM-4.6V-Flash",
+		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
+		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
+		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
+		Scenarios: TestScenarios{
+			TextCompletion:        false,
+			TextCompletionStream:  false,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			MultipleToolCalls:     false,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			Embedding:             true,
+			Transcription:         true,
+			TranscriptionStream:   false,
+			SpeechSynthesis:       true,
+			SpeechSynthesisStream: false,
+			Reasoning:             false,
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{

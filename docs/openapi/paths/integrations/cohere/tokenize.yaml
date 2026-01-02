@@ -1,0 +1,35 @@
+# Cohere - Tokenize Endpoints
+
+tokenize:
+  post:
+    operationId: cohereTokenize
+    summary: Tokenize text (Cohere format)
+    description: |
+      Tokenizes text using Cohere v1 API format.
+    tags:
+      - Cohere Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'

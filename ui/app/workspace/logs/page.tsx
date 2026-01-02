@@ -1,21 +1,34 @@
-"use client"
+"use client";
 
-import { createColumns } from "@/app/workspace/logs/views/columns"
-import { EmptyState } from "@/app/workspace/logs/views/emptyState"
-import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet"
-import { LogsDataTable } from "@/app/workspace/logs/views/logsTable"
-import FullPageLoader from "@/components/fullPageLoader"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Card, CardContent } from "@/components/ui/card"
-import { Skeleton } from "@/components/ui/skeleton"
-import { useWebSocket } from "@/hooks/useWebSocket"
-import { getErrorMessage, useDeleteLogsMutation, useLazyGetLogsQuery, useLazyGetLogsStatsQuery } from "@/lib/store"
-import type { ChatMessage, ChatMessageContent, ContentBlock, LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs"
-import { dateUtils } from "@/lib/types/logs"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react"
-import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { createColumns } from "@/app/workspace/logs/views/columns";
+import { EmptyState } from "@/app/workspace/logs/views/emptyState";
+import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet";
+import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
+import FullPageLoader from "@/components/fullPageLoader";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Card, CardContent } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import {
+	getErrorMessage,
+	useDeleteLogsMutation,
+	useLazyGetLogsQuery,
+	useLazyGetLogsStatsQuery
+} from "@/lib/store";
+import type {
+	ChatMessage,
+	ChatMessageContent,
+	ContentBlock,
+	LogEntry,
+	LogFilters,
+	LogStats,
+	Pagination
+} from "@/lib/types/logs";
+import { dateUtils } from "@/lib/types/logs";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Calculate default timestamps once at module level to prevent constant recalculation
 const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
@@ -26,24 +39,24 @@ const DEFAULT_START_TIME = (() => {
 })();
 
 export default function LogsPage() {
-  const [logs, setLogs] = useState<LogEntry[]>([])
-  const [totalItems, setTotalItems] = useState(0) // changes with filters
-  const [stats, setStats] = useState<LogStats | null>(null)
-  const [initialLoading, setInitialLoading] = useState(true) // on initial load
-  const [fetchingLogs, setFetchingLogs] = useState(false) // on pagination/filters change
-  const [fetchingStats, setFetchingStats] = useState(false) // on stats fetch
-  const [error, setError] = useState<string | null>(null)
-  const [showEmptyState, setShowEmptyState] = useState(false)
+	const [logs, setLogs] = useState<LogEntry[]>([]);
+	const [totalItems, setTotalItems] = useState(0); // changes with filters
+	const [stats, setStats] = useState<LogStats | null>(null);
+	const [initialLoading, setInitialLoading] = useState(true); // on initial load
+	const [fetchingLogs, setFetchingLogs] = useState(false); // on pagination/filters change
+	const [fetchingStats, setFetchingStats] = useState(false); // on stats fetch
+	const [error, setError] = useState<string | null>(null);
+	const [showEmptyState, setShowEmptyState] = useState(false);
 
-  const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete)
+	const hasDeleteAccess = useRbac(RbacResource.Logs, RbacOperation.Delete);
 
-  // RTK Query lazy hooks for manual triggering
+	// RTK Query lazy hooks for manual triggering
 	const [triggerGetLogs] = useLazyGetLogsQuery();
 	const [triggerGetStats] = useLazyGetLogsStatsQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
 
 	const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
-
+	
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -64,6 +77,7 @@ export default function LogsPage() {
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),
 			live_enabled: parseAsBoolean.withDefault(true),
+			missing_cost_only: parseAsBoolean.withDefault(false),
 		},
 		{
 			history: "push",
@@ -83,6 +97,7 @@ export default function LogsPage() {
 			content_search: urlState.content_search,
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
+			missing_cost_only: urlState.missing_cost_only,
 		}),
 		[urlState],
 	);
@@ -112,10 +127,11 @@ export default function LogsPage() {
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
+				missing_cost_only: newFilters.missing_cost_only ?? filters.missing_cost_only ?? false,
 				offset: 0,
 			});
 		},
-		[setUrlState],
+		[setUrlState, filters],
 	);
 
 	// Helper to update pagination in URL
@@ -136,15 +152,18 @@ export default function LogsPage() {
 		latest.current = { logs, filters, pagination, showEmptyState, liveEnabled };
 	}, [logs, filters, pagination, showEmptyState, liveEnabled]);
 
-	const handleDelete = useCallback(async (log: LogEntry) => {
-		try {
-			await deleteLogs({ ids: [log.id] }).unwrap();
-			setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
-			setTotalItems((prev) => prev - 1);
-		} catch (error) {
-			setError(getErrorMessage(error));
-		}
-	}, [deleteLogs]);
+	const handleDelete = useCallback(
+		async (log: LogEntry) => {
+			try {
+				await deleteLogs({ ids: [log.id] }).unwrap();
+				setLogs((prevLogs) => prevLogs.filter((l) => l.id !== log.id));
+				setTotalItems((prev) => prev - 1);
+			} catch (error) {
+				setError(getErrorMessage(error));
+			}
+		},
+		[deleteLogs],
+	);
 
 	const handleLogMessage = useCallback((log: LogEntry, operation: "create" | "update") => {
 		const { logs, filters, pagination, showEmptyState, liveEnabled } = latest.current;
@@ -416,6 +435,9 @@ export default function LogsPage() {
 
 	// Helper function to check if a log matches the current filters
 	const matchesFilters = (log: LogEntry, filters: LogFilters, applyTimeFilters = true): boolean => {
+		if (filters.missing_cost_only && typeof log.cost === "number" && log.cost > 0) {
+			return false;
+		}
 		if (filters.providers?.length && !filters.providers.includes(log.provider)) {
 			return false;
 		}
@@ -490,7 +512,7 @@ export default function LogsPage() {
 		[stats, fetchingStats],
 	);
 
-	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess])
+	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
 	return (
 		<div className="dark:bg-card bg-white">
@@ -515,8 +537,6 @@ export default function LogsPage() {
 							))}
 						</div>
 
-
-
 						{/* Error Alert */}
 						{error && (
 							<Alert variant="destructive">
@@ -535,22 +555,24 @@ export default function LogsPage() {
 							onFiltersChange={setFilters}
 							onPaginationChange={setPagination}
 							onRowClick={(row, columnId) => {
-								if (columnId==="actions") return;
+								if (columnId === "actions") return;
 								setSelectedLog(row);
 							}}
 							isSocketConnected={isSocketConnected}
 							liveEnabled={liveEnabled}
 							onLiveToggle={handleLiveToggle}
+							fetchLogs={fetchLogs}
+							fetchStats={fetchStats}
 						/>
 					</div>
 
 					{/* Log Detail Sheet */}
 					<LogDetailSheet
-							log={selectedLog}
-							open={selectedLog !== null}
-							onOpenChange={(open) => !open && setSelectedLog(null)}
-							handleDelete={handleDelete}
-						/>
+						log={selectedLog}
+						open={selectedLog !== null}
+						onOpenChange={(open) => !open && setSelectedLog(null)}
+						handleDelete={handleDelete}
+					/>
 				</div>
 			)}
 		</div>

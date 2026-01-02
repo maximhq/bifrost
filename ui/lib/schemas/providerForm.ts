@@ -91,6 +91,17 @@ const VertexKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidDeployments(value), { message: "Valid Deployments (JSON object) are required for Vertex AI keys" }),
 });
 
+// S3 bucket configuration for Bedrock batch operations
+const S3BucketConfigSchema = z.object({
+	bucket_name: z.string().min(1, "Bucket name is required"),
+	prefix: z.string().optional(),
+	is_default: z.boolean().optional(),
+});
+
+const BatchS3ConfigSchema = z.object({
+	buckets: z.array(S3BucketConfigSchema).optional(),
+});
+
 const BedrockKeyConfigSchema = z
 	.object({
 		access_key: z.string(),
@@ -104,6 +115,7 @@ const BedrockKeyConfigSchema = z
 			.refine((value) => !value || Object.keys(value).length === 0 || isValidDeployments(value), {
 				message: "Valid Deployments (JSON object) are required for Bedrock keys",
 			}),
+		batch_s3_config: BatchS3ConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -140,6 +152,7 @@ const KeySchema = z.object({
 	azure_key_config: AzureKeyConfigSchema.optional(),
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
+	use_for_batch_api: z.boolean().optional(),
 });
 
 // Main provider form schema

@@ -61,7 +61,9 @@ type ServerCallbacks interface {
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
+	ForceReloadPricing(ctx context.Context) error
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
+	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
@@ -753,12 +755,13 @@ func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) []schemas.Plugi
 }
 
 // SyncLoadedPlugin syncs the loaded plugin to the Bifrost core.
-func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, plugin schemas.Plugin) error {
+// configName is the name from the configuration/database, used for status tracking.
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, configName string, plugin schemas.Plugin) error {
 	if err := s.Client.ReloadPlugin(plugin); err != nil {
-		s.UpdatePluginStatus(plugin.GetName(), schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", plugin.GetName(), err)})
+		s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", configName, err)})
 		return err
 	}
-	s.UpdatePluginStatus(plugin.GetName(), schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", plugin.GetName())})
+	s.UpdatePluginStatus(configName, schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", configName)})
 	// CAS retry loop (matching bifrost.go pattern)
 	for {
 		oldPlugins := s.Config.Plugins.Load()
@@ -803,7 +806,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
 		return err
 	}
-	return s.SyncLoadedPlugin(ctx, newPlugin)
+	return s.SyncLoadedPlugin(ctx, name, newPlugin)
 }
 
 // ReloadPricingManager reloads the pricing manager
@@ -817,6 +820,14 @@ func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
 	return s.Config.PricingManager.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
 }
 
+// ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
+func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	return s.Config.PricingManager.ForceReloadPricing(ctx)
+}
+
 // ReloadProxyConfig reloads the proxy configuration
 func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
 	if s.Config == nil {
@@ -825,6 +836,23 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 	// Store the proxy config in memory for use by components that need it
 	s.Config.ProxyConfig = config
 	logger.Info("proxy configuration reloaded: enabled=%t, type=%s", config.Enabled, config.Type)
+	return nil
+}
+
+// ReloadHeaderFilterConfig reloads the header filter configuration
+func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	// Store the header filter config in ClientConfig
+	s.Config.ClientConfig.HeaderFilterConfig = config
+	allowlistLen := 0
+	denylistLen := 0
+	if config != nil {
+		allowlistLen = len(config.Allowlist)
+		denylistLen = len(config.Denylist)
+	}
+	logger.Info("header filter configuration reloaded: allowlist=%d, denylist=%d", allowlistLen, denylistLen)
 	return nil
 }
 

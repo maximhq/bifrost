@@ -301,7 +301,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 				VirtualKeyID:  vk.ID,
 				Provider:      pc.Provider,
-				Weight:        pc.Weight,
+				Weight:        &pc.Weight,
 				AllowedModels: pc.AllowedModels,
 				Keys:          keys,
 			}
@@ -605,7 +605,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 					VirtualKeyID:  vk.ID,
 					Provider:      pc.Provider,
-					Weight:        pc.Weight,
+					Weight:        &pc.Weight,
 					AllowedModels: pc.AllowedModels,
 					Keys:          keys,
 				}
@@ -656,7 +656,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			}
 			requestConfigsMap[*pc.ID] = true
 			existing.Provider = pc.Provider
-			existing.Weight = pc.Weight
+			existing.Weight = &pc.Weight
 			existing.AllowedModels = pc.AllowedModels
 
 				// Get keys for this provider config if specified

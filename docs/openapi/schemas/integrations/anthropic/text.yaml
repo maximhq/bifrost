@@ -1,0 +1,62 @@
+# Anthropic Integration Text Completions Schemas (Legacy Complete API)
+
+AnthropicTextRequest:
+  type: object
+  required:
+    - model
+    - prompt
+    - max_tokens_to_sample
+  properties:
+    model:
+      type: string
+      description: Model identifier
+    prompt:
+      type: string
+      description: The prompt to complete
+    max_tokens_to_sample:
+      type: integer
+      description: Maximum tokens to generate
+    stream:
+      type: boolean
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 1
+    top_p:
+      type: number
+    top_k:
+      type: integer
+    stop_sequences:
+      type: array
+      items:
+        type: string
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+AnthropicTextResponse:
+  type: object
+  properties:
+    type:
+      type: string
+      default: completion
+    id:
+      type: string
+    completion:
+      type: string
+    stop_reason:
+      type: string
+      enum: [stop_sequence, max_tokens, null]
+    model:
+      type: string
+    usage:
+      type: object
+      properties:
+        input_tokens:
+          type: integer
+          description: Number of input tokens used
+        output_tokens:
+          type: integer
+          description: Number of output tokens generated

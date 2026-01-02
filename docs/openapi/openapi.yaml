@@ -1,0 +1,825 @@
+openapi: 3.1.0
+info:
+  title: Bifrost API
+  description: |
+    Bifrost HTTP Transport API for AI model inference and gateway management.
+
+    This API provides a unified interface for interacting with multiple AI providers
+    including OpenAI, Anthropic, Bedrock, Gemini, and more through a single API,
+    along with comprehensive management APIs for configuring and monitoring the gateway.
+
+    ## API Structure
+
+    ### Unified Inference API (`/v1/*`)
+    The primary API using Bifrost's unified format. Model parameters use the format
+    `provider/model` (e.g., `openai/gpt-4`, `anthropic/claude-3-opus`).
+
+    ### Provider Integration APIs
+    Native provider-format APIs for drop-in compatibility:
+    - `/openai/*` - OpenAI-compatible API
+    - `/anthropic/*` - Anthropic-compatible API
+    - `/genai/*` - Google GenAI (Gemini) compatible API
+    - `/bedrock/*` - AWS Bedrock compatible API
+    - `/cohere/*` - Cohere compatible API
+
+    ### Framework Integration APIs
+    Multi-provider proxy endpoints for AI frameworks:
+    - `/litellm/*` - LiteLLM proxy with all provider formats
+    - `/langchain/*` - LangChain compatible endpoints
+    - `/pydanticai/*` - PydanticAI compatible endpoints
+
+    ### Management APIs (`/api/*`)
+    APIs for managing and monitoring the Bifrost gateway:
+    - `/api/config` - Configuration management
+    - `/api/providers` - Provider and API key management
+    - `/api/plugins` - Plugin management
+    - `/api/governance/*` - Virtual keys, teams, and customers
+    - `/api/logs` - Log search and analytics
+    - `/api/mcp/*` - MCP (Model Context Protocol) client management
+    - `/api/session/*` - Authentication and session management
+    - `/api/cache/*` - Cache management
+    - `/health` - Health check endpoint
+
+    ## Fallbacks
+    Requests can include fallback models that will be tried if the primary model fails.
+  version: 1.0.0
+  contact:
+    name: Contact Us
+    url: https://getmaxim.ai/bifrost
+  license:
+    name: Apache 2.0
+    url: https://opensource.org/licenses/Apache-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  # Unified Inference API
+  - name: Models
+    description: Model listing and information
+  - name: Chat Completions
+    description: Chat-based text generation
+  - name: Text Completions
+    description: Text completion generation
+  - name: Responses
+    description: OpenAI Responses API compatible endpoints
+  - name: Embeddings
+    description: Text embedding generation
+  - name: Audio
+    description: Speech synthesis and transcription
+  - name: Count Tokens
+    description: Token counting utilities
+  - name: Batch
+    description: Batch processing operations
+  - name: Files
+    description: File management operations
+  # Provider Integrations
+  - name: OpenAI Integration
+    description: OpenAI-compatible API endpoints (/openai/*)
+  - name: Azure Integration
+    description: Azure OpenAI integration endpoints
+  - name: Anthropic Integration
+    description: Anthropic-compatible API endpoints (/anthropic/*)
+  - name: GenAI Integration
+    description: Google GenAI (Gemini) compatible API endpoints (/genai/*)
+  - name: Bedrock Integration
+    description: AWS Bedrock compatible API endpoints (/bedrock/*)
+  - name: Cohere Integration
+    description: Cohere compatible API endpoints (/cohere/*)
+  - name: LiteLLM Integration
+    description: LiteLLM proxy endpoints with multi-provider support (/litellm/*)
+  - name: LangChain Integration
+    description: LangChain compatible endpoints with multi-provider support (/langchain/*)
+  - name: PydanticAI Integration
+    description: PydanticAI compatible endpoints with multi-provider support (/pydanticai/*)
+  # Management APIs
+  - name: Health
+    description: Health check endpoints
+  - name: Configuration
+    description: Configuration management endpoints
+  - name: Session
+    description: Session and authentication endpoints
+  - name: Providers
+    description: Provider management endpoints
+  - name: Plugins
+    description: Plugin management endpoints
+  - name: MCP
+    description: Model Context Protocol endpoints
+  - name: Governance
+    description: Virtual keys, teams, and customers management
+  - name: Logging
+    description: Log search and management endpoints
+  - name: Cache
+    description: Cache management endpoints
+
+paths:
+  # ==================== Unified Inference API ====================
+  /v1/models:
+    $ref: './paths/inference/models.yaml#/models'
+  /v1/chat/completions:
+    $ref: './paths/inference/chat-completions.yaml#/chat-completions'
+  /v1/completions:
+    $ref: './paths/inference/text-completions.yaml#/text-completions'
+  /v1/responses:
+    $ref: './paths/inference/responses.yaml#/responses'
+  /v1/embeddings:
+    $ref: './paths/inference/embeddings.yaml#/embeddings'
+  /v1/audio/speech:
+    $ref: './paths/inference/audio.yaml#/speech'
+  /v1/audio/transcriptions:
+    $ref: './paths/inference/audio.yaml#/transcriptions'
+  /v1/count_tokens:
+    $ref: './paths/inference/count-tokens.yaml#/count-tokens'
+  /v1/batches:
+    $ref: './paths/inference/batches.yaml#/batches'
+  /v1/batches/{batch_id}:
+    $ref: './paths/inference/batches.yaml#/batches-by-id'
+  /v1/batches/{batch_id}/cancel:
+    $ref: './paths/inference/batches.yaml#/batches-cancel'
+  /v1/batches/{batch_id}/results:
+    $ref: './paths/inference/batches.yaml#/batches-results'
+  /v1/files:
+    $ref: './paths/inference/files.yaml#/files'
+  /v1/files/{file_id}:
+    $ref: './paths/inference/files.yaml#/files-by-id'
+  /v1/files/{file_id}/content:
+    $ref: './paths/inference/files.yaml#/files-content'
+
+  # ==================== OpenAI Integration ====================
+  # Chat Completions
+  /openai/v1/chat/completions:
+    $ref: './paths/integrations/openai/chat.yaml#/chat-completions'
+  /openai/openai/deployments/{deployment-id}/chat/completions:
+    $ref: './paths/integrations/openai/chat.yaml#/azure-chat-completions'
+
+  # Text Completions (Legacy)
+  /openai/v1/completions:
+    $ref: './paths/integrations/openai/text.yaml#/text-completions'
+  /openai/openai/deployments/{deployment-id}/completions:
+    $ref: './paths/integrations/openai/text.yaml#/azure-text-completions'
+
+  # Responses API
+  /openai/v1/responses:
+    $ref: './paths/integrations/openai/responses.yaml#/responses'
+  /openai/openai/deployments/{deployment-id}/responses:
+    $ref: './paths/integrations/openai/responses.yaml#/azure-responses'
+  /openai/v1/responses/input_tokens:
+    $ref: './paths/integrations/openai/responses.yaml#/responses-input-tokens'
+
+  # Embeddings
+  /openai/v1/embeddings:
+    $ref: './paths/integrations/openai/embeddings.yaml#/embeddings'
+  /openai/openai/deployments/{deployment-id}/embeddings:
+    $ref: './paths/integrations/openai/embeddings.yaml#/azure-embeddings'
+
+  # Audio (Speech & Transcription)
+  /openai/v1/audio/speech:
+    $ref: './paths/integrations/openai/audio.yaml#/speech'
+  /openai/openai/deployments/{deployment-id}/audio/speech:
+    $ref: './paths/integrations/openai/audio.yaml#/azure-speech'
+  /openai/v1/audio/transcriptions:
+    $ref: './paths/integrations/openai/audio.yaml#/transcriptions'
+  /openai/openai/deployments/{deployment-id}/audio/transcriptions:
+    $ref: './paths/integrations/openai/audio.yaml#/azure-transcriptions'
+
+  # Models
+  /openai/v1/models:
+    $ref: './paths/integrations/openai/models.yaml#/models'
+  /openai/openai/deployments/{deployment-id}/models:
+    $ref: './paths/integrations/openai/models.yaml#/azure-models'
+
+  # Batch API
+  /openai/v1/batches:
+    $ref: './paths/integrations/openai/batch.yaml#/batches'
+  /openai/v1/batches/{batch_id}:
+    $ref: './paths/integrations/openai/batch.yaml#/batches-by-id'
+  /openai/v1/batches/{batch_id}/cancel:
+    $ref: './paths/integrations/openai/batch.yaml#/batches-cancel'
+
+  # Files API
+  /openai/v1/files:
+    $ref: './paths/integrations/openai/files.yaml#/files'
+  /openai/v1/files/{file_id}:
+    $ref: './paths/integrations/openai/files.yaml#/files-by-id'
+  /openai/v1/files/{file_id}/content:
+    $ref: './paths/integrations/openai/files.yaml#/files-content'
+
+  # ==================== Anthropic Integration ====================
+  # Messages API
+  /anthropic/v1/messages:
+    $ref: './paths/integrations/anthropic/messages.yaml#/messages'
+
+  # Legacy Complete API
+  /anthropic/v1/complete:
+    $ref: './paths/integrations/anthropic/text.yaml#/complete'
+
+  # Models
+  /anthropic/v1/models:
+    $ref: './paths/integrations/anthropic/models.yaml#/models'
+
+  # Count Tokens
+  /anthropic/v1/messages/count_tokens:
+    $ref: './paths/integrations/anthropic/count-tokens.yaml#/count-tokens'
+
+  # Batch API
+  /anthropic/v1/messages/batches:
+    $ref: './paths/integrations/anthropic/batch.yaml#/batches'
+  /anthropic/v1/messages/batches/{batch_id}:
+    $ref: './paths/integrations/anthropic/batch.yaml#/batches-by-id'
+  /anthropic/v1/messages/batches/{batch_id}/cancel:
+    $ref: './paths/integrations/anthropic/batch.yaml#/batches-cancel'
+  /anthropic/v1/messages/batches/{batch_id}/results:
+    $ref: './paths/integrations/anthropic/batch.yaml#/batches-results'
+
+  # Files API
+  /anthropic/v1/files:
+    $ref: './paths/integrations/anthropic/files.yaml#/files'
+  /anthropic/v1/files/{file_id}/content:
+    $ref: './paths/integrations/anthropic/files.yaml#/files-content'
+  /anthropic/v1/files/{file_id}:
+    $ref: './paths/integrations/anthropic/files.yaml#/files-by-id'
+
+  # ==================== GenAI (Gemini) Integration ====================
+  # Generation
+  /genai/v1beta/models/{model}:generateContent:
+    $ref: './paths/integrations/genai/generation.yaml#/generate-content'
+  /genai/v1beta/models/{model}:streamGenerateContent:
+    $ref: './paths/integrations/genai/generation.yaml#/stream-generate-content'
+  /genai/v1beta/models/{model}:embedContent:
+    $ref: './paths/integrations/genai/generation.yaml#/embed-content'
+  /genai/v1beta/models/{model}:countTokens:
+    $ref: './paths/integrations/genai/generation.yaml#/count-tokens'
+
+  # Models
+  /genai/v1beta/models:
+    $ref: './paths/integrations/genai/models.yaml#/models'
+
+  # Files
+  /genai/upload/v1beta/files:
+    $ref: './paths/integrations/genai/files.yaml#/files-upload'
+  /genai/v1beta/files:
+    $ref: './paths/integrations/genai/files.yaml#/files'
+  /genai/v1beta/files/{file_id}:
+    $ref: './paths/integrations/genai/files.yaml#/files-by-id'
+
+  # ==================== Bedrock Integration ====================
+  # Converse API
+  /bedrock/model/{modelId}/converse:
+    $ref: './paths/integrations/bedrock/converse.yaml#/converse'
+  /bedrock/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/bedrock/converse.yaml#/converse-stream'
+
+  # Invoke API (Legacy/Raw)
+  /bedrock/model/{modelId}/invoke:
+    $ref: './paths/integrations/bedrock/invoke.yaml#/invoke'
+  /bedrock/model/{modelId}/invoke-with-response-stream:
+    $ref: './paths/integrations/bedrock/invoke.yaml#/invoke-stream'
+
+  # Batch API
+  /bedrock/model-invocation-jobs:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-jobs'
+  /bedrock/model-invocation-jobs/{jobIdentifier}:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-by-id'
+  /bedrock/model-invocation-jobs/{jobIdentifier}/stop:
+    $ref: './paths/integrations/bedrock/batch.yaml#/batch-job-cancel'
+
+  # ==================== Cohere Integration ====================
+  # Chat (v2)
+  /cohere/v2/chat:
+    $ref: './paths/integrations/cohere/chat.yaml#/chat'
+
+  # Embed (v2)
+  /cohere/v2/embed:
+    $ref: './paths/integrations/cohere/embed.yaml#/embed'
+
+  # Tokenize (v1)
+  /cohere/v1/tokenize:
+    $ref: './paths/integrations/cohere/tokenize.yaml#/tokenize'
+
+  # ==================== LiteLLM Integration ====================
+  # OpenAI-compatible
+  /litellm/v1/completions:
+    $ref: './paths/integrations/litellm/openai.yaml#/text-completions'
+  /litellm/v1/chat/completions:
+    $ref: './paths/integrations/litellm/openai.yaml#/chat-completions'
+  /litellm/v1/embeddings:
+    $ref: './paths/integrations/litellm/openai.yaml#/embeddings'
+  /litellm/v1/models:
+    $ref: './paths/integrations/litellm/openai.yaml#/models'
+  /litellm/v1/responses:
+    $ref: './paths/integrations/litellm/openai.yaml#/responses'
+  /litellm/v1/responses/input_tokens:
+    $ref: './paths/integrations/litellm/openai.yaml#/responses-input-tokens'
+  /litellm/v1/audio/speech:
+    $ref: './paths/integrations/litellm/openai.yaml#/speech'
+  /litellm/v1/audio/transcriptions:
+    $ref: './paths/integrations/litellm/openai.yaml#/transcriptions'
+
+  # Anthropic-compatible
+  /litellm/anthropic/v1/messages:
+    $ref: './paths/integrations/litellm/anthropic.yaml#/messages'
+
+  # GenAI-compatible
+  /litellm/genai/v1beta/models:
+    $ref: './paths/integrations/litellm/genai.yaml#/models'
+  /litellm/genai/v1beta/models/{model}:generateContent:
+    $ref: './paths/integrations/litellm/genai.yaml#/generate-content'
+  /litellm/genai/v1beta/models/{model}:streamGenerateContent:
+    $ref: './paths/integrations/litellm/genai.yaml#/stream-generate-content'
+
+  # Bedrock-compatible
+  /litellm/bedrock/model/{modelId}/converse:
+    $ref: './paths/integrations/litellm/bedrock.yaml#/converse'
+  /litellm/bedrock/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/litellm/bedrock.yaml#/converse-stream'
+
+  # Cohere-compatible
+  /litellm/cohere/v2/chat:
+    $ref: './paths/integrations/litellm/cohere.yaml#/chat'
+  /litellm/cohere/v2/embed:
+    $ref: './paths/integrations/litellm/cohere.yaml#/embed'
+  /litellm/cohere/v1/tokenize:
+    $ref: './paths/integrations/litellm/cohere.yaml#/tokenize'
+
+  # ==================== LangChain Integration ====================
+  # OpenAI-compatible
+  /langchain/v1/completions:
+    $ref: './paths/integrations/langchain/openai.yaml#/text-completions'
+  /langchain/v1/chat/completions:
+    $ref: './paths/integrations/langchain/openai.yaml#/chat-completions'
+  /langchain/v1/embeddings:
+    $ref: './paths/integrations/langchain/openai.yaml#/embeddings'
+  /langchain/v1/models:
+    $ref: './paths/integrations/langchain/openai.yaml#/models'
+  /langchain/v1/responses:
+    $ref: './paths/integrations/langchain/openai.yaml#/responses'
+  /langchain/v1/responses/input_tokens:
+    $ref: './paths/integrations/langchain/openai.yaml#/responses-input-tokens'
+  /langchain/v1/audio/speech:
+    $ref: './paths/integrations/langchain/openai.yaml#/speech'
+  /langchain/v1/audio/transcriptions:
+    $ref: './paths/integrations/langchain/openai.yaml#/transcriptions'
+
+  # Anthropic-compatible
+  /langchain/anthropic/v1/messages:
+    $ref: './paths/integrations/langchain/anthropic.yaml#/messages'
+  /langchain/anthropic/v1/messages/count_tokens:
+    $ref: './paths/integrations/langchain/anthropic.yaml#/count-tokens'
+
+  # GenAI-compatible
+  /langchain/genai/v1beta/models:
+    $ref: './paths/integrations/langchain/genai.yaml#/models'
+  /langchain/genai/v1beta/models/{model}:generateContent:
+    $ref: './paths/integrations/langchain/genai.yaml#/generate-content'
+  /langchain/genai/v1beta/models/{model}:streamGenerateContent:
+    $ref: './paths/integrations/langchain/genai.yaml#/stream-generate-content'
+
+  # Bedrock-compatible
+  /langchain/bedrock/model/{modelId}/converse:
+    $ref: './paths/integrations/langchain/bedrock.yaml#/converse'
+  /langchain/bedrock/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/langchain/bedrock.yaml#/converse-stream'
+
+  # Cohere-compatible
+  /langchain/cohere/v2/chat:
+    $ref: './paths/integrations/langchain/cohere.yaml#/chat'
+  /langchain/cohere/v2/embed:
+    $ref: './paths/integrations/langchain/cohere.yaml#/embed'
+  /langchain/cohere/v1/tokenize:
+    $ref: './paths/integrations/langchain/cohere.yaml#/tokenize'
+
+  # ==================== PydanticAI Integration ====================
+  # OpenAI-compatible
+  /pydanticai/v1/completions:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/text-completions'
+  /pydanticai/v1/chat/completions:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/chat-completions'
+  /pydanticai/v1/embeddings:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/embeddings'
+  /pydanticai/v1/models:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/models'
+  /pydanticai/v1/responses:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/responses'
+  /pydanticai/v1/responses/input_tokens:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/responses-input-tokens'
+  /pydanticai/v1/audio/speech:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/speech'
+  /pydanticai/v1/audio/transcriptions:
+    $ref: './paths/integrations/pydanticai/openai.yaml#/transcriptions'
+
+  # Anthropic-compatible
+  /pydanticai/anthropic/v1/messages:
+    $ref: './paths/integrations/pydanticai/anthropic.yaml#/messages'
+
+  # GenAI-compatible
+  /pydanticai/genai/v1beta/models:
+    $ref: './paths/integrations/pydanticai/genai.yaml#/models'
+  /pydanticai/genai/v1beta/models/{model}:generateContent:
+    $ref: './paths/integrations/pydanticai/genai.yaml#/generate-content'
+  /pydanticai/genai/v1beta/models/{model}:streamGenerateContent:
+    $ref: './paths/integrations/pydanticai/genai.yaml#/stream-generate-content'
+
+  # Bedrock-compatible
+  /pydanticai/bedrock/model/{modelId}/converse:
+    $ref: './paths/integrations/pydanticai/bedrock.yaml#/converse'
+  /pydanticai/bedrock/model/{modelId}/converse-stream:
+    $ref: './paths/integrations/pydanticai/bedrock.yaml#/converse-stream'
+
+  # Cohere-compatible
+  /pydanticai/cohere/v2/chat:
+    $ref: './paths/integrations/pydanticai/cohere.yaml#/chat'
+  /pydanticai/cohere/v2/embed:
+    $ref: './paths/integrations/pydanticai/cohere.yaml#/embed'
+  /pydanticai/cohere/v1/tokenize:
+    $ref: './paths/integrations/pydanticai/cohere.yaml#/tokenize'
+
+  # ==================== Management APIs ====================
+  # Health
+  /health:
+    $ref: './paths/management/health.yaml#/health'
+
+  # Configuration
+  /api/config:
+    $ref: './paths/management/config.yaml#/config'
+  /api/version:
+    $ref: './paths/management/config.yaml#/version'
+  /api/proxy-config:
+    $ref: './paths/management/config.yaml#/proxy-config'
+  /api/pricing/force-sync:
+    $ref: './paths/management/config.yaml#/force-sync-pricing'
+
+  # Session
+  /api/session/login:
+    $ref: './paths/management/session.yaml#/login'
+  /api/session/logout:
+    $ref: './paths/management/session.yaml#/logout'
+  /api/session/is-auth-enabled:
+    $ref: './paths/management/session.yaml#/is-auth-enabled'
+
+  # Providers
+  /api/providers:
+    $ref: './paths/management/providers.yaml#/providers'
+  /api/providers/{provider}:
+    $ref: './paths/management/providers.yaml#/providers-by-name'
+  /api/keys:
+    $ref: './paths/management/providers.yaml#/keys'
+  /api/models:
+    $ref: './paths/management/providers.yaml#/models'
+
+  # Plugins
+  /api/plugins:
+    $ref: './paths/management/plugins.yaml#/plugins'
+  /api/plugins/{name}:
+    $ref: './paths/management/plugins.yaml#/~1plugins~1{name}'
+
+  # MCP
+  /v1/mcp/tool/execute:
+    $ref: './paths/management/mcp.yaml#/execute-tool'
+  /api/mcp/clients:
+    $ref: './paths/management/mcp.yaml#/clients'
+  /api/mcp/client:
+    $ref: './paths/management/mcp.yaml#/client'
+  /api/mcp/client/{id}:
+    $ref: './paths/management/mcp.yaml#/client-by-id'
+  /api/mcp/client/{id}/reconnect:
+    $ref: './paths/management/mcp.yaml#/client-reconnect'
+
+  # Governance - Virtual Keys
+  /api/governance/virtual-keys:
+    $ref: './paths/management/governance.yaml#/virtual-keys'
+  /api/governance/virtual-keys/{vk_id}:
+    $ref: './paths/management/governance.yaml#/virtual-keys-by-id'
+
+  # Governance - Teams
+  /api/governance/teams:
+    $ref: './paths/management/governance.yaml#/teams'
+  /api/governance/teams/{team_id}:
+    $ref: './paths/management/governance.yaml#/teams-by-id'
+
+  # Governance - Customers
+  /api/governance/customers:
+    $ref: './paths/management/governance.yaml#/customers'
+  /api/governance/customers/{customer_id}:
+    $ref: './paths/management/governance.yaml#/customers-by-id'
+
+  # Logging
+  /api/logs:
+    $ref: './paths/management/logging.yaml#/logs'
+  /api/logs/stats:
+    $ref: './paths/management/logging.yaml#/logs-stats'
+  /api/logs/dropped:
+    $ref: './paths/management/logging.yaml#/logs-dropped'
+  /api/logs/filterdata:
+    $ref: './paths/management/logging.yaml#/logs-filterdata'
+  /api/logs/recalculate-cost:
+    $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
+
+  # Cache
+  /api/cache/clear/{requestId}:
+    $ref: './paths/management/cache.yaml#/clear-by-request-id'
+  /api/cache/clear-by-key/{cacheKey}:
+    $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+components:
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: './schemas/inference/common.yaml#/BifrostError'
+
+  schemas:
+    # ==================== Common ====================
+    ModelProvider:
+      $ref: './schemas/inference/common.yaml#/ModelProvider'
+    Fallback:
+      $ref: './schemas/inference/common.yaml#/Fallback'
+    BifrostError:
+      $ref: './schemas/inference/common.yaml#/BifrostError'
+    ErrorField:
+      $ref: './schemas/inference/common.yaml#/ErrorField'
+    BifrostErrorExtraFields:
+      $ref: './schemas/inference/common.yaml#/BifrostErrorExtraFields'
+    BifrostResponseExtraFields:
+      $ref: './schemas/inference/common.yaml#/BifrostResponseExtraFields'
+    BifrostCacheDebug:
+      $ref: './schemas/inference/common.yaml#/BifrostCacheDebug'
+    CacheControl:
+      $ref: './schemas/inference/common.yaml#/CacheControl'
+
+    # ==================== Usage ====================
+    BifrostLLMUsage:
+      $ref: './schemas/inference/usage.yaml#/BifrostLLMUsage'
+    ChatPromptTokensDetails:
+      $ref: './schemas/inference/usage.yaml#/ChatPromptTokensDetails'
+    ChatCompletionTokensDetails:
+      $ref: './schemas/inference/usage.yaml#/ChatCompletionTokensDetails'
+    BifrostCost:
+      $ref: './schemas/inference/usage.yaml#/BifrostCost'
+
+    # ==================== Models ====================
+    ListModelsResponse:
+      $ref: './schemas/inference/models.yaml#/ListModelsResponse'
+    Model:
+      $ref: './schemas/inference/models.yaml#/Model'
+
+    # ==================== Chat Completions ====================
+    ChatCompletionRequest:
+      $ref: './schemas/inference/chat.yaml#/ChatCompletionRequest'
+    ChatCompletionResponse:
+      $ref: './schemas/inference/chat.yaml#/ChatCompletionResponse'
+    ChatMessage:
+      $ref: './schemas/inference/chat.yaml#/ChatMessage'
+    PerplexitySearchResult:
+      $ref: './schemas/inference/chat.yaml#/PerplexitySearchResult'
+    PerplexityVideoResult:
+      $ref: './schemas/inference/chat.yaml#/VideoResult'
+
+    # ==================== Text Completions ====================
+    TextCompletionRequest:
+      $ref: './schemas/inference/text.yaml#/TextCompletionRequest'
+    TextCompletionResponse:
+      $ref: './schemas/inference/text.yaml#/TextCompletionResponse'
+
+    # ==================== Responses API ====================
+    ResponsesRequest:
+      $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
+    ResponsesResponse:
+      $ref: './schemas/inference/responses.yaml#/ResponsesResponse'
+
+    # ==================== Embeddings ====================
+    EmbeddingRequest:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingRequest'
+    EmbeddingResponse:
+      $ref: './schemas/inference/embeddings.yaml#/EmbeddingResponse'
+
+    # ==================== Speech ====================
+    SpeechRequest:
+      $ref: './schemas/inference/speech.yaml#/SpeechRequest'
+    SpeechResponse:
+      $ref: './schemas/inference/speech.yaml#/SpeechResponse'
+
+    # ==================== Transcription ====================
+    TranscriptionRequest:
+      $ref: './schemas/inference/transcription.yaml#/TranscriptionRequest'
+    TranscriptionResponse:
+      $ref: './schemas/inference/transcription.yaml#/TranscriptionResponse'
+
+    # ==================== Count Tokens ====================
+    CountTokensRequest:
+      $ref: './schemas/inference/count-tokens.yaml#/CountTokensRequest'
+    CountTokensResponse:
+      $ref: './schemas/inference/count-tokens.yaml#/CountTokensResponse'
+
+    # ==================== Batch ====================
+    BatchCreateRequest:
+      $ref: './schemas/inference/batch.yaml#/BatchCreateRequest'
+    BatchCreateResponse:
+      $ref: './schemas/inference/batch.yaml#/BatchCreateResponse'
+    BatchListResponse:
+      $ref: './schemas/inference/batch.yaml#/BatchListResponse'
+    BatchRetrieveResponse:
+      $ref: './schemas/inference/batch.yaml#/BatchRetrieveResponse'
+
+    # ==================== Files ====================
+    FileUploadRequest:
+      $ref: './schemas/inference/files.yaml#/FileUploadRequest'
+    FileUploadResponse:
+      $ref: './schemas/inference/files.yaml#/FileUploadResponse'
+    FileListResponse:
+      $ref: './schemas/inference/files.yaml#/FileListResponse'
+
+    # ==================== OpenAI Integration ====================
+    OpenAIChatRequest:
+      $ref: './schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
+    OpenAIMessage:
+      $ref: './schemas/integrations/openai/chat.yaml#/OpenAIMessage'
+    OpenAITextCompletionRequest:
+      $ref: './schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest'
+    OpenAIResponsesRequest:
+      $ref: './schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    OpenAIEmbeddingRequest:
+      $ref: './schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest'
+    OpenAISpeechRequest:
+      $ref: './schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest'
+    OpenAITranscriptionRequest:
+      $ref: './schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest'
+    OpenAIListModelsResponse:
+      $ref: './schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse'
+
+    # ==================== Anthropic Integration ====================
+    AnthropicMessageRequest:
+      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+    AnthropicMessage:
+      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessage'
+    AnthropicContentBlock:
+      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicContentBlock'
+    AnthropicMessageResponse:
+      $ref: './schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse'
+    AnthropicTextRequest:
+      $ref: './schemas/integrations/anthropic/text.yaml#/AnthropicTextRequest'
+    AnthropicListModelsResponse:
+      $ref: './schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse'
+
+    # ==================== GenAI (Gemini) Integration ====================
+    GeminiGenerationRequest:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    GeminiGenerationResponse:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+    GeminiContent:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiContent'
+    GeminiPart:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiPart'
+    GeminiEmbeddingRequest:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiEmbeddingRequest'
+    GeminiEmbeddingResponse:
+      $ref: './schemas/integrations/genai/generation.yaml#/GeminiEmbeddingResponse'
+    GeminiListModelsResponse:
+      $ref: './schemas/integrations/genai/common.yaml#/GeminiListModelsResponse'
+    GeminiError:
+      $ref: './schemas/integrations/genai/common.yaml#/GeminiError'
+
+    # ==================== Bedrock Integration ====================
+    BedrockConverseRequest:
+      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+    BedrockConverseResponse:
+      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse'
+    BedrockMessage:
+      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockMessage'
+    BedrockContentBlock:
+      $ref: './schemas/integrations/bedrock/converse.yaml#/BedrockContentBlock'
+    BedrockInvokeRequest:
+      $ref: './schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeRequest'
+    BedrockInvokeResponse:
+      $ref: './schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeResponse'
+    BedrockBatchJobRequest:
+      $ref: './schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobRequest'
+    BedrockBatchJobResponse:
+      $ref: './schemas/integrations/bedrock/batch.yaml#/BedrockBatchJobResponse'
+    BedrockError:
+      $ref: './schemas/integrations/bedrock/common.yaml#/BedrockError'
+
+    # ==================== Cohere Integration ====================
+    CohereChatRequest:
+      $ref: './schemas/integrations/cohere/chat.yaml#/CohereChatRequest'
+    CohereChatResponse:
+      $ref: './schemas/integrations/cohere/chat.yaml#/CohereChatResponse'
+    CohereMessage:
+      $ref: './schemas/integrations/cohere/chat.yaml#/CohereMessage'
+    CohereEmbeddingRequest:
+      $ref: './schemas/integrations/cohere/embed.yaml#/CohereEmbeddingRequest'
+    CohereEmbeddingResponse:
+      $ref: './schemas/integrations/cohere/embed.yaml#/CohereEmbeddingResponse'
+    CohereCountTokensRequest:
+      $ref: './schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensRequest'
+    CohereCountTokensResponse:
+      $ref: './schemas/integrations/cohere/tokenize.yaml#/CohereCountTokensResponse'
+    CohereError:
+      $ref: './schemas/integrations/cohere/common.yaml#/CohereError'
+
+    # ==================== Management ====================
+    # Common
+    SuccessResponse:
+      $ref: './schemas/management/common.yaml#/SuccessResponse'
+    ManagementErrorResponse:
+      $ref: './schemas/management/common.yaml#/ErrorResponse'
+    MessageResponse:
+      $ref: './schemas/management/common.yaml#/MessageResponse'
+
+    # Health
+    HealthResponse:
+      $ref: './schemas/management/health.yaml#/HealthResponse'
+
+    # Configuration
+    GetConfigResponse:
+      $ref: './schemas/management/config.yaml#/GetConfigResponse'
+    UpdateConfigRequest:
+      $ref: './schemas/management/config.yaml#/UpdateConfigRequest'
+    Version:
+      $ref: './schemas/management/config.yaml#/Version'
+
+    # Session
+    LoginRequest:
+      $ref: './schemas/management/session.yaml#/LoginRequest'
+    LoginResponse:
+      $ref: './schemas/management/session.yaml#/LoginResponse'
+    IsAuthEnabledResponse:
+      $ref: './schemas/management/session.yaml#/IsAuthEnabledResponse'
+
+    # Providers
+    ProviderResponse:
+      $ref: './schemas/management/providers.yaml#/ProviderResponse'
+    ListProvidersResponse:
+      $ref: './schemas/management/providers.yaml#/ListProvidersResponse'
+    AddProviderRequest:
+      $ref: './schemas/management/providers.yaml#/AddProviderRequest'
+    UpdateProviderRequest:
+      $ref: './schemas/management/providers.yaml#/UpdateProviderRequest'
+    Key:
+      $ref: './schemas/management/providers.yaml#/Key'
+    NetworkConfig:
+      $ref: './schemas/management/providers.yaml#/NetworkConfig'
+    ConcurrencyAndBufferSize:
+      $ref: './schemas/management/providers.yaml#/ConcurrencyAndBufferSize'
+
+    # Plugins
+    Plugin:
+      $ref: './schemas/management/plugins.yaml#/Plugin'
+    ListPluginsResponse:
+      $ref: './schemas/management/plugins.yaml#/ListPluginsResponse'
+    CreatePluginRequest:
+      $ref: './schemas/management/plugins.yaml#/CreatePluginRequest'
+    UpdatePluginRequest:
+      $ref: './schemas/management/plugins.yaml#/UpdatePluginRequest'
+
+    # MCP
+    MCPClient:
+      $ref: './schemas/management/mcp.yaml#/MCPClient'
+    MCPClientConfig:
+      $ref: './schemas/management/mcp.yaml#/MCPClientConfig'
+    ExecuteToolRequest:
+      $ref: './schemas/management/mcp.yaml#/ExecuteToolRequest'
+
+    # Governance
+    VirtualKey:
+      $ref: './schemas/management/governance.yaml#/VirtualKey'
+    ListVirtualKeysResponse:
+      $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
+    CreateVirtualKeyRequest:
+      $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
+    UpdateVirtualKeyRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+    Team:
+      $ref: './schemas/management/governance.yaml#/Team'
+    ListTeamsResponse:
+      $ref: './schemas/management/governance.yaml#/ListTeamsResponse'
+    Customer:
+      $ref: './schemas/management/governance.yaml#/Customer'
+    ListCustomersResponse:
+      $ref: './schemas/management/governance.yaml#/ListCustomersResponse'
+
+    # Logging
+    LogEntry:
+      $ref: './schemas/management/logging.yaml#/LogEntry'
+    SearchLogsResponse:
+      $ref: './schemas/management/logging.yaml#/SearchLogsResponse'
+    LogStats:
+      $ref: './schemas/management/logging.yaml#/LogStats'
+    DeleteLogsRequest:
+      $ref: './schemas/management/logging.yaml#/DeleteLogsRequest'
+    RecalculateCostRequest:
+      $ref: './schemas/management/logging.yaml#/RecalculateCostRequest'
+    RecalculateCostResponse:
+      $ref: './schemas/management/logging.yaml#/RecalculateCostResponse'
+
+    # Cache
+    ClearCacheResponse:
+      $ref: './schemas/management/cache.yaml#/ClearCacheResponse'

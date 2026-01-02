@@ -1,0 +1,9 @@
+# Cache API schemas
+
+ClearCacheResponse:
+  type: object
+  description: Clear cache response
+  properties:
+    message:
+      type: string
+      example: Cache cleared successfully

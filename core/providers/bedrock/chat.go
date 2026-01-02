@@ -60,78 +60,110 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	var reasoningText string
 
 	if response.Output.Message != nil {
-		if len(response.Output.Message.Content) == 1 && response.Output.Message.Content[0].Text != nil {
-			contentStr = response.Output.Message.Content[0].Text
-		} else {
-			// Check if this is a single tool use for structured output (response_format)
-			// If there's only one tool use and no other content, treat it as structured output
-			if structuredOutputToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
-				if len(response.Output.Message.Content) > 0 && response.Output.Message.Content[0].ToolUse != nil && structuredOutputToolName == response.Output.Message.Content[0].ToolUse.Name {
-					toolUse := response.Output.Message.Content[0].ToolUse
-					// Marshal the tool input to JSON string and use as content
-					if toolUse.Input != nil {
-						if argBytes, err := sonic.Marshal(toolUse.Input); err == nil {
+		for _, contentBlock := range response.Output.Message.Content {
+			// Handle text content
+			if contentBlock.Text != nil && *contentBlock.Text != "" {
+				chatContentBlock := schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText,
+					Text: contentBlock.Text,
+				}
+				contentBlocks = append(contentBlocks, chatContentBlock)
+			}
+
+			if contentBlock.ToolUse != nil {
+				// Check if this is the structured output tool
+				if structuredOutputToolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok && contentBlock.ToolUse.Name == structuredOutputToolName {
+					// This is structured output - set contentStr and skip adding to toolCalls
+					if contentBlock.ToolUse.Input != nil {
+						if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
 							jsonStr := string(argBytes)
 							contentStr = &jsonStr
 						} else {
-							jsonStr := fmt.Sprintf("%v", toolUse.Input)
+							jsonStr := fmt.Sprintf("%v", contentBlock.ToolUse.Input)
 							contentStr = &jsonStr
 						}
 					}
+					continue // Skip adding to toolCalls
 				}
-			} else {
-				for _, contentBlock := range response.Output.Message.Content {
-					// Handle text content
-					if contentBlock.Text != nil && *contentBlock.Text != "" {
-						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
-							Type: schemas.ChatContentBlockTypeText,
-							Text: contentBlock.Text,
-						})
+
+				// Regular tool call processing
+				var arguments string
+				if contentBlock.ToolUse.Input != nil {
+					if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
+						arguments = string(argBytes)
+					} else {
+						arguments = fmt.Sprintf("%v", contentBlock.ToolUse.Input)
 					}
+				} else {
+					arguments = "{}"
+				}
 
-					// Handle tool use
-					if contentBlock.ToolUse != nil {
-						// Marshal the tool input to JSON string
-						var arguments string
-						if contentBlock.ToolUse.Input != nil {
-							if argBytes, err := sonic.Marshal(contentBlock.ToolUse.Input); err == nil {
-								arguments = string(argBytes)
-							} else {
-								arguments = fmt.Sprintf("%v", contentBlock.ToolUse.Input)
-							}
-						} else {
-							arguments = "{}"
-						}
+				toolUseID := contentBlock.ToolUse.ToolUseID
+				toolUseName := contentBlock.ToolUse.Name
 
-						// Create copies of the values to avoid range loop variable capture
-						toolUseID := contentBlock.ToolUse.ToolUseID
-						toolUseName := contentBlock.ToolUse.Name
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+					Index: uint16(len(toolCalls)),
+					Type:  schemas.Ptr("function"),
+					ID:    &toolUseID,
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &toolUseName,
+						Arguments: arguments,
+					},
+				})
+			}
 
-						toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-							Index: uint16(len(toolCalls)),
-							Type:  schemas.Ptr("function"),
-							ID:    &toolUseID,
-							Function: schemas.ChatAssistantMessageToolCallFunction{
-								Name:      &toolUseName,
-								Arguments: arguments,
-							},
-						})
+			// Handle reasoning content
+			if contentBlock.ReasoningContent != nil {
+				if contentBlock.ReasoningContent.ReasoningText == nil {
+					continue
+				}
+				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+					Index:     len(reasoningDetails),
+					Type:      schemas.BifrostReasoningDetailsTypeText,
+					Text:      contentBlock.ReasoningContent.ReasoningText.Text,
+					Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
+				})
+				if contentBlock.ReasoningContent.ReasoningText.Text != nil {
+					reasoningText += *contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+				}
+			}
+
+			// Handle document content
+			if contentBlock.Document != nil {
+				fileBlock := schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeFile,
+					File: &schemas.ChatInputFile{},
+				}
+
+				// Set filename from document name
+				if contentBlock.Document.Name != "" {
+					fileBlock.File.Filename = &contentBlock.Document.Name
+				}
+
+				// Set file type based on format
+				if contentBlock.Document.Format != "" {
+					var fileType string
+					switch contentBlock.Document.Format {
+					case "pdf":
+						fileType = "application/pdf"
+					case "txt", "md", "html", "csv":
+						fileType = "text/plain"
+					default:
+						fileType = "application/pdf"
 					}
+					fileBlock.File.FileType = &fileType
+				}
 
-					// Handle reasoning content
-					if contentBlock.ReasoningContent != nil {
-						if contentBlock.ReasoningContent.ReasoningText == nil {
-							continue
-						}
-						reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-							Index:     len(reasoningDetails),
-							Type:      schemas.BifrostReasoningDetailsTypeText,
-							Text:      schemas.Ptr(contentBlock.ReasoningContent.ReasoningText.Text),
-							Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
-						})
-						reasoningText += contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+				// Convert document source data
+				if contentBlock.Document.Source != nil {
+					if contentBlock.Document.Source.Bytes != nil {
+						fileBlock.File.FileData = contentBlock.Document.Source.Bytes
+					} else if contentBlock.Document.Source.Text != nil {
+						fileBlock.File.FileData = contentBlock.Document.Source.Text
 					}
 				}
+
+				contentBlocks = append(contentBlocks, fileBlock)
 			}
 		}
 	}
@@ -337,12 +369,12 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			reasoningContentDelta := chunk.Delta.ReasoningContent
 
 			// Only construct and return a response when either Text or Signature is set
-			if reasoningContentDelta.Text == "" && reasoningContentDelta.Signature == nil {
+			if (reasoningContentDelta.Text == nil || *reasoningContentDelta.Text == "") && reasoningContentDelta.Signature == nil {
 				return nil, nil, false
 			}
 
 			var streamResponse *schemas.BifrostChatResponse
-			if reasoningContentDelta.Text != "" {
+			if reasoningContentDelta.Text != nil && *reasoningContentDelta.Text != "" {
 				streamResponse = &schemas.BifrostChatResponse{
 					Object: "chat.completion.chunk",
 					Choices: []schemas.BifrostResponseChoice{
@@ -350,12 +382,12 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 							Index: 0,
 							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 								Delta: &schemas.ChatStreamResponseChoiceDelta{
-									Reasoning: schemas.Ptr(reasoningContentDelta.Text),
+									Reasoning: reasoningContentDelta.Text,
 									ReasoningDetails: []schemas.ChatReasoningDetails{
 										{
 											Index: 0,
 											Type:  schemas.BifrostReasoningDetailsTypeText,
-											Text:  schemas.Ptr(reasoningContentDelta.Text),
+											Text:  reasoningContentDelta.Text,
 										},
 									},
 								},

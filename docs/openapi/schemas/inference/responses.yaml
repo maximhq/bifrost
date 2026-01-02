@@ -1,0 +1,701 @@
+# Responses API schemas
+
+ResponsesRequest:
+  type: object
+  required:
+    - model
+    - input
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    input:
+      $ref: '#/ResponsesRequestInput'
+    fallbacks:
+      type: array
+      items:
+        type: string
+    stream:
+      type: boolean
+    background:
+      type: boolean
+    conversation:
+      type: string
+    include:
+      type: array
+      items:
+        type: string
+    instructions:
+      type: string
+    max_output_tokens:
+      type: integer
+    max_tool_calls:
+      type: integer
+    metadata:
+      type: object
+      additionalProperties: true
+    parallel_tool_calls:
+      type: boolean
+    previous_response_id:
+      type: string
+    prompt_cache_key:
+      type: string
+    reasoning:
+      $ref: '#/ResponsesParametersReasoning'
+    safety_identifier:
+      type: string
+    service_tier:
+      type: string
+    stream_options:
+      $ref: '#/ResponsesStreamOptions'
+    store:
+      type: boolean
+    temperature:
+      type: number
+    text:
+      $ref: '#/ResponsesTextConfig'
+    top_logprobs:
+      type: integer
+    top_p:
+      type: number
+    tool_choice:
+      $ref: '#/ResponsesToolChoice'
+    tools:
+      type: array
+      items:
+        $ref: '#/ResponsesTool'
+    truncation:
+      type: string
+
+ResponsesRequestInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '#/ResponsesMessage'
+  description: Input - can be a string or array of messages
+
+ResponsesMessage:
+  type: object
+  properties:
+    id:
+      type: string
+    type:
+      $ref: '#/ResponsesMessageType'
+    status:
+      type: string
+      enum: [in_progress, completed, incomplete, interpreting, failed]
+    role:
+      type: string
+      enum: [assistant, user, system, developer]
+    content:
+      $ref: '#/ResponsesMessageContent'
+    call_id:
+      type: string
+    name:
+      type: string
+    arguments:
+      type: string
+    output:
+      type: object
+    action:
+      type: object
+    error:
+      type: string
+    queries:
+      type: array
+      items:
+        type: string
+    results:
+      type: array
+      items:
+        type: object
+    summary:
+      type: array
+      items:
+        $ref: '#/ResponsesReasoningSummary'
+    encrypted_content:
+      type: string
+
+ResponsesMessageType:
+  type: string
+  enum:
+    - message
+    - file_search_call
+    - computer_call
+    - computer_call_output
+    - web_search_call
+    - function_call
+    - function_call_output
+    - code_interpreter_call
+    - local_shell_call
+    - local_shell_call_output
+    - mcp_call
+    - custom_tool_call
+    - custom_tool_call_output
+    - image_generation_call
+    - mcp_list_tools
+    - mcp_approval_request
+    - mcp_approval_responses
+    - reasoning
+    - item_reference
+    - refusal
+
+ResponsesMessageContent:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '#/ResponsesMessageContentBlock'
+
+ResponsesMessageContentBlock:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [input_text, input_image, input_file, input_audio, output_text, refusal, reasoning_text]
+    file_id:
+      type: string
+    text:
+      type: string
+    signature:
+      type: string
+    image_url:
+      type: string
+    detail:
+      type: string
+    file_data:
+      type: string
+    file_url:
+      type: string
+    filename:
+      type: string
+    file_type:
+      type: string
+    input_audio:
+      $ref: '#/ResponsesInputMessageContentBlockAudio'
+    annotations:
+      type: array
+      items:
+        $ref: '#/ResponsesOutputMessageContentTextAnnotation'
+    logprobs:
+      type: array
+      items:
+        $ref: '#/ResponsesOutputMessageContentTextLogProb'
+    refusal:
+      type: string
+    cache_control:
+      $ref: './common.yaml#/CacheControl'
+
+ResponsesInputMessageContentBlockAudio:
+  type: object
+  required:
+    - format
+    - data
+  properties:
+    format:
+      type: string
+      enum: [mp3, wav]
+    data:
+      type: string
+
+ResponsesOutputMessageContentTextAnnotation:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [file_citation, url_citation, container_file_citation, file_path]
+    index:
+      type: integer
+    file_id:
+      type: string
+    text:
+      type: string
+    start_index:
+      type: integer
+    end_index:
+      type: integer
+    filename:
+      type: string
+    title:
+      type: string
+    url:
+      type: string
+    container_id:
+      type: string
+
+ResponsesOutputMessageContentTextLogProb:
+  type: object
+  properties:
+    bytes:
+      type: array
+      items:
+        type: integer
+    logprob:
+      type: number
+    token:
+      type: string
+    top_logprobs:
+      type: array
+      items:
+        $ref: './chat.yaml#/LogProb'
+
+ResponsesParametersReasoning:
+  type: object
+  properties:
+    effort:
+      type: string
+      enum: [none, minimal, low, medium, high, xhigh]
+    generate_summary:
+      type: string
+      deprecated: true
+    summary:
+      type: string
+      enum: [auto, concise, detailed]
+    max_tokens:
+      type: integer
+
+ResponsesStreamOptions:
+  type: object
+  properties:
+    include_obfuscation:
+      type: boolean
+
+ResponsesTextConfig:
+  type: object
+  properties:
+    format:
+      $ref: '#/ResponsesTextConfigFormat'
+    verbosity:
+      type: string
+      enum: [low, medium, high]
+
+ResponsesTextConfigFormat:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [text, json_schema, json_object]
+    name:
+      type: string
+    schema:
+      type: object
+    strict:
+      type: boolean
+
+ResponsesToolChoice:
+  oneOf:
+    - type: string
+      enum: [none, auto, required]
+    - $ref: '#/ResponsesToolChoiceStruct'
+
+ResponsesToolChoiceStruct:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum:
+        - none
+        - auto
+        - any
+        - required
+        - function
+        - allowed_tools
+        - file_search
+        - web_search_preview
+        - computer_use_preview
+        - code_interpreter
+        - image_generation
+        - mcp
+        - custom
+    mode:
+      type: string
+    name:
+      type: string
+    server_label:
+      type: string
+    tools:
+      type: array
+      items:
+        $ref: '#/ResponsesToolChoiceAllowedToolDef'
+
+ResponsesToolChoiceAllowedToolDef:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [function, mcp, image_generation]
+    name:
+      type: string
+    server_label:
+      type: string
+
+ResponsesTool:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum:
+        - function
+        - file_search
+        - computer_use_preview
+        - web_search
+        - mcp
+        - code_interpreter
+        - image_generation
+        - local_shell
+        - custom
+        - web_search_preview
+    name:
+      type: string
+    description:
+      type: string
+    cache_control:
+      $ref: './common.yaml#/CacheControl'
+    parameters:
+      $ref: './chat.yaml#/ToolFunctionParameters'
+    strict:
+      type: boolean
+    vector_store_ids:
+      type: array
+      items:
+        type: string
+    filters:
+      type: object
+    max_num_results:
+      type: integer
+    ranking_options:
+      type: object
+    display_height:
+      type: integer
+    display_width:
+      type: integer
+    environment:
+      type: string
+    enable_zoom:
+      type: boolean
+    search_context_size:
+      type: string
+    user_location:
+      type: object
+    server_label:
+      type: string
+    server_url:
+      type: string
+    allowed_tools:
+      type: object
+    authorization:
+      type: string
+    connector_id:
+      type: string
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+    require_approval:
+      type: object
+    server_description:
+      type: string
+    container:
+      type: object
+    background:
+      type: string
+    input_fidelity:
+      type: string
+    input_image_mask:
+      type: object
+    moderation:
+      type: string
+    output_compression:
+      type: integer
+    output_format:
+      type: string
+    partial_images:
+      type: integer
+    quality:
+      type: string
+    size:
+      type: string
+    format:
+      type: object
+
+ResponsesReasoningSummary:
+  type: object
+  required:
+    - type
+    - text
+  properties:
+    type:
+      type: string
+      enum: [summary_text]
+    text:
+      type: string
+
+ResponsesResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    background:
+      type: boolean
+    conversation:
+      type: object
+    created_at:
+      type: integer
+    error:
+      $ref: '#/ResponsesResponseError'
+    include:
+      type: array
+      items:
+        type: string
+    incomplete_details:
+      $ref: '#/ResponsesResponseIncompleteDetails'
+    instructions:
+      type: object
+    max_output_tokens:
+      type: integer
+    max_tool_calls:
+      type: integer
+    metadata:
+      type: object
+    model:
+      type: string
+    output:
+      type: array
+      items:
+        $ref: '#/ResponsesMessage'
+    parallel_tool_calls:
+      type: boolean
+    previous_response_id:
+      type: string
+    prompt:
+      type: object
+    prompt_cache_key:
+      type: string
+    reasoning:
+      $ref: '#/ResponsesParametersReasoning'
+    safety_identifier:
+      type: string
+    service_tier:
+      type: string
+    status:
+      type: string
+      enum: [completed, failed, in_progress, canceled, queued, incomplete]
+    stop_reason:
+      type: string
+    store:
+      type: boolean
+    temperature:
+      type: number
+    text:
+      $ref: '#/ResponsesTextConfig'
+    top_logprobs:
+      type: integer
+    top_p:
+      type: number
+    tool_choice:
+      $ref: '#/ResponsesToolChoice'
+    tools:
+      type: array
+      items:
+        $ref: '#/ResponsesTool'
+    truncation:
+      type: string
+    usage:
+      $ref: '#/ResponsesResponseUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+    search_results:
+      type: array
+      items:
+        $ref: './chat.yaml#/PerplexitySearchResult'
+    videos:
+      type: array
+      items:
+        $ref: './chat.yaml#/VideoResult'
+    citations:
+      type: array
+      items:
+        type: string
+
+ResponsesResponseError:
+  type: object
+  required:
+    - code
+    - message
+  properties:
+    code:
+      type: string
+    message:
+      type: string
+
+ResponsesResponseIncompleteDetails:
+  type: object
+  required:
+    - reason
+  properties:
+    reason:
+      type: string
+
+ResponsesResponseUsage:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+    input_tokens_details:
+      $ref: '#/ResponsesResponseInputTokens'
+    output_tokens:
+      type: integer
+    output_tokens_details:
+      $ref: '#/ResponsesResponseOutputTokens'
+    total_tokens:
+      type: integer
+    cost:
+      $ref: './usage.yaml#/BifrostCost'
+
+ResponsesResponseInputTokens:
+  type: object
+  properties:
+    text_tokens:
+      type: integer
+    audio_tokens:
+      type: integer
+    image_tokens:
+      type: integer
+    cached_tokens:
+      type: integer
+
+ResponsesResponseOutputTokens:
+  type: object
+  properties:
+    text_tokens:
+      type: integer
+    accepted_prediction_tokens:
+      type: integer
+    audio_tokens:
+      type: integer
+    reasoning_tokens:
+      type: integer
+    rejected_prediction_tokens:
+      type: integer
+    citation_tokens:
+      type: integer
+    num_search_queries:
+      type: integer
+    cached_tokens:
+      type: integer
+
+ResponsesStreamResponse:
+  type: object
+  description: Streaming responses API response (SSE format)
+  properties:
+    type:
+      $ref: '#/ResponsesStreamResponseType'
+    sequence_number:
+      type: integer
+    response:
+      $ref: '#/ResponsesResponse'
+    output_index:
+      type: integer
+    item:
+      $ref: '#/ResponsesMessage'
+    content_index:
+      type: integer
+    item_id:
+      type: string
+    part:
+      $ref: '#/ResponsesMessageContentBlock'
+    delta:
+      type: string
+    signature:
+      type: string
+    logprobs:
+      type: array
+      items:
+        $ref: '#/ResponsesOutputMessageContentTextLogProb'
+    text:
+      type: string
+    refusal:
+      type: string
+    arguments:
+      type: string
+    partial_image_b64:
+      type: string
+    partial_image_index:
+      type: integer
+    annotation:
+      $ref: '#/ResponsesOutputMessageContentTextAnnotation'
+    annotation_index:
+      type: integer
+    code:
+      type: string
+    message:
+      type: string
+    param:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+ResponsesStreamResponseType:
+  type: string
+  enum:
+    - response.ping
+    - response.created
+    - response.in_progress
+    - response.completed
+    - response.failed
+    - response.incomplete
+    - response.output_item.added
+    - response.output_item.done
+    - response.content_part.added
+    - response.content_part.done
+    - response.output_text.delta
+    - response.output_text.done
+    - response.refusal.delta
+    - response.refusal.done
+    - response.function_call_arguments.delta
+    - response.function_call_arguments.done
+    - response.file_search_call.in_progress
+    - response.file_search_call.searching
+    - response.file_search_call.results.added
+    - response.file_search_call.results.completed
+    - response.web_search_call.searching
+    - response.web_search_call.results.added
+    - response.web_search_call.results.completed
+    - response.reasoning_summary_part.added
+    - response.reasoning_summary_part.done
+    - response.reasoning_summary_text.delta
+    - response.reasoning_summary_text.done
+    - response.image_generation_call.completed
+    - response.image_generation_call.generating
+    - response.image_generation_call.in_progress
+    - response.image_generation_call.partial_image
+    - response.mcp_call_arguments.delta
+    - response.mcp_call_arguments.done
+    - response.mcp_call.completed
+    - response.mcp_call.failed
+    - response.mcp_call.in_progress
+    - response.mcp_list_tools.completed
+    - response.mcp_list_tools.failed
+    - response.mcp_list_tools.in_progress
+    - response.code_interpreter_call.in_progress
+    - response.code_interpreter_call.interpreting
+    - response.code_interpreter_call.completed
+    - response.code_interpreter_call_code.delta
+    - response.code_interpreter_call_code.done
+    - response.output_text.annotation.added
+    - response.output_text.annotation.done
+    - response.queued
+    - response.custom_tool_call_input.delta
+    - response.custom_tool_call_input.done
+    - error

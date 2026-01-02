@@ -649,7 +649,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	.map((key) => ({
 																		label: key.name,
 																		value: key.key_id,
-																		description: key.models.join(", "),
+																		description: key.models?.join(", ") || "",
 																		provider: key.provider,
 																	}));
 
@@ -667,7 +667,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			defaultOptions={providerKeys.map((key) => ({
 																				label: key.name,
 																				value: key.key_id,
-																				description: key.models.join(", "),
+																				description: key.models?.join(", ") || "",
 																				provider: key.provider,
 																			}))}
 																			views={{

@@ -30,13 +30,8 @@ git pull origin
 # Fetching all tags
 git fetch --tags >/dev/null 2>&1 || true
 
-# Get latest core version
-LATEST_CORE_TAG=$(git tag -l "core/v*" | sort -V | tail -1)
-if [ -z "$LATEST_CORE_TAG" ]; then
-  CORE_VERSION="v$(tr -d '\n\r' < core/version)"
-else
-  CORE_VERSION=${LATEST_CORE_TAG#core/}
-fi
+# Get core version from version file
+CORE_VERSION="v$(tr -d '\n\r' < core/version)"
 
 
 # Before starting the test, we need to update hello-word plugin core dependencies

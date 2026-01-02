@@ -5,10 +5,17 @@
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
   },
+  "banner": {
+    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
+    "dismissible": true
+  },
   "theme": "mint",
   "colors": {
     "primary": "#0C3B43",
     "light": "#07C983"
+  },
+  "styles": {
+    "latex": true
   },
   "favicon": "favicon.ico",
   "topbarLinks": [
@@ -21,19 +28,21 @@
     "name": "Dashboard",
     "url": "https://www.getbifrost.ai"
   },
-  "anchors": [
-    {
-      "name": "Community",
-      "icon": "discord",
-      "url": "https://getmax.im/bifrost-discord"
-    },
-    {
-      "name": "Blog",
-      "icon": "newspaper",
-      "url": "https://getmaxim.ai/blog"
-    }
-  ],
   "navigation": {
+    "global": {
+      "anchors": [
+        {
+          "anchor": "Discord",
+          "icon": "discord",
+          "href": "https://getmax.im/bifrost-discord"
+        },
+        {
+          "anchor": "Try Enterprise",
+          "icon": "building",
+          "href": "https://www.getmaxim.ai/bifrost/enterprise"
+        }
+      ]
+    },
     "tabs": [
       {
         "tab": "Documentation",
@@ -63,25 +72,102 @@
                 "pages": [
                   "quickstart/go-sdk/setting-up",
                   "quickstart/go-sdk/provider-configuration",
+                  "quickstart/go-sdk/context-keys",
                   "quickstart/go-sdk/streaming",
                   "quickstart/go-sdk/tool-calling",
-                  "quickstart/go-sdk/multimodal"
+                  "quickstart/go-sdk/multimodal",
+                  "quickstart/go-sdk/logger"
                 ]
               }
             ]
           },
           {
-            "group": "Provider Integrations",
+            "group": "Providers & Guides",
+            "icon": "solar-system",
+            "pages": [
+              {
+                "group": "Supported Providers",
+                "icon": "bars-progress",
+                "pages": [
+                  "providers/supported-providers/overview",
+                  "providers/supported-providers/anthropic",
+                  "providers/supported-providers/azure",
+                  "providers/supported-providers/bedrock",
+                  "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cohere",
+                  "providers/supported-providers/elevenlabs",
+                  "providers/supported-providers/gemini",
+                  "providers/supported-providers/groq",
+                  "providers/supported-providers/huggingface",
+                  "providers/supported-providers/mistral",
+                  "providers/supported-providers/nebius",
+                  "providers/supported-providers/ollama",
+                  "providers/supported-providers/openai",
+                  "providers/supported-providers/openrouter",
+                  "providers/supported-providers/parasail",
+                  "providers/supported-providers/perplexity",
+                  "providers/supported-providers/sgl",
+                  "providers/supported-providers/vertex"
+                ]
+              },
+              "providers/reasoning",
+              "providers/performance",
+              "providers/custom-providers"
+            ]
+          },
+          {
+            "group": "SDK Integrations",
             "icon": "plug",
             "pages": [
               "integrations/what-is-an-integration",
-              "integrations/openai-sdk",
-              "integrations/anthropic-sdk",
-              "integrations/bedrock-sdk",
-              "integrations/genai-sdk",
+              {
+                "group": "OpenAI SDK",
+                "icon": "openai",
+                "pages": [
+                  "integrations/openai-sdk/overview",
+                  "integrations/openai-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Anthropic SDK",
+                "icon": "asterisk",
+                "pages": [
+                  "integrations/anthropic-sdk/overview",
+                  "integrations/anthropic-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "Bedrock SDK",
+                "icon": "aws",
+                "pages": [
+                  "integrations/bedrock-sdk/overview",
+                  "integrations/bedrock-sdk/files-and-batch"
+                ]
+              },
+              {
+                "group": "GenAI SDK",
+                "icon": "diamond",
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
+              },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk"
+            ]
+          },
+          {
+            "group": "MCP Gateway",
+            "icon": "toolbox",
+            "pages": [
+              "features/mcp/overview",
+              "features/mcp/connecting-to-servers",
+              "features/mcp/tool-execution",
+              "features/mcp/agent-mode",
+              "features/mcp/code-mode",
+              "features/mcp/gateway-url",
+              "features/mcp/tool-hosting",
+              "features/mcp/filtering"
             ]
           },
           {
@@ -90,18 +176,17 @@
             "pages": [
               "plugins/getting-started",
               "plugins/building-dynamic-binary",
-              "plugins/writing-plugin"
+              "plugins/writing-plugin",
+              "plugins/migration-guide"
             ]
           },
           {
             "group": "Open Source Features",
             "icon": "bolt",
             "pages": [
-              "features/unified-interface",
               "features/drop-in-replacement",
               "features/fallbacks",
               "features/keys-management",
-              "features/mcp",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -129,7 +214,6 @@
               },
               "features/telemetry",
               "features/semantic-caching",
-              "features/custom-providers",
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
@@ -146,6 +230,7 @@
             "pages": [
               "enterprise/guardrails",
               "enterprise/clustering",
+              "enterprise/adaptive-load-balancing",
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
@@ -165,7 +250,6 @@
               "enterprise/mcp-with-fa",
               "enterprise/vault-support",
               "enterprise/invpc-deployments",
-              "enterprise/intelligent-load-balancing",
               "enterprise/custom-plugins",
               "enterprise/audit-logs",
               "enterprise/log-exports"
@@ -220,7 +304,7 @@
         "groups": [
           {
             "group": "API Reference",
-            "openapi": "apis/openapi.json"
+            "openapi": "openapi/openapi.json"
           }
         ]
       },
@@ -266,17 +350,32 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.3.48",
-          "changelogs/v1.3.47",
-          "changelogs/v1.3.46",
-          "changelogs/v1.3.45",
-          "changelogs/v1.3.44",
-          "changelogs/v1.3.43",
-          "changelogs/v1.3.42",
-          "changelogs/v1.3.41",
-          "changelogs/v1.3.40",
-          "changelogs/v1.3.39",
-          "changelogs/v1.3.38",
+          "changelogs/v1.3.57",
+          "changelogs/v1.3.56",
+          {
+            "group": "December 2025",
+            "pages": [
+              "changelogs/v1.4.0-prerelease2",
+              "changelogs/v1.4.0-prerelease1",
+              "changelogs/v1.3.54",
+              "changelogs/v1.3.53",
+              "changelogs/v1.3.52",
+              "changelogs/v1.3.51",
+              "changelogs/v1.3.50",
+              "changelogs/v1.3.49",
+              "changelogs/v1.3.48",
+              "changelogs/v1.3.47",
+              "changelogs/v1.3.46",
+              "changelogs/v1.3.45",
+              "changelogs/v1.3.44",
+              "changelogs/v1.3.43",
+              "changelogs/v1.3.42",
+              "changelogs/v1.3.41",
+              "changelogs/v1.3.40",
+              "changelogs/v1.3.39",
+              "changelogs/v1.3.38"
+            ]
+          },
           {
             "group": "November 2025",
             "pages": [
@@ -295,12 +394,20 @@
               "changelogs/v1.3.25",
               "changelogs/v1.3.24",
               "changelogs/v1.3.23",
-              "changelogs/v1.3.22"
+              "changelogs/v1.3.22",
+              "changelogs/v1.3.21",
+              "changelogs/v1.3.20",
+              "changelogs/v1.3.19",
+              "changelogs/v1.3.18"
             ]
           },
           {
             "group": "October 2025",
             "pages": [
+              "changelogs/v1.3.17",
+              "changelogs/v1.3.16",
+              "changelogs/v1.3.15",
+              "changelogs/v1.3.14",
               "changelogs/v1.3.13",
               "changelogs/v1.3.12",
               "changelogs/v1.3.11",
@@ -321,6 +428,7 @@
               "changelogs/v1.3.0-prerelease3",
               "changelogs/v1.3.0-prerelease2",
               "changelogs/v1.3.0-prerelease1",
+              "changelogs/v1.3.0",
               "changelogs/v1.2.24",
               "changelogs/v1.2.23"
             ]
@@ -328,7 +436,6 @@
           {
             "group": "September 2025",
             "pages": [
-              "changelogs/v1.3.0",
               "changelogs/v1.2.22",
               "changelogs/v1.2.21"
             ]
@@ -337,6 +444,16 @@
       }
     ]
   },
+  "redirects": [
+    {
+      "source": "/features/unified-interface",
+      "destination": "/providers/supported-providers/overview"
+    },
+    {
+      "source": "/providers/huggingface",
+      "destination": "/providers/supported-providers/huggingface"
+    }
+  ],
   "footer": {
     "socials": {
       "x": "https://x.com/getmaximai",

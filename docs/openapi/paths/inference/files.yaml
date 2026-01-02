@@ -1,0 +1,176 @@
+files:
+  post:
+    operationId: uploadFile
+    summary: Upload a file
+    description: |
+      Uploads a file to be used with batch operations or other features.
+    tags:
+      - Files
+    parameters:
+      - name: provider
+        in: query
+        description: Provider to upload file to (can also use x-model-provider header)
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/files.yaml#/FileUploadRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/files.yaml#/FileUploadResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  get:
+    operationId: listFiles
+    summary: List files
+    description: |
+      Lists files for a provider.
+    tags:
+      - Files
+    parameters:
+      - name: x-model-provider
+        in: query
+        required: true
+        description: Provider to list files for
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+      - name: purpose
+        in: query
+        description: Filter by purpose
+        schema:
+          $ref: '../../schemas/inference/files.yaml#/FilePurpose'
+      - name: limit
+        in: query
+        description: Maximum number of files to return
+        schema:
+          type: integer
+          minimum: 1
+      - name: after
+        in: query
+        description: Cursor for pagination
+        schema:
+          type: string
+      - name: order
+        in: query
+        description: Sort order (asc/desc)
+        schema:
+          type: string
+          enum: [asc, desc]
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/files.yaml#/FileListResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+files-by-id:
+  get:
+    operationId: retrieveFile
+    summary: Retrieve file metadata
+    description: |
+      Retrieves metadata for a specific file.
+    tags:
+      - Files
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        description: The ID of the file
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the file
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/files.yaml#/FileRetrieveResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: deleteFile
+    summary: Delete a file
+    description: |
+      Deletes a file.
+    tags:
+      - Files
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        description: The ID of the file to delete
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the file
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/files.yaml#/FileDeleteResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+files-content:
+  get:
+    operationId: getFileContent
+    summary: Download file content
+    description: |
+      Downloads the content of a file.
+    tags:
+      - Files
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        description: The ID of the file
+        schema:
+          type: string
+      - name: provider
+        in: query
+        required: true
+        description: The provider of the file
+        schema:
+          $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

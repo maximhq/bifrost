@@ -1,0 +1,85 @@
+# AWS Bedrock - Invoke Endpoints
+
+invoke:
+  post:
+    operationId: bedrockInvokeModel
+    summary: Invoke model (Bedrock format)
+    description: |
+      Invokes a model using AWS Bedrock InvokeModel API format.
+      Accepts raw model-specific request body.
+    tags:
+      - Bedrock Integration
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+
+invoke-stream:
+  post:
+    operationId: bedrockInvokeModelStream
+    summary: Invoke model with streaming (Bedrock format)
+    description: |
+      Invokes a model with streaming using AWS Bedrock InvokeModelWithResponseStream API format.
+    tags:
+      - Bedrock Integration
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/invoke.yaml#/BedrockInvokeRequest'
+    responses:
+      '200':
+        description: Successful streaming response
+        content:
+          application/x-amz-eventstream:
+            schema:
+              type: object
+              description: AWS event stream format
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'

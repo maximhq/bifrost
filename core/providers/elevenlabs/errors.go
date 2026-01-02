@@ -9,7 +9,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
+func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMetadata) *schemas.BifrostError {
 	var errorResp ElevenlabsError
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Detail != nil {
@@ -56,7 +56,7 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 			}
 
 			if message != "" {
-				return &schemas.BifrostError{
+				result := &schemas.BifrostError{
 					IsBifrostError: false,
 					StatusCode:     schemas.Ptr(resp.StatusCode()),
 					Error: &schemas.ErrorField{
@@ -64,6 +64,14 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 						Message: message,
 					},
 				}
+				if meta != nil {
+					result.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       meta.Provider,
+						ModelRequested: meta.Model,
+						RequestType:    meta.RequestType,
+					}
+				}
+				return result
 			}
 		}
 
@@ -83,6 +91,13 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 			}
 			bifrostErr.Error.Type = schemas.Ptr(errorType)
 			bifrostErr.Error.Message = message
+		}
+	}
+	if meta != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       meta.Provider,
+			ModelRequested: meta.Model,
+			RequestType:    meta.RequestType,
 		}
 	}
 	return bifrostErr

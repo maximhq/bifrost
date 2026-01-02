@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 type Role string
@@ -69,6 +71,7 @@ type GeminiGenerationRequest struct {
 	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
+	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
@@ -962,6 +965,10 @@ const (
 	ThinkingLevelHigh        ThinkingLevel = "HIGH"
 )
 
+type GeminiBatchEmbeddingRequest struct {
+	Requests []GeminiEmbeddingRequest `json:"requests,omitempty"`
+}
+
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
 	Content              *Content `json:"content,omitempty"`
@@ -1010,6 +1017,57 @@ type Part struct {
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 	// Optional. Text part (can be code).
 	Text string `json:"text,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for Part.
+// This handles the thoughtSignature field which can be sent as a base64-encoded string from the Google GenAI SDK.
+func (p *Part) UnmarshalJSON(data []byte) error {
+	type PartAlias struct {
+		VideoMetadata       *VideoMetadata       `json:"videoMetadata,omitempty"`
+		Thought             bool                 `json:"thought,omitempty"`
+		InlineData          *Blob                `json:"inlineData,omitempty"`
+		FileData            *FileData            `json:"fileData,omitempty"`
+		ThoughtSignature    string               `json:"thoughtSignature,omitempty"`
+		CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult,omitempty"`
+		ExecutableCode      *ExecutableCode      `json:"executableCode,omitempty"`
+		FunctionCall        *FunctionCall        `json:"functionCall,omitempty"`
+		FunctionResponse    *FunctionResponse    `json:"functionResponse,omitempty"`
+		Text                string               `json:"text,omitempty"`
+	}
+
+	var aux PartAlias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	p.VideoMetadata = aux.VideoMetadata
+	p.Thought = aux.Thought
+	p.InlineData = aux.InlineData
+	p.FileData = aux.FileData
+	p.CodeExecutionResult = aux.CodeExecutionResult
+	p.ExecutableCode = aux.ExecutableCode
+	p.FunctionCall = aux.FunctionCall
+	p.FunctionResponse = aux.FunctionResponse
+	p.Text = aux.Text
+
+	if aux.ThoughtSignature != "" {
+		// Convert URL-safe base64 to standard base64
+		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.ThoughtSignature, "_", "/"), "-", "+")
+		// Add padding if necessary
+		switch len(standardBase64) % 4 {
+		case 2:
+			standardBase64 += "=="
+		case 3:
+			standardBase64 += "="
+		}
+		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+		if err != nil {
+			return fmt.Errorf("failed to decode base64 thoughtSignature: %v", err)
+		}
+		p.ThoughtSignature = decoded
+	}
+
+	return nil
 }
 
 // Blob represents content blob.
@@ -1431,4 +1489,230 @@ type GeminiModel struct {
 type GeminiListModelsResponse struct {
 	Models        []GeminiModel `json:"models"`
 	NextPageToken string        `json:"nextPageToken"`
+}
+
+// ==================== BATCH API TYPES ====================
+// Aligned with official documentation: https://ai.google.dev/gemini-api/docs/batch-api
+
+// GeminiBatchCreateRequest represents the top-level request structure for creating a batch.
+type GeminiBatchCreateRequest struct {
+	Batch GeminiBatchConfig `json:"batch"`
+}
+
+// GeminiBatchConfig represents the batch configuration.
+type GeminiBatchConfig struct {
+	DisplayName string                 `json:"display_name,omitempty"`
+	InputConfig GeminiBatchInputConfig `json:"input_config"`
+}
+
+// GeminiBatchInputConfig represents the input configuration for batch requests.
+// Supports both inline requests and file-based input.
+type GeminiBatchInputConfig struct {
+	Requests *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
+	FileName string                      `json:"file_name,omitempty"`
+}
+
+// GeminiBatchRequestsWrapper wraps the array of batch request items.
+type GeminiBatchRequestsWrapper struct {
+	Requests []GeminiBatchRequestItem `json:"requests"`
+}
+
+// GeminiBatchRequestItem represents a single request in a batch with metadata.
+type GeminiBatchRequestItem struct {
+	Request  GeminiBatchGenerateContentRequest `json:"request"`
+	Metadata *GeminiBatchMetadata              `json:"metadata,omitempty"`
+}
+
+// GeminiBatchGenerateContentRequest represents a GenerateContentRequest for batch.
+type GeminiBatchGenerateContentRequest struct {
+	Contents          []Content         `json:"contents"`
+	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
+	SafetySettings    []SafetySetting   `json:"safetySettings,omitempty"`
+	SystemInstruction *Content          `json:"systemInstruction,omitempty"`
+}
+
+// GeminiBatchStats represents the stats of a batch job.
+type GeminiBatchStats struct {
+	RequestCount           int `json:"requestCount"`
+	PendingRequestCount    int `json:"pendingRequestCount"`
+	SuccessfulRequestCount int `json:"successfulRequestCount"`
+}
+
+// MarshalJSON implements the json.Marshaler interface.
+func (g *GeminiBatchStats) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		RequestCount           string `json:"requestCount"`
+		PendingRequestCount    string `json:"pendingRequestCount"`
+		SuccessfulRequestCount string `json:"successfulRequestCount"`
+	}{
+		RequestCount:           strconv.Itoa(g.RequestCount),
+		PendingRequestCount:    strconv.Itoa(g.PendingRequestCount),
+		SuccessfulRequestCount: strconv.Itoa(g.SuccessfulRequestCount),
+	})
+}
+
+// UnmarshalJSON implements the json.Unmarshaler interface.
+// Gemini API returns these counts as strings, so we need to parse them.
+func (g *GeminiBatchStats) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		RequestCount           string `json:"requestCount"`
+		PendingRequestCount    string `json:"pendingRequestCount"`
+		SuccessfulRequestCount string `json:"successfulRequestCount"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.RequestCount != "" {
+		val, err := strconv.Atoi(raw.RequestCount)
+		if err != nil {
+			return err
+		}
+		g.RequestCount = val
+	}
+	if raw.PendingRequestCount != "" {
+		val, err := strconv.Atoi(raw.PendingRequestCount)
+		if err != nil {
+			return err
+		}
+		g.PendingRequestCount = val
+	}
+	if raw.SuccessfulRequestCount != "" {
+		val, err := strconv.Atoi(raw.SuccessfulRequestCount)
+		if err != nil {
+			return err
+		}
+		g.SuccessfulRequestCount = val
+	}
+	return nil
+}
+
+// GeminiBatchMetadataInputConfig represents the input config in batch job metadata.
+// Note: This uses camelCase (fileName) unlike GeminiBatchInputConfig which uses snake_case (file_name).
+type GeminiBatchMetadataInputConfig struct {
+	FileName string `json:"fileName,omitempty"`
+}
+
+// GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
+type GeminiBatchMetadataOutputConfig struct {
+	ResponsesFile string `json:"responsesFile,omitempty"`
+}
+
+// GeminiBatchMetadata contains metadata for tracking batch requests.
+type GeminiBatchMetadata struct {
+	Key         string                           `json:"key"`
+	Type        string                           `json:"@type"`
+	Model       string                           `json:"model"`
+	DisplayName string                           `json:"displayName"`
+	InputConfig *GeminiBatchMetadataInputConfig  `json:"inputConfig,omitempty"`
+	Output      *GeminiBatchMetadataOutputConfig `json:"output,omitempty"`
+	CreateTime  string                           `json:"createTime"`
+	EndTime     string                           `json:"endTime,omitempty"`
+	UpdateTime  string                           `json:"updateTime"`
+	BatchStats  *GeminiBatchStats                `json:"batchStats"`
+	State       string                           `json:"state"`
+	Name        string                           `json:"name"`
+}
+
+// GeminiBatchJobResponse represents the response from batch operations.
+type GeminiBatchJobResponse struct {
+	Name     string                `json:"name"` // e.g., "batches/xxx" or full resource name
+	Dest     *GeminiBatchDest      `json:"dest,omitempty"`
+	Error    *GeminiBatchErrorInfo `json:"error,omitempty"`
+	Metadata *GeminiBatchMetadata  `json:"metadata,omitempty"`
+	Done     bool                  `json:"done,omitempty"`
+	Response *GeminiBatchOutput    `json:"response,omitempty"`
+}
+
+// GeminiBatchOutput represents the output of a successful batch job.
+type GeminiBatchOutput struct {
+	Type          string `json:"@type,omitempty"`
+	ResponsesFile string `json:"responsesFile,omitempty"`
+}
+
+// GeminiBatchDest contains the destination/output of a batch job.
+// For inline requests, results are in InlinedResponses.
+// For file-based input, results are in a file referenced by FileName.
+type GeminiBatchDest struct {
+	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
+	FileName         string                  `json:"fileName,omitempty"`
+}
+
+// GeminiInlinedResponse represents a single response in the batch output.
+type GeminiInlinedResponse struct {
+	Response *GenerateContentResponse `json:"response,omitempty"`
+	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
+	Metadata *GeminiBatchMetadata     `json:"metadata,omitempty"`
+}
+
+// GeminiBatchErrorInfo represents error information.
+type GeminiBatchErrorInfo struct {
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Status  string `json:"status,omitempty"`
+}
+
+// GeminiBatchFileResultLine represents a single line in the batch results JSONL file.
+// Used when batch results are returned as a file rather than inline responses.
+type GeminiBatchFileResultLine struct {
+	Key      string                   `json:"key,omitempty"`
+	Response *GenerateContentResponse `json:"response,omitempty"`
+	Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
+}
+
+// GeminiBatchListResponse represents the response from listing batches.
+type GeminiBatchListResponse struct {
+	Operations    []GeminiBatchJobResponse `json:"operations,omitempty"`
+	NextPageToken string                   `json:"nextPageToken,omitempty"`
+}
+
+// Gemini batch job states
+const (
+	GeminiBatchStateUnspecified = "BATCH_STATE_UNSPECIFIED"
+	GeminiBatchStatePending     = "BATCH_STATE_PENDING"
+	GeminiBatchStateRunning     = "BATCH_STATE_RUNNING"
+	GeminiBatchStateSucceeded   = "BATCH_STATE_SUCCEEDED"
+	GeminiBatchStateFailed      = "BATCH_STATE_FAILED"
+	GeminiBatchStateCancelling  = "BATCH_STATE_CANCELLING"
+	GeminiBatchStateCancelled   = "BATCH_STATE_CANCELLED"
+	GeminiBatchStateExpired     = "BATCH_STATE_EXPIRED"
+)
+
+// ==================== FILE TYPES ====================
+
+// GeminiFileUploadRequest represents the request for uploading a file.
+type GeminiFileUploadRequest struct {
+	File     []byte                `json:"-"`        // Raw file content (not serialized)
+	Filename string                `json:"filename"` // Original filename
+	Purpose  string                `json:"purpose"`  // Purpose of the file (e.g., "batch")
+	Provider schemas.ModelProvider `json:"provider"`
+}
+
+// GeminiFileListRequest represents the request for listing files.
+type GeminiFileListRequest struct {
+	Limit int     `json:"limit,omitempty"`
+	After *string `json:"after,omitempty"`
+	Order *string `json:"order,omitempty"`
+}
+
+// GeminiFileRetrieveRequest request represents the request for retrieving a file.
+type GeminiFileRetrieveRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// GeminiFileDeleteRequest request represents the request for deleting a file.
+type GeminiFileDeleteRequest struct {
+	FileID string `json:"file_id"`
+}
+
+// GeminiCountTokensResponse represents the response from Google Gemini's count tokens API.
+type GeminiCountTokensResponse struct {
+	// Response from models.countTokens
+	// TotalTokens is the number of tokens that the Model tokenizes the prompt into.
+	TotalTokens int32 `json:"totalTokens,omitempty"`
+	// Number of tokens in the cached part of the prompt (the cached content).
+	CachedContentTokenCount int32 `json:"cachedContentTokenCount,omitempty"`
+	// Output only. List of modalities that were processed in the request input.
+	PromptTokensDetails []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
+	// Output only. List of modalities that were processed in the cached content.
+	CacheTokensDetails []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
 }

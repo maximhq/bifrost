@@ -1,7 +1,8 @@
 package gemini
 
 import (
-	"bytes"
+	"encoding/base64"
+	"fmt"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -35,15 +36,23 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		if strings.Contains(r.Model, "openai") {
 			params.Reasoning.Summary = schemas.Ptr("auto")
 		}
-		if config.ThinkingConfig.ThinkingBudget != nil {
-			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
-		}
 		if config.ThinkingConfig.ThinkingLevel != ThinkingLevelUnspecified {
 			switch config.ThinkingConfig.ThinkingLevel {
 			case ThinkingLevelLow:
 				params.Reasoning.Effort = schemas.Ptr("low")
 			case ThinkingLevelHigh:
 				params.Reasoning.Effort = schemas.Ptr("high")
+			}
+		}
+		if config.ThinkingConfig.ThinkingBudget != nil {
+			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
+			switch *config.ThinkingConfig.ThinkingBudget {
+			case 0:
+				params.Reasoning.Effort = schemas.Ptr("none")
+			case -1:
+				// dynamic thinking budget
+				params.Reasoning.Effort = schemas.Ptr("medium")
+				params.Reasoning.MaxTokens = schemas.Ptr(-1)
 			}
 		}
 	}
@@ -206,6 +215,40 @@ func isImageMimeType(mimeType string) bool {
 	}
 
 	return false
+}
+
+// convertFileDataToBytes converts file data (data URL or base64) to raw bytes for Gemini API.
+// Returns the bytes and an extracted mime type (if found in data URL).
+func convertFileDataToBytes(fileData string) ([]byte, string) {
+	var dataBytes []byte
+	var mimeType string
+
+	// Check if it's a data URL (e.g., "data:application/pdf;base64,...")
+	if strings.HasPrefix(fileData, "data:") {
+		urlInfo := schemas.ExtractURLTypeInfo(fileData)
+
+		if urlInfo.DataURLWithoutPrefix != nil {
+			// Decode the base64 content
+			decoded, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
+			if err == nil {
+				dataBytes = decoded
+				if urlInfo.MediaType != nil {
+					mimeType = *urlInfo.MediaType
+				}
+			}
+		}
+	} else {
+		// Try to decode as plain base64
+		decoded, err := base64.StdEncoding.DecodeString(fileData)
+		if err == nil {
+			dataBytes = decoded
+		} else {
+			// Not base64 - treat as plain text
+			dataBytes = []byte(fileData)
+		}
+	}
+
+	return dataBytes, mimeType
 }
 
 var (
@@ -454,21 +497,79 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 		schema.Required = params.Required
 	}
 
+	if len(params.Enum) > 0 {
+		schema.Enum = params.Enum
+	}
+
 	if params.Properties != nil && len(*params.Properties) > 0 {
 		schema.Properties = make(map[string]*Schema)
-		// Note: This is a simplified conversion. In practice, you'd need to
-		// recursively convert nested schemas
 		for k, v := range *params.Properties {
-			// Convert interface{} to Schema - this would need more sophisticated logic
-			if propMap, ok := v.(map[string]interface{}); ok {
-				propSchema := &Schema{}
-				if propType, ok := propMap["type"].(string); ok {
-					propSchema.Type = Type(propType)
+			schema.Properties[k] = convertPropertyToSchema(v)
+		}
+	}
+
+	return schema
+}
+
+// convertPropertyToSchema recursively converts a property to Gemini Schema
+func convertPropertyToSchema(prop interface{}) *Schema {
+	schema := &Schema{}
+
+	// Handle property as map[string]interface{}
+	if propMap, ok := prop.(map[string]interface{}); ok {
+		if propType, exists := propMap["type"]; exists {
+			if typeStr, ok := propType.(string); ok {
+				schema.Type = Type(typeStr)
+			}
+		}
+
+		if desc, exists := propMap["description"]; exists {
+			if descStr, ok := desc.(string); ok {
+				schema.Description = descStr
+			}
+		}
+
+		if enum, exists := propMap["enum"]; exists {
+			if enumSlice, ok := enum.([]interface{}); ok {
+				var enumStrs []string
+				for _, item := range enumSlice {
+					if str, ok := item.(string); ok {
+						enumStrs = append(enumStrs, str)
+					}
 				}
-				if propDesc, ok := propMap["description"].(string); ok {
-					propSchema.Description = propDesc
+				schema.Enum = enumStrs
+			} else if enumStrs, ok := enum.([]string); ok {
+				schema.Enum = enumStrs
+			}
+		}
+
+		// Handle nested properties for object types
+		if props, exists := propMap["properties"]; exists {
+			if propsMap, ok := props.(map[string]interface{}); ok {
+				schema.Properties = make(map[string]*Schema)
+				for key, nestedProp := range propsMap {
+					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 				}
-				schema.Properties[k] = propSchema
+			}
+		}
+
+		// Handle array items
+		if items, exists := propMap["items"]; exists {
+			schema.Items = convertPropertyToSchema(items)
+		}
+
+		// Handle required fields
+		if required, exists := propMap["required"]; exists {
+			if reqSlice, ok := required.([]interface{}); ok {
+				var reqStrs []string
+				for _, item := range reqSlice {
+					if str, ok := item.(string); ok {
+						reqStrs = append(reqStrs, str)
+					}
+				}
+				schema.Required = reqStrs
+			} else if reqStrs, ok := required.([]string); ok {
+				schema.Required = reqStrs
 			}
 		}
 	}
@@ -569,6 +670,42 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 						parts = append(parts, &Part{
 							Text: *block.Text,
 						})
+					} else if block.File != nil {
+						// Handle file blocks - use FileID if available (uploaded file)
+						if block.File.FileID != nil && *block.File.FileID != "" {
+							mimeType := "application/pdf"
+							if block.File.FileType != nil {
+								mimeType = *block.File.FileType
+							}
+							parts = append(parts, &Part{
+								FileData: &FileData{
+									FileURI:  *block.File.FileID,
+									MIMEType: mimeType,
+								},
+							})
+						} else if block.File.FileData != nil {
+							// Inline file data - convert to InlineData (Blob)
+							fileData := *block.File.FileData
+							mimeType := "application/pdf"
+							if block.File.FileType != nil {
+								mimeType = *block.File.FileType
+							}
+
+							// Convert file data to bytes for Gemini Blob
+							dataBytes, extractedMimeType := convertFileDataToBytes(fileData)
+							if extractedMimeType != "" {
+								mimeType = extractedMimeType
+							}
+
+							if len(dataBytes) > 0 {
+								parts = append(parts, &Part{
+									InlineData: &Blob{
+										MIMEType: mimeType,
+										Data:     dataBytes,
+									},
+								})
+							}
+						}
 					}
 					// Handle other content block types as needed
 				}
@@ -599,11 +736,19 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 						},
 					}
 
-					// Preserve thought signature from extra_content (required for Gemini 3 Pro)
-					if toolCall.ExtraContent != nil {
-						if googleData, ok := toolCall.ExtraContent["google"].(map[string]interface{}); ok {
-							if thoughtSig, ok := googleData["thought_signature"].(string); ok {
-								part.ThoughtSignature = []byte(thoughtSig)
+					// check in reasoning details array for thought signature with id tool_call_<callID>
+					if len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
+						lookupID := fmt.Sprintf("tool_call_%s", callID)
+						for _, reasoningDetail := range message.ChatAssistantMessage.ReasoningDetails {
+							if reasoningDetail.ID != nil && *reasoningDetail.ID == lookupID &&
+								reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeEncrypted &&
+								reasoningDetail.Signature != nil {
+								// Decode the base64 string to raw bytes
+								decoded, err := base64.StdEncoding.DecodeString(*reasoningDetail.Signature)
+								if err == nil {
+									part.ThoughtSignature = decoded
+								}
+								break
 							}
 						}
 					}
@@ -683,234 +828,153 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 	return contents
 }
 
-var (
-	riff = []byte("RIFF")
-	wave = []byte("WAVE")
-	id3  = []byte("ID3")
-	form = []byte("FORM")
-	aiff = []byte("AIFF")
-	aifc = []byte("AIFC")
-	flac = []byte("fLaC")
-	oggs = []byte("OggS")
-	adif = []byte("ADIF")
-)
-
-// detectAudioMimeType attempts to detect the MIME type from audio file headers
-// Gemini supports: WAV, MP3, AIFF, AAC, OGG Vorbis, FLAC
-func detectAudioMimeType(audioData []byte) string {
-	if len(audioData) < 4 {
-		return "audio/mp3"
-	}
-	// WAV (RIFF/WAVE)
-	if len(audioData) >= 12 &&
-		bytes.Equal(audioData[:4], riff) &&
-		bytes.Equal(audioData[8:12], wave) {
-		return "audio/wav"
-	}
-	// MP3: ID3v2 tag (keep this check for MP3)
-	if len(audioData) >= 3 && bytes.Equal(audioData[:3], id3) {
-		return "audio/mp3"
-	}
-	// AAC: ADIF or ADTS (0xFFF sync) - check before MP3 frame sync to avoid misclassification
-	if bytes.HasPrefix(audioData, adif) {
-		return "audio/aac"
-	}
-	if len(audioData) >= 2 && audioData[0] == 0xFF && (audioData[1]&0xF6) == 0xF0 {
-		return "audio/aac"
-	}
-	// AIFF / AIFC (map both to audio/aiff)
-	if len(audioData) >= 12 && bytes.Equal(audioData[:4], form) &&
-		(bytes.Equal(audioData[8:12], aiff) || bytes.Equal(audioData[8:12], aifc)) {
-		return "audio/aiff"
-	}
-	// FLAC
-	if bytes.HasPrefix(audioData, flac) {
-		return "audio/flac"
-	}
-	// OGG container
-	if bytes.HasPrefix(audioData, oggs) {
-		return "audio/ogg"
-	}
-	// MP3: MPEG frame sync (cover common variants) - check after AAC to avoid misclassification
-	if len(audioData) >= 2 && audioData[0] == 0xFF &&
-		(audioData[1] == 0xFB || audioData[1] == 0xF3 || audioData[1] == 0xF2 || audioData[1] == 0xFA) {
-		return "audio/mp3"
-	}
-	// Fallback within supported set
-	return "audio/mp3"
-}
-
-// convertGeminiSchemaToJSONSchema converts Gemini Schema to JSON Schema format
-// This converts uppercase type values (STRING, NUMBER, etc.) to lowercase (string, number, etc.)
-// and converts the struct to a map[string]interface{} format
-func convertGeminiSchemaToJSONSchema(geminiSchema *Schema) map[string]interface{} {
-	if geminiSchema == nil {
+// normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
+func normalizeSchemaTypes(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
 		return nil
 	}
 
-	// First, marshal the schema to JSON and unmarshal to map to get all fields
-	schemaBytes, err := sonic.Marshal(geminiSchema)
-	if err != nil {
-		return nil
+	normalized := make(map[string]interface{}, len(schema))
+	for k, v := range schema {
+		normalized[k] = v
 	}
 
-	var schemaMap map[string]interface{}
-	if err := sonic.Unmarshal(schemaBytes, &schemaMap); err != nil {
-		return nil
+	// Normalize type field if it exists
+	if typeVal, ok := normalized["type"].(string); ok {
+		normalized["type"] = strings.ToLower(typeVal)
 	}
 
-	// Convert type from uppercase to lowercase
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
-	}
-
-	// Recursively convert nested properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
+	// Recursively normalize properties (create new map only if present)
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{}, len(properties))
 		for key, prop := range properties {
 			if propMap, ok := prop.(map[string]interface{}); ok {
-				// Check if this is a Schema struct that was marshaled
-				if propType, hasType := propMap["type"].(string); hasType {
-					// Convert the type
-					propMap["type"] = convertGeminiTypeToJSONSchemaType(propType)
-					// Recursively convert nested properties and items
-					convertedProps[key] = convertNestedSchema(propMap)
-				} else {
-					convertedProps[key] = propMap
-				}
+				newProps[key] = normalizeSchemaTypes(propMap)
 			} else {
-				convertedProps[key] = prop
+				newProps[key] = prop
 			}
 		}
-		schemaMap["properties"] = convertedProps
+		normalized["properties"] = newProps
 	}
 
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
-		}
+	// Recursively normalize items (for arrays)
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		normalized["items"] = normalizeSchemaTypes(items)
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
+	// Recursively normalize anyOf
+	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
+		newAnyOf := make([]interface{}, len(anyOf))
+		for i, item := range anyOf {
 			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
+				newAnyOf[i] = normalizeSchemaTypes(itemMap)
 			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
+				newAnyOf[i] = item
 			}
 		}
-		schemaMap["anyOf"] = convertedAnyOf
+		normalized["anyOf"] = newAnyOf
 	}
 
-	return schemaMap
+	// Recursively normalize oneOf
+	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
+		newOneOf := make([]interface{}, len(oneOf))
+		for i, item := range oneOf {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				newOneOf[i] = normalizeSchemaTypes(itemMap)
+			} else {
+				newOneOf[i] = item
+			}
+		}
+		normalized["oneOf"] = newOneOf
+	}
+
+	return normalized
 }
 
-// convertNestedSchema recursively converts nested schema structures
-func convertNestedSchema(schemaMap map[string]interface{}) map[string]interface{} {
-	// Convert type if present
-	if typeVal, ok := schemaMap["type"].(string); ok {
-		schemaMap["type"] = convertGeminiTypeToJSONSchemaType(typeVal)
+// buildJSONSchemaFromMap converts a schema map to ResponsesTextConfigFormatJSONSchema
+// with individual fields properly populated (not nested under Schema field)
+func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.ResponsesTextConfigFormatJSONSchema {
+	// Normalize types (OBJECT → object, STRING → string, etc.)
+	normalizedSchemaMap := normalizeSchemaTypes(schemaMap)
+
+	jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
+
+	// Extract type
+	if typeVal, ok := normalizedSchemaMap["type"].(string); ok {
+		jsonSchema.Type = schemas.Ptr(typeVal)
 	}
 
-	// Recursively convert properties
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		convertedProps := make(map[string]interface{})
-		for key, prop := range properties {
-			if propMap, ok := prop.(map[string]interface{}); ok {
-				convertedProps[key] = convertNestedSchema(propMap)
-			} else {
-				convertedProps[key] = prop
+	// Extract properties
+	if properties, ok := normalizedSchemaMap["properties"].(map[string]interface{}); ok {
+		jsonSchema.Properties = &properties
+	}
+
+	// Extract required fields
+	if required, ok := normalizedSchemaMap["required"].([]interface{}); ok {
+		requiredStrs := make([]string, 0, len(required))
+		for _, r := range required {
+			if str, ok := r.(string); ok {
+				requiredStrs = append(requiredStrs, str)
 			}
 		}
-		schemaMap["properties"] = convertedProps
-	}
-
-	// Recursively convert items
-	if items, ok := schemaMap["items"]; ok {
-		if itemsMap, ok := items.(map[string]interface{}); ok {
-			schemaMap["items"] = convertNestedSchema(itemsMap)
+		if len(requiredStrs) > 0 {
+			jsonSchema.Required = requiredStrs
 		}
+	} else if requiredStrs, ok := normalizedSchemaMap["required"].([]string); ok && len(requiredStrs) > 0 {
+		jsonSchema.Required = requiredStrs
 	}
 
-	// Recursively convert anyOf
-	if anyOf, ok := schemaMap["anyOf"].([]interface{}); ok {
-		convertedAnyOf := make([]interface{}, 0, len(anyOf))
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok {
-				convertedAnyOf = append(convertedAnyOf, convertNestedSchema(itemMap))
-			} else {
-				convertedAnyOf = append(convertedAnyOf, item)
-			}
-		}
-		schemaMap["anyOf"] = convertedAnyOf
+	// Extract description
+	if description, ok := normalizedSchemaMap["description"].(string); ok {
+		jsonSchema.Description = schemas.Ptr(description)
 	}
 
-	return schemaMap
-}
-
-// convertGeminiTypeToJSONSchemaType converts Gemini's uppercase type values to JSON Schema lowercase
-func convertGeminiTypeToJSONSchemaType(geminiType string) string {
-	switch geminiType {
-	case "STRING":
-		return "string"
-	case "NUMBER":
-		return "number"
-	case "INTEGER":
-		return "integer"
-	case "BOOLEAN":
-		return "boolean"
-	case "ARRAY":
-		return "array"
-	case "OBJECT":
-		return "object"
-	case "NULL":
-		return "null"
-	case "TYPE_UNSPECIFIED":
-		return "" // Empty string for unspecified
-	default:
-		// If already lowercase or unknown, return as-is
-		return geminiType
+	// Extract additionalProperties
+	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
+		jsonSchema.AdditionalProperties = schemas.Ptr(additionalProps)
 	}
+
+	// Extract name/title
+	if name, ok := normalizedSchemaMap["name"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(name)
+	} else if title, ok := normalizedSchemaMap["title"].(string); ok {
+		jsonSchema.Name = schemas.Ptr(title)
+	}
+
+	return jsonSchema
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
 func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
-	var schema interface{}
+	var schemaMap map[string]interface{}
 	name := "response_schema"
 
 	// Prefer responseSchema over responseJsonSchema
 	if responseSchema != nil {
-		// Convert Gemini Schema to JSON Schema format
-		schema = convertGeminiSchemaToJSONSchema(responseSchema)
-		if responseSchema.Title != "" {
-			name = responseSchema.Title
-		}
-	} else if responseJsonSchema != nil {
-		if schemaMap, ok := responseJsonSchema.(map[string]interface{}); ok {
-			// Create a deep copy to avoid modifying the original
-			schemaBytes, err := sonic.Marshal(schemaMap)
-			if err == nil {
-				var copiedMap map[string]interface{}
-				if err := sonic.Unmarshal(schemaBytes, &copiedMap); err == nil {
-					// Recursively convert the schema to ensure all types are lowercase
-					schema = convertNestedSchema(copiedMap)
-					if title, ok := copiedMap["title"].(string); ok && title != "" {
-						name = title
-					}
-				} else {
-					schema = responseJsonSchema
+		// Convert Schema struct to map
+		schemaBytes, err := sonic.Marshal(responseSchema)
+		if err == nil {
+			if err := sonic.Unmarshal(schemaBytes, &schemaMap); err == nil {
+				if responseSchema.Title != "" {
+					name = responseSchema.Title
 				}
-			} else {
-				schema = responseJsonSchema
 			}
-		} else {
-			schema = responseJsonSchema
+			// If unmarshal failed, schemaMap remains nil - will try next option
 		}
-	} else {
-		// No schema provided - use older json_object mode
+	}
+
+	if schemaMap == nil && responseJsonSchema != nil {
+		// Use responseJsonSchema directly if it's a map
+		if m, ok := responseJsonSchema.(map[string]interface{}); ok {
+			schemaMap = m
+			if title, ok := m["title"].(string); ok && title != "" {
+				name = title
+			}
+		}
+	}
+
+	// No schema provided - use json_object mode
+	if schemaMap == nil {
 		return &schemas.ResponsesTextConfig{
 			Format: &schemas.ResponsesTextConfigFormat{
 				Type: "json_object",
@@ -918,14 +982,15 @@ func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interf
 		}
 	}
 
+	// Build JSONSchema with individual fields spread out
+	jsonSchema := buildJSONSchemaFromMap(schemaMap)
+
 	return &schemas.ResponsesTextConfig{
 		Format: &schemas.ResponsesTextConfigFormat{
-			Type: "json_schema",
-			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-				Name:   schemas.Ptr(name),
-				Strict: schemas.Ptr(false),
-				Schema: schemas.Ptr(schema),
-			},
+			Type:       "json_schema",
+			Name:       schemas.Ptr(name),
+			Strict:     schemas.Ptr(false),
+			JSONSchema: jsonSchema,
 		},
 	}
 }

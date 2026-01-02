@@ -30,7 +30,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Configure connection pool
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -42,14 +42,14 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		maxIdleConns = 5
 	}
 	sqlDB.SetMaxIdleConns(maxIdleConns)
-	
+
 	// Set MaxOpenConns (default: 50)
 	maxOpenConns := config.MaxOpenConns
 	if maxOpenConns == 0 {
 		maxOpenConns = 50
 	}
 	sqlDB.SetMaxOpenConns(maxOpenConns)
-	
+
 	d := &RDBLogStore{db: db, logger: logger}
 	// Run migrations
 	if err := triggerMigrations(ctx, db); err != nil {

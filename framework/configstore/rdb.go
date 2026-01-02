@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -25,6 +26,15 @@ type RDBConfigStore struct {
 	logger schemas.Logger
 }
 
+// getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
+// This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
+func getWeight(w *float64) float64 {
+	if w == nil {
+		return 1.0
+	}
+	return *w
+}
+
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
@@ -40,6 +50,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		AllowedOrigins:          config.AllowedOrigins,
 		MaxRequestBodySizeMB:    config.MaxRequestBodySizeMB,
 		EnableLiteLLMFallbacks:  config.EnableLiteLLMFallbacks,
+		HeaderFilterConfig:      config.HeaderFilterConfig,
 	}
 	// Delete existing client config and create new one in a transaction
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -194,6 +205,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowedOrigins:          dbConfig.AllowedOrigins,
 		MaxRequestBodySizeMB:    dbConfig.MaxRequestBodySizeMB,
 		EnableLiteLLMFallbacks:  dbConfig.EnableLiteLLMFallbacks,
+		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
 	}, nil
 }
 
@@ -231,10 +243,15 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 		// Create keys for this provider
 		dbKeys := make([]tables.TableKey, 0, len(providerConfig.Keys))
 		for _, key := range providerConfig.Keys {
-			// Generate key hash
-			keyHash, err := GenerateKeyHash(key)
-			if err != nil {
-				return fmt.Errorf("failed to generate key hash: %w", err)
+			// Use existing ConfigHash if set (came from reconciliation with DB),
+			// otherwise generate new hash (new key from config.json)
+			keyHash := key.ConfigHash
+			if keyHash == "" {
+				var err error
+				keyHash, err = GenerateKeyHash(key)
+				if err != nil {
+					return fmt.Errorf("failed to generate key hash: %w", err)
+				}
 			}
 			dbKey := tables.TableKey{
 				Provider:         dbProvider.Name,
@@ -243,7 +260,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				Name:             key.Name,
 				Value:            key.Value,
 				Models:           key.Models,
-				Weight:           key.Weight,
+				Weight:           &key.Weight,
+				Enabled:          key.Enabled,
+				UseForBatchAPI:   key.UseForBatchAPI,
 				AzureKeyConfig:   key.AzureKeyConfig,
 				VertexKeyConfig:  key.VertexKeyConfig,
 				BedrockKeyConfig: key.BedrockKeyConfig,
@@ -271,6 +290,16 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+				if key.BedrockKeyConfig.BatchS3Config != nil {
+					data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
+					if err != nil {
+						return err
+					}
+					s := string(data)
+					dbKey.BedrockBatchS3ConfigJSON = &s
+				}
+			} else {
+				dbKey.BedrockBatchS3ConfigJSON = nil
 			}
 
 			dbKeys = append(dbKeys, dbKey)
@@ -286,13 +315,30 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				// Update existing key with new data
 				dbKey.ID = existingKey.ID                 // Keep the same database ID
 				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
+				dbKey.Enabled = existingKey.Enabled       // Preserve the existing Enabled status
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
 			} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				// Create new key
-				if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
-					return s.parseGormError(err)
+				// KeyID not found, try fallback lookup by Name (handles config reload with new UUID)
+				result = txDB.WithContext(ctx).Where("name = ?", dbKey.Name).First(&existingKey)
+				if result.Error == nil {
+					// Found by name - update existing key, preserve original KeyID
+					dbKey.ID = existingKey.ID
+					dbKey.KeyID = existingKey.KeyID       // Preserve original KeyID
+					dbKey.ProviderID = existingKey.ProviderID
+					dbKey.Enabled = existingKey.Enabled
+					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
+						return s.parseGormError(err)
+					}
+				} else if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+					// Neither KeyID nor Name found - create new key
+					if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
+						return s.parseGormError(err)
+					}
+				} else {
+					// Other error occurred during name lookup
+					return result.Error
 				}
 			} else {
 				// Other error occurred
@@ -325,6 +371,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	if err != nil {
 		return err
 	}
+	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
+	configCopy.ConfigHash = config.ConfigHash
 	// Substitute environment variables back to their original form
 	substituteEnvVars(&configCopy, provider, envKeys)
 
@@ -368,7 +416,9 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			Name:             key.Name,
 			Value:            key.Value,
 			Models:           key.Models,
-			Weight:           key.Weight,
+			Weight:           &key.Weight,
+			Enabled:          key.Enabled,
+			UseForBatchAPI:   key.UseForBatchAPI,
 			AzureKeyConfig:   key.AzureKeyConfig,
 			VertexKeyConfig:  key.VertexKeyConfig,
 			BedrockKeyConfig: key.BedrockKeyConfig,
@@ -396,19 +446,33 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			if key.BedrockKeyConfig.BatchS3Config != nil {
+				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
+				if err != nil {
+					return err
+				}
+				s := string(data)
+				dbKey.BedrockBatchS3ConfigJSON = &s
+			} else {
+				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
 		}
 
 		// Check if this key already exists
 		if existingKey, exists := existingKeysMap[key.ID]; exists {
-			// Update existing key - preserve the database ID
+			// Update existing key - preserve the database ID and ConfigHash
+			// ConfigHash should only be set during initial sync from config.json,
+			// not when updating via UI (so DB updates aren't overwritten on restart)
 			dbKey.ID = existingKey.ID
+			dbKey.Enabled = existingKey.Enabled
+			dbKey.ConfigHash = existingKey.ConfigHash
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
 			// Remove from map to track which keys are still in use
 			delete(existingKeysMap, key.ID)
 		} else {
-			// Create new key
+			// Create new key - ConfigHash is set from the generated hash above
 			if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -441,6 +505,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	if err != nil {
 		return err
 	}
+	// Preserve ConfigHash (it has json:"-" tag so deepCopy via JSON doesn't copy it)
+	configCopy.ConfigHash = config.ConfigHash
 	// Substitute environment variables back to their original form
 	substituteEnvVars(&configCopy, provider, envKeys)
 
@@ -475,7 +541,9 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			Name:             key.Name,
 			Value:            key.Value,
 			Models:           key.Models,
-			Weight:           key.Weight,
+			Weight:           &key.Weight,
+			Enabled:          key.Enabled,
+			UseForBatchAPI:   key.UseForBatchAPI,
 			AzureKeyConfig:   key.AzureKeyConfig,
 			VertexKeyConfig:  key.VertexKeyConfig,
 			BedrockKeyConfig: key.BedrockKeyConfig,
@@ -503,6 +571,16 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			if key.BedrockKeyConfig.BatchS3Config != nil {
+				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
+				if err != nil {
+					return err
+				}
+				s := string(data)
+				dbKey.BedrockBatchS3ConfigJSON = &s
+			} else {
+				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
 		}
 
 		// Create the key
@@ -626,7 +704,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 					if processedARN, err := envutils.ProcessEnvValue(*bedrockConfig.ARN); err == nil {
 						bedrockConfigCopy.ARN = &processedARN
 					}
-				}
+				}				
 				bedrockConfig = &bedrockConfigCopy
 			}
 
@@ -635,10 +713,13 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 				Name:             dbKey.Name,
 				Value:            processedValue,
 				Models:           dbKey.Models,
-				Weight:           dbKey.Weight,
+				Weight:           getWeight(dbKey.Weight),
+				Enabled:          dbKey.Enabled,
+				UseForBatchAPI:   dbKey.UseForBatchAPI,
 				AzureKeyConfig:   azureConfig,
 				VertexKeyConfig:  vertexConfig,
 				BedrockKeyConfig: bedrockConfig,
+				ConfigHash:       dbKey.ConfigHash,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -1242,11 +1323,31 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		txDB = s.db
 	}
 
-	// Update virtual key
-	// Use Select() to explicitly update all fields, including nil pointer fields
-	// This ensures TeamID gets set to NULL when switching from team to customer association
-	if err := txDB.WithContext(ctx).Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "config_hash", "updated_at").Updates(virtualKey).Error; err != nil {
+	// Check if record exists by ID or Name
+	var existing tables.TableVirtualKey
+	err := txDB.WithContext(ctx).
+		Where("id = ? OR name = ?", virtualKey.ID, virtualKey.Name).
+		First(&existing).Error
+
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return s.parseGormError(err)
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Create new record
+		if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
+			return s.parseGormError(err)
+		}
+	} else {
+		// Update existing record (use existing.ID to ensure we update the found record)
+		virtualKey.ID = existing.ID
+		// Use Select() to explicitly update all fields, including nil pointer fields
+		// This ensures TeamID gets set to NULL when switching from team to customer association
+		if err := txDB.WithContext(ctx).
+			Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "config_hash", "updated_at").
+			Updates(virtualKey).Error; err != nil {
+			return s.parseGormError(err)
+		}
 	}
 	return nil
 }
@@ -1296,7 +1397,7 @@ func (s *RDBConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) (
 			ID:     key.KeyID,
 			Name:   key.Name,
 			Models: models,
-			Weight: key.Weight,
+			Weight: getWeight(key.Weight),
 		}
 	}
 	return redactedKeys, nil
@@ -1337,6 +1438,53 @@ func (s *RDBConfigStore) CreateVirtualKeyProviderConfig(ctx context.Context, vir
 	// Store keys before create
 	keysToAssociate := virtualKeyProviderConfig.Keys
 
+	// Resolve keys by name/key_id if they don't have database IDs
+	// This handles config file inputs that only specify name
+	if len(keysToAssociate) > 0 {
+		resolvedKeys := make([]tables.TableKey, 0, len(keysToAssociate))
+		var unresolvedKeys []string
+		for i, k := range keysToAssociate {
+			// If key already has a database ID (from UI), use it directly
+			if k.ID > 0 {
+				resolvedKeys = append(resolvedKeys, k)
+				continue
+			}
+			// Otherwise resolve by KeyID or Name (from config file)
+			var dbKey tables.TableKey
+			var resolved bool
+			if k.KeyID != "" {
+				if err := txDB.WithContext(ctx).Where("key_id = ?", k.KeyID).First(&dbKey).Error; err == nil {
+					resolvedKeys = append(resolvedKeys, dbKey)
+					resolved = true
+				}
+			}
+			if !resolved && k.Name != "" {
+				if err := txDB.WithContext(ctx).Where("name = ? AND provider = ?", k.Name, virtualKeyProviderConfig.Provider).First(&dbKey).Error; err == nil {
+					resolvedKeys = append(resolvedKeys, dbKey)
+					resolved = true
+				}
+			}
+			if !resolved {
+				// Collect identifier for unresolved key
+				if k.KeyID != "" {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("key_id=%s", k.KeyID))
+				} else if k.Name != "" {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("name=%s", k.Name))
+				} else {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("key[%d]", i))
+				}
+			}
+		}
+		if len(unresolvedKeys) > 0 {
+			return &ErrUnresolvedKeys{Identifiers: unresolvedKeys}
+		}
+		keysToAssociate = resolvedKeys
+	}
+
+	// Clear Keys before Create to prevent GORM from auto-associating unresolved keys (with ID=0)
+	// We'll manually associate the resolved keys after Create
+	virtualKeyProviderConfig.Keys = nil
+
 	if err := txDB.WithContext(ctx).Create(virtualKeyProviderConfig).Error; err != nil {
 		return s.parseGormError(err)
 	}
@@ -1361,6 +1509,53 @@ func (s *RDBConfigStore) UpdateVirtualKeyProviderConfig(ctx context.Context, vir
 
 	// Store keys before save
 	keysToAssociate := virtualKeyProviderConfig.Keys
+
+	// Resolve keys by name/key_id if they don't have database IDs
+	// This handles config file inputs that only specify name
+	if len(keysToAssociate) > 0 {
+		resolvedKeys := make([]tables.TableKey, 0, len(keysToAssociate))
+		var unresolvedKeys []string
+		for i, k := range keysToAssociate {
+			// If key already has a database ID (from UI), use it directly
+			if k.ID > 0 {
+				resolvedKeys = append(resolvedKeys, k)
+				continue
+			}
+			// Otherwise resolve by KeyID or Name (from config file)
+			var dbKey tables.TableKey
+			var resolved bool
+			if k.KeyID != "" {
+				if err := txDB.WithContext(ctx).Where("key_id = ?", k.KeyID).First(&dbKey).Error; err == nil {
+					resolvedKeys = append(resolvedKeys, dbKey)
+					resolved = true
+				}
+			}
+			if !resolved && k.Name != "" {
+				if err := txDB.WithContext(ctx).Where("name = ? AND provider = ?", k.Name, virtualKeyProviderConfig.Provider).First(&dbKey).Error; err == nil {
+					resolvedKeys = append(resolvedKeys, dbKey)
+					resolved = true
+				}
+			}
+			if !resolved {
+				// Collect identifier for unresolved key
+				if k.KeyID != "" {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("key_id=%s", k.KeyID))
+				} else if k.Name != "" {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("name=%s", k.Name))
+				} else {
+					unresolvedKeys = append(unresolvedKeys, fmt.Sprintf("key[%d]", i))
+				}
+			}
+		}
+		if len(unresolvedKeys) > 0 {
+			return &ErrUnresolvedKeys{Identifiers: unresolvedKeys}
+		}
+		keysToAssociate = resolvedKeys
+	}
+
+	// Clear Keys before Save to prevent GORM from auto-associating unresolved keys (with ID=0)
+	// We'll manually manage the association after Save
+	virtualKeyProviderConfig.Keys = nil
 
 	if err := txDB.WithContext(ctx).Save(virtualKeyProviderConfig).Error; err != nil {
 		return s.parseGormError(err)
@@ -1706,7 +1901,12 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var rateLimits []tables.TableRateLimit
 	var governanceConfigs []tables.TableGovernanceConfig
 
-	if err := s.db.WithContext(ctx).Preload("ProviderConfigs").Find(&virtualKeys).Error; err != nil {
+	if err := s.db.WithContext(ctx).
+		Preload("ProviderConfigs").
+		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, name, key_id, models_json, provider")
+		}).
+		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
 	if err := s.db.WithContext(ctx).Find(&teams).Error; err != nil {
@@ -1885,6 +2085,45 @@ func (s *RDBConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.G
 	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
 		Key:   tables.ConfigProxyKey,
 		Value: string(configJSON),
+	}).Error
+}
+
+// GetRestartRequiredConfig retrieves the restart required configuration from the database.
+func (s *RDBConfigStore) GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error) {
+	var configEntry tables.TableGovernanceConfig
+	if err := s.db.WithContext(ctx).First(&configEntry, "key = ?", tables.ConfigRestartRequiredKey).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if configEntry.Value == "" {
+		return nil, nil
+	}
+	var restartConfig tables.RestartRequiredConfig
+	if err := json.Unmarshal([]byte(configEntry.Value), &restartConfig); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal restart required config: %w", err)
+	}
+	return &restartConfig, nil
+}
+
+// SetRestartRequiredConfig sets the restart required configuration in the database.
+func (s *RDBConfigStore) SetRestartRequiredConfig(ctx context.Context, config *tables.RestartRequiredConfig) error {
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal restart required config: %w", err)
+	}
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigRestartRequiredKey,
+		Value: string(configJSON),
+	}).Error
+}
+
+// ClearRestartRequiredConfig clears the restart required configuration in the database.
+func (s *RDBConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
+	return s.db.WithContext(ctx).Save(&tables.TableGovernanceConfig{
+		Key:   tables.ConfigRestartRequiredKey,
+		Value: `{"required":false,"reason":""}`,
 	}).Error
 }
 

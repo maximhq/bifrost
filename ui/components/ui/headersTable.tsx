@@ -97,10 +97,8 @@ export function HeadersTable({
 					</TableHeader>
 					<TableBody>
 						{rows.map(([key, value], index) => {
-							// Use key for existing entries, index for the empty row
-							const rowKey = key !== "" ? key : `empty-${index}`;
 							return (
-								<TableRow key={rowKey} className="border-b last:border-0">
+								<TableRow key={index} className="border-b last:border-0">
 									<TableCell className="p-2">
 										<Input
 											placeholder={keyPlaceholder}

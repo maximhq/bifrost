@@ -7,6 +7,7 @@ export const KnownProvidersNames = [
 	"cohere",
 	"gemini",
 	"groq",
+	"huggingface",
 	"mistral",
 	"ollama",
 	"openai",
@@ -16,6 +17,7 @@ export const KnownProvidersNames = [
 	"perplexity",
 	"sgl",
 	"vertex",
+	"nebius",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -39,6 +41,7 @@ export const RequestTypes = [
 	"transcription_stream",
 	"image_generation",
 	"image_generation_stream",
+	"count_tokens",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -58,6 +61,8 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cerebras: "Cerebras",
 	gemini: "Gemini",
 	openrouter: "OpenRouter",
+	huggingface: "HuggingFace",
+	nebius: "Nebius Token Factory",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -76,6 +81,13 @@ export const StatusColors = {
 	error: "bg-red-100 text-red-800",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
+} as const;
+
+export const StatusBarColors = {
+	success: "bg-green-500",
+	error: "bg-red-500",
+	processing: "bg-blue-500",
+	cancelled: "bg-gray-400",
 } as const;
 
 export const RequestTypeLabels = {
@@ -105,6 +117,21 @@ export const RequestTypeLabels = {
 	transcription_stream: "Transcription Stream",
 	image_generation: "Image Generation",
 	image_generation_stream: "Image Generation Stream",
+	count_tokens: "Count Tokens",
+
+	batch_create: "Batch Create",
+	batch_list: "Batch List",
+	batch_retrieve: "Batch Retrieve",
+	batch_cancel: "Batch Cancel",
+	batch_results: "Batch Results",
+
+	file_upload: "File Upload",
+	file_list: "File List",
+	file_retrieve: "File Retrieve",
+	file_delete: "File Delete",
+	file_content: "File Content",
+
+	
 } as const;
 
 export const RequestTypeColors = {
@@ -134,6 +161,19 @@ export const RequestTypeColors = {
 	transcription_stream: "bg-lime-100 text-lime-800",
 	image_generation: "bg-indigo-100 text-indigo-800",
 	image_generation_stream: "bg-purple-100 text-purple-800",
+	count_tokens: "bg-cyan-100 text-cyan-800",
+
+	batch_create: "bg-green-100 text-green-800",
+	batch_list: "bg-blue-100 text-blue-800",
+	batch_retrieve: "bg-red-100 text-red-800",
+	batch_cancel: "bg-yellow-100 text-yellow-800",
+	batch_results: "bg-purple-100 text-purple-800",
+	
+	file_upload: "bg-pink-100 text-pink-800",
+	file_list: "bg-lime-100 text-lime-800",
+	file_retrieve: "bg-orange-100 text-orange-800",
+	file_delete: "bg-red-100 text-red-800",
+	file_content: "bg-blue-100 text-blue-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];

@@ -29,6 +29,62 @@ var (
 	}
 )
 
+// assertBedrockRequestEqual compares two BedrockConverseRequest objects
+// but ignores the order of tools in ToolConfig
+func assertBedrockRequestEqual(t *testing.T, expected, actual *bedrock.BedrockConverseRequest) {
+	t.Helper()
+
+	assert.Equal(t, expected.ModelID, actual.ModelID)
+	assert.Equal(t, expected.Messages, actual.Messages)
+	assert.Equal(t, expected.System, actual.System)
+	assert.Equal(t, expected.InferenceConfig, actual.InferenceConfig)
+	assert.Equal(t, expected.GuardrailConfig, actual.GuardrailConfig)
+	assert.Equal(t, expected.AdditionalModelRequestFields, actual.AdditionalModelRequestFields)
+	assert.Equal(t, expected.AdditionalModelResponseFieldPaths, actual.AdditionalModelResponseFieldPaths)
+	assert.Equal(t, expected.PerformanceConfig, actual.PerformanceConfig)
+	assert.Equal(t, expected.PromptVariables, actual.PromptVariables)
+	assert.Equal(t, expected.RequestMetadata, actual.RequestMetadata)
+	assert.Equal(t, expected.ServiceTier, actual.ServiceTier)
+	assert.Equal(t, expected.Stream, actual.Stream)
+	assert.Equal(t, expected.ExtraParams, actual.ExtraParams)
+	assert.Equal(t, expected.Fallbacks, actual.Fallbacks)
+
+	if expected.ToolConfig == nil {
+		assert.Nil(t, actual.ToolConfig)
+		return
+	}
+
+	require.NotNil(t, actual.ToolConfig)
+	assert.Equal(t, expected.ToolConfig.ToolChoice, actual.ToolConfig.ToolChoice)
+
+	expectedTools := expected.ToolConfig.Tools
+	actualTools := actual.ToolConfig.Tools
+
+	assert.Equal(t, len(expectedTools), len(actualTools), "Tool count mismatch")
+
+	expectedToolMap := make(map[string]bedrock.BedrockTool)
+	for _, tool := range expectedTools {
+		if tool.ToolSpec != nil {
+			expectedToolMap[tool.ToolSpec.Name] = tool
+		}
+	}
+
+	actualToolMap := make(map[string]bedrock.BedrockTool)
+	for _, tool := range actualTools {
+		if tool.ToolSpec != nil {
+			actualToolMap[tool.ToolSpec.Name] = tool
+		}
+	}
+
+	for name, expectedTool := range expectedToolMap {
+		actualTool, exists := actualToolMap[name]
+		assert.True(t, exists, "Tool %s not found in actual tools", name)
+		if exists {
+			assert.Equal(t, expectedTool, actualTool, "Tool %s differs", name)
+		}
+	}
+}
+
 func TestBedrock(t *testing.T) {
 	t.Parallel()
 
@@ -42,6 +98,26 @@ func TestBedrock(t *testing.T) {
 	}
 	defer cancel()
 
+	// Get Bedrock-specific configuration from environment
+	s3Bucket := os.Getenv("AWS_S3_BUCKET")
+	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
+
+	// Build extra params for batch and file operations
+	var batchExtraParams map[string]interface{}
+	var fileExtraParams map[string]interface{}
+
+	if s3Bucket != "" {
+		fileExtraParams = map[string]interface{}{
+			"s3_bucket": s3Bucket,
+		}
+		batchExtraParams = map[string]interface{}{
+			"output_s3_uri": "s3://" + s3Bucket + "/batch-output/",
+		}
+		if roleArn != "" {
+			batchExtraParams["role_arn"] = roleArn
+		}
+	}
+
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
 		ChatModel:   "claude-4-sonnet",
@@ -50,8 +126,11 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel: "cohere.embed-v4:0",
-		ReasoningModel: "claude-4.5-sonnet",
+		EmbeddingModel:     "cohere.embed-v4:0",
+		ReasoningModel:     "claude-4.5-sonnet",
+		PromptCachingModel: "claude-4.5-sonnet",
+		BatchExtraParams:   batchExtraParams,
+		FileExtraParams:    fileExtraParams,
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -69,6 +148,19 @@ func TestBedrock(t *testing.T) {
 			Embedding:             true,
 			ListModels:            true,
 			Reasoning:             true,
+			PromptCaching:         true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           true,
+			FileBatchInput:        true,
+			CountTokens:           false, // Not supported
 		},
 	}
 
@@ -414,6 +506,156 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "ParallelToolCalls",
+			input: &schemas.BifrostChatRequest{
+				Model: "claude-3-sonnet",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Invoke all tools in parallel that are available to you"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("I'll invoke both available tools in parallel for you."),
+						},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Index: 0,
+									Type:  schemas.Ptr("function"),
+									ID:    schemas.Ptr("tooluse_Yl388l8ES0G_3TQtDcKq_g"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("hello"),
+										Arguments: "{}",
+									},
+								},
+								{
+									Index: 1,
+									Type:  schemas.Ptr("function"),
+									ID:    schemas.Ptr("tooluse_eARDw2iqRXak8uyRC2KxXw"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("world"),
+										Arguments: "{}",
+									},
+								},
+							},
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleTool,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Hello"),
+						},
+						ChatToolMessage: &schemas.ChatToolMessage{
+							ToolCallID: schemas.Ptr("tooluse_Yl388l8ES0G_3TQtDcKq_g"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleTool,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("World"),
+						},
+						ChatToolMessage: &schemas.ChatToolMessage{
+							ToolCallID: schemas.Ptr("tooluse_eARDw2iqRXak8uyRC2KxXw"),
+						},
+					},
+				},
+			},
+			expected: &bedrock.BedrockConverseRequest{
+				ModelID: "claude-3-sonnet",
+				Messages: []bedrock.BedrockMessage{
+					{
+						Role: bedrock.BedrockMessageRoleUser,
+						Content: []bedrock.BedrockContentBlock{
+							{
+								Text: schemas.Ptr("Invoke all tools in parallel that are available to you"),
+							},
+						},
+					},
+					{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{
+								Text: schemas.Ptr("I'll invoke both available tools in parallel for you."),
+							},
+							{
+								ToolUse: &bedrock.BedrockToolUse{
+									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
+									Name:      "hello",
+									Input:     map[string]interface{}{},
+								},
+							},
+							{
+								ToolUse: &bedrock.BedrockToolUse{
+									ToolUseID: "tooluse_eARDw2iqRXak8uyRC2KxXw",
+									Name:      "world",
+									Input:     map[string]interface{}{},
+								},
+							},
+						},
+					},
+					{
+						Role: bedrock.BedrockMessageRoleUser,
+						Content: []bedrock.BedrockContentBlock{
+							{
+								ToolResult: &bedrock.BedrockToolResult{
+									ToolUseID: "tooluse_Yl388l8ES0G_3TQtDcKq_g",
+									Content: []bedrock.BedrockContentBlock{
+										{
+											Text: schemas.Ptr("Hello"),
+										},
+									},
+									Status: schemas.Ptr("success"),
+								},
+							},
+							{
+								ToolResult: &bedrock.BedrockToolResult{
+									ToolUseID: "tooluse_eARDw2iqRXak8uyRC2KxXw",
+									Content: []bedrock.BedrockContentBlock{
+										{
+											Text: schemas.Ptr("World"),
+										},
+									},
+									Status: schemas.Ptr("success"),
+								},
+							},
+						},
+					},
+				},
+				ToolConfig: &bedrock.BedrockToolConfig{
+					Tools: []bedrock.BedrockTool{
+						{
+							ToolSpec: &bedrock.BedrockToolSpec{
+								Name:        "hello",
+								Description: schemas.Ptr("Tool extracted from conversation history"),
+								InputSchema: bedrock.BedrockToolInputSchema{
+									JSON: map[string]interface{}{
+										"type":       "object",
+										"properties": map[string]interface{}{},
+									},
+								},
+							},
+						},
+						{
+							ToolSpec: &bedrock.BedrockToolSpec{
+								Name:        "world",
+								Description: schemas.Ptr("Tool extracted from conversation history"),
+								InputSchema: bedrock.BedrockToolInputSchema{
+									JSON: map[string]interface{}{
+										"type":       "object",
+										"properties": map[string]interface{}{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name:    "NilRequest",
 			input:   nil,
 			wantErr: true,
@@ -443,7 +685,11 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err)
-				assert.Equal(t, tt.expected, actual)
+				if tt.name == "ParallelToolCalls" {
+					assertBedrockRequestEqual(t, tt.expected, actual)
+				} else {
+					assert.Equal(t, tt.expected, actual)
+				}
 			}
 		})
 	}
@@ -457,6 +703,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
+	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -945,9 +1192,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockReq *bedrock.BedrockConverseRequest
-				actual, err = bedrockReq.ToBifrostResponsesRequest()
+				actual, err = bedrockReq.ToBifrostResponsesRequest(&ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesRequest()
+				actual, err = tt.input.ToBifrostResponsesRequest(&ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1526,6 +1773,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	toolInput := map[string]interface{}{
 		"location": "NYC",
 	}
+	ctx := context.Background()
 
 	tests := []struct {
 		name     string
@@ -1669,9 +1917,9 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockResp *bedrock.BedrockConverseResponse
-				actual, err = bedrockResp.ToBifrostResponsesResponse()
+				actual, err = bedrockResp.ToBifrostResponsesResponse(&ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesResponse()
+				actual, err = tt.input.ToBifrostResponsesResponse(&ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1736,7 +1984,8 @@ func TestToBedrockResponsesRequest_AdditionalFields(t *testing.T) {
 		},
 	}
 
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(req)
+	ctx := context.Background()
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
@@ -1762,7 +2011,8 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 		},
 	}
 
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(req)
+	ctx := context.Background()
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 

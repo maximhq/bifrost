@@ -1,0 +1,121 @@
+# OpenAI Integration Chat Completions Schemas
+# Reuses inference schemas where possible since Bifrost follows OpenAI format
+
+OpenAIChatRequest:
+  type: object
+  required:
+    - model
+    - messages
+  properties:
+    model:
+      type: string
+      description: Model identifier (e.g., gpt-4, gpt-3.5-turbo)
+      example: gpt-4
+    messages:
+      type: array
+      items:
+        $ref: '#/OpenAIMessage'
+      description: List of messages in the conversation
+    stream:
+      type: boolean
+      description: Whether to stream the response
+    max_tokens:
+      type: integer
+      description: Maximum tokens to generate (legacy, use max_completion_tokens)
+    max_completion_tokens:
+      type: integer
+      description: Maximum tokens to generate
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 2
+    top_p:
+      type: number
+    frequency_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    presence_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    logit_bias:
+      type: object
+      additionalProperties:
+        type: number
+    logprobs:
+      type: boolean
+    top_logprobs:
+      type: integer
+    n:
+      type: integer
+    stop:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+    seed:
+      type: integer
+    user:
+      type: string
+    tools:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatTool'
+    tool_choice:
+      $ref: '../../inference/chat.yaml#/ChatToolChoice'
+    parallel_tool_calls:
+      type: boolean
+    response_format:
+      type: object
+      description: Format for the response
+    reasoning_effort:
+      type: string
+      enum: [none, minimal, low, medium, high, xhigh]
+      description: OpenAI reasoning effort level
+    service_tier:
+      type: string
+    stream_options:
+      $ref: '../../inference/chat.yaml#/ChatStreamOptions'
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models
+
+OpenAIMessage:
+  type: object
+  required:
+    - role
+  properties:
+    role:
+      type: string
+      enum: [system, user, assistant, tool, developer]
+    name:
+      type: string
+    content:
+      $ref: '../../inference/chat.yaml#/ChatMessageContent'
+    tool_call_id:
+      type: string
+      description: For tool messages
+    refusal:
+      type: string
+    reasoning:
+      type: string
+    annotations:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatAssistantMessageAnnotation'
+    tool_calls:
+      type: array
+      items:
+        $ref: '../../inference/chat.yaml#/ChatAssistantMessageToolCall'
+
+# Response reuses inference schema since format is identical
+OpenAIChatResponse:
+  $ref: '../../inference/chat.yaml#/ChatCompletionResponse'
+
+OpenAIChatStreamResponse:
+  $ref: '../../inference/chat.yaml#/ChatCompletionStreamResponse'

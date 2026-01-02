@@ -1,0 +1,90 @@
+# OpenAI Integration Audio Schemas (Speech and Transcription)
+
+# Speech (TTS) Request
+OpenAISpeechRequest:
+  type: object
+  required:
+    - model
+    - input
+  properties:
+    model:
+      type: string
+      description: Model identifier (e.g., tts-1, tts-1-hd)
+      example: tts-1
+    input:
+      type: string
+      description: Text to convert to speech
+    voice:
+      type: string
+      description: Voice to use
+      enum: [alloy, echo, fable, onyx, nova, shimmer]
+    response_format:
+      type: string
+      enum: [mp3, opus, aac, flac, wav, pcm]
+    speed:
+      type: number
+      minimum: 0.25
+      maximum: 4.0
+    stream_format:
+      type: string
+      enum: [sse]
+      description: Set to 'sse' for streaming
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+# Transcription Request
+OpenAITranscriptionRequest:
+  type: object
+  required:
+    - model
+    - file
+  properties:
+    model:
+      type: string
+      description: Model identifier (e.g., whisper-1)
+      example: whisper-1
+    file:
+      type: string
+      format: binary
+      description: Audio file to transcribe
+    language:
+      type: string
+      description: Language of the audio (ISO 639-1)
+    prompt:
+      type: string
+      description: Prompt to guide transcription
+    response_format:
+      type: string
+      enum: [json, text, srt, verbose_json, vtt]
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 1
+    timestamp_granularities:
+      type: array
+      items:
+        type: string
+        enum: [word, segment]
+    stream:
+      type: boolean
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+# Responses reuse inference schemas
+OpenAISpeechResponse:
+  $ref: '../../inference/speech.yaml#/SpeechResponse'
+
+OpenAISpeechStreamResponse:
+  $ref: '../../inference/speech.yaml#/SpeechStreamResponse'
+
+OpenAITranscriptionResponse:
+  $ref: '../../inference/transcription.yaml#/TranscriptionResponse'
+
+OpenAITranscriptionStreamResponse:
+  $ref: '../../inference/transcription.yaml#/TranscriptionStreamResponse'

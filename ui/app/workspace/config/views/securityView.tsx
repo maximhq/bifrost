@@ -167,7 +167,7 @@ export default function SecurityView() {
 	}, [bifrostConfig, localConfig, authConfig, updateCoreConfig]);
 
 	return (
-		<div className="space-y-4">
+		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div className="flex items-center justify-between">
 				<div>
 					<h2 className="text-2xl font-semibold tracking-tight">Security Settings</h2>
@@ -185,7 +185,7 @@ export default function SecurityView() {
 						<Info className="h-4 w-4 text-blue-600" />
 						<AlertDescription>
 							You will need to use Basic Auth for all your inference calls (including MCP tool execution). You can disable it below. Check{" "}
-							<Link href="/workspace/config?tab=api-keys" className="text-md text-primary underline">
+							<Link href="/workspace/config/api-keys" className="text-md text-primary underline">
 								API Keys
 							</Link>
 						</AlertDescription>
@@ -238,7 +238,7 @@ export default function SecurityView() {
 										onChange={(e) => handleAuthFieldChange("admin_password", e.target.value)}
 									/>
 								</div>
-								<div className="flex items-center justify-between rounded-lg border p-4">
+								<div className="flex items-center justify-between">
 									<div className="space-y-0.5">
 										<Label htmlFor="disable-auth-inference" className="text-sm font-medium">
 											Disable authentication on inference calls

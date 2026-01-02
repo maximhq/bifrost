@@ -1,0 +1,156 @@
+# Google GenAI (Gemini) - Files Endpoints
+
+files-upload:
+  post:
+    operationId: geminiUploadFile
+    summary: Upload file (Gemini format)
+    description: |
+      Uploads a file using Google Gemini API format.
+
+      This is a multipart upload with two parts:
+      - "metadata": JSON object containing file metadata
+      - "file": Binary file content
+
+      Note: Direct file content download is not supported by Gemini Files API.
+      Use the file.uri field from the response to access uploaded files.
+    tags:
+      - GenAI Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/genai/files.yaml#/GeminiFileUploadRequest'
+          encoding:
+            metadata:
+              contentType: application/json
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/files.yaml#/GeminiFileUploadResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+files:
+  get:
+    operationId: geminiListFiles
+    summary: List files (Gemini format)
+    description: |
+      Lists uploaded files in Google Gemini API format.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: pageSize
+        in: query
+        schema:
+          type: integer
+        description: Maximum number of files to return
+      - name: pageToken
+        in: query
+        schema:
+          type: string
+        description: Page token for pagination
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/files.yaml#/GeminiFileListResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+files-by-id:
+  get:
+    operationId: geminiRetrieveFile
+    summary: Retrieve file (Gemini format)
+    description: |
+      Retrieves file metadata in Google Gemini API format.
+
+      Note: This endpoint returns file metadata only. Direct file content
+      download is not supported by Gemini Files API. Use the file.uri
+      field from the response to access the file content.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/files.yaml#/GeminiFileRetrieveResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+  delete:
+    operationId: geminiDeleteFile
+    summary: Delete file (Gemini format)
+    description: |
+      Deletes a file in Google Gemini API format.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID to delete
+    responses:
+      '200':
+        description: Successful response (empty)
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/files.yaml#/GeminiFileDeleteResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'

@@ -1,0 +1,74 @@
+login:
+  post:
+    operationId: login
+    summary: Login
+    description: |
+      Authenticates a user and returns a session token.
+      Sets a cookie with the session token for subsequent requests.
+    tags:
+      - Session
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/session.yaml#/LoginRequest'
+    responses:
+      '200':
+        description: Login successful
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/session.yaml#/LoginResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Invalid credentials
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '403':
+        description: Authentication is not enabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+logout:
+  post:
+    operationId: logout
+    summary: Logout
+    description: Logs out the current user and invalidates the session token.
+    tags:
+      - Session
+    responses:
+      '200':
+        description: Logout successful
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/session.yaml#/LogoutResponse'
+      '403':
+        description: Authentication is not enabled
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+
+is-auth-enabled:
+  get:
+    operationId: isAuthEnabled
+    summary: Check if authentication is enabled
+    description: Returns whether authentication is enabled and if the current token is valid.
+    tags:
+      - Session
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/session.yaml#/IsAuthEnabledResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

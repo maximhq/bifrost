@@ -2,11 +2,15 @@
 package mistral
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -247,14 +251,389 @@ func (provider *MistralProvider) SpeechStream(ctx context.Context, postHookRunne
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by the Mistral provider.
+// Transcription performs an audio transcription request to the Mistral API.
+// It creates a multipart form with the audio file and sends it to Mistral's transcription endpoint.
+// Returns the transcribed text and metadata, or an error if the request fails.
 func (provider *MistralProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	// Convert Bifrost request to Mistral format
+	mistralReq := ToMistralTranscriptionRequest(request)
+	if mistralReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
+	}
+
+	// Create multipart form body
+	body, contentType, bifrostErr := createMistralTranscriptionMultipartBody(mistralReq, providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create HTTP request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(contentType)
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	req.SetBody(body.Bytes())
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Check for empty response
+	trimmed := strings.TrimSpace(string(responseBody))
+	if len(trimmed) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderResponseEmpty,
+			},
+		}
+	}
+
+	copiedResponseBody := append([]byte(nil), responseBody...)
+
+	// Parse Mistral's transcription response
+	var mistralResponse MistralTranscriptionResponse
+	if err := sonic.Unmarshal(copiedResponseBody, &mistralResponse); err != nil {
+		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderResponseHTML,
+					Error:   errors.New(string(copiedResponseBody)),
+				},
+			}
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+	}
+
+	// Convert to Bifrost format
+	response := mistralResponse.ToBifrostTranscriptionResponse()
+	if response == nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to convert transcription response", nil, providerName)
+	}
+
+	// Set extra fields
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.RequestType = schemas.TranscriptionRequest
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+
+	// Set raw response if enabled
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err == nil {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+	}
+
+	return response, nil
 }
 
-// TranscriptionStream is not supported by the Mistral provider.
+// TranscriptionStream performs a streaming transcription request to Mistral's API.
+// It creates a multipart form with the audio file and streams transcription events.
+// Returns a channel of BifrostStream objects containing transcription deltas.
 func (provider *MistralProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	// Convert Bifrost request to Mistral format
+	mistralReq := ToMistralTranscriptionRequest(request)
+	if mistralReq == nil {
+		return nil, providerUtils.NewBifrostOperationError("transcription input is not provided", nil, providerName)
+	}
+	mistralReq.Stream = schemas.Ptr(true)
+
+	// Create multipart form body with stream=true
+	body, contentType, bifrostErr := createMistralTranscriptionMultipartBody(mistralReq, providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Prepare headers for streaming
+	headers := map[string]string{
+		"Content-Type":  contentType,
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	if key.Value != "" {
+		headers["Authorization"] = "Bearer " + key.Value
+	}
+
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
+
+	// Set headers
+	for headerKey, value := range headers {
+		req.Header.Set(headerKey, value)
+	}
+
+	req.SetBody(body.Bytes())
+
+	// Make the request
+	err := provider.client.Do(req, resp)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer close(responseChan)
+		defer providerUtils.ReleaseStreamingResponse(resp)
+
+		scanner := bufio.NewScanner(resp.BodyStream())
+		// Increase buffer size to handle large chunks
+		buf := make([]byte, 0, 64*1024) // 64KB initial buffer
+		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
+		chunkIndex := -1
+
+		startTime := time.Now()
+		lastChunkTime := startTime
+
+		var currentEvent string
+		var currentData string
+
+		for scanner.Scan() {
+			// Check if context is done before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+
+			// Skip empty lines (event delimiter)
+			if line == "" {
+				// Process accumulated event if we have both event and data
+				if currentEvent != "" && currentData != "" {
+					chunkIndex++
+					provider.processTranscriptionStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
+					// Break the loop if this was a done event (check both possible event types)
+					eventType := MistralTranscriptionStreamEventType(currentEvent)
+					if eventType == MistralTranscriptionStreamEventDone || currentEvent == "transcript.text.done" {
+						break
+					}
+				}
+				// Reset for next event
+				currentEvent = ""
+				currentData = ""
+				continue
+			}
+
+			// Parse SSE format
+			if strings.HasPrefix(line, "event: ") {
+				currentEvent = strings.TrimPrefix(line, "event: ")
+			} else if strings.HasPrefix(line, "data: ") {
+				currentData = strings.TrimPrefix(line, "data: ")
+			}
+		}
+
+		// Process any remaining event
+		if currentEvent != "" && currentData != "" {
+			chunkIndex++
+			provider.processTranscriptionStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
+			// Note: No need to break here as scanner.Scan() has already finished
+		}
+
+		// Handle scanner errors
+		if err := scanner.Err(); err != nil {
+			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
+		}
+	}()
+
+	return responseChan, nil
+}
+
+// processTranscriptionStreamEvent processes a single SSE event and sends it to the response channel.
+func (provider *MistralProvider) processTranscriptionStreamEvent(
+	ctx context.Context,
+	postHookRunner schemas.PostHookRunner,
+	eventType string,
+	jsonData string,
+	model string,
+	providerName schemas.ModelProvider,
+	chunkIndex int,
+	startTime time.Time,
+	lastChunkTime *time.Time,
+	responseChan chan *schemas.BifrostStream,
+) {
+	// Skip empty data
+	if strings.TrimSpace(jsonData) == "" {
+		return
+	}
+
+	// First, check if this is an error response
+	var bifrostErr schemas.BifrostError
+	if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				Provider:       providerName,
+				ModelRequested: model,
+				RequestType:    schemas.TranscriptionStreamRequest,
+			}
+			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+			return
+		}
+	}
+
+	// Parse the event data
+	var eventData MistralTranscriptionStreamData
+	if err := sonic.Unmarshal([]byte(jsonData), &eventData); err != nil {
+		provider.logger.Warn(fmt.Sprintf("Failed to parse stream event data: %v", err))
+		return
+	}
+
+	// Create the stream event
+	streamEvent := &MistralTranscriptionStreamEvent{
+		Event: eventType,
+		Data:  &eventData,
+	}
+
+	// Convert to Bifrost format
+	response := streamEvent.ToBifrostTranscriptionStreamResponse()
+	if response == nil {
+		return
+	}
+
+	// Set extra fields
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:    schemas.TranscriptionStreamRequest,
+		Provider:       providerName,
+		ModelRequested: model,
+		ChunkIndex:     chunkIndex,
+		Latency:        time.Since(*lastChunkTime).Milliseconds(),
+	}
+	*lastChunkTime = time.Now()
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = jsonData
+	}
+
+	// Check for done event (handle both "transcription.done" and "transcript.text.done")
+	if MistralTranscriptionStreamEventType(eventType) == MistralTranscriptionStreamEventDone || eventType == "transcript.text.done" {
+		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+		// Ensure response type is set to Done
+		response.Type = schemas.TranscriptionStreamResponseTypeDone
+	}
+
+	providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
+}
+
+// BatchCreate is not supported by Mistral provider.
+func (provider *MistralProvider) BatchCreate(_ context.Context, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
+}
+
+// BatchList is not supported by Mistral provider.
+func (provider *MistralProvider) BatchList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
+}
+
+// BatchRetrieve is not supported by Mistral provider.
+func (provider *MistralProvider) BatchRetrieve(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
+}
+
+// BatchCancel is not supported by Mistral provider.
+func (provider *MistralProvider) BatchCancel(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
+}
+
+// BatchResults is not supported by Mistral provider.
+func (provider *MistralProvider) BatchResults(_ context.Context, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
+}
+
+// FileUpload is not supported by Mistral provider.
+func (provider *MistralProvider) FileUpload(_ context.Context, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
+}
+
+// FileList is not supported by Mistral provider.
+func (provider *MistralProvider) FileList(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
+}
+
+// FileRetrieve is not supported by Mistral provider.
+func (provider *MistralProvider) FileRetrieve(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
+}
+
+// FileDelete is not supported by Mistral provider.
+func (provider *MistralProvider) FileDelete(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
+}
+
+// FileContent is not supported by Mistral provider.
+func (provider *MistralProvider) FileContent(_ context.Context, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
+}
+
+// CountTokens is not supported by the Mistral provider.
+func (provider *MistralProvider) CountTokens(_ context.Context, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
 // ImageGeneration is not supported by the Mistral provider.

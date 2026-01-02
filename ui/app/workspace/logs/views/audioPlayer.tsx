@@ -2,15 +2,87 @@ import { Button } from "@/components/ui/button";
 import { Pause, Play, Download } from "lucide-react";
 import { useState } from "react";
 
-const AudioPlayer = ({ src }: { src: string }) => {
+interface AudioPlayerProps {
+	src: string;
+	format?: string; // Optional format: "mp3", "wav", "pcm16", etc.
+}
+
+const AudioPlayer = ({ src, format }: AudioPlayerProps) => {
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [audio] = useState<HTMLAudioElement | null>(typeof window !== "undefined" ? new Audio() : null);
 	const [error, setError] = useState<string | null>(null);
 
-	const createAudioBlob = (base64Data: string): Blob | null => {
+	// Convert PCM16 to WAV format
+	const convertPCM16ToWAV = (pcmData: Uint8Array, sampleRate: number = 24000, numChannels: number = 1): Uint8Array => {
+		const bitsPerSample = 16;
+		const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+		const blockAlign = (numChannels * bitsPerSample) / 8;
+		const dataSize = pcmData.length;
+		const fileSize = 36 + dataSize;
+
+		const wavBuffer = new ArrayBuffer(44 + dataSize);
+		const view = new DataView(wavBuffer);
+
+		// RIFF header
+		const writeString = (offset: number, string: string) => {
+			for (let i = 0; i < string.length; i++) {
+				view.setUint8(offset + i, string.charCodeAt(i));
+			}
+		};
+
+		writeString(0, "RIFF");
+		view.setUint32(4, fileSize, true);
+		writeString(8, "WAVE");
+
+		// fmt subchunk
+		writeString(12, "fmt ");
+		view.setUint32(16, 16, true); // Subchunk1Size
+		view.setUint16(20, 1, true); // AudioFormat (1 = PCM)
+		view.setUint16(22, numChannels, true); // NumChannels
+		view.setUint32(24, sampleRate, true); // SampleRate
+		view.setUint32(28, byteRate, true); // ByteRate
+		view.setUint16(32, blockAlign, true); // BlockAlign
+		view.setUint16(34, bitsPerSample, true); // BitsPerSample
+
+		// data subchunk
+		writeString(36, "data");
+		view.setUint32(40, dataSize, true);
+
+		// Copy PCM data
+		const wavArray = new Uint8Array(wavBuffer);
+		wavArray.set(pcmData, 44);
+
+		return wavArray;
+	};
+
+	const createAudioBlob = (base64Data: string, audioFormat?: string): Blob | null => {
 		try {
-			return new Blob([Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0))], {
-				type: "audio/mpeg",
+			const binaryString = atob(base64Data);
+			const pcmData = Uint8Array.from(binaryString, (c) => c.charCodeAt(0));
+
+			// Handle PCM16 format - convert to WAV
+			if (audioFormat === "pcm16" || audioFormat === "pcm_s16le_16") {
+				const wavData = convertPCM16ToWAV(pcmData);
+				// Create a new ArrayBuffer to ensure proper type
+				const buffer = new ArrayBuffer(wavData.length);
+				new Uint8Array(buffer).set(wavData);
+				return new Blob([buffer], {
+					type: "audio/wav",
+				});
+			}
+
+			// Handle other formats
+			let mimeType = "audio/mpeg"; // Default to MP3
+			if (audioFormat === "wav") {
+				mimeType = "audio/wav";
+			} else if (audioFormat === "ogg") {
+				mimeType = "audio/ogg";
+			} else if (audioFormat === "webm") {
+				mimeType = "audio/webm";
+			}
+
+			return new Blob([pcmData], {
+				type: mimeType,
 			});
 		} catch (err) {
 			console.error("Failed to decode audio data:", err);
@@ -26,7 +98,7 @@ const AudioPlayer = ({ src }: { src: string }) => {
 			audio.pause();
 			setIsPlaying(false);
 		} else {
-			const audioBlob = createAudioBlob(src);
+			const audioBlob = createAudioBlob(src, format);
 			if (!audioBlob) return;
 
 			const audioUrl = URL.createObjectURL(audioBlob);
@@ -48,14 +120,26 @@ const AudioPlayer = ({ src }: { src: string }) => {
 	const handleDownload = () => {
 		if (!src) return;
 
-		const audioBlob = createAudioBlob(src);
+		const audioBlob = createAudioBlob(src, format);
 		if (!audioBlob) return;
 
 		const audioUrl = URL.createObjectURL(audioBlob);
 
+		// Determine file extension based on format
+		let extension = "mp3";
+		if (format === "pcm16" || format === "pcm_s16le_16") {
+			extension = "wav";
+		} else if (format === "wav") {
+			extension = "wav";
+		} else if (format === "ogg") {
+			extension = "ogg";
+		} else if (format === "webm") {
+			extension = "webm";
+		}
+
 		const a = document.createElement("a");
 		a.href = audioUrl;
-		a.download = "speech-output.mp3";
+		a.download = `speech-output.${extension}`;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);

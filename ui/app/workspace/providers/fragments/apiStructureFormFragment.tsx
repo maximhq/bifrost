@@ -49,6 +49,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				speech_stream: provider.custom_provider_config?.allowed_requests?.speech_stream ?? true,
 				transcription: provider.custom_provider_config?.allowed_requests?.transcription ?? true,
 				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
+				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
 				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
 			},
 			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,

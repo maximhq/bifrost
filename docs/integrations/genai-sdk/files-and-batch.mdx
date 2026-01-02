@@ -1,0 +1,1022 @@
+---
+title: "Files and Batch API"
+description: "Upload files and create batch jobs for asynchronous processing using the Google GenAI SDK through Bifrost across multiple providers."
+icon: "folder-open"
+---
+
+## Overview
+
+Bifrost supports the Google GenAI Files API and Batch API with **cross-provider routing**. This means you can use the Google GenAI SDK to manage files and batch jobs across multiple providers including Gemini, OpenAI, Anthropic, and Bedrock.
+
+The provider is specified using the `x-model-provider` header in `HttpOptions`.
+
+<Note>
+**Bedrock Limitation:** Bedrock batch operations require file-based input with S3 storage, which is not fully supported via the GenAI SDK's batch API. For Bedrock batch operations, use the [Bedrock SDK](../bedrock-sdk/files-and-batch) directly.
+</Note>
+
+---
+
+## Client Setup
+
+### Gemini Provider (Default)
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(base_url="http://localhost:8080/genai")
+)
+```
+
+### Cross-Provider Client Setup
+
+To route requests to different providers, add the `x-model-provider` header:
+
+<Tabs group="provider">
+<Tab title="Gemini Provider (Default)">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}
+    )
+)
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "openai"}
+    )
+)
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-anthropic-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "anthropic"}
+    )
+)
+```
+
+<Note>
+Anthropic batch operations use inline requests. File uploads for batch processing are not supported for Anthropic.
+</Note>
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "bedrock"}
+    )
+)
+```
+
+<Warning>
+Bedrock requires S3-based file storage for batch operations. Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for full batch support.
+</Warning>
+
+</Tab>
+</Tabs>
+
+### Helper Function for Provider-Specific Clients
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+def get_provider_client(provider: str, api_key: str):
+    """Create GenAI client with x-model-provider header"""
+    return genai.Client(
+        api_key=api_key,
+        http_options=HttpOptions(
+            base_url="http://localhost:8080/genai",
+            headers={"x-model-provider": provider}
+        )
+    )
+
+# Usage
+gemini_client = get_provider_client("gemini", "your-gemini-key")
+openai_client = get_provider_client("openai", "your-openai-key")
+```
+
+---
+
+## Files API
+
+Files are managed through the `client.files` namespace.
+
+### Upload a File
+
+<Tabs group="provider">
+<Tab title="Gemini Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions, UploadFileConfig
+import json
+import tempfile
+
+def add_gemini_header():
+    return {"x-model-provider": "gemini"}
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers=add_gemini_header()
+    )
+)
+
+# Create JSON content for Gemini batch format
+def create_gemini_batch_json(num_requests: int = 2) -> str:
+    requests_list = []
+    for i in range(num_requests):
+        request = {
+            "key": f"request_{i+1}",
+            "request": {
+                "contents": [
+                    {
+                        "parts": [{"text": f"Hello, this is test message {i+1}. Say hi back briefly."}],
+                        "role": "user"
+                    }
+                ]
+            }
+        }
+        requests_list.append(json.dumps(request))
+    return "\n".join(requests_list)
+
+# Write content to a temporary file
+json_content = create_gemini_batch_json(num_requests=2)
+with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    f.write(json_content)
+    temp_file_path = f.name
+
+# Upload the file
+response = client.files.upload(
+    file=temp_file_path,
+    config=UploadFileConfig(display_name='batch_input_gemini')
+)
+
+print(f"File name: {response.name}")
+print(f"Display name: {response.display_name}")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions, UploadFileConfig
+import json
+import tempfile
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "openai"}
+    )
+)
+
+# Create JSONL content for OpenAI batch format
+def create_openai_batch_jsonl(model_id: str, num_requests: int = 2) -> str:
+    lines = []
+    for i in range(num_requests):
+        record = {
+            "custom_id": f"request-{i+1}",
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": {
+                "model": model_id,
+                "messages": [
+                    {"role": "user", "content": f"Hello, this is test message {i+1}. Say hi back briefly."}
+                ],
+                "max_tokens": 100,
+            },
+        }
+        lines.append(json.dumps(record))
+    return "\n".join(lines)
+
+# Write content to a temporary file
+jsonl_content = create_openai_batch_jsonl("gpt-4o-mini")
+with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+    f.write(jsonl_content)
+    temp_file_path = f.name
+
+# Upload the file
+response = client.files.upload(
+    file=temp_file_path,
+    config=UploadFileConfig(display_name='batch_input_openai')
+)
+
+print(f"File name: {response.name}")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+<Warning>
+Anthropic does not support file uploads for batch processing via this API. Use inline batch requests instead (see Batch API section).
+</Warning>
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+<Warning>
+Bedrock requires S3-based file storage. Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for file operations.
+</Warning>
+
+</Tab>
+</Tabs>
+
+### List Files
+
+<Tabs group="provider">
+<Tab title="Gemini Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}
+    )
+)
+
+# List files
+for file in client.files.list(config={'page_size': 50}):
+    print(f"File name: {file.name}")
+    print(f"Display name: {file.display_name}")
+    if hasattr(file, 'size_bytes'):
+        print(f"Size: {file.size_bytes} bytes")
+    print("---")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "openai"}
+    )
+)
+
+# List files from OpenAI
+for file in client.files.list(config={'page_size': 50}):
+    print(f"File name: {file.name}")
+    print(f"Display name: {file.display_name}")
+    print("---")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+<Warning>
+File listing is not supported for Anthropic via this API.
+</Warning>
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+<Warning>
+Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for file listing with S3 storage.
+</Warning>
+
+</Tab>
+</Tabs>
+
+### Retrieve File Metadata
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai"
+    )
+)
+
+# Retrieve file metadata by name
+file_name = "files/abc123"
+response = client.files.get(name=file_name)
+
+print(f"File name: {response.name}")
+print(f"Display name: {response.display_name}")
+if hasattr(response, 'size_bytes'):
+    print(f"Size: {response.size_bytes} bytes")
+```
+
+### Delete a File
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai"
+    )
+)
+
+# Delete a file
+file_name = "files/abc123"
+client.files.delete(name=file_name)
+
+print(f"Deleted file: {file_name}")
+```
+
+---
+
+## Batch API
+
+Batches are managed through the `client.batches` namespace. The GenAI SDK supports both file-based and inline batch creation.
+
+### Create a Batch with File
+
+<Tabs group="provider">
+<Tab title="Gemini Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions, UploadFileConfig
+import json
+import tempfile
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}
+    )
+)
+
+# Create batch input JSON content (Gemini format)
+batch_request = json.dumps({
+    "key": "request_1",
+    "request": {
+        "contents": [
+            {"parts": [{"text": "Hello! Say hi back briefly."}], "role": "user"}
+        ]
+    }
+})
+
+# Write to temporary file and upload
+with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    f.write(batch_request)
+    temp_file_path = f.name
+
+uploaded_file = client.files.upload(
+    file=temp_file_path,
+    config=UploadFileConfig(display_name='batch_input_gemini')
+)
+
+# Create batch job using file reference
+batch_job = client.batches.create(
+    model="gemini-1.5-flash",
+    src=uploaded_file.name,
+)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions, UploadFileConfig
+import json
+import tempfile
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "openai"}
+    )
+)
+
+# Create batch input JSONL content (OpenAI format)
+batch_request = json.dumps({
+    "custom_id": "request-1",
+    "method": "POST",
+    "url": "/v1/chat/completions",
+    "body": {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "Hello! Say hi back briefly."}],
+        "max_tokens": 100
+    }
+})
+
+# Write to temporary file and upload
+with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
+    f.write(batch_request)
+    temp_file_path = f.name
+
+uploaded_file = client.files.upload(
+    file=temp_file_path,
+    config=UploadFileConfig(display_name='batch_input_openai')
+)
+
+# Create batch job using file reference
+batch_job = client.batches.create(
+    model="gpt-4o-mini",
+    src=uploaded_file.name,
+)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+<Warning>
+Anthropic does not support file-based batch creation. Use inline requests instead.
+</Warning>
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+<Warning>
+Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for Bedrock batch operations with S3 storage.
+</Warning>
+
+</Tab>
+</Tabs>
+
+### Create a Batch with Inline Requests
+
+<Tabs group="provider">
+<Tab title="Gemini Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}
+    )
+)
+
+# Create inline requests
+inline_requests = [
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is 2+2?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    },
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is the capital of France?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    }
+]
+
+# Create batch job with inline requests
+batch_job = client.batches.create(
+    model="gemini-1.5-flash",
+    src=inline_requests,
+)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "openai"}
+    )
+)
+
+# Create inline requests (OpenAI format via Bifrost translation)
+inline_requests = [
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is 2+2?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    },
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is the capital of France?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    }
+]
+
+batch_job = client.batches.create(
+    model="gpt-4o-mini",
+    src=inline_requests,
+)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-anthropic-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "anthropic"}
+    )
+)
+
+# Create inline requests for Anthropic
+inline_requests = [
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is 2+2?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    },
+    {
+        "contents": [
+            {
+                "parts": [{"text": "What is the capital of France?"}],
+                "role": "user"
+            }
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    }
+]
+
+batch_job = client.batches.create(
+    model="claude-3-sonnet-20240229",
+    src=inline_requests,
+)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+<Warning>
+Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for Bedrock batch operations.
+</Warning>
+
+</Tab>
+</Tabs>
+
+### List Batches
+
+```python
+from google import genai
+from google.genai.types import HttpOptions, ListBatchJobsConfig
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai", "anthropic"
+    )
+)
+
+# List batch jobs
+for job in client.batches.list(config=ListBatchJobsConfig(page_size=10)):
+    print(f"Batch name: {job.name}")
+    print(f"State: {job.state}")
+    print("---")
+```
+
+### Retrieve Batch Status
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai", "anthropic"
+    )
+)
+
+# Get batch job status
+batch_name = "batches/abc123"
+batch_job = client.batches.get(name=batch_name)
+
+print(f"Batch name: {batch_job.name}")
+print(f"State: {batch_job.state}")
+```
+
+### Cancel a Batch
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai", "anthropic"
+    )
+)
+
+# Cancel batch job
+batch_name = "batches/abc123"
+cancelled_job = client.batches.cancel(name=batch_name)
+
+print(f"Batch name: {cancelled_job.name}")
+print(f"State: {cancelled_job.state}")  # JOB_STATE_CANCELLING or JOB_STATE_CANCELLED
+```
+
+### Delete a Batch
+
+```python
+from google import genai
+from google.genai.types import HttpOptions
+
+client = genai.Client(
+    api_key="your-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": "gemini"}  # or "openai", "anthropic"
+    )
+)
+
+# Delete batch job
+batch_name = "batches/abc123"
+client.batches.delete(name=batch_name)
+
+print(f"Deleted batch: {batch_name}")
+```
+
+---
+
+## End-to-End Workflows
+
+### Gemini Batch Workflow
+
+```python
+import time
+from google import genai
+from google.genai.types import HttpOptions, UploadFileConfig, ListBatchJobsConfig
+import json
+import tempfile
+import os
+
+# Configuration
+provider = "gemini"
+model = "gemini-1.5-flash"
+
+client = genai.Client(
+    api_key="your-gemini-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": provider}
+    )
+)
+
+# Step 1: Create batch input file
+print("Step 1: Creating batch input file...")
+
+def create_gemini_batch_json(num_requests: int) -> str:
+    requests_list = []
+    for i in range(num_requests):
+        request = {
+            "key": f"request_{i+1}",
+            "request": {
+                "contents": [
+                    {
+                        "parts": [{"text": f"What is {i+1} + {i+1}? Answer briefly."}],
+                        "role": "user"
+                    }
+                ]
+            }
+        }
+        requests_list.append(json.dumps(request))
+    return "\n".join(requests_list)
+
+json_content = create_gemini_batch_json(num_requests=3)
+
+with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+    f.write(json_content)
+    temp_file_path = f.name
+
+# Step 2: Upload batch input file
+print("Step 2: Uploading batch input file...")
+uploaded_file = client.files.upload(
+    file=temp_file_path,
+    config=UploadFileConfig(display_name='batch_e2e_gemini')
+)
+print(f"  Uploaded file: {uploaded_file.name}")
+
+# Step 3: Create batch job
+print("Step 3: Creating batch job...")
+batch_job = client.batches.create(
+    model=model,
+    src=uploaded_file.name,
+)
+print(f"  Created batch: {batch_job.name}, state: {batch_job.state}")
+
+# Step 4: Poll for completion
+print("Step 4: Polling batch status...")
+terminal_states = ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"]
+
+for i in range(20):
+    batch_job = client.batches.get(name=batch_job.name)
+    print(f"  Poll {i+1}: state = {batch_job.state}")
+    
+    if batch_job.state in terminal_states:
+        print(f"  Batch reached terminal state: {batch_job.state}")
+        break
+    
+    time.sleep(5)
+
+# Step 5: Verify batch is in list
+print("Step 5: Verifying batch in list...")
+found = False
+for job in client.batches.list(config=ListBatchJobsConfig(page_size=20)):
+    if job.name == batch_job.name:
+        found = True
+        break
+
+assert found, f"Batch {batch_job.name} should be in list"
+print(f"  Verified batch {batch_job.name} is in list")
+
+# Cleanup
+os.remove(temp_file_path)
+try:
+    client.files.delete(name=uploaded_file.name)
+    client.batches.delete(name=batch_job.name)
+except Exception as e:
+    print(f"Cleanup note: {e}")
+
+print(f"\nSuccess! Batch workflow completed for {batch_job.name}")
+```
+
+### OpenAI via GenAI SDK Workflow
+
+```python
+import time
+from google import genai
+from google.genai.types import HttpOptions, ListBatchJobsConfig
+
+# Configuration
+provider = "openai"
+model = "gpt-4o-mini"
+
+client = genai.Client(
+    api_key="your-openai-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": provider}
+    )
+)
+
+# Step 1: Create inline requests
+print("Step 1: Creating inline requests...")
+inline_requests = [
+    {
+        "contents": [
+            {"parts": [{"text": "What is 2+2?"}], "role": "user"}
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    },
+    {
+        "contents": [
+            {"parts": [{"text": "What is the capital of France?"}], "role": "user"}
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    }
+]
+print(f"  Created {len(inline_requests)} inline requests")
+
+# Step 2: Create batch job
+print("Step 2: Creating batch job...")
+batch_job = client.batches.create(
+    model=model,
+    src=inline_requests,
+)
+print(f"  Created batch: {batch_job.name}, state: {batch_job.state}")
+
+# Step 3: Poll for completion
+print("Step 3: Polling batch status...")
+terminal_states = ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED"]
+
+for i in range(10):
+    batch_job = client.batches.get(name=batch_job.name)
+    print(f"  Poll {i+1}: state = {batch_job.state}")
+    
+    if batch_job.state in terminal_states:
+        break
+    
+    time.sleep(5)
+
+# Cleanup
+try:
+    client.batches.delete(name=batch_job.name)
+except Exception as e:
+    print(f"Cleanup note: {e}")
+
+print(f"\nSuccess! Cross-provider batch {batch_job.name} completed via GenAI SDK.")
+```
+
+### Anthropic via GenAI SDK Workflow
+
+```python
+import time
+from google import genai
+from google.genai.types import HttpOptions
+
+# Configuration
+provider = "anthropic"
+model = "claude-3-sonnet-20240229"
+
+client = genai.Client(
+    api_key="your-anthropic-api-key",
+    http_options=HttpOptions(
+        base_url="http://localhost:8080/genai",
+        headers={"x-model-provider": provider}
+    )
+)
+
+# Step 1: Create inline requests
+print("Step 1: Creating inline requests...")
+inline_requests = [
+    {
+        "contents": [
+            {"parts": [{"text": "What is 15 * 7?"}], "role": "user"}
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    },
+    {
+        "contents": [
+            {"parts": [{"text": "What is the largest ocean?"}], "role": "user"}
+        ],
+        "config": {"response_modalities": ["TEXT"]}
+    }
+]
+print(f"  Created {len(inline_requests)} inline requests")
+
+# Step 2: Create batch job
+print("Step 2: Creating batch job...")
+batch_job = client.batches.create(
+    model=model,
+    src=inline_requests,
+)
+print(f"  Created batch: {batch_job.name}, state: {batch_job.state}")
+
+# Step 3: Poll for completion
+print("Step 3: Polling batch status...")
+terminal_states = ["JOB_STATE_SUCCEEDED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "ended"]
+
+for i in range(10):
+    batch_job = client.batches.get(name=batch_job.name)
+    print(f"  Poll {i+1}: state = {batch_job.state}")
+    
+    if batch_job.state in terminal_states:
+        break
+    
+    time.sleep(5)
+
+print(f"\nSuccess! Anthropic batch {batch_job.name} completed via GenAI SDK.")
+```
+
+---
+
+## Batch Job States
+
+| State | Description |
+|-------|-------------|
+| `JOB_STATE_QUEUED` | Job is queued and waiting to start |
+| `JOB_STATE_PENDING` | Job is pending processing |
+| `JOB_STATE_RUNNING` | Job is currently running |
+| `JOB_STATE_SUCCEEDED` | Job completed successfully |
+| `JOB_STATE_FAILED` | Job failed |
+| `JOB_STATE_CANCELLING` | Job is being cancelled |
+| `JOB_STATE_CANCELLED` | Job was cancelled |
+
+---
+
+## JSON Format Reference
+
+### Gemini Batch Format
+
+```json
+{"key": "request-1", "request": {"contents": [{"parts": [{"text": "Hello!"}], "role": "user"}]}}
+```
+
+### Inline Request Format
+
+```python
+{
+    "contents": [
+        {"parts": [{"text": "Hello!"}], "role": "user"}
+    ],
+    "config": {"response_modalities": ["TEXT"]}
+}
+```
+
+---
+
+## Provider-Specific Notes
+
+| Provider | Header Value | File Upload | Batch Type | Models |
+|----------|--------------|-------------|------------|--------|
+| **Gemini** | `gemini` or omit | Native storage | File or Inline | `gemini-1.5-*` |
+| **OpenAI** | `openai` | Native storage | File or Inline | `gpt-4o-*`, `gpt-4-*` |
+| **Anthropic** | `anthropic` | Not supported | Inline only | `claude-3-*` |
+| **Bedrock** | `bedrock` | Use Bedrock SDK | Use Bedrock SDK | `anthropic.claude-*` |
+
+<Note>
+- **Gemini** and **OpenAI** support both file-based and inline batch creation
+- **Anthropic** only supports inline batch requests via this SDK
+- **Bedrock** requires the [Bedrock SDK](../bedrock-sdk/files-and-batch) for full batch support
+</Note>
+
+---
+
+## Next Steps
+
+- **[Overview](./overview)** - GenAI SDK integration basics
+- **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Governance, semantic caching, and more
+

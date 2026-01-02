@@ -164,6 +164,12 @@ type ImageGenerationRetryCondition interface {
 	GetConditionName() string
 }
 
+// CountTokensRetryCondition defines an interface for checking if a count tokens test operation should be retried
+type CountTokensRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostCountTokensResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
 // ListModelsRetryCondition defines an interface for checking if a list models test operation should be retried
 type ListModelsRetryCondition interface {
 	ShouldRetry(response *schemas.BifrostListModelsResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
@@ -254,6 +260,16 @@ type EmbeddingRetryConfig struct {
 	BaseDelay   time.Duration                                    // Base delay between retries
 	MaxDelay    time.Duration                                    // Maximum delay between retries
 	Conditions  []EmbeddingRetryCondition                        // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// CountTokensRetryConfig configures retry behavior for count tokens test scenarios
+type CountTokensRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []CountTokensRetryCondition                      // Conditions that trigger retries
 	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
 	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
 }
@@ -845,7 +861,9 @@ func StreamingRetryConfig() TestRetryConfig {
 		},
 		OnRetry: func(attempt int, reason string, t *testing.T) {
 			// reason already contains ❌ prefix from retry logic
-			t.Logf("🔄 Retrying streaming test (attempt %d): %s", attempt, reason)
+			// attempt represents the current failed attempt number
+			// Log with attempt+1 to show the next attempt that will run
+			t.Logf("🔄 Retrying streaming test (attempt %d): %s", attempt+1, reason)
 		},
 		OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
 			// finalErr already contains ❌ prefix from retry logic
@@ -963,6 +981,22 @@ func DefaultEmbeddingRetryConfig() TestRetryConfig {
 		},
 		OnRetry: func(attempt int, reason string, t *testing.T) {
 			t.Logf("🔄 Retrying embedding test (attempt %d): %s", attempt, reason)
+		},
+	}
+}
+
+// DefaultCountTokensRetryConfig creates a retry config for count tokens tests
+func DefaultCountTokensRetryConfig() TestRetryConfig {
+	return TestRetryConfig{
+		MaxAttempts: 10,
+		BaseDelay:   2000 * time.Millisecond,
+		MaxDelay:    10 * time.Second,
+		Conditions: []TestRetryCondition{
+			&EmptyCountTokensCondition{},
+			&InvalidCountTokensCondition{},
+		},
+		OnRetry: func(attempt int, reason string, t *testing.T) {
+			t.Logf("🔄 Retrying count tokens test (attempt %d): %s", attempt, reason)
 		},
 	}
 }
@@ -1163,6 +1197,8 @@ func GetTestRetryConfigForScenario(scenarioName string, testConfig Comprehensive
 		return StreamingRetryConfig()
 	case "Embedding":
 		return DefaultEmbeddingRetryConfig()
+	case "CountTokens":
+		return DefaultCountTokensRetryConfig()
 	case "SpeechSynthesis", "SpeechSynthesisHD", "SpeechSynthesis_Voice": // 🔊 Speech synthesis tests
 		return DefaultSpeechRetryConfig()
 	case "SpeechSynthesisStream", "SpeechSynthesisStreamHD", "SpeechSynthesisStreamVoice": // 🔊 Streaming speech tests
@@ -1861,6 +1897,154 @@ func checkEmbeddingRetryConditions(response *schemas.BifrostEmbeddingResponse, e
 	return false, ""
 }
 
+// WithCountTokensTestRetry wraps a count tokens test operation with retry logic for LLM behavior inconsistencies
+func WithCountTokensTestRetry(
+	t *testing.T,
+	config CountTokensRetryConfig,
+	context TestRetryContext,
+	expectations ResponseExpectations,
+	scenarioName string,
+	operation func() (*schemas.BifrostCountTokensResponse, *schemas.BifrostError),
+) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+
+	var lastResponse *schemas.BifrostCountTokensResponse
+	var lastError *schemas.BifrostError
+
+	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
+		context.AttemptNumber = attempt
+
+		// Execute the operation
+		response, err := operation()
+		lastResponse = response
+		lastError = err
+
+		// If we have a response, validate it FIRST
+		if response != nil {
+			validationResult := ValidateCountTokensResponse(t, response, err, expectations, scenarioName)
+
+			// If validation passes, we're done!
+			if validationResult.Passed {
+				return response, err
+			}
+
+			if attempt < config.MaxAttempts {
+				// ALWAYS retry on timeout errors - this takes precedence over all other conditions
+				if err != nil && isTimeoutError(err) {
+					retryReason := fmt.Sprintf("❌ timeout error detected: %s", GetErrorMessage(err))
+					if config.OnRetry != nil {
+						config.OnRetry(attempt, retryReason, t)
+					}
+
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+
+				// Check other retry conditions first (for logging/debugging)
+				shouldRetryFromConditions, conditionReason := checkCountTokensRetryConditions(response, err, context, config.Conditions)
+
+				// ALWAYS retry on validation failures
+				shouldRetry := len(validationResult.Errors) > 0
+				var retryReason string
+
+				if shouldRetry {
+					retryReason = fmt.Sprintf("❌ validation failure (content/functionality check): %s", strings.Join(validationResult.Errors, "; "))
+					if shouldRetryFromConditions && conditionReason != "" {
+						retryReason += fmt.Sprintf(" | also: %s", conditionReason)
+					}
+				} else if shouldRetryFromConditions {
+					shouldRetry = true
+					if !strings.Contains(conditionReason, "❌") {
+						retryReason = fmt.Sprintf("❌ %s", conditionReason)
+					} else {
+						retryReason = conditionReason
+					}
+				}
+
+				if shouldRetry {
+					if config.OnRetry != nil {
+						config.OnRetry(attempt, retryReason, t)
+					}
+
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// All retries failed validation - create a BifrostError to force test failure
+			validationErrors := strings.Join(validationResult.Errors, "; ")
+
+			if config.OnFinalFail != nil {
+				finalErr := fmt.Errorf("❌ validation failed after %d attempts: %s", attempt, validationErrors)
+				config.OnFinalFail(attempt, finalErr, t)
+			}
+
+			statusCode := 400
+			testFailureError := &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("❌ Validation failed after %d attempts: %s", attempt, validationErrors),
+				},
+			}
+			return nil, testFailureError
+		}
+
+		// If we have an error without a response, check if we should retry
+		if err != nil && attempt < config.MaxAttempts {
+			// ALWAYS retry on timeout errors - this takes precedence over other conditions
+			if isTimeoutError(err) {
+				retryReason := fmt.Sprintf("❌ timeout error detected: %s", GetErrorMessage(err))
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+
+			shouldRetry, retryReason := checkCountTokensRetryConditions(response, err, context, config.Conditions)
+			if shouldRetry {
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		break
+	}
+
+	// Final failure callback
+	if config.OnFinalFail != nil && lastError != nil {
+		errorMsg := "unknown error"
+		if lastError.Error != nil {
+			errorMsg = lastError.Error.Message
+		}
+		if !strings.Contains(errorMsg, "❌") {
+			errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+		}
+		config.OnFinalFail(config.MaxAttempts, fmt.Errorf("❌ final error: %s", errorMsg), t)
+	}
+
+	return lastResponse, lastError
+}
+
+// checkCountTokensRetryConditions checks if any count tokens retry conditions are met
+func checkCountTokensRetryConditions(response *schemas.BifrostCountTokensResponse, err *schemas.BifrostError, context TestRetryContext, conditions []CountTokensRetryCondition) (bool, string) {
+	for _, condition := range conditions {
+		if shouldRetry, reason := condition.ShouldRetry(response, err, context); shouldRetry {
+			return true, fmt.Sprintf("%s: %s", condition.GetConditionName(), reason)
+		}
+	}
+	return false, ""
+}
+
 // checkTranscriptionRetryConditions checks if any transcription retry conditions are met
 func checkTranscriptionRetryConditions(response *schemas.BifrostTranscriptionResponse, err *schemas.BifrostError, context TestRetryContext, conditions []TranscriptionRetryCondition) (bool, string) {
 	for _, condition := range conditions {
@@ -2358,6 +2542,13 @@ func WithResponsesStreamValidationRetry(
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
 		context.AttemptNumber = attempt
 
+		// Log attempt start (especially for retries)
+		if attempt > 1 {
+			t.Logf("🔄 Starting responses stream retry attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
+		} else {
+			t.Logf("🔄 Starting responses stream test attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
+		}
+
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
 
@@ -2403,13 +2594,20 @@ func WithResponsesStreamValidationRetry(
 				}
 
 				if shouldRetry {
+					// Log the error and upcoming retry
+					if attempt > 1 {
+						t.Logf("❌ Responses stream request failed on attempt %d/%d for %s: %s", attempt, config.MaxAttempts, context.ScenarioName, retryReason)
+					}
+
 					if config.OnRetry != nil {
+						// Pass current failed attempt number
 						config.OnRetry(attempt, retryReason, t)
 					} else {
 						t.Logf("🔄 Retrying responses stream request (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
 					}
 
 					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					t.Logf("⏳ Waiting %v before retry...", delay)
 					time.Sleep(delay)
 					continue
 				}
@@ -2435,12 +2633,17 @@ func WithResponsesStreamValidationRetry(
 		if responseChannel == nil {
 			if attempt < config.MaxAttempts {
 				retryReason := "❌ response channel is nil"
+				t.Logf("❌ Responses stream response channel is nil on attempt %d/%d for %s", attempt, config.MaxAttempts, context.ScenarioName)
 				if config.OnRetry != nil {
+					// Pass current failed attempt number
 					config.OnRetry(attempt, retryReason, t)
+				} else {
+					t.Logf("🔄 Retrying responses stream request (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
 				}
 				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				t.Logf("⏳ Waiting %v before retry...", delay)
 				time.Sleep(delay)
-				continue
+				continue // CRITICAL: Must continue to retry, not return
 			}
 			return ResponsesStreamValidationResult{
 				Passed: false,
@@ -2503,6 +2706,7 @@ func WithResponsesStreamValidationRetry(
 			}
 
 			if config.OnRetry != nil {
+				// Pass current failed attempt number
 				config.OnRetry(attempt, retryReason, t)
 			} else {
 				t.Logf("🔄 Retrying responses stream validation (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)

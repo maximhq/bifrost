@@ -1,0 +1,172 @@
+---
+title: "Nebius"
+description: "Nebius API conversion guide - OpenAI-compatible format, parameter handling, streaming, embeddings, and special features"
+icon: "n"
+---
+
+## Overview
+
+Nebius is an **OpenAI-compatible provider** offering comprehensive API support. Bifrost delegates to the OpenAI implementation with standard parameter filtering. Key features:
+- **Full OpenAI compatibility** - Chat, text completion, embeddings, and responses
+- **Streaming support** - Server-Sent Events with delta-based updates
+- **AI Project ID** - Nebius-specific project identifier support
+- **Tool calling** - Complete function definition and execution
+- **Parameter filtering** - Removes unsupported OpenAI-specific fields
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Speech, Transcriptions, Files, and Batch are not supported by the upstream Nebius API. These return `UnsupportedOperationError`.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Nebius supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Nebius-Specific Parameters
+
+**ai_project_id (Optional):**
+
+Nebius allows specifying a project ID for resource organization:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nebius/model-name",
+    "messages": [...],
+    "ai_project_id": "project-123"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+request := &schemas.BifrostChatRequest{
+    Model: "model-name",
+    Input: messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "ai_project_id": "project-123",
+        },
+    },
+}
+```
+
+</Tab>
+</Tabs>
+
+The `ai_project_id` is appended as a query parameter to the request URL.
+
+### Filtered Parameters
+
+Removed for Nebius compatibility:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - Not supported
+
+Nebius supports all standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support and message handling as Chat Completions. Supports ai_project_id via extra_params.
+
+---
+
+# 3. Text Completions
+
+Nebius supports legacy text completion format:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Direct pass-through |
+| `max_tokens` | max_tokens |
+| `temperature`, `top_p` | Direct pass-through |
+| `stop` | Stop sequences |
+| `frequency_penalty`, `presence_penalty` | Penalty parameters |
+
+---
+
+# 4. Embeddings
+
+Nebius supports text embeddings:
+
+| Parameter | Notes |
+|-----------|-------|
+| `input` | Text or array of texts |
+| `model` | Embedding model name |
+| `encoding_format` | "float" or "base64" |
+| `dimensions` | Custom output dimensions (optional) |
+
+Response returns embedding vectors with usage information.
+
+---
+
+# 5. List Models
+
+Lists available Nebius models with capabilities and context lengths.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Speech/TTS | Not offered by Nebius API |
+| Transcription/STT | Not offered by Nebius API |
+| Batch Operations | Not offered by Nebius API |
+| File Management | Not offered by Nebius API |
+
+---
+
+## Caveats
+
+<Accordion title="Cache Control Stripped">
+**Severity**: Medium
+**Behavior**: Cache control directives are removed from messages
+**Impact**: Prompt caching features don't work
+**Code**: Stripped during JSON marshaling
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific fields filtered out
+**Impact**: prompt_cache_key, verbosity, store removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: SanitizeUserField enforces 64-char max
+</Accordion>

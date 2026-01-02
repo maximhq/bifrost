@@ -1,14 +1,16 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RequestTypeLabels, RequestTypes, Statuses } from "@/lib/constants/logs";
-import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import { getErrorMessage, useGetAvailableFilterDataQuery, useGetProvidersQuery, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
-import { Check, FilterIcon, Pause, Play, Search } from "lucide-react";
+import { Calculator, Check, FilterIcon, MoreVertical, Pause, Play, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 /**
  * Converts a Date object to an RFC 3339 string with the local time zone offset.
@@ -49,12 +51,16 @@ interface LogFiltersProps {
 	onFiltersChange: (filters: LogFiltersType) => void;
 	liveEnabled: boolean;
 	onLiveToggle: (enabled: boolean) => void;
+	fetchLogs: () => Promise<void>;
+	fetchStats: () => Promise<void>;
 }
 
-export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle }: LogFiltersProps) {
-	const [open, setOpen] = useState(false);
+export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle, fetchLogs, fetchStats }: LogFiltersProps) {
+	const [openFiltersPopover, setOpenFiltersPopover] = useState(false);
+	const [openMoreActionsPopover, setOpenMoreActionsPopover] = useState(false);
 	const [localSearch, setLocalSearch] = useState(filters.content_search || "");
 	const searchTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+	const [recalculateCosts, { isLoading: recalculating }] = useRecalculateLogCostsMutation();
 
 	// Convert ISO strings from filters to Date objects for the DateTimePicker
 	const [startTime, setStartTime] = useState<Date | undefined>(filters.start_time ? new Date(filters.start_time) : undefined);
@@ -87,6 +93,21 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			}
 		};
 	}, []);
+
+	const handleRecalculateCosts = useCallback(async () => {
+		try {
+			const response = await recalculateCosts({ filters }).unwrap();
+			await fetchLogs();
+			await fetchStats();
+			setOpenMoreActionsPopover(false);
+			toast.success(`Recalculated costs for ${response.updated} logs`, {
+				description: `${response.updated} logs updated, ${response.skipped} logs skipped, ${response.remaining} logs remaining`,
+				duration: 5000,
+			});
+		} catch (err) {
+			toast.error(getErrorMessage(err));
+		}
+	}, [filters, recalculateCosts, fetchLogs, fetchStats]);
 
 	const handleSearchChange = useCallback(
 		(value: string) => {
@@ -185,7 +206,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	} as const;
 
 	return (
-		<div className="flex items-center justify-between space-x-4">
+		<div className="flex items-center justify-between space-x-2">
 			<Button variant={"outline"} size="sm" className="h-9" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
@@ -225,9 +246,9 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					});
 				}}
 			/>
-			<Popover open={open} onOpenChange={setOpen}>
+			<Popover open={openFiltersPopover} onOpenChange={setOpenFiltersPopover}>
 				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-9">
+					<Button variant="outline" size="sm" className="h-9 w-[120px]">
 						<FilterIcon className="h-4 w-4" />
 						Filters
 						{getSelectedCount() > 0 && (
@@ -242,6 +263,20 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 						<CommandInput placeholder="Search filters..." />
 						<CommandList>
 							<CommandEmpty>No filters found.</CommandEmpty>
+							<CommandGroup>
+								<CommandItem className="cursor-pointer">
+									<Checkbox
+										className={cn(
+											"border-primary opacity-50",
+											filters.missing_cost_only && "bg-primary text-primary-foreground opacity-100",
+										)}
+										id="missing-cost-toggle"
+										checked={!!filters.missing_cost_only}
+										onCheckedChange={(checked: boolean) => onFiltersChange({ ...filters, missing_cost_only: checked })}
+									/>
+									<span className="text-sm">Show missing cost</span>
+								</CommandItem>
+							</CommandGroup>
 							{Object.entries(FILTER_OPTIONS)
 								.filter(([_, values]) => values.length > 0)
 								.map(([category, values]) => (
@@ -279,6 +314,26 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 										})}
 									</CommandGroup>
 								))}
+						</CommandList>
+					</Command>
+				</PopoverContent>
+			</Popover>
+			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
+				<PopoverTrigger asChild>
+					<Button variant="outline" size="sm" className="h-9">
+						<MoreVertical className="h-4 w-4" />
+					</Button>
+				</PopoverTrigger>
+				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
+					<Command>
+						<CommandList>
+							<CommandItem className="hover:bg-accent/50 cursor-pointer" onSelect={handleRecalculateCosts}>
+								<Calculator className="text-muted-foreground size-4" />
+								<div className="flex flex-col">
+									<span className="text-sm">Recalculate costs</span>
+									<span className="text-muted-foreground text-xs">For all logs that don't have a cost</span>
+								</div>
+							</CommandItem>
 						</CommandList>
 					</Command>
 				</PopoverContent>

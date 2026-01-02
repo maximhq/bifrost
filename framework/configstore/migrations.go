@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/migrator"
@@ -80,6 +81,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLogRetentionDaysColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddEnabledColumnToKeyTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBatchAndCachePricingColumns(ctx, db); err != nil {
 		return err
 	}
@@ -99,6 +103,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddAdditionalConfigHashColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAdd200kTokenPricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddHeaderFilterConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -1092,6 +1105,49 @@ func migrationAddLogRetentionDaysColumn(ctx context.Context, db *gorm.DB) error 
 	return nil
 }
 
+// migrationAddEnabledColumnToKeyTable adds the enabled column to the config_keys table
+func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_enabled_column_to_key_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Check if column already exists
+			if !mg.HasColumn(&tables.TableKey{}, "enabled") {
+				// Add the column
+				if err := mg.AddColumn(&tables.TableKey{}, "enabled"); err != nil {
+					return fmt.Errorf("failed to add enabled column: %w", err)
+				}
+
+			}
+			// Set default = true for existing rows
+			if err := tx.Exec("UPDATE config_keys SET enabled = TRUE WHERE enabled IS NULL").Error; err != nil {
+				return fmt.Errorf("failed to backfill enabled column: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if mg.HasColumn(&tables.TableKey{}, "enabled") {
+				if err := mg.DropColumn(&tables.TableKey{}, "enabled"); err != nil {
+					return fmt.Errorf("failed to drop enabled column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running enabled column migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddBatchAndCachePricingColumns adds the cache_read_input_token_cost, cache_creation_input_token_cost, input_cost_per_token_batches, and output_cost_per_token_batches columns to the model_pricing table
 func migrationAddBatchAndCachePricingColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -1194,7 +1250,7 @@ func migrationMoveKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
 								providerConfig = tables.TableVirtualKeyProviderConfig{
 									VirtualKeyID:  assoc.VirtualKeyID,
 									Provider:      key.Provider,
-									Weight:        1.0,
+									Weight:        bifrost.Ptr(1.0),
 									AllowedModels: []string{},
 								}
 								if err := tx.Create(&providerConfig).Error; err != nil {
@@ -1370,12 +1426,13 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 				}
 				for _, key := range keys {
 					if key.ConfigHash == "" {
+						
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
 							Name:             key.Name,
 							Value:            key.Value,
 							Models:           key.Models,
-							Weight:           key.Weight,
+							Weight:           getWeight(key.Weight),
 							AzureKeyConfig:   key.AzureKeyConfig,
 							VertexKeyConfig:  key.VertexKeyConfig,
 							BedrockKeyConfig: key.BedrockKeyConfig,
@@ -1674,6 +1731,138 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running add additional config hash columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAdd200kTokenPricingColumns adds pricing columns for 200k token tier models
+func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_200k_token_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_above_200k_tokens",
+				"output_cost_per_token_above_200k_tokens",
+				"cache_creation_input_token_cost_above_200k_tokens",
+				"cache_read_input_token_cost_above_200k_tokens",
+			}
+
+			for _, field := range columns {
+				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_above_200k_tokens",
+				"output_cost_per_token_above_200k_tokens",
+				"cache_creation_input_token_cost_above_200k_tokens",
+				"cache_read_input_token_cost_above_200k_tokens",
+			}
+
+			for _, field := range columns {
+				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddUseForBatchAPIColumnAndS3BucketsConfig adds the use_for_batch_api and bedrock_batch_s3_config_json columns to the config_keys table
+// Existing keys are backfilled with use_for_batch_api = TRUE to preserve current behavior
+func migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_use_for_batch_api_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// Add use_for_batch_api column
+			if !mg.HasColumn(&tables.TableKey{}, "use_for_batch_api") {
+				if err := mg.AddColumn(&tables.TableKey{}, "use_for_batch_api"); err != nil {
+					return fmt.Errorf("failed to add use_for_batch_api column: %w", err)
+				}
+			}
+
+			// Add bedrock_batch_s3_config_json column
+			if !mg.HasColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json") {
+				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
+					return fmt.Errorf("failed to add bedrock_batch_s3_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if mg.HasColumn(&tables.TableKey{}, "use_for_batch_api") {
+				if err := mg.DropColumn(&tables.TableKey{}, "use_for_batch_api"); err != nil {
+					return fmt.Errorf("failed to drop use_for_batch_api column: %w", err)
+				}
+			}
+
+			if mg.HasColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json") {
+				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_batch_s3_config_json"); err != nil {
+					return fmt.Errorf("failed to drop bedrock_batch_s3_config_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running use_for_batch_api migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddHeaderFilterConfigJSONColumn adds the header_filter_config_json column to the config_client table
+func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_header_filter_config_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasColumn(&tables.TableClientConfig{}, "header_filter_config_json") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
+					return fmt.Errorf("failed to add header_filter_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if mg.HasColumn(&tables.TableClientConfig{}, "header_filter_config_json") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "header_filter_config_json"); err != nil {
+					return fmt.Errorf("failed to drop header_filter_config_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running header_filter_config_json migration: %s", err.Error())
 	}
 	return nil
 }

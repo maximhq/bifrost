@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -63,11 +62,21 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					t.Parallel()
 				}
 
+				speechSynthesisProvider := testConfig.Provider
+				if testConfig.ExternalTTSProvider != "" {
+					speechSynthesisProvider = testConfig.ExternalTTSProvider
+				}
+
+				speechSynthesisModel := testConfig.SpeechSynthesisModel
+				if testConfig.ExternalTTSModel != "" {
+					speechSynthesisModel = testConfig.ExternalTTSModel
+				}
+
 				// Step 1: Generate TTS audio
-				voice := GetProviderVoice(testConfig.Provider, tc.voiceType)
+				voice := GetProviderVoice(speechSynthesisProvider, tc.voiceType)
 				ttsRequest := &schemas.BifrostSpeechRequest{
-					Provider: testConfig.Provider,
-					Model:    testConfig.SpeechSynthesisModel,
+					Provider: speechSynthesisProvider,
+					Model:    speechSynthesisModel,
 					Input: &schemas.SpeechInput{
 						Input: tc.text,
 					},
@@ -88,8 +97,8 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 						"should_generate_audio": true,
 					},
 					TestMetadata: map[string]interface{}{
-						"provider": testConfig.Provider,
-						"model":    testConfig.SpeechSynthesisModel,
+						"provider": speechSynthesisProvider,
+						"model":    speechSynthesisModel,
 					},
 				}
 				ttsExpectations := SpeechExpectations(100)
@@ -335,8 +344,18 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				t.Parallel()
 			}
 
+			speechSynthesisProvider := testConfig.Provider
+			if testConfig.ExternalTTSProvider != "" {
+				speechSynthesisProvider = testConfig.ExternalTTSProvider
+			}
+
+			speechSynthesisModel := testConfig.SpeechSynthesisModel
+			if testConfig.ExternalTTSModel != "" {
+				speechSynthesisModel = testConfig.ExternalTTSModel
+			}
+
 			// Generate audio for streaming test
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 
 			// Test streaming with JSON format
 			request := &schemas.BifrostTranscriptionRequest{
@@ -420,8 +439,18 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				t.Parallel()
 			}
 
+			speechSynthesisProvider := testConfig.Provider
+			if testConfig.ExternalTTSProvider != "" {
+				speechSynthesisProvider = testConfig.ExternalTTSProvider
+			}
+
+			speechSynthesisModel := testConfig.SpeechSynthesisModel
+			if testConfig.ExternalTTSModel != "" {
+				speechSynthesisModel = testConfig.ExternalTTSModel
+			}
+
 			// Generate audio for language streaming tests
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
+			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 			// Test streaming with different language hints (only English for now)
 			languages := []string{"en"}
 
@@ -509,8 +538,18 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				t.Parallel()
 			}
 
+			speechSynthesisProvider := testConfig.Provider
+			if testConfig.ExternalTTSProvider != "" {
+				speechSynthesisProvider = testConfig.ExternalTTSProvider
+			}
+
+			speechSynthesisModel := testConfig.SpeechSynthesisModel
+			if testConfig.ExternalTTSModel != "" {
+				speechSynthesisModel = testConfig.ExternalTTSModel
+			}
+
 			// Generate audio for custom prompt streaming test
-			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, testConfig.Provider, testConfig.SpeechSynthesisModel, TTSTestTextTechnical, "tertiary", "mp3")
+			audioData, _ := GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextTechnical, "tertiary", "mp3")
 
 			// Test streaming with custom prompt for context
 			request := &schemas.BifrostTranscriptionRequest{

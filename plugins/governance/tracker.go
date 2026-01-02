@@ -97,7 +97,7 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 // updateBudgetHierarchy updates budget usage atomically in the VK → Team → Customer hierarchy
 func (t *UsageTracker) updateBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, update *UsageUpdate) {
 	// Use atomic budget update to prevent race conditions and ensure consistency
-	if err := t.store.UpdateBudget(ctx, vk, update.Cost); err != nil {
+	if err := t.store.UpdateBudget(ctx, vk, update.Provider, update.Cost); err != nil {
 		t.logger.Error("failed to update budget hierarchy atomically for VK %s: %v", vk.ID, err)
 	}
 }

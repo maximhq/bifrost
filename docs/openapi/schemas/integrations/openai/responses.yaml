@@ -1,0 +1,108 @@
+# OpenAI Integration Responses API Schemas
+
+OpenAIResponsesRequest:
+  type: object
+  required:
+    - model
+    - input
+  properties:
+    model:
+      type: string
+      description: Model identifier
+      example: gpt-4
+    input:
+      $ref: '#/OpenAIResponsesInput'
+    stream:
+      type: boolean
+    instructions:
+      type: string
+      description: System instructions for the model
+    max_output_tokens:
+      type: integer
+    metadata:
+      type: object
+      additionalProperties: true
+    parallel_tool_calls:
+      type: boolean
+    previous_response_id:
+      type: string
+    reasoning:
+      $ref: '#/OpenAIResponsesReasoning'
+    store:
+      type: boolean
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 2
+    text:
+      $ref: '#/OpenAIResponsesTextConfig'
+    tool_choice:
+      $ref: '../../inference/responses.yaml#/ResponsesToolChoice'
+    tools:
+      type: array
+      items:
+        $ref: '../../inference/responses.yaml#/ResponsesTool'
+    top_p:
+      type: number
+    truncation:
+      type: string
+      enum: [auto, disabled]
+    user:
+      type: string
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+OpenAIResponsesInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '../../inference/responses.yaml#/ResponsesMessage'
+  description: Input - can be a string or array of messages
+
+OpenAIResponsesReasoning:
+  type: object
+  properties:
+    effort:
+      type: string
+      enum: [none, minimal, low, medium, high, xhigh]
+    generate_summary:
+      type: string
+      enum: [auto, concise, detailed]
+    summary:
+      type: string
+      enum: [auto, concise, detailed]
+    max_tokens:
+      type: integer
+
+OpenAIResponsesTextConfig:
+  type: object
+  properties:
+    format:
+      $ref: '#/OpenAIResponsesTextFormat'
+
+OpenAIResponsesTextFormat:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [text, json_object, json_schema]
+    json_schema:
+      type: object
+      properties:
+        name:
+          type: string
+        schema:
+          type: object
+        strict:
+          type: boolean
+
+# Response reuses inference schema
+OpenAIResponsesResponse:
+  $ref: '../../inference/responses.yaml#/ResponsesResponse'
+
+OpenAIResponsesStreamResponse:
+  $ref: '../../inference/responses.yaml#/ResponsesStreamResponse'

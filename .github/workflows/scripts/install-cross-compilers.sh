@@ -27,42 +27,42 @@ sudo ln -sf /usr/bin/aarch64-linux-gnu-g++ /usr/local/bin/aarch64-linux-musl-g++
 echo "🍎 Setting up Darwin cross-compilation..."
 
 # Where to install SDK
-SDK_DIR="/opt/MacOSX11.3.sdk"
-SDK_URL="https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz"
+SDK_DIR="/opt/MacOSX12.3.sdk"
+SDK_URL="https://github.com/phracker/MacOSX-SDKs/releases/download/12.3/MacOSX12.3.sdk.tar.xz"
 
 # Download and extract macOS SDK if not already installed
 if [ ! -d "$SDK_DIR" ]; then
   echo "📦 Downloading macOS SDK..."
   # Use -f to fail on HTTP errors, -L to follow redirects
-  if ! curl -fL "$SDK_URL" -o /tmp/MacOSX11.3.sdk.tar.xz; then
+  if ! curl -fL "$SDK_URL" -o /tmp/MacOSX12.3.sdk.tar.xz; then
     echo "❌ Failed to download macOS SDK from primary URL, trying alternative..."
-    SDK_URL_ALT="https://github.com/joseluisq/macosx-sdks/releases/download/11.3/MacOSX11.3.sdk.tar.xz"
-    curl -fL "$SDK_URL_ALT" -o /tmp/MacOSX11.3.sdk.tar.xz
+    SDK_URL_ALT="https://github.com/joseluisq/macosx-sdks/releases/download/12.3/MacOSX12.3.sdk.tar.xz"
+    curl -fL "$SDK_URL_ALT" -o /tmp/MacOSX12.3.sdk.tar.xz
   fi
   sudo mkdir -p /opt
-  sudo tar -xf /tmp/MacOSX11.3.sdk.tar.xz -C /opt
-  rm -f /tmp/MacOSX11.3.sdk.tar.xz
+  sudo tar -xf /tmp/MacOSX12.3.sdk.tar.xz -C /opt
+  rm -f /tmp/MacOSX12.3.sdk.tar.xz
 fi
 
 # Create wrapper scripts with proper shebang and linker configuration
 sudo tee /usr/local/bin/o64-clang > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang -target x86_64-apple-darwin --sysroot=/opt/MacOSX11.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
+exec clang -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/o64-clang++ > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang++ -target x86_64-apple-darwin --sysroot=/opt/MacOSX11.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
+exec clang++ -target x86_64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/oa64-clang > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang -target arm64-apple-darwin --sysroot=/opt/MacOSX11.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
+exec clang -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo tee /usr/local/bin/oa64-clang++ > /dev/null << 'WRAPPER_EOF'
 #!/bin/bash
-exec clang++ -target arm64-apple-darwin --sysroot=/opt/MacOSX11.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
+exec clang++ -target arm64-apple-darwin --sysroot=/opt/MacOSX12.3.sdk -fuse-ld=lld -Wno-unused-command-line-argument "$@"
 WRAPPER_EOF
 
 sudo chmod +x /usr/local/bin/o64-clang /usr/local/bin/o64-clang++ \

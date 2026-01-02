@@ -64,7 +64,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.3"
+          go-version: "1.25.5"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -115,6 +115,7 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

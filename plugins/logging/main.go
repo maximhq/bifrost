@@ -46,6 +46,14 @@ type UpdateLogData struct {
 	RawResponse         interface{}
 }
 
+// RecalculateCostResult represents summary stats from a cost backfill operation
+type RecalculateCostResult struct {
+	TotalMatched int64 `json:"total_matched"`
+	Updated      int   `json:"updated"`
+	Skipped      int   `json:"skipped"`
+	Remaining    int64 `json:"remaining"`
+}
+
 // LogMessage represents a message in the logging queue
 type LogMessage struct {
 	Operation          LogOperation
@@ -264,7 +272,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input
+			initialData.TranscriptionInput = req.TranscriptionRequest.Input		
 		}
 	}
 

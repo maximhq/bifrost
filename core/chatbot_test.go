@@ -41,14 +41,6 @@ type ChatSession struct {
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
 type ComprehensiveTestAccount struct{}
 
-// getEnvWithDefault returns the value of the environment variable if set, otherwise returns the default value
-func getEnvWithDefault(envVar, defaultValue string) string {
-	if value := os.Getenv(envVar); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
 // GetConfiguredProviders returns the list of initially supported providers.
 func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
 	return []schemas.ModelProvider{
@@ -515,7 +507,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	s.history = append(s.history, *assistantMessage)
 
 	// Check if assistant wants to use tools
-	if assistantMessage.ToolCalls != nil && len(assistantMessage.ToolCalls) > 0 {
+	if len(assistantMessage.ToolCalls) > 0 {
 		return s.handleToolCalls(*assistantMessage)
 	}
 
@@ -523,7 +515,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	var responseText string
 	if assistantMessage.Content.ContentStr != nil {
 		responseText = *assistantMessage.Content.ContentStr
-	} else if assistantMessage.Content.ContentBlocks != nil && len(assistantMessage.Content.ContentBlocks) > 0 {
+	} else if len(assistantMessage.Content.ContentBlocks) > 0 {
 		var textParts []string
 		for _, block := range assistantMessage.Content.ContentBlocks {
 			if block.Text != nil {

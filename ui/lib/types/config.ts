@@ -49,6 +49,16 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	deployments: {},
 } as const satisfies Required<VertexKeyConfig>;
 
+export interface S3BucketConfig {
+	bucket_name: string;
+	prefix?: string;
+	is_default?: boolean;
+}
+
+export interface BatchS3Config {
+	buckets?: S3BucketConfig[];
+}
+
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
 	access_key?: string;
@@ -57,6 +67,7 @@ export interface BedrockKeyConfig {
 	region: string;
 	arn?: string;
 	deployments?: Record<string, string> | string; // Allow string during editing
+	batch_s3_config?: BatchS3Config;
 }
 
 // Default BedrockKeyConfig
@@ -67,6 +78,7 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	region: "us-east-1",
 	arn: undefined as unknown as string,
 	deployments: {},
+	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
 // Key structure matching Go's schemas.Key
@@ -76,6 +88,8 @@ export interface ModelProviderKey {
 	value?: string;
 	models?: string[];
 	weight: number;
+	enabled?: boolean;
+	use_for_batch_api?: boolean;
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
@@ -88,6 +102,7 @@ export const DefaultModelProviderKey: ModelProviderKey = {
 	value: "",
 	models: [],
 	weight: 1.0,
+	enabled: true,
 };
 
 // NetworkConfig matching Go's schemas.NetworkConfig
@@ -116,6 +131,7 @@ export interface ProxyConfig {
 	url?: string;
 	username?: string;
 	password?: string;
+	ca_cert_pem?: string;
 }
 
 // Request types matching Go's schemas.RequestType
@@ -133,7 +149,18 @@ export type RequestType =
 	| "transcription"
 	| "transcription_stream"
 	| "image_generation"
-	| "image_generation_stream";
+	| "image_generation_stream"
+	| "count_tokens"
+	| "batch_create"
+	| "batch_list"
+	| "batch_retrieve"
+	| "batch_cancel"
+	| "batch_results"
+	| "file_upload"
+	| "file_list"
+	| "file_retrieve"
+	| "file_delete"
+	| "file_content";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -150,6 +177,7 @@ export interface AllowedRequests {
 	transcription_stream: boolean;
 	image_generation: boolean;
 	image_generation_stream: boolean; 
+	count_tokens: boolean;
 	list_models: boolean;
 }
 
@@ -242,7 +270,7 @@ export interface AuthConfig {
 }
 
 // Global proxy type (for global proxy configuration, not per-provider)
-export type GlobalProxyType = 'http' | 'socks5' | 'tcp'
+export type GlobalProxyType = "http" | "socks5" | "tcp";
 
 // Global proxy configuration matching Go's tables.GlobalProxyConfig
 export interface GlobalProxyConfig {
@@ -251,6 +279,7 @@ export interface GlobalProxyConfig {
 	url: string;
 	username?: string;
 	password?: string;
+	ca_cert_pem?: string;
 	no_proxy?: string;
 	timeout?: number;
 	skip_tls_verify?: boolean;
@@ -262,16 +291,35 @@ export interface GlobalProxyConfig {
 // Default GlobalProxyConfig
 export const DefaultGlobalProxyConfig: GlobalProxyConfig = {
 	enabled: false,
-	type: 'http',
-	url: '',
-	username: '',
-	password: '',
-	no_proxy: '',
+	type: "http",
+	url: "",
+	username: "",
+	password: "",
+	no_proxy: "",
 	timeout: 30,
 	skip_tls_verify: false,
 	enable_for_scim: false,
 	enable_for_inference: false,
 	enable_for_api: false,
+};
+
+// Global header filter configuration matching Go's tables.GlobalHeaderFilterConfig
+// Controls which headers with the x-bf-eh-* prefix are forwarded to LLM providers
+export interface GlobalHeaderFilterConfig {
+	allowlist?: string[]; // If non-empty, only these headers are allowed
+	denylist?: string[]; // Headers to always block
+}
+
+// Default GlobalHeaderFilterConfig
+export const DefaultGlobalHeaderFilterConfig: GlobalHeaderFilterConfig = {
+	allowlist: [],
+	denylist: [],
+};
+
+// Restart required configuration
+export interface RestartRequiredConfig {
+	required: boolean;
+	reason?: string;
 }
 
 // Bifrost Config
@@ -279,7 +327,8 @@ export interface BifrostConfig {
 	client_config: CoreConfig;
 	framework_config: FrameworkConfig;
 	auth_config?: AuthConfig;
-	proxy_config?: GlobalProxyConfig;
+	proxy_config?: GlobalProxyConfig;	
+	restart_required?: RestartRequiredConfig;
 	is_db_connected: boolean;
 	is_cache_connected: boolean;
 	is_logs_connected: boolean;
@@ -300,6 +349,7 @@ export interface CoreConfig {
 	allowed_origins: string[];
 	max_request_body_size_mb: number;
 	enable_litellm_fallbacks: boolean;
+	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
 // Semantic cache configuration types

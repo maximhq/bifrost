@@ -23,7 +23,9 @@ import (
 	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/groq"
+	"github.com/maximhq/bifrost/core/providers/huggingface"
 	"github.com/maximhq/bifrost/core/providers/mistral"
+	"github.com/maximhq/bifrost/core/providers/nebius"
 	"github.com/maximhq/bifrost/core/providers/ollama"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
@@ -33,6 +35,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // ChannelMessage represents a message passed through the request channel.
@@ -682,6 +685,45 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx context.Context, req *schemas
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// CountTokensRequest sends a count tokens request to the specified provider.
+func (bifrost *Bifrost) CountTokensRequest(ctx context.Context, req *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "count tokens request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.CountTokensRequest,
+			},
+		}
+	}
+	if req.Input == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "input not provided for count tokens request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.CountTokensRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.CountTokensRequest
+	bifrostReq.CountTokensRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.CountTokensResponse, nil
+}
+
 // EmbeddingRequest sends an embedding request to the specified provider.
 func (bifrost *Bifrost) EmbeddingRequest(ctx context.Context, req *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -932,6 +974,436 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
 	bifrostReq.ImageGenerationRequest = req
 
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
+// BatchCreateRequest creates a new batch job for asynchronous processing.
+func (bifrost *Bifrost) BatchCreateRequest(ctx context.Context, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch create request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch create request",
+			},
+		}
+	}
+	if req.InputFileID == "" && len(req.Requests) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "either input_file_id or requests is required for batch create request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	provider := bifrost.getProviderByKey(req.Provider)
+	if provider == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider not found for batch create request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchCreateRequest
+	bifrostReq.BatchCreateRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchCreateResponse, nil
+}
+
+// BatchListRequest lists batch jobs for the specified provider.
+func (bifrost *Bifrost) BatchListRequest(ctx context.Context, req *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch list request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch list request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchListRequest
+	bifrostReq.BatchListRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchListResponse, nil
+}
+
+// BatchRetrieveRequest retrieves a specific batch job.
+func (bifrost *Bifrost) BatchRetrieveRequest(ctx context.Context, req *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch retrieve request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch retrieve request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch retrieve request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchRetrieveRequest
+	bifrostReq.BatchRetrieveRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchRetrieveResponse, nil
+}
+
+// BatchCancelRequest cancels a batch job.
+func (bifrost *Bifrost) BatchCancelRequest(ctx context.Context, req *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch cancel request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch cancel request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch cancel request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchCancelRequest
+	bifrostReq.BatchCancelRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchCancelResponse, nil
+}
+
+// BatchResultsRequest retrieves results from a completed batch job.
+func (bifrost *Bifrost) BatchResultsRequest(ctx context.Context, req *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch results request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch results request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch results request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.BatchResultsRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchResultsRequest
+	bifrostReq.BatchResultsRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchResultsResponse, nil
+}
+
+// FileUploadRequest uploads a file to the specified provider.
+func (bifrost *Bifrost) FileUploadRequest(ctx context.Context, req *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file upload request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file upload request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+			},
+		}
+	}
+	if len(req.File) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file content is required for file upload request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileUploadRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FileUploadRequest
+	bifrostReq.FileUploadRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FileUploadResponse, nil
+}
+
+// FileListRequest lists files from the specified provider.
+func (bifrost *Bifrost) FileListRequest(ctx context.Context, req *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file list request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileListRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file list request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.FileListRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FileListRequest
+	bifrostReq.FileListRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FileListResponse, nil
+}
+
+// FileRetrieveRequest retrieves file metadata from the specified provider.
+func (bifrost *Bifrost) FileRetrieveRequest(ctx context.Context, req *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file retrieve request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file retrieve request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file retrieve request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FileRetrieveRequest
+	bifrostReq.FileRetrieveRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FileRetrieveResponse, nil
+}
+
+// FileDeleteRequest deletes a file from the specified provider.
+func (bifrost *Bifrost) FileDeleteRequest(ctx context.Context, req *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file delete request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file delete request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file delete request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FileDeleteRequest
+	bifrostReq.FileDeleteRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FileDeleteResponse, nil
+}
+
+// FileContentRequest downloads file content from the specified provider.
+func (bifrost *Bifrost) FileContentRequest(ctx context.Context, req *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file content request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for file content request",
+			},
+		}
+	}
+	if req.FileID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "file_id is required for file content request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.FileContentRequest
+	bifrostReq.FileContentRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.FileContentResponse, nil
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -1518,6 +1990,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return openrouter.NewOpenRouterProvider(config, bifrost.logger), nil
 	case schemas.Elevenlabs:
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
+	case schemas.Nebius:
+		return nebius.NewNebiusProvider(config, bifrost.logger)
+	case schemas.HuggingFace:
+		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -1599,9 +2075,7 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 		queue := queueValue.(chan *ChannelMessage)
 		return queue, nil
 	}
-
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
-
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get config for provider: %v", err)
@@ -1609,14 +2083,14 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (cha
 	if config == nil {
 		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
 	}
-
 	if err := bifrost.prepareProvider(providerKey, config); err != nil {
 		return nil, err
 	}
-
-	queueValue, _ := bifrost.requestQueues.Load(providerKey)
+	queueValue, ok := bifrost.requestQueues.Load(providerKey)
+	if !ok {
+		return nil, fmt.Errorf("request queue not found for provider %s", providerKey)
+	}
 	queue := queueValue.(chan *ChannelMessage)
-
 	return queue, nil
 }
 
@@ -1673,27 +2147,27 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryErr *schemas.BifrostError) bool {
 	// If no primary error, we succeeded
 	if primaryErr == nil {
-		bifrost.logger.Debug("No primary error, we should not try fallbacks")
+		bifrost.logger.Debug("no primary error, we should not try fallbacks")
 		return false
 	}
 
 	// Handle request cancellation
 	if primaryErr.Error != nil && primaryErr.Error.Type != nil && *primaryErr.Error.Type == schemas.RequestCancelled {
-		bifrost.logger.Debug("Request cancelled, we should not try fallbacks")
+		bifrost.logger.Debug("request cancelled, we should not try fallbacks")
 		return false
 	}
 
 	// Check if this is a short-circuit error that doesn't allow fallbacks
 	// Note: AllowFallbacks = nil is treated as true (allow fallbacks by default)
 	if primaryErr.AllowFallbacks != nil && !*primaryErr.AllowFallbacks {
-		bifrost.logger.Debug("AllowFallbacks is false, we should not try fallbacks")
+		bifrost.logger.Debug("allowFallbacks is false, we should not try fallbacks")
 		return false
 	}
 
 	// If no fallbacks configured, return primary error
 	_, _, fallbacks := req.GetRequestFields()
 	if len(fallbacks) == 0 {
-		bifrost.logger.Debug("No fallbacks configured, we should not try fallbacks")
+		bifrost.logger.Debug("no fallbacks configured, we should not try fallbacks")
 		return false
 	}
 
@@ -1707,7 +2181,7 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	// Check if we have config for this fallback provider
 	_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
 	if err != nil {
-		bifrost.logger.Warn(fmt.Sprintf("Config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
+		bifrost.logger.Warn(fmt.Sprintf("config not found for provider %s, skipping fallback: %v", fallback.Provider, err))
 		return nil
 	}
 
@@ -1733,6 +2207,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.ResponsesRequest = &tmp
+	}
+
+	if req.CountTokensRequest != nil {
+		tmp := *req.CountTokensRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.CountTokensRequest = &tmp
 	}
 
 	if req.EmbeddingRequest != nil {
@@ -1787,9 +2268,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // It is the wrapper for all non-streaming public API methods.
 func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	defer bifrost.releaseBifrostRequest(req)
-
 	provider, model, fallbacks := req.GetRequestFields()
-
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
 			RequestType:    req.RequestType,
@@ -1804,19 +2283,19 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 		ctx = bifrost.ctx
 	}
 
-	bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
+	bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s and %d fallbacks", provider, model, len(fallbacks)))
 
 	// Try the primary provider first
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
-			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %s", provider, model, primaryErr.Error.Message))
 		} else {
-			bifrost.logger.Debug(fmt.Sprintf("Primary provider %s with model %s returned error: %v", provider, model, primaryErr))
+			bifrost.logger.Debug(fmt.Sprintf("primary provider %s with model %s returned error: %v", provider, model, primaryErr))
 		}
 		if len(fallbacks) > 0 {
-			bifrost.logger.Debug(fmt.Sprintf("Check if we should try %d fallbacks", len(fallbacks)))
+			bifrost.logger.Debug(fmt.Sprintf("check if we should try %d fallbacks", len(fallbacks)))
 		}
 	}
 
@@ -1836,19 +2315,19 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 	// Try fallbacks in order
 	for i, fallback := range fallbacks {
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, i+1)
-		bifrost.logger.Debug(fmt.Sprintf("Trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
+		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
 		if fallbackReq == nil {
-			bifrost.logger.Debug(fmt.Sprintf("Fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
 			continue
 		}
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
-			bifrost.logger.Debug(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			return result, nil
 		}
 
@@ -1890,6 +2369,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 			Provider:       provider,
 			ModelRequested: model,
 		}
+		err.StatusCode = schemas.Ptr(fasthttp.StatusBadRequest)
 		return nil, err
 	}
 
@@ -1928,7 +2408,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
 		if fallbackErr == nil {
-			bifrost.logger.Debug(fmt.Sprintf("Successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
+			bifrost.logger.Debug(fmt.Sprintf("successfully used fallback provider %s with model %s", fallback.Provider, fallback.Model))
 			return result, nil
 		}
 
@@ -2027,7 +2507,7 @@ func (bifrost *Bifrost) tryRequest(ctx context.Context, req *schemas.BifrostRequ
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
-			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
+			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
 			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 				RequestType:    req.RequestType,
@@ -2202,7 +2682,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx context.Context, req *schemas.Bifro
 	default:
 		if bifrost.dropExcessRequests.Load() {
 			bifrost.releaseChannelMessage(msg)
-			bifrost.logger.Warn("Request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
+			bifrost.logger.Warn("request dropped: queue is full, please increase the queue size or set dropExcessRequests to false")
 			bifrostErr := newBifrostErrorFromMsg("request dropped: queue is full")
 			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 				RequestType:    req.RequestType,
@@ -2356,27 +2836,57 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 
 		key := schemas.Key{}
+		var keys []schemas.Key
 		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
-			// Use the custom provider name for actual key selection, but pass base provider type for key validation
-			key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
-			if err != nil {
-				bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
-				req.Err <- schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: err.Error(),
-						Error:   err,
-					},
-					ExtraFields: schemas.BifrostErrorExtraFields{
-						Provider:       provider.GetProviderKey(),
-						ModelRequested: model,
-						RequestType:    req.RequestType,
-					},
+			// Determine if this is a multi-key batch/file operation
+			// BatchCreate, FileUpload use single key; other batch/file ops use multiple keys
+			isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
+			isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
+
+			if isMultiKeyBatchOp || isMultiKeyFileOp {
+				var modelPtr *string
+				if model != "" {
+					modelPtr = &model
 				}
-				continue
+				keys, err = bifrost.getKeysForBatchAndFileOps(&req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
+				if err != nil {
+					bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
+					req.Err <- schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: err.Error(),
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							Provider:       provider.GetProviderKey(),
+							ModelRequested: model,
+							RequestType:    req.RequestType,
+						},
+					}
+					continue
+				}
+			} else {
+				// Use the custom provider name for actual key selection, but pass base provider type for key validation
+				key, err = bifrost.selectKeyFromProviderForModel(&req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+				if err != nil {
+					bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
+					req.Err <- schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: err.Error(),
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							Provider:       provider.GetProviderKey(),
+							ModelRequested: model,
+							RequestType:    req.RequestType,
+						},
+					}
+					continue
+				}
+				req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
+				req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
 			}
-			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyID, key.ID)
-			req.Context = context.WithValue(req.Context, schemas.BifrostContextKeySelectedKeyName, key.Name)
 		}
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
 		var postHookRunner schemas.PostHookRunner
@@ -2399,7 +2909,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			}, req.RequestType, provider.GetProviderKey(), model)
 		} else {
 			result, bifrostError = executeRequestWithRetries(&req.Context, config, func() (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return bifrost.handleProviderRequest(provider, req, key)
+				return bifrost.handleProviderRequest(provider, req, key, keys)
 			}, req.RequestType, provider.GetProviderKey(), model)
 		}
 
@@ -2458,7 +2968,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 }
 
 // handleProviderRequest handles the request to the provider based on the request type
-func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+// key is used for single-key operations, keys is used for batch/file operations that need multiple keys
+func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.TextCompletionRequest:
@@ -2479,6 +2990,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.ResponsesResponse = responsesResponse
+	case schemas.CountTokensRequest:
+		countTokensResponse, bifrostError := provider.CountTokens(req.Context, key, req.BifrostRequest.CountTokensRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.CountTokensResponse = countTokensResponse
 	case schemas.EmbeddingRequest:
 		embeddingResponse, bifrostError := provider.Embedding(req.Context, key, req.BifrostRequest.EmbeddingRequest)
 		if bifrostError != nil {
@@ -2503,6 +3020,66 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.ImageGenerationResponse = imageResponse
+	case schemas.FileUploadRequest:
+		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FileUploadResponse = fileUploadResponse
+	case schemas.FileListRequest:
+		fileListResponse, bifrostError := provider.FileList(req.Context, keys, req.BifrostRequest.FileListRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FileListResponse = fileListResponse
+	case schemas.FileRetrieveRequest:
+		fileRetrieveResponse, bifrostError := provider.FileRetrieve(req.Context, keys, req.BifrostRequest.FileRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FileRetrieveResponse = fileRetrieveResponse
+	case schemas.FileDeleteRequest:
+		fileDeleteResponse, bifrostError := provider.FileDelete(req.Context, keys, req.BifrostRequest.FileDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FileDeleteResponse = fileDeleteResponse
+	case schemas.FileContentRequest:
+		fileContentResponse, bifrostError := provider.FileContent(req.Context, keys, req.BifrostRequest.FileContentRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.FileContentResponse = fileContentResponse
+	case schemas.BatchCreateRequest:
+		batchCreateResponse, bifrostError := provider.BatchCreate(req.Context, key, req.BifrostRequest.BatchCreateRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchCreateResponse = batchCreateResponse
+	case schemas.BatchListRequest:
+		batchListResponse, bifrostError := provider.BatchList(req.Context, keys, req.BifrostRequest.BatchListRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchListResponse = batchListResponse
+	case schemas.BatchRetrieveRequest:
+		batchRetrieveResponse, bifrostError := provider.BatchRetrieve(req.Context, keys, req.BifrostRequest.BatchRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchRetrieveResponse = batchRetrieveResponse
+	case schemas.BatchCancelRequest:
+		batchCancelResponse, bifrostError := provider.BatchCancel(req.Context, keys, req.BifrostRequest.BatchCancelRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchCancelResponse = batchCancelResponse
+	case schemas.BatchResultsRequest:
+		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchResultsResponse = batchResultsResponse
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -2705,13 +3282,25 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 // resetBifrostRequest resets a BifrostRequest instance for reuse
 func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.RequestType = ""
+	req.ListModelsRequest = nil
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil
+	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
 	req.ImageGenerationRequest = nil
+	req.FileUploadRequest = nil
+	req.FileListRequest = nil
+	req.FileRetrieveRequest = nil
+	req.FileDeleteRequest = nil
+	req.FileContentRequest = nil
+	req.BatchCreateRequest = nil
+	req.BatchListRequest = nil
+	req.BatchRetrieveRequest = nil
+	req.BatchCancelRequest = nil
+	req.BatchResultsRequest = nil
 }
 
 // getBifrostRequest gets a BifrostRequest from the pool
@@ -2750,6 +3339,10 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *context.Context, providerKey sc
 	// Filter keys for ListModels - only check if key has a value
 	var supportedKeys []schemas.Key
 	for _, k := range keys {
+		// Skip disabled keys (default enabled when nil)
+		if k.Enabled != nil && !*k.Enabled {
+			continue
+		}
 		if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 			supportedKeys = append(supportedKeys, k)
 		}
@@ -2762,6 +3355,76 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *context.Context, providerKey sc
 	return supportedKeys, nil
 }
 
+// getKeysForBatchAndFileOps retrieves keys for batch and file operations with model filtering.
+// For batch operations, only keys with UseForBatchAPI enabled are included.
+// Model filtering: if model is specified and key has model restrictions, only include if model is in list.
+func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *context.Context, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider, model *string, isBatchOp bool) ([]schemas.Key, error) {
+	// Check if key has been set in the context explicitly
+	if ctx != nil {
+		key, ok := (*ctx).Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+		if ok {
+			// If a direct key is specified, return it as a single-element slice
+			return []schemas.Key{key}, nil
+		}
+	}
+
+	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no keys found for provider: %v", providerKey)
+	}
+
+	var filteredKeys []schemas.Key
+	for _, k := range keys {
+		// Skip disabled keys
+		if k.Enabled != nil && !*k.Enabled {
+			continue
+		}
+
+		// For batch operations, only include keys with UseForBatchAPI enabled
+		if isBatchOp && (k.UseForBatchAPI == nil || !*k.UseForBatchAPI) {
+			continue
+		}
+
+		// Model filtering logic:
+		// - If model is nil or empty → include all keys (no model filter)
+		// - If model is specified:
+		//   - If key.Models is empty → include key (supports all models)
+		//   - If key.Models is non-empty → only include if model is in list
+		if model != nil && *model != "" && len(k.Models) > 0 {
+			if !slices.Contains(k.Models, *model) {
+				continue
+			}
+		}
+
+		// Check key value (or if provider allows empty keys)
+		if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
+			filteredKeys = append(filteredKeys, k)
+		}
+	}
+
+	if len(filteredKeys) == 0 {
+		modelStr := ""
+		if model != nil {
+			modelStr = *model
+		}
+		if isBatchOp {
+			return nil, fmt.Errorf("no batch-enabled keys found for provider: %v and model: %s", providerKey, modelStr)
+		}
+		return nil, fmt.Errorf("no keys found for provider: %v and model: %s", providerKey, modelStr)
+	}
+
+	// Sort keys by ID for deterministic pagination order across requests
+	sort.Slice(filteredKeys, func(i, j int) bool {
+		return filteredKeys[i].ID < filteredKeys[j].ID
+	})
+
+	return filteredKeys, nil
+}
+
 // selectKeyFromProviderForModel selects an appropriate API key for a given provider and model.
 // It uses weighted random selection if multiple keys are available.
 func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, baseProviderType schemas.ModelProvider) (schemas.Key, error) {
@@ -2772,33 +3435,59 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 			return key, nil
 		}
 	}
-
+	// Check if key skipping is allowed
 	if skipKeySelection, ok := (*ctx).Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
 		return schemas.Key{}, nil
 	}
-
+	// Get keys for provider
 	keys, err := bifrost.account.GetKeysForProvider(ctx, providerKey)
 	if err != nil {
 		return schemas.Key{}, err
 	}
-
+	// Check if no keys found
 	if len(keys) == 0 {
 		return schemas.Key{}, fmt.Errorf("no keys found for provider: %v and model: %s", providerKey, model)
 	}
 
-	// filter out keys which dont support the model, if the key has no models, it is supported for all models
-	var supportedKeys []schemas.Key
-	if requestType == schemas.ListModelsRequest {
-		// Skip deployment check but still check if the key has a value
+	// For batch API operations, filter keys to only include those with UseForBatchAPI enabled
+	if isBatchRequestType(requestType) || isFileRequestType(requestType) {
+		var batchEnabledKeys []schemas.Key
 		for _, k := range keys {
+			if k.UseForBatchAPI != nil && *k.UseForBatchAPI {
+				batchEnabledKeys = append(batchEnabledKeys, k)
+			}
+		}
+		if len(batchEnabledKeys) == 0 {
+			return schemas.Key{}, fmt.Errorf("no config found for batch APIs. Please enable 'Use for Batch APIs' on at least one key for provider: %v", providerKey)
+		}
+		keys = batchEnabledKeys
+	}
+
+	// filter out keys which don't support the model, if the key has no models, it is supported for all models
+	var supportedKeys []schemas.Key
+
+	// Skip model check conditions
+	// We can improve these conditions in the future
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType))) || requestType == schemas.ListModelsRequest
+	if skipModelCheck {
+		// When skipping model check: just verify keys are enabled and have values
+		for _, k := range keys {
+			// Skip disabled keys
+			if k.Enabled != nil && !*k.Enabled {
+				continue
+			}
 			if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 				supportedKeys = append(supportedKeys, k)
 			}
 		}
 	} else {
+		// When NOT skipping model check: do full model/deployment filtering
 		for _, key := range keys {
+			// Skip disabled keys
+			if key.Enabled != nil && !*key.Enabled {
+				continue
+			}
 			modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType))) || len(key.Models) == 0
-
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {
@@ -2828,6 +3517,22 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *context.Context, requ
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
+	}
+
+	var requestedKeyName string
+	if ctx != nil {
+		if keyName, ok := (*ctx).Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+			requestedKeyName = strings.TrimSpace(keyName)
+		}
+	}
+
+	if requestedKeyName != "" {
+		for _, key := range supportedKeys {
+			if key.Name == requestedKeyName {
+				return key, nil
+			}
+		}
+		return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", requestedKeyName, providerKey)
 	}
 
 	if len(supportedKeys) == 1 {

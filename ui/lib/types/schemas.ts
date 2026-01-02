@@ -86,6 +86,17 @@ export const vertexKeyConfigSchema = z
 		},
 	);
 
+// S3 bucket configuration for Bedrock batch operations
+export const s3BucketConfigSchema = z.object({
+	bucket_name: z.string().min(1, "Bucket name is required"),
+	prefix: z.string().optional(),
+	is_default: z.boolean().optional(),
+})
+
+export const batchS3ConfigSchema = z.object({
+	buckets: z.array(s3BucketConfigSchema).optional(),
+})
+
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
@@ -95,6 +106,7 @@ export const bedrockKeyConfigSchema = z
 		region: z.string().min(1, "Region is required"),
 		arn: z.string().optional(),
 		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -133,7 +145,7 @@ export const modelProviderKeySchema = z
 		value: z.string().optional(),
 		models: z.array(z.string()).default([]).optional(),
 		weight: z.union([
-			z.number().min(0.1, "Weight must be greater than 0.1").max(1, "Weight must be less than 1"),
+			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
 			z
 				.string()
 				.transform((val) => {
@@ -150,11 +162,12 @@ export const modelProviderKeySchema = z
 					}
 					return num;
 				})
-				.pipe(z.number().min(0.1, "Weight must be greater than 0.1").max(1, "Weight must be less than 1")),
+				.pipe(z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1")),
 		]),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
@@ -207,7 +220,7 @@ export const networkFormConfigSchema = z
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
 			.min(1, "Timeout must be greater than 0 seconds")
-			.max(3600, "Timeout must be less than 3600 seconds"),
+			.max(172800, "Timeout must be less than 172800 seconds i.e. 48 hours"),
 		max_retries: z.coerce
 			.number("Max retries must be a number")
 			.min(0, "Max retries must be greater than 0")
@@ -242,6 +255,7 @@ export const proxyConfigSchema = z
 		url: z.url("Must be a valid URL"),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine((data) => !(data.type === "http" || data.type === "socks5") || (data.url && data.url.trim().length > 0), {
 		message: "Proxy URL is required when using HTTP or SOCKS5 proxy",
@@ -269,6 +283,7 @@ export const proxyFormConfigSchema = z
 		url: z.string().optional(),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine(
 		(data) => {
@@ -319,6 +334,7 @@ export const allowedRequestsSchema = z.object({
 	speech_stream: z.boolean(),
 	transcription: z.boolean(),
 	transcription_stream: z.boolean(),
+	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 });
 
@@ -616,6 +632,7 @@ export const globalProxyConfigSchema = z
 		url: z.string(),
 		username: z.string().optional(),
 		password: z.string().optional(),
+		ca_cert_pem: z.string().optional(),
 		no_proxy: z.string().optional(),
 		timeout: z.number().min(0).optional(),
 		skip_tls_verify: z.boolean().optional(),
@@ -660,6 +677,18 @@ export const globalProxyFormSchema = z.object({
 	proxy_config: globalProxyConfigSchema,
 });
 
+// Global header filter configuration schema
+// Controls which headers with the x-bf-eh-* prefix are forwarded to LLM providers
+export const globalHeaderFilterConfigSchema = z.object({
+	allowlist: z.array(z.string()).optional(), // If non-empty, only these headers are allowed
+	denylist: z.array(z.string()).optional(), // Headers to always block
+});
+
+// Global header filter form schema for the HeaderFilterView
+export const globalHeaderFilterFormSchema = z.object({
+	header_filter_config: globalHeaderFilterConfigSchema,
+});
+
 // Export type inference helpers
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
@@ -677,3 +706,5 @@ export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;
 export type GlobalProxyConfigSchema = z.infer<typeof globalProxyConfigSchema>;
 export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
+export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
+export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;

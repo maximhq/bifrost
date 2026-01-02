@@ -1,0 +1,364 @@
+# Cohere v2 Chat API Schemas
+
+CohereChatRequest:
+  type: object
+  required:
+    - model
+    - messages
+  properties:
+    model:
+      type: string
+      description: Model to use for chat completion
+      example: command-r-plus
+    messages:
+      type: array
+      items:
+        $ref: '#/CohereMessage'
+      description: Array of message objects
+    tools:
+      type: array
+      items:
+        $ref: '#/CohereTool'
+    tool_choice:
+      $ref: '#/CohereToolChoice'
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 1
+    p:
+      type: number
+      description: Top-p sampling
+    k:
+      type: integer
+      description: Top-k sampling
+    max_tokens:
+      type: integer
+    stop_sequences:
+      type: array
+      items:
+        type: string
+    frequency_penalty:
+      type: number
+    presence_penalty:
+      type: number
+    stream:
+      type: boolean
+    safety_mode:
+      type: string
+      enum: [CONTEXTUAL, STRICT, NONE]
+    log_probs:
+      type: boolean
+    strict_tool_choice:
+      type: boolean
+    thinking:
+      $ref: '#/CohereThinking'
+    response_format:
+      $ref: '#/CohereResponseFormat'
+
+CohereMessage:
+  type: object
+  required:
+    - role
+  properties:
+    role:
+      type: string
+      enum: [system, user, assistant, tool]
+    content:
+      $ref: '#/CohereMessageContent'
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/CohereToolCall'
+    tool_call_id:
+      type: string
+    tool_plan:
+      type: string
+      description: Chain-of-thought style reflection (assistant only)
+
+CohereMessageContent:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '#/CohereContentBlock'
+  description: Message content - can be a string or array of content blocks
+
+CohereContentBlock:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [text, image_url, thinking, document]
+    text:
+      type: string
+    image_url:
+      type: object
+      properties:
+        url:
+          type: string
+    thinking:
+      type: string
+    document:
+      type: object
+      properties:
+        data:
+          type: object
+        id:
+          type: string
+
+CohereTool:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [function]
+    function:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+
+CohereToolChoice:
+  type: string
+  enum: [AUTO, NONE, REQUIRED]
+  description: Tool choice mode - AUTO lets the model decide, NONE disables tools, REQUIRED forces tool use
+
+CohereToolCall:
+  type: object
+  properties:
+    id:
+      type: string
+    type:
+      type: string
+      enum: [function]
+    function:
+      type: object
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+
+CohereThinking:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [enabled, disabled]
+    token_budget:
+      type: integer
+      minimum: 1
+
+CohereResponseFormat:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [text, json_object]
+      description: Response format type
+    schema:
+      type: object
+      description: JSON schema for structured output (used with json_object type)
+
+# Response types
+CohereChatResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    finish_reason:
+      type: string
+      enum: [COMPLETE, STOP_SEQUENCE, MAX_TOKENS, TOOL_CALL, ERROR, TIMEOUT]
+    message:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: array
+          items:
+            $ref: '#/CohereContentBlock'
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/CohereToolCall'
+        tool_plan:
+          type: string
+    usage:
+      $ref: '#/CohereUsage'
+    logprobs:
+      type: array
+      items:
+        $ref: '#/CohereLogProb'
+      description: Log probabilities (if requested)
+
+CohereUsage:
+  type: object
+  properties:
+    billed_units:
+      $ref: '#/CohereBilledUnits'
+    tokens:
+      $ref: '#/CohereTokenUsage'
+    cached_tokens:
+      type: integer
+      description: Cached tokens
+
+CohereBilledUnits:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+      description: Number of billed input tokens
+    output_tokens:
+      type: integer
+      description: Number of billed output tokens
+    search_units:
+      type: integer
+      description: Number of billed search units
+    classifications:
+      type: integer
+      description: Number of billed classification units
+
+CohereTokenUsage:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+      description: Number of input tokens used
+    output_tokens:
+      type: integer
+      description: Number of output tokens produced
+
+CohereLogProb:
+  type: object
+  properties:
+    token_ids:
+      type: array
+      items:
+        type: integer
+      description: Token IDs of each token in text chunk
+    text:
+      type: string
+      description: Text chunk for log probabilities
+    logprobs:
+      type: array
+      items:
+        type: number
+      description: Log probability of each token
+
+# Stream event types
+CohereChatStreamEvent:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [message-start, content-start, content-delta, content-end, tool-plan-delta, tool-call-start, tool-call-delta, tool-call-end, citation-start, citation-end, message-end, debug]
+      description: Type of streaming event
+    id:
+      type: string
+      description: Event ID (for message-start)
+    index:
+      type: integer
+      description: Index for indexed events
+    delta:
+      $ref: '#/CohereStreamDelta'
+
+CohereStreamDelta:
+  type: object
+  properties:
+    message:
+      $ref: '#/CohereStreamMessage'
+    finish_reason:
+      type: string
+      enum: [COMPLETE, STOP_SEQUENCE, MAX_TOKENS, TOOL_CALL, ERROR, TIMEOUT]
+    usage:
+      $ref: '#/CohereUsage'
+
+CohereStreamMessage:
+  type: object
+  properties:
+    role:
+      type: string
+      description: Message role (for message-start)
+    content:
+      oneOf:
+        - $ref: '#/CohereStreamContent'
+        - type: array
+          items:
+            $ref: '#/CohereStreamContent'
+      description: Content for content events
+    tool_plan:
+      type: string
+      description: Tool plan content (for tool-plan-delta)
+    tool_calls:
+      oneOf:
+        - $ref: '#/CohereToolCall'
+        - type: array
+          items:
+            $ref: '#/CohereToolCall'
+      description: Tool calls (for tool-call events)
+    citations:
+      oneOf:
+        - $ref: '#/CohereCitation'
+        - type: array
+          items:
+            $ref: '#/CohereCitation'
+      description: Citations (for citation events)
+
+CohereStreamContent:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [text, image_url, thinking, document]
+    text:
+      type: string
+    thinking:
+      type: string
+
+CohereCitation:
+  type: object
+  properties:
+    start:
+      type: integer
+      description: Start position of cited text
+    end:
+      type: integer
+      description: End position of cited text
+    text:
+      type: string
+      description: Cited text
+    sources:
+      type: array
+      items:
+        $ref: '#/CohereSource'
+    content_index:
+      type: integer
+      description: Content index of the citation
+    type:
+      type: string
+      enum: [TEXT_CONTENT, THINKING_CONTENT, PLAN]
+      description: Type of citation
+
+CohereSource:
+  type: object
+  properties:
+    type:
+      type: string
+      enum: [tool, document]
+      description: Source type
+    id:
+      type: string
+      description: Source ID (nullable)
+    tool_output:
+      type: object
+      description: Tool output (for tool sources)
+    document:
+      type: object
+      description: Document data (for document sources)

@@ -29,8 +29,9 @@ func TestAnthropic(t *testing.T) {
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 			{Provider: schemas.Anthropic, Model: "claude-sonnet-4-20250514"},
 		},
-		VisionModel:    "claude-3-7-sonnet-20250219", // Same model supports vision
-		ReasoningModel: "claude-opus-4-5",
+		VisionModel:        "claude-3-7-sonnet-20250219", // Same model supports vision
+		ReasoningModel:     "claude-opus-4-5",
+		PromptCachingModel: "claude-sonnet-4-20250514",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -47,7 +48,20 @@ func TestAnthropic(t *testing.T) {
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			Reasoning:             true,
+			PromptCaching:         true,
 			ListModels:            true,
+			BatchCreate:           true,
+			BatchList:             true,
+			BatchRetrieve:         true,
+			BatchCancel:           true,
+			BatchResults:          true,
+			FileUpload:            true,
+			FileList:              true,
+			FileRetrieve:          true,
+			FileDelete:            true,
+			FileContent:           false,
+			FileBatchInput:        false, // Anthropic batch API only supports inline requests, not file-based input
+			CountTokens:           true,
 		},
 	}
 
