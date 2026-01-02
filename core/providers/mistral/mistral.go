@@ -578,7 +578,7 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 		response.Type = schemas.TranscriptionStreamResponseTypeDone
 	}
 
-	providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
+	providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response, nil), responseChan)
 }
 
 // BatchCreate is not supported by Mistral provider.

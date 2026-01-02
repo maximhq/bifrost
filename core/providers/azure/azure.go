@@ -1029,7 +1029,7 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 						response.ExtraFields.RawResponse = audioData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				}
 			}
 
@@ -1061,7 +1061,7 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 			}
 
 			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil, nil), responseChan)
 		}
 
 		// Note: We don't call ReleaseStreamingResponse here because the scanner has already
