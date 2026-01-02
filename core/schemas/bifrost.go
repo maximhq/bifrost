@@ -22,6 +22,7 @@ type BifrostConfig struct {
 	Account            Account
 	Plugins            []Plugin
 	Logger             Logger
+	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
 	DropExcessRequests bool        // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	MCPConfig          *MCPConfig  // MCP (Model Context Protocol) configuration for tool integration
@@ -124,11 +125,11 @@ const (
 	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
 	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
 	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost)
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"   // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string][]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"       // string
@@ -136,9 +137,19 @@ const (
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
-	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost)
+	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
+	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
+	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
+	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
+	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
+	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
+	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)
+	BifrostContextKeyTraceCompleter                      BifrostContextKey = "bifrost-trace-completer"                          // func() (callback to complete trace after streaming - set by tracing middleware)
+	BifrostContextKeyPostHookSpanFinalizer               BifrostContextKey = "bifrost-posthook-span-finalizer"                  // func(context.Context) (callback to finalize post-hook spans after streaming - set by bifrost)
+	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -486,7 +497,7 @@ type BifrostError struct {
 	Error          *ErrorField             `json:"error"`
 	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
 	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields,omitempty"`
+	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
 }
 
 // StreamControl represents stream control options.

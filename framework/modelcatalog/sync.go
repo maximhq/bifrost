@@ -58,6 +58,13 @@ func (mc *ModelCatalog) shouldSyncPricing(ctx context.Context) (bool, string) {
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 	mc.logger.Debug("starting pricing data synchronization for governance")
 
+	if mc.shouldSyncPricingFunc != nil {
+		if !mc.shouldSyncPricingFunc(ctx) {
+			mc.logger.Debug("pricing sync cancelled by custom function")
+			return nil
+		}
+	}
+
 	// Load pricing data from URL
 	pricingData, err := mc.loadPricingFromURL(ctx)
 	if err != nil {

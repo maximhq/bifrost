@@ -2357,7 +2357,7 @@ def get_bedrock_s3_config() -> Dict[str, Optional[str]]:
     """
     return {
         "s3_bucket": os.environ.get("AWS_S3_BUCKET"),
-        "role_arn": os.environ.get("AWS_BEDROCK_ROLE_ARN"),
+        "role_arn": os.environ.get("AWS_ARN"),
         "output_s3_prefix": os.environ.get("AWS_OUTPUT_S3_PREFIX", "bifrost-batch-output/"),
         "region": os.environ.get("AWS_REGION", "us-west-2"),
     }

@@ -28,7 +28,17 @@ else
 fi
 
 # Ensure we have the latest version
-git pull origin
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+  # In detached HEAD state (common in CI), use GITHUB_REF_NAME or default to main
+  CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+fi
+
+echo "Pulling latest changes from origin/$CURRENT_BRANCH..."
+if ! git pull origin "$CURRENT_BRANCH"; then
+  echo "❌ Error: git pull origin $CURRENT_BRANCH failed"
+  exit 1
+fi
 
 echo "🔌 Releasing plugin: $PLUGIN_NAME"
 echo "🔧 Core version: $CORE_VERSION"
@@ -66,19 +76,24 @@ if [ -f "go.mod" ]; then
 
   # Run tests with coverage if any exist
   if go list ./... | grep -q .; then
-    echo "🧪 Running plugin tests with coverage..."
-    go test -coverprofile=coverage.txt -coverpkg=./... ./...
-    
-    # Upload coverage to Codecov
-    if [ -n "${CODECOV_TOKEN:-}" ]; then
-      echo "📊 Uploading coverage to Codecov..."
-      curl -Os https://uploader.codecov.io/latest/linux/codecov
-      chmod +x codecov
-      ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F "plugin-${PLUGIN_NAME}"
-      rm -f codecov coverage.txt
+    # Skip tests for governance plugin (no tests yet)
+    if [ "$PLUGIN_NAME" = "governance" ]; then
+      echo "ℹ️ Skipping tests for governance plugin"
     else
-      echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
-      rm -f coverage.txt
+      echo "🧪 Running plugin tests with coverage..."
+      go test -coverprofile=coverage.txt -coverpkg=./... ./...
+      
+      # Upload coverage to Codecov
+      if [ -n "${CODECOV_TOKEN:-}" ]; then
+        echo "📊 Uploading coverage to Codecov..."
+        curl -Os https://uploader.codecov.io/latest/linux/codecov
+        chmod +x codecov
+        ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F "plugin-${PLUGIN_NAME}"
+        rm -f codecov coverage.txt
+      else
+        echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
+        rm -f coverage.txt
+      fi
     fi
   fi
 

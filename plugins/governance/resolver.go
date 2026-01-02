@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -63,12 +62,12 @@ type UsageInfo struct {
 
 // BudgetResolver provides decision logic for the new hierarchical governance system
 type BudgetResolver struct {
-	store  *GovernanceStore
+	store  GovernanceStore
 	logger schemas.Logger
 }
 
 // NewBudgetResolver creates a new budget-based governance resolver
-func NewBudgetResolver(store *GovernanceStore, logger schemas.Logger) *BudgetResolver {
+func NewBudgetResolver(store GovernanceStore, logger schemas.Logger) *BudgetResolver {
 	return &BudgetResolver{
 		store:  store,
 		logger: logger,
@@ -127,13 +126,13 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 		}
 	}
 
-	// 4. Check rate limits (Provider level first, then VK level)
-	if rateLimitResult := r.checkRateLimits(vk, string(evaluationRequest.Provider)); rateLimitResult != nil {
+	// 4. Check rate limits hierarchy (Provider level first, then VK level)
+	if rateLimitResult := r.checkRateLimitHierarchy(ctx, vk, string(evaluationRequest.Provider), evaluationRequest.Model, evaluationRequest.RequestID); rateLimitResult != nil {
 		return rateLimitResult
 	}
 
 	// 5. Check budget hierarchy (VK → Team → Customer)
-	if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest.Provider); budgetResult != nil {
+	if budgetResult := r.checkBudgetHierarchy(ctx, vk, evaluationRequest); budgetResult != nil {
 		return budgetResult
 	}
 
@@ -192,77 +191,25 @@ func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey
 	return false
 }
 
-// checkRateLimits checks provider-level rate limits first, then VK rate limits using flexible approach
-func (r *BudgetResolver) checkRateLimits(vk *configstoreTables.TableVirtualKey, provider string) *EvaluationResult {
-	// First check provider-level rate limits
-	if providerRateLimitResult := r.checkProviderRateLimits(vk, provider); providerRateLimitResult != nil {
-		return providerRateLimitResult
-	}
-
-	// Then check VK-level rate limits
-	if vk.RateLimit == nil {
-		return nil // No VK rate limits defined
-	}
-
-	return r.checkSingleRateLimit(vk.RateLimit, "virtual key", vk)
-}
-
-// checkProviderRateLimits checks rate limits for a specific provider config
-func (r *BudgetResolver) checkProviderRateLimits(vk *configstoreTables.TableVirtualKey, provider string) *EvaluationResult {
-	if vk.ProviderConfigs == nil {
-		return nil // No provider configs defined
-	}
-
-	// Find the specific provider config
-	for _, pc := range vk.ProviderConfigs {
-		if pc.Provider == provider && pc.RateLimit != nil {
-			return r.checkSingleRateLimit(pc.RateLimit, fmt.Sprintf("provider '%s'", provider), vk)
-		}
-	}
-
-	return nil // No rate limits for this provider
-}
-
-// checkSingleRateLimit checks a single rate limit and returns evaluation result if violated
-func (r *BudgetResolver) checkSingleRateLimit(rateLimit *configstoreTables.TableRateLimit, rateLimitName string, vk *configstoreTables.TableVirtualKey) *EvaluationResult {
-	var violations []string
-
-	// Token limits
-	if rateLimit.TokenMaxLimit != nil && rateLimit.TokenCurrentUsage >= *rateLimit.TokenMaxLimit {
-		duration := "unknown"
-		if rateLimit.TokenResetDuration != nil {
-			duration = *rateLimit.TokenResetDuration
-		}
-		violations = append(violations, fmt.Sprintf("token limit exceeded (%d/%d, resets every %s)",
-			rateLimit.TokenCurrentUsage, *rateLimit.TokenMaxLimit, duration))
-	}
-
-	// Request limits
-	if rateLimit.RequestMaxLimit != nil && rateLimit.RequestCurrentUsage >= *rateLimit.RequestMaxLimit {
-		duration := "unknown"
-		if rateLimit.RequestResetDuration != nil {
-			duration = *rateLimit.RequestResetDuration
-		}
-		violations = append(violations, fmt.Sprintf("request limit exceeded (%d/%d, resets every %s)",
-			rateLimit.RequestCurrentUsage, *rateLimit.RequestMaxLimit, duration))
-	}
-
-	if len(violations) > 0 {
-		// Determine specific violation type
-		decision := DecisionRateLimited
-		if len(violations) == 1 {
-			if strings.Contains(violations[0], "token") {
-				decision = DecisionTokenLimited
-			} else if strings.Contains(violations[0], "request") {
-				decision = DecisionRequestLimited
+// checkRateLimitHierarchy checks provider-level rate limits first, then VK rate limits using flexible approach
+func (r *BudgetResolver) checkRateLimitHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider string, model string, requestID string) *EvaluationResult {
+	if decision, err := r.store.CheckRateLimit(ctx, vk, schemas.ModelProvider(provider), model, requestID, nil, nil); err != nil {
+		// Check provider-level first (matching check order), then VK-level
+		var rateLimitInfo *configstoreTables.TableRateLimit
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == provider && pc.RateLimit != nil {
+				rateLimitInfo = pc.RateLimit
+				break
 			}
 		}
-
+		if rateLimitInfo == nil && vk.RateLimit != nil {
+			rateLimitInfo = vk.RateLimit
+		}
 		return &EvaluationResult{
 			Decision:      decision,
-			Reason:        fmt.Sprintf("%s rate limits exceeded: %v", rateLimitName, violations),
+			Reason:        fmt.Sprintf("Rate limit check failed: %s", err.Error()),
 			VirtualKey:    vk,
-			RateLimitInfo: rateLimit,
+			RateLimitInfo: rateLimitInfo,
 		}
 	}
 
@@ -270,14 +217,14 @@ func (r *BudgetResolver) checkSingleRateLimit(rateLimit *configstoreTables.Table
 }
 
 // checkBudgetHierarchy checks the budget hierarchy atomically (VK → Team → Customer)
-func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) *EvaluationResult {
+func (r *BudgetResolver) checkBudgetHierarchy(ctx context.Context, vk *configstoreTables.TableVirtualKey, request *EvaluationRequest) *EvaluationResult {
 	// Use atomic budget checking to prevent race conditions
-	if err := r.store.CheckBudget(ctx, vk, provider); err != nil {
-		r.logger.Debug(fmt.Sprintf("Atomic budget check failed for VK %s: %s", vk.ID, err.Error()))
+	if err := r.store.CheckBudget(ctx, vk, request, nil); err != nil {
+		r.logger.Debug(fmt.Sprintf("Atomic budget exceeded for VK %s: %s", vk.ID, err.Error()))
 
 		return &EvaluationResult{
 			Decision:   DecisionBudgetExceeded,
-			Reason:     fmt.Sprintf("Budget check failed: %s", err.Error()),
+			Reason:     fmt.Sprintf("Budget exceeded: %s", err.Error()),
 			VirtualKey: vk,
 		}
 	}

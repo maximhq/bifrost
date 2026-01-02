@@ -563,7 +563,7 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.ChatMessage) (str
 		stopChan, wg := startLoader()
 
 		// Execute the tool using Bifrost's integrated MCP functionality
-		toolResult, err := s.client.ExecuteMCPTool(context.Background(), toolCall)
+		toolResult, err := s.client.ExecuteChatMCPTool(context.Background(), toolCall)
 
 		// Stop loading animation
 		stopLoader(stopChan, wg)

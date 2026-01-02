@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,20 +35,23 @@ type EnvKeyInfo struct {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
-	DropExcessRequests      bool                            `json:"drop_excess_requests"`                // Drop excess requests if the provider queue is full
-	InitialPoolSize         int                             `json:"initial_pool_size"`                   // The initial pool size for the bifrost client
-	PrometheusLabels        []string                        `json:"prometheus_labels"`                   // The labels to be used for prometheus metrics
-	EnableLogging           bool                            `json:"enable_logging"`                      // Enable logging of requests and responses
-	DisableContentLogging   bool                            `json:"disable_content_logging"`             // Disable logging of content
-	LogRetentionDays        int                             `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool                            `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceGovernanceHeader bool                            `json:"enforce_governance_header"`           // Enforce governance on all requests
-	AllowDirectKeys         bool                            `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
-	AllowedOrigins          []string                        `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
-	MaxRequestBodySizeMB    int                             `json:"max_request_body_size_mb"`            // The maximum request body size in MB
-	EnableLiteLLMFallbacks  bool                            `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
+	DropExcessRequests      bool                             `json:"drop_excess_requests"`                // Drop excess requests if the provider queue is full
+	InitialPoolSize         int                              `json:"initial_pool_size"`                   // The initial pool size for the bifrost client
+	PrometheusLabels        []string                         `json:"prometheus_labels"`                   // The labels to be used for prometheus metrics
+	EnableLogging           bool                             `json:"enable_logging"`                      // Enable logging of requests and responses
+	DisableContentLogging   bool                             `json:"disable_content_logging"`             // Disable logging of content
+	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
+	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
+	EnforceGovernanceHeader bool                             `json:"enforce_governance_header"`           // Enforce governance on all requests
+	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
+	AllowedOrigins          []string                         `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
+	MaxRequestBodySizeMB    int                              `json:"max_request_body_size_mb"`            // The maximum request body size in MB
+	EnableLiteLLMFallbacks  bool                             `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
+	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
+	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
-	ConfigHash              string                          `json:"-"`                                   // Config hash for reconciliation (not serialized)
+	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
@@ -96,6 +100,24 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableLiteLLMFallbacks:true"))
 	} else {
 		hash.Write([]byte("enableLiteLLMFallbacks:false"))
+	}
+
+	if c.MCPAgentDepth > 0 {
+		hash.Write([]byte("mcpAgentDepth:" + strconv.Itoa(c.MCPAgentDepth)))
+	} else {
+		hash.Write([]byte("mcpAgentDepth:0"))
+	}
+
+	if c.MCPToolExecutionTimeout > 0 {
+		hash.Write([]byte("mcpToolExecutionTimeout:" + strconv.Itoa(c.MCPToolExecutionTimeout)))
+	} else {
+		hash.Write([]byte("mcpToolExecutionTimeout:0"))
+	}
+
+	if c.MCPCodeModeBindingLevel != "" {
+		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
+	} else {
+		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
 	}
 
 	// Hash integer fields

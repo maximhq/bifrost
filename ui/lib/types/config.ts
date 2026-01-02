@@ -351,6 +351,9 @@ export interface CoreConfig {
 	allowed_origins: string[];
 	max_request_body_size_mb: number;
 	enable_litellm_fallbacks: boolean;
+	mcp_agent_depth: number;
+	mcp_tool_execution_timeout: number;
+	mcp_code_mode_binding_level?: string;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 

@@ -23,6 +23,7 @@ var reservedKeys = []any{
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyExtraHeaders,
 	BifrostContextKeyURLPath,
+	BifrostContextKeyDeferTraceCompletion,
 }
 
 // BifrostContext is a custom context.Context implementation that tracks user-set values.
@@ -171,6 +172,9 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	}
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}
 	bc.userValues[key] = value
 }
 

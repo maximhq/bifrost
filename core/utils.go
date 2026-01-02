@@ -396,3 +396,8 @@ func isPrivateIP(ip net.IP) bool {
 	}
 	return false
 }
+
+// sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
+func sanitizeSpanName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}

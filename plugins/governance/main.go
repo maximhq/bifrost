@@ -10,11 +10,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/valyala/fasthttp"
 )
 
 // PluginName is the name of the governance plugin
@@ -37,6 +39,15 @@ type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 }
 
+type BaseGovernancePlugin interface {
+	GetName() string
+	HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware
+	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	Cleanup() error
+	GetGovernanceStore() GovernanceStore
+}
+
 // GovernancePlugin implements the main governance plugin with hierarchical budget system
 type GovernancePlugin struct {
 	ctx        context.Context
@@ -44,9 +55,9 @@ type GovernancePlugin struct {
 	wg         sync.WaitGroup // Track active goroutines
 
 	// Core components with clear separation of concerns
-	store    *GovernanceStore // Pure data access layer
-	resolver *BudgetResolver  // Pure decision engine for hierarchical governance
-	tracker  *UsageTracker    // Business logic owner (updates, resets, persistence)
+	store    GovernanceStore // Pure data access layer
+	resolver *BudgetResolver // Pure decision engine for hierarchical governance
+	tracker  *UsageTracker   // Business logic owner (updates, resets, persistence)
 
 	// Dependencies
 	configStore  configstore.ConfigStore
@@ -67,7 +78,9 @@ type GovernancePlugin struct {
 //
 // Behavior and defaults:
 //   - Enables all governance features with optimized defaults.
-//   - If `store` is nil, the plugin runs in-memory only (no persistence).
+//   - If `configStore` is nil, the plugin will use an in-memory LocalGovernanceStore
+//     (no persistence). Init constructs a LocalGovernanceStore internally when
+//     configStore is nil.
 //   - If `modelCatalog` is nil, cost calculation is skipped.
 //   - `config.IsVkMandatory` controls whether `x-bf-vk` is required in PreHook.
 //   - `inMemoryStore` is used by TransportInterceptor to validate configured providers
@@ -80,7 +93,7 @@ type GovernancePlugin struct {
 //   - ctx: base context for the plugin; a child context with cancel is created.
 //   - config: plugin flags; may be nil.
 //   - logger: logger used by all subcomponents.
-//   - store: configuration store used for persistence; may be nil.
+//   - configStore: configuration store used for persistence; may be nil.
 //   - governanceConfig: initial/seed governance configuration for the store.
 //   - modelCatalog: optional model catalog to compute request cost.
 //   - inMemoryStore: provider registry used for routing/validation in transports.
@@ -91,17 +104,21 @@ type GovernancePlugin struct {
 //
 // Side effects:
 //   - Logs warnings when optional dependencies are missing.
-//   - May perform startup resets via the usage tracker when `store` is non-nil.
+//   - May perform startup resets via the usage tracker when `configStore` is non-nil.
+//
+// Alternative entry point:
+//   - Use InitFromStore to inject a custom GovernanceStore implementation instead
+//     of constructing a LocalGovernanceStore internally.
 func Init(
 	ctx context.Context,
 	config *Config,
 	logger schemas.Logger,
-	store configstore.ConfigStore,
+	configStore configstore.ConfigStore,
 	governanceConfig *configstore.GovernanceConfig,
 	modelCatalog *modelcatalog.ModelCatalog,
 	inMemoryStore InMemoryStore,
 ) (*GovernancePlugin, error) {
-	if store == nil {
+	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
 	}
 	if modelCatalog == nil {
@@ -114,7 +131,7 @@ func Init(
 		isVkMandatory = config.IsVkMandatory
 	}
 
-	governanceStore, err := NewGovernanceStore(ctx, logger, store, governanceConfig)
+	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
@@ -123,10 +140,10 @@ func Init(
 	resolver := NewBudgetResolver(governanceStore, logger)
 
 	// 3. Tracker (business logic owner, depends on store and resolver)
-	tracker := NewUsageTracker(ctx, governanceStore, resolver, store, logger)
+	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
 	// 4. Perform startup reset check for any expired limits from downtime
-	if store != nil {
+	if configStore != nil {
 		if err := tracker.PerformStartupResets(ctx); err != nil {
 			logger.Warn("startup reset failed: %v", err)
 			// Continue initialization even if startup reset fails (non-critical)
@@ -139,11 +156,71 @@ func Init(
 		store:         governanceStore,
 		resolver:      resolver,
 		tracker:       tracker,
-		configStore:   store,
+		configStore:   configStore,
 		modelCatalog:  modelCatalog,
 		logger:        logger,
 		isVkMandatory: isVkMandatory,
 		inMemoryStore: inMemoryStore,
+	}
+	return plugin, nil
+}
+
+// InitFromStore initializes and returns a governance plugin instance with a custom store.
+//
+// This constructor allows providing a custom GovernanceStore implementation instead of
+// creating a new LocalGovernanceStore. Use this when you need to:
+//   - Inject a custom store implementation for testing
+//   - Use a pre-configured store instance
+//   - Integrate with non-standard storage backends
+//
+// Parameters are the same as Init, except governanceConfig is replaced by governanceStore.
+// The governanceStore must not be nil, or an error is returned.
+//
+// See Init documentation for details on other parameters and behavior.
+func InitFromStore(
+	ctx context.Context,
+	config *Config,
+	logger schemas.Logger,
+	governanceStore GovernanceStore,
+	configStore configstore.ConfigStore,
+	modelCatalog *modelcatalog.ModelCatalog,
+	inMemoryStore InMemoryStore,
+) (*GovernancePlugin, error) {
+	if configStore == nil {
+		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
+	}
+	if modelCatalog == nil {
+		logger.Warn("governance plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+	}
+	if governanceStore == nil {
+		return nil, fmt.Errorf("governance store is nil")
+	}
+	// Handle nil config - use safe default for IsVkMandatory
+	var isVkMandatory *bool
+	if config != nil {
+		isVkMandatory = config.IsVkMandatory
+	}
+	resolver := NewBudgetResolver(governanceStore, logger)
+	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+	// Perform startup reset check for any expired limits from downtime
+	if configStore != nil {
+		if err := tracker.PerformStartupResets(ctx); err != nil {
+			logger.Warn("startup reset failed: %v", err)
+			// Continue initialization even if startup reset fails (non-critical)
+		}
+	}
+	ctx, cancelFunc := context.WithCancel(ctx)
+	plugin := &GovernancePlugin{
+		ctx:           ctx,
+		cancelFunc:    cancelFunc,
+		store:         governanceStore,
+		resolver:      resolver,
+		tracker:       tracker,
+		configStore:   configStore,
+		modelCatalog:  modelCatalog,
+		logger:        logger,
+		inMemoryStore: inMemoryStore,
+		isVkMandatory: isVkMandatory,
 	}
 	return plugin, nil
 }
@@ -153,64 +230,87 @@ func (p *GovernancePlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor intercepts requests before they are processed (governance decision point)
-// Parameters:
-//   - ctx: The Bifrost context
-//   - url: The URL of the request
-//   - headers: The request headers
-//   - body: The request body
-//
-// Returns:
-//   - map[string]string: The updated request headers
-//   - map[string]any: The updated request body
-//   - error: Any error that occurred during processing
-func (p *GovernancePlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
+func parseVirtualKey(ctx *fasthttp.RequestCtx) *string {
 	var virtualKeyValue string
-	var err error
-
-	for header, value := range headers {
-		headerStr := strings.ToLower(header)
-		if headerStr == string(schemas.BifrostContextKeyVirtualKey) {
-			virtualKeyValue = string(value)
-			break
-		}
-		if headerStr == "authorization" {
-			valueStr := string(value)
-			// Only accept Bearer token format: "Bearer ..."
-			if strings.HasPrefix(strings.ToLower(valueStr), "bearer ") {
-				authHeaderValue := strings.TrimSpace(valueStr[7:]) // Remove "Bearer " prefix
-				if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-					virtualKeyValue = authHeaderValue
-					break
-				}
+	vkHeader := ctx.Request.Header.Peek("x-bf-vk")
+	if string(vkHeader) != "" {
+		return bifrost.Ptr(string(vkHeader))
+	}
+	authHeader := string(ctx.Request.Header.Peek("Authorization"))
+	if authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+				virtualKeyValue = authHeaderValue
 			}
 		}
-		if (headerStr == "x-api-key" || headerStr == "x-goog-api-key") && strings.HasPrefix(strings.ToLower(string(value)), VirtualKeyPrefix) {
-			virtualKeyValue = string(value)
-			break
+	}
+	if virtualKeyValue != "" {
+		return bifrost.Ptr(virtualKeyValue)
+	}
+	xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xAPIKey)
+	}
+	// Checking x-goog-api-key header
+	xGoogleAPIKey := string(ctx.Request.Header.Peek("x-goog-api-key"))
+	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xGoogleAPIKey)
+	}
+	return nil
+}
+
+// HTTPTransportMiddleware intercepts requests before they are processed (governance decision point)
+func (p *GovernancePlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			virtualKeyValue := parseVirtualKey(ctx)
+			if virtualKeyValue == nil {
+				next(ctx)
+				return
+			}
+			// Get the virtual key from the store
+			virtualKey, ok := p.store.GetVirtualKey(*virtualKeyValue)
+			if !ok || virtualKey == nil || !virtualKey.IsActive {
+				next(ctx)
+				return
+			}
+			headers, err := p.addMCPIncludeTools(nil, virtualKey)
+			if err != nil {
+				p.logger.Error("failed to add MCP include tools: %v", err)
+				next(ctx)
+				return
+			}
+			for header, value := range headers {
+				ctx.Request.Header.Set(header, value)
+			}
+			if ctx.Request.Body() == nil {
+				next(ctx)
+				return
+			}
+			var payload map[string]any
+			err = sonic.Unmarshal(ctx.Request.Body(), &payload)
+			if err != nil {
+				p.logger.Error("failed to unmarshal request body to check for virtual key: %v", err)
+				next(ctx)
+				return
+			}
+			payload, err = p.loadBalanceProvider(payload, virtualKey)
+			if err != nil {
+				p.logger.Error("failed to load balance provider: %v", err)
+				next(ctx)
+				return
+			}
+			body, err := sonic.Marshal(payload)
+			if err != nil {
+				p.logger.Error("failed to marshal request body to check for virtual key: %v", err)
+				next(ctx)
+				return
+			}
+			ctx.Request.SetBody(body)
+			next(ctx)
 		}
 	}
-	if virtualKeyValue == "" {
-		return headers, body, nil
-	}
-
-	virtualKey, ok := p.store.GetVirtualKey(virtualKeyValue)
-	if !ok || virtualKey == nil || !virtualKey.IsActive {
-		return headers, body, nil
-	}
-
-
-	body, err = p.loadBalanceProvider(body, virtualKey)
-	if err != nil {
-		return headers, body, err
-	}
-
-	headers, err = p.addMCPIncludeTools(headers, virtualKey)
-	if err != nil {
-		return headers, body, err
-	}
-
-	return headers, body, nil
 }
 
 // loadBalanceProvider loads balances the provider for the request
@@ -386,7 +486,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 					Type:       bifrost.Ptr("virtual_key_required"),
 					StatusCode: bifrost.Ptr(401),
 					Error: &schemas.ErrorField{
-						Message: "x-bf-vk header is missing and is mandatory.",
+						Message: "virtual key is missing in headers and is mandatory.",
 					},
 				},
 			}, nil
@@ -597,6 +697,6 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 }
 
 // GetGovernanceStore returns the governance store
-func (p *GovernancePlugin) GetGovernanceStore() *GovernanceStore {
+func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
 }

@@ -236,7 +236,18 @@ if ! grep -q "\"$route\"" docs/docs.json; then
 fi
 
 # Pulling again before committing
-git pull origin main
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+  # In detached HEAD state (common in CI), use GITHUB_REF_NAME or default to main
+  CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+fi
+
+echo "Pulling latest changes from origin/$CURRENT_BRANCH..."
+if ! git pull origin "$CURRENT_BRANCH"; then
+  echo "❌ Error: git pull origin $CURRENT_BRANCH failed"
+  exit 1
+fi
+
 # Commit and push changes
 git add docs/changelogs/$VERSION.mdx
 git add docs/docs.json
@@ -247,4 +258,4 @@ done
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git commit -m "Adds changelog for $VERSION --skip-pipeline"
-git push origin main
+git push origin "$CURRENT_BRANCH"

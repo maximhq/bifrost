@@ -7,15 +7,17 @@ require (
 	github.com/bytedance/sonic v1.14.2
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
+	github.com/google/pprof v0.0.0-20251213031049-b05bdaca462f
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.2.45
-	github.com/maximhq/bifrost/framework v1.1.56
-	github.com/maximhq/bifrost/plugins/governance v1.3.57
-	github.com/maximhq/bifrost/plugins/logging v1.3.57
-	github.com/maximhq/bifrost/plugins/maxim v1.4.57
-	github.com/maximhq/bifrost/plugins/otel v1.0.56
-	github.com/maximhq/bifrost/plugins/semanticcache v1.3.56
-	github.com/maximhq/bifrost/plugins/telemetry v1.3.56
+	github.com/mark3labs/mcp-go v0.43.2
+	github.com/maximhq/bifrost/core v1.3.1
+	github.com/maximhq/bifrost/framework v1.2.1
+	github.com/maximhq/bifrost/plugins/governance v1.4.1
+	github.com/maximhq/bifrost/plugins/logging v1.4.1
+	github.com/maximhq/bifrost/plugins/maxim v1.5.1
+	github.com/maximhq/bifrost/plugins/otel v1.1.1
+	github.com/maximhq/bifrost/plugins/semanticcache v1.4.1
+	github.com/maximhq/bifrost/plugins/telemetry v1.4.1
 	github.com/prometheus/client_golang v1.23.0
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
@@ -50,9 +52,12 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/clarkmcc/go-typescript v0.7.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/dlclark/regexp2 v1.11.4 // indirect
+	github.com/dop251/goja v0.0.0-20251103141225-af2ceb9156d7 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/analysis v0.24.2 // indirect
@@ -76,6 +81,7 @@ require (
 	github.com/go-openapi/swag/typeutils v0.25.4 // indirect
 	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
 	github.com/go-openapi/validate v0.25.1 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.2 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
@@ -89,12 +95,11 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
-	github.com/mark3labs/mcp-go v0.43.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.3.56 // indirect
-	github.com/maximhq/maxim-go v0.1.15 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.4.1 // indirect
+	github.com/maximhq/maxim-go v0.1.14 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

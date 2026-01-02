@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -50,26 +51,36 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, "Hello World Plugin", name, "Plugin name should match")
 	})
 
-	// Test TransportInterceptor
-	t.Run("TransportInterceptor", func(t *testing.T) {
-		ctx := context.Background()
-		url := "http://example.com/api"
-		headers := map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer token123",
+	// Test HTTPTransportMiddleware
+	t.Run("HTTPTransportMiddleware", func(t *testing.T) {
+		// Track if the next handler was called
+		nextHandlerCalled := false
+
+		// Create a mock next handler
+		nextHandler := func(ctx *fasthttp.RequestCtx) {
+			nextHandlerCalled = true
 		}
-		body := map[string]any{
-			"model": "gpt-4",
-			"messages": []map[string]string{
-				{"role": "user", "content": "Hello"},
-			},
-		}
-		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		modifiedHeaders, modifiedBody, err := plugin.TransportInterceptor(pluginCtx, url, headers, body)
-		require.NoError(t, err, "TransportInterceptor should not return error")
-		assert.Equal(t, headers, modifiedHeaders, "Headers should be unchanged")
-		assert.Equal(t, body, modifiedBody, "Body should be unchanged")
+
+		// Get the middleware function
+		middleware := plugin.HTTPTransportMiddleware()
+		require.NotNil(t, middleware, "HTTPTransportMiddleware should return a middleware function")
+
+		// Wrap the next handler with the middleware
+		wrappedHandler := middleware(nextHandler)
+		require.NotNil(t, wrappedHandler, "Middleware should return a wrapped handler")
+
+		// Create a test request context
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("http://example.com/api")
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Authorization", "Bearer token123")
+
+		// Call the wrapped handler
+		wrappedHandler(ctx)
+
+		// Verify the next handler was called
+		assert.True(t, nextHandlerCalled, "Next handler should have been called")
 	})
 
 	// Test PreHook

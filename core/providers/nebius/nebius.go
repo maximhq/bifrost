@@ -49,6 +49,7 @@ func NewNebiusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }

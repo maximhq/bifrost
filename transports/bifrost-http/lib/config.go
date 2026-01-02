@@ -46,6 +46,11 @@ const (
 	MaxRetryBackoff = 1000000 * time.Millisecond // Maximum retry backoff: 1000000ms (1000 seconds)
 )
 
+const (
+	DBLookupMaxRetries = 5
+	DBLookupDelay      = 1 * time.Second
+)
+
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
 func getWeight(w *float64) float64 {
@@ -247,6 +252,9 @@ var DefaultClientConfig = configstore.ClientConfig{
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},
 	MaxRequestBodySizeMB:    100,
+	MCPAgentDepth:           10,
+	MCPToolExecutionTimeout: 30,
+	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
 	EnableLiteLLMFallbacks:  false,
 }
 
@@ -486,7 +494,51 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 
 		// Merge with config file if present
 		if configData.Client != nil {
-			mergeClientConfig(&config.ClientConfig, configData.Client)
+			logger.Debug("merging client config from config file with store")
+			// DB takes priority, but fill in empty/zero values from config file
+			if config.ClientConfig.InitialPoolSize == 0 && configData.Client.InitialPoolSize != 0 {
+				config.ClientConfig.InitialPoolSize = configData.Client.InitialPoolSize
+			}
+			if len(config.ClientConfig.PrometheusLabels) == 0 && len(configData.Client.PrometheusLabels) > 0 {
+				config.ClientConfig.PrometheusLabels = configData.Client.PrometheusLabels
+			}
+			if len(config.ClientConfig.AllowedOrigins) == 0 && len(configData.Client.AllowedOrigins) > 0 {
+				config.ClientConfig.AllowedOrigins = configData.Client.AllowedOrigins
+			}
+			if config.ClientConfig.MaxRequestBodySizeMB == 0 && configData.Client.MaxRequestBodySizeMB != 0 {
+				config.ClientConfig.MaxRequestBodySizeMB = configData.Client.MaxRequestBodySizeMB
+			}
+			// Boolean fields: only override if DB has false and config file has true
+			if !config.ClientConfig.DropExcessRequests && configData.Client.DropExcessRequests {
+				config.ClientConfig.DropExcessRequests = configData.Client.DropExcessRequests
+			}
+			if !config.ClientConfig.EnableLogging && configData.Client.EnableLogging {
+				config.ClientConfig.EnableLogging = configData.Client.EnableLogging
+			}
+			if !config.ClientConfig.DisableContentLogging && configData.Client.DisableContentLogging {
+				config.ClientConfig.DisableContentLogging = configData.Client.DisableContentLogging
+			}
+			if !config.ClientConfig.EnableGovernance && configData.Client.EnableGovernance {
+				config.ClientConfig.EnableGovernance = configData.Client.EnableGovernance
+			}
+			if !config.ClientConfig.EnforceGovernanceHeader && configData.Client.EnforceGovernanceHeader {
+				config.ClientConfig.EnforceGovernanceHeader = configData.Client.EnforceGovernanceHeader
+			}
+			if !config.ClientConfig.AllowDirectKeys && configData.Client.AllowDirectKeys {
+				config.ClientConfig.AllowDirectKeys = configData.Client.AllowDirectKeys
+			}
+			if !config.ClientConfig.EnableLiteLLMFallbacks && configData.Client.EnableLiteLLMFallbacks {
+				config.ClientConfig.EnableLiteLLMFallbacks = configData.Client.EnableLiteLLMFallbacks
+			}
+			if config.ClientConfig.MCPAgentDepth == 0 && configData.Client.MCPAgentDepth != 0 {
+				config.ClientConfig.MCPAgentDepth = configData.Client.MCPAgentDepth
+			}
+			if config.ClientConfig.MCPToolExecutionTimeout == 0 && configData.Client.MCPToolExecutionTimeout != 0 {
+				config.ClientConfig.MCPToolExecutionTimeout = configData.Client.MCPToolExecutionTimeout
+			}
+			if config.ClientConfig.MCPCodeModeBindingLevel == "" && configData.Client.MCPCodeModeBindingLevel != "" {
+				config.ClientConfig.MCPCodeModeBindingLevel = configData.Client.MCPCodeModeBindingLevel
+			}
 			// Update store with merged config
 			if config.ConfigStore != nil {
 				logger.Debug("updating merged client config in store")
@@ -868,7 +920,6 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 
 	if mcpConfig != nil {
 		config.MCPConfig = mcpConfig
-
 		// Merge with config file if present
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			mergeMCPConfig(ctx, config, configData, mcpConfig)
@@ -1580,7 +1631,11 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 		Pricing: pricingConfig,
 	}
 
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
+	var pricingManager *modelcatalog.ModelCatalog
+	var err error
+
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
@@ -1955,7 +2010,9 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	}
 
 	// Initialize pricing manager
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
+	var pricingManager *modelcatalog.ModelCatalog
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
@@ -2888,7 +2945,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		c.cleanupEnvKeys("", clientConfig.ID, newEnvKeys)
-		return fmt.Errorf("failed to add MCP client: %w", err)
+		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	if c.ConfigStore != nil {
@@ -3037,8 +3094,10 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 
 	// Update the in-memory config with the processed values
 	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
+	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = processedConfig.IsCodeModeClient
 	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
+	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
 
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
@@ -3073,12 +3132,14 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.MCPClientConfig {
 	// Create a copy with basic fields
 	configCopy := schemas.MCPClientConfig{
-		ID:               config.ID,
-		Name:             config.Name,
-		ConnectionType:   config.ConnectionType,
-		ConnectionString: config.ConnectionString,
-		StdioConfig:      config.StdioConfig,
-		ToolsToExecute:   append([]string{}, config.ToolsToExecute...),
+		ID:                 config.ID,
+		Name:               config.Name,
+		IsCodeModeClient:   config.IsCodeModeClient,
+		ConnectionType:     config.ConnectionType,
+		ConnectionString:   config.ConnectionString,
+		StdioConfig:        config.StdioConfig,
+		ToolsToExecute:     append([]string{}, config.ToolsToExecute...),
+		ToolsToAutoExecute: append([]string{}, config.ToolsToAutoExecute...),
 	}
 
 	// Handle connection string if present

@@ -12,6 +12,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -22,6 +23,7 @@ import (
 
 // GovernanceManager is the interface for the governance manager
 type GovernanceManager interface {
+	GetGovernanceData() *governance.GovernanceData
 	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
@@ -38,6 +40,9 @@ type GovernanceHandler struct {
 
 // NewGovernanceHandler creates a new governance handler instance
 func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+	if manager == nil {
+		return nil, fmt.Errorf("governance manager is required")
+	}
 	if configStore == nil {
 		return nil, fmt.Errorf("config store is required")
 	}
@@ -150,7 +155,7 @@ type UpdateCustomerRequest struct {
 }
 
 // RegisterRoutes registers all governance-related routes for the new hierarchical system
-func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
 	r.POST("/api/governance/virtual-keys", lib.ChainMiddlewares(h.createVirtualKey, middlewares...))
@@ -171,12 +176,30 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...lib.
 	r.GET("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.getCustomer, middlewares...))
 	r.PUT("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.updateCustomer, middlewares...))
 	r.DELETE("/api/governance/customers/{customer_id}", lib.ChainMiddlewares(h.deleteCustomer, middlewares...))
+
+	// Budget and Rate Limit GET operations
+	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
+	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 }
 
 // Virtual Key CRUD Operations
 
 // getVirtualKeys handles GET /api/governance/virtual-keys - Get all virtual keys with relationships
 func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"virtual_keys": data.VirtualKeys,
+			"count":        len(data.VirtualKeys),
+		})
+		return
+	}
 	// Preload all relationships for complete information
 	virtualKeys, err := h.configStore.GetVirtualKeys(ctx)
 	if err != nil {
@@ -285,29 +308,29 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 				}
 
-			// Get keys for this provider config if specified
-			var keys []configstoreTables.TableKey
-			if len(pc.KeyIDs) > 0 {
-				var err error
-				keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
-				if err != nil {
-					return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+				// Get keys for this provider config if specified
+				var keys []configstoreTables.TableKey
+				if len(pc.KeyIDs) > 0 {
+					var err error
+					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
+					if err != nil {
+						return fmt.Errorf("failed to get keys by IDs for provider %s: %w", pc.Provider, err)
+					}
+					if len(keys) != len(pc.KeyIDs) {
+						return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+					}
 				}
-				if len(keys) != len(pc.KeyIDs) {
-					return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
+
+				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
+					VirtualKeyID:  vk.ID,
+					Provider:      pc.Provider,
+					Weight:        &pc.Weight,
+					AllowedModels: pc.AllowedModels,
+					Keys:          keys,
 				}
-			}
 
-			providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
-				VirtualKeyID:  vk.ID,
-				Provider:      pc.Provider,
-				Weight:        &pc.Weight,
-				AllowedModels: pc.AllowedModels,
-				Keys:          keys,
-			}
-
-			// Create budget for provider config if provided
-			if pc.Budget != nil {
+				// Create budget for provider config if provided
+				if pc.Budget != nil {
 					budget := configstoreTables.TableBudget{
 						ID:            uuid.NewString(),
 						MaxLimit:      pc.Budget.MaxLimit,
@@ -397,6 +420,25 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 // getVirtualKey handles GET /api/governance/virtual-keys/{vk_id} - Get a specific virtual key
 func (h *GovernanceHandler) getVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		for _, vk := range data.VirtualKeys {
+			if vk.ID == vkID {
+				SendJSON(ctx, map[string]interface{}{
+					"virtual_key": vk,
+				})
+				return
+			}
+		}
+		SendError(ctx, 404, "Virtual key not found")
+		return
+	}
 	vk, err := h.configStore.GetVirtualKey(ctx, vkID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -885,6 +927,7 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 404, "Virtual key not found")
 			return
 		}
+		logger.Error("failed to delete virtual key: %v", err)
 		SendError(ctx, 500, "Failed to delete virtual key")
 		return
 	}
@@ -898,6 +941,33 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 // getTeams handles GET /api/governance/teams - Get all teams
 func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 	customerID := string(ctx.QueryArgs().Peek("customer_id"))
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		if customerID != "" {
+			teams := make(map[string]*configstoreTables.TableTeam)
+			for _, team := range data.Teams {
+				if team.CustomerID != nil && *team.CustomerID == customerID {
+					teams[team.ID] = team
+				}
+			}
+			SendJSON(ctx, map[string]interface{}{
+				"teams": teams,
+				"count": len(teams),
+			})
+		} else {
+			SendJSON(ctx, map[string]interface{}{
+				"teams": data.Teams,
+				"count": len(data.Teams),
+			})
+		}
+		return
+	}
 	// Preload relationships for complete information
 	teams, err := h.configStore.GetTeams(ctx, customerID)
 	if err != nil {
@@ -980,6 +1050,24 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 // getTeam handles GET /api/governance/teams/{team_id} - Get a specific team
 func (h *GovernanceHandler) getTeam(ctx *fasthttp.RequestCtx) {
 	teamID := ctx.UserValue("team_id").(string)
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		team, ok := data.Teams[teamID]
+		if !ok {
+			SendError(ctx, 404, "Team not found")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"team": team,
+		})
+		return
+	}
 	team, err := h.configStore.GetTeam(ctx, teamID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1112,6 +1200,20 @@ func (h *GovernanceHandler) deleteTeam(ctx *fasthttp.RequestCtx) {
 
 // getCustomers handles GET /api/governance/customers - Get all customers
 func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"customers": data.Customers,
+			"count":     len(data.Customers),
+		})
+		return
+	}
 	customers, err := h.configStore.GetCustomers(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve customers: %v", err)
@@ -1190,6 +1292,24 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 // getCustomer handles GET /api/governance/customers/{customer_id} - Get a specific customer
 func (h *GovernanceHandler) getCustomer(ctx *fasthttp.RequestCtx) {
 	customerID := ctx.UserValue("customer_id").(string)
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		customer, ok := data.Customers[customerID]
+		if !ok {
+			SendError(ctx, 404, "Customer not found")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"customer": customer,
+		})
+		return
+	}
 	customer, err := h.configStore.GetCustomer(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
@@ -1313,6 +1433,64 @@ func (h *GovernanceHandler) deleteCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Customer deleted successfully",
+	})
+}
+
+// Budget and Rate Limit GET operations
+
+// getBudgets handles GET /api/governance/budgets - Get all budgets
+func (h *GovernanceHandler) getBudgets(ctx *fasthttp.RequestCtx) {
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"budgets": data.Budgets,
+			"count":   len(data.Budgets),
+		})
+		return
+	}
+	budgets, err := h.configStore.GetBudgets(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve budgets: %v", err)
+		SendError(ctx, 500, "failed to retrieve budgets")
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"budgets": budgets,
+		"count":   len(budgets),
+	})
+}
+
+// getRateLimits handles GET /api/governance/rate-limits - Get all rate limits
+func (h *GovernanceHandler) getRateLimits(ctx *fasthttp.RequestCtx) {
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"rate_limits": data.RateLimits,
+			"count":       len(data.RateLimits),
+		})
+		return
+	}
+	rateLimits, err := h.configStore.GetRateLimits(ctx)
+	if err != nil {
+		logger.Error("failed to retrieve rate limits: %v", err)
+		SendError(ctx, 500, "failed to retrieve rate limits")
+		return
+	}
+	SendJSON(ctx, map[string]interface{}{
+		"rate_limits": rateLimits,
+		"count":       len(rateLimits),
 	})
 }
 

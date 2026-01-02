@@ -1,6 +1,12 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import (
+	"context"
+
+	"github.com/valyala/fasthttp"
+)
+
 // PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
 type PluginShortCircuit struct {
@@ -27,6 +33,10 @@ type PluginStatus struct {
 	Logs   []string `json:"logs"`
 }
 
+// BifrostHTTPMiddleware is a middleware function for the Bifrost HTTP transport
+// It follows the standard pattern: receives the next handler and returns a new handler
+type BifrostHTTPMiddleware func(next fasthttp.RequestHandler) fasthttp.RequestHandler
+
 // Plugin defines the interface for Bifrost plugins.
 // Plugins can intercept and modify requests and responses at different stages
 // of the processing pipeline.
@@ -35,7 +45,7 @@ type PluginStatus struct {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. TransportInterceptor (HTTP transport only, modifies raw headers/body before entering Bifrost core)
+// 1. HTTPTransportMiddleware (HTTP transport only, modifies raw headers/body before entering Bifrost core)
 // 2. PreHook (executed in registration order)
 // 3. Provider call
 // 4. PostHook (executed in reverse order of PreHooks)
@@ -62,11 +72,11 @@ type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
 
-	// TransportInterceptor is called at the HTTP transport layer before requests enter Bifrost core.
-	// It allows plugins to modify raw HTTP headers and body before transformation into BifrostRequest.
+	// HTTPTransportMiddleware is called at the HTTP transport layer before requests enter Bifrost core.
+	// It allows plugins to modify the request and response before they are processed by the next middleware.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
-	// Returns modified headers, modified body, and any error that occurred during interception.
-	TransportInterceptor(ctx *BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	// Returns a new handler that will be called next in the middleware chain.
+	HTTPTransportMiddleware() BifrostHTTPMiddleware
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.
@@ -94,4 +104,34 @@ type PluginConfig struct {
 	Path    *string `json:"path,omitempty"`
 	Version *int16  `json:"version,omitempty"`
 	Config  any     `json:"config,omitempty"`
+}
+
+// ObservabilityPlugin is an interface for plugins that receive completed traces
+// for forwarding to observability backends (e.g., OTEL collectors, Datadog, etc.)
+//
+// ObservabilityPlugins are called asynchronously after the HTTP response has been
+// written to the wire, ensuring they don't add latency to the client response.
+//
+// Plugins implementing this interface will:
+// 1. Continue to work as regular plugins via PreHook/PostHook
+// 2. Additionally receive completed traces via the Inject method
+//
+// Example backends: OpenTelemetry collectors, Datadog, Jaeger, Maxim, etc.
+//
+// Note: Go type assertion (plugin.(ObservabilityPlugin)) is used to identify
+// plugins implementing this interface - no marker method is needed.
+type ObservabilityPlugin interface {
+	Plugin
+
+	// Inject receives a completed trace for forwarding to observability backends.
+	// This method is called asynchronously after the response has been written to the client.
+	// The trace contains all spans that were added during request processing.
+	//
+	// Implementations should:
+	// - Convert the trace to their backend's format
+	// - Send the trace to the backend (can be async)
+	// - Handle errors gracefully (log and continue)
+	//
+	// The context passed is a fresh background context, not the request context.
+	Inject(ctx context.Context, trace *Trace) error
 }

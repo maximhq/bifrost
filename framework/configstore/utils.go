@@ -183,32 +183,59 @@ func substituteMCPEnvVars(config *schemas.MCPConfig, envKeys map[string][]EnvKey
 }
 
 // substituteMCPClientEnvVars replaces resolved environment variable values with their original env.VAR_NAME references for a single MCP client config
-func substituteMCPClientEnvVars(clientConfig *schemas.MCPClientConfig, envKeys map[string][]EnvKeyInfo) {
+// If existingHeaders is provided, it will restore redacted plain header values from the existing headers before substitution
+func substituteMCPClientEnvVars(clientConfig *schemas.MCPClientConfig, envKeys map[string][]EnvKeyInfo, existingHeaders map[string]string) {
+	// First, restore redacted plain header values from existing headers if provided
+	// This handles the case where UI sends redacted headers that aren't env vars
+	if existingHeaders != nil && clientConfig.Headers != nil {
+		for header, value := range clientConfig.Headers {
+			// Check if the value is redacted (contains **** pattern) and not an env var
+			if strings.Contains(value, "****") && !strings.HasPrefix(value, "env.") {
+				// If header exists in existing headers and wasn't an env var, restore it
+				if oldHeaderValue, exists := existingHeaders[header]; exists {
+					if !strings.HasPrefix(oldHeaderValue, "env.") {
+						clientConfig.Headers[header] = oldHeaderValue
+					}
+				}
+			}
+		}
+	}
+
 	// Find the environment variable for this client's connection string and headers
 	for envVar, keyInfos := range envKeys {
 		for _, keyInfo := range keyInfos {
 			// For MCP connection strings
 			if keyInfo.KeyType == "connection_string" {
-				// Extract client name from config path like "mcp.client_configs.clientName.connection_string"
+				// Extract client ID from config path like "mcp.client_configs.clientID.connection_string"
 				pathParts := strings.Split(keyInfo.ConfigPath, ".")
 				if len(pathParts) >= 3 && pathParts[0] == "mcp" && pathParts[1] == "client_configs" {
-					clientName := pathParts[2]
-					// If this environment variable is for the current client
-					if clientName == clientConfig.Name && clientConfig.ConnectionString != nil {
+					clientID := pathParts[2]
+					// If this environment variable is for the current client (match by ID)
+					if clientID == clientConfig.ID && clientConfig.ConnectionString != nil {
 						clientConfig.ConnectionString = &[]string{fmt.Sprintf("env.%s", envVar)}[0]
 					}
 				}
 			}
 			// For MCP headers
 			if keyInfo.KeyType == "mcp_header" {
-				// Extract client name and header name from config path like "mcp.client_configs.clientName.headers.headerName"
+				// Extract client ID and header name from config path like "mcp.client_configs.clientID.headers.headerName"
 				pathParts := strings.Split(keyInfo.ConfigPath, ".")
 				if len(pathParts) >= 5 && pathParts[0] == "mcp" && pathParts[1] == "client_configs" && pathParts[3] == "headers" {
-					clientName := pathParts[2]
+					clientID := pathParts[2]
 					headerName := pathParts[4]
-					// If this environment variable is for the current client
-					if clientName == clientConfig.Name && clientConfig.Headers != nil {
-						clientConfig.Headers[headerName] = fmt.Sprintf("env.%s", envVar)
+					// If this environment variable is for the current client (match by ID)
+					if clientID == clientConfig.ID && clientConfig.Headers != nil {
+						if headerValue, exists := clientConfig.Headers[headerName]; exists {
+							// If it's already in env.VAR format, update to use the correct env var
+							if strings.HasPrefix(headerValue, "env.") {
+								clientConfig.Headers[headerName] = fmt.Sprintf("env.%s", envVar)
+							} else if strings.Contains(headerValue, "****") {
+								// If it's redacted (contains ****), restore to env.VAR format
+								// This handles the case where UI sends redacted headers back for env vars
+								clientConfig.Headers[headerName] = fmt.Sprintf("env.%s", envVar)
+							}
+							// If it's a plain value (not env. and not redacted), leave it as-is
+						}
 					}
 				}
 			}

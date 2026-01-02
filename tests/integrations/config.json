@@ -139,7 +139,7 @@
                         "access_key": "env.AWS_ACCESS_KEY_ID",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY",
                         "region": "env.AWS_REGION",
-                        "arn": "env.AWS_BEDROCK_ROLE_ARN"
+                        "arn": "env.AWS_ARN"
                     },
                     "weight": 1,
                     "use_for_batch_api": true

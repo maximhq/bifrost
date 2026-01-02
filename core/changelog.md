@@ -1,3 +1,0 @@
-- fix: empty string handling in Anthropic provider to prevent sending empty content blocks in chat requests
-- fix: Gemini/Vertex tool conversion to append all function declarations to a single Tool object
-- feat: added Azure Entra ID (Service Principal) authentication support to the Azure provider

@@ -672,7 +672,7 @@ integration_settings:
   bedrock:
     region: "${AWS_REGION:-us-west-2}"
     s3_bucket: "${AWS_S3_BUCKET:-}"
-    batch_role_arn: "${AWS_BEDROCK_ROLE_ARN:-}"
+    batch_role_arn: "${AWS_ARN:-}"
     output_s3_prefix: "${AWS_OUTPUT_S3_PREFIX:-bifrost-batch-output/}"
 
 # Environment-specific overrides

@@ -1135,15 +1135,8 @@ func (m *MCPManager) createInProcessConnection(config schemas.MCPClientConfig) (
 	if config.InProcessServer == nil {
 		return nil, MCPClientConnectionInfo{}, fmt.Errorf("InProcess connection requires a server instance")
 	}
-
-	// Type assert to ensure we have a proper MCP server
-	mcpServer, ok := config.InProcessServer.(*server.MCPServer)
-	if !ok {
-		return nil, MCPClientConnectionInfo{}, fmt.Errorf("InProcessServer must be a *server.MCPServer instance")
-	}
-
 	// Create in-process client directly connected to the provided server
-	inProcessClient, err := client.NewInProcessClient(mcpServer)
+	inProcessClient, err := client.NewInProcessClient(config.InProcessServer)
 	if err != nil {
 		return nil, MCPClientConnectionInfo{}, fmt.Errorf("failed to create in-process client: %w", err)
 	}

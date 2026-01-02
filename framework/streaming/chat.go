@@ -153,20 +153,28 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		accumulator.mu.Unlock()
 	}()
+
+	// Calculate Time to First Token (TTFT) in milliseconds
+	var ttft int64
+	if !accumulator.StartTimestamp.IsZero() && !accumulator.FirstChunkTimestamp.IsZero() {
+		ttft = accumulator.FirstChunkTimestamp.Sub(accumulator.StartTimestamp).Nanoseconds() / 1e6
+	}
+
 	// Initialize accumulated data
 	data := &AccumulatedData{
-		RequestID:      requestID,
-		Status:         "success",
-		Stream:         true,
-		StartTimestamp: accumulator.StartTimestamp,
-		EndTimestamp:   accumulator.FinalTimestamp,
-		Latency:        0,
-		OutputMessage:  nil,
-		ToolCalls:      nil,
-		ErrorDetails:   nil,
-		TokenUsage:     nil,
-		CacheDebug:     nil,
-		Cost:           nil,
+		RequestID:        requestID,
+		Status:           "success",
+		Stream:           true,
+		StartTimestamp:   accumulator.StartTimestamp,
+		EndTimestamp:     accumulator.FinalTimestamp,
+		Latency:          0,
+		TimeToFirstToken: ttft,
+		OutputMessage:    nil,
+		ToolCalls:        nil,
+		ErrorDetails:     nil,
+		TokenUsage:       nil,
+		CacheDebug:       nil,
+		Cost:             nil,
 	}
 	// Build complete message from accumulated chunks
 	completeMessage := a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
@@ -231,11 +239,11 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 // processChatStreamingResponse processes a chat streaming response
 func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
 	a.logger.Debug("[streaming] processing chat streaming response")
-	// Extract request ID from context
-	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
+	// Extract accumulator ID from context
+	requestID, ok := getAccumulatorID(ctx)
 	if !ok || requestID == "" {
 		// Log error but don't fail the request
-		return nil, fmt.Errorf("request-id not found in context or is empty")
+		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
 	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 

@@ -13,6 +13,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -45,6 +46,7 @@ type ConfigManager interface {
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
@@ -68,7 +70,7 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 
 // RegisterRoutes registers the configuration-related routes.
 // It adds the `PUT /api/config` endpoint.
-func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
 	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
@@ -241,6 +243,49 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.DropExcessRequests = payload.ClientConfig.DropExcessRequests
 	}
 
+	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
+		if payload.ClientConfig.MCPCodeModeBindingLevel != string(schemas.CodeModeBindingLevelServer) && payload.ClientConfig.MCPCodeModeBindingLevel != string(schemas.CodeModeBindingLevelTool) {
+			logger.Warn("mcp_code_mode_binding_level must be 'server' or 'tool'")
+			SendError(ctx, fasthttp.StatusBadRequest, "mcp_code_mode_binding_level must be 'server' or 'tool'")
+			return
+		}
+	}
+
+	shouldReloadMCPToolManagerConfig := false
+
+	if payload.ClientConfig.MCPAgentDepth != currentConfig.MCPAgentDepth {
+		if payload.ClientConfig.MCPAgentDepth <= 0 {
+			logger.Warn("mcp_agent_depth must be greater than 0")
+			SendError(ctx, fasthttp.StatusBadRequest, "mcp_agent_depth must be greater than 0")
+			return
+		}
+		updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
+		shouldReloadMCPToolManagerConfig = true
+	}
+
+	if payload.ClientConfig.MCPToolExecutionTimeout != currentConfig.MCPToolExecutionTimeout {
+		if payload.ClientConfig.MCPToolExecutionTimeout <= 0 {
+			logger.Warn("mcp_tool_execution_timeout must be greater than 0")
+			SendError(ctx, fasthttp.StatusBadRequest, "mcp_tool_execution_timeout must be greater than 0")
+			return
+		}
+		updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
+		shouldReloadMCPToolManagerConfig = true
+	}
+
+	if payload.ClientConfig.MCPCodeModeBindingLevel != "" && payload.ClientConfig.MCPCodeModeBindingLevel != currentConfig.MCPCodeModeBindingLevel {
+		updatedConfig.MCPCodeModeBindingLevel = payload.ClientConfig.MCPCodeModeBindingLevel
+		shouldReloadMCPToolManagerConfig = true
+	}
+
+	if shouldReloadMCPToolManagerConfig {
+		if err := h.configManager.UpdateMCPToolManagerConfig(ctx, updatedConfig.MCPAgentDepth, updatedConfig.MCPToolExecutionTimeout, updatedConfig.MCPCodeModeBindingLevel); err != nil {
+			logger.Warn(fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp tool manager config: %v", err))
+			return
+		}
+	}
+
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels
 		shouldReloadTelemetryPlugin = true
@@ -281,6 +326,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 
 	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
+	updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
+	updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout
+	// Only update MCPCodeModeBindingLevel if payload is non-empty to avoid clearing stored value
+	if payload.ClientConfig.MCPCodeModeBindingLevel != "" {
+		updatedConfig.MCPCodeModeBindingLevel = payload.ClientConfig.MCPCodeModeBindingLevel
+	}
 
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
