@@ -132,6 +132,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHeaderFilterConfigJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelConfigTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddProviderGovernanceColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1205,7 +1211,6 @@ func migrationAddEnabledColumnToKeyTable(ctx context.Context, db *gorm.DB) error
 				if err := mg.AddColumn(&tables.TableKey{}, "enabled"); err != nil {
 					return fmt.Errorf("failed to add enabled column: %w", err)
 				}
-
 			}
 			// Set default = true for existing rows
 			if err := tx.Exec("UPDATE config_keys SET enabled = TRUE WHERE enabled IS NULL").Error; err != nil {
@@ -1713,7 +1718,7 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 				}
 				for _, key := range keys {
 					if key.ConfigHash == "" {
-						
+
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
 							Name:             key.Name,
@@ -2150,6 +2155,115 @@ func migrationAddHeaderFilterConfigJSONColumn(ctx context.Context, db *gorm.DB) 
 
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running header_filter_config_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddModelConfigTable adds the governance_model_configs table
+func migrationAddModelConfigTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_config_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.TableModelConfig{}) {
+				if err := migrator.CreateTable(&tables.TableModelConfig{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropTable(&tables.TableModelConfig{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add model config table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderGovernanceColumns adds budget_id and rate_limit_id columns to config_providers table
+func migrationAddProviderGovernanceColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_provider_governance_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			provider := &tables.TableProvider{}
+
+			// Add budget_id column if it doesn't exist
+			if !migrator.HasColumn(provider, "budget_id") {
+				if err := migrator.AddColumn(provider, "budget_id"); err != nil {
+					return fmt.Errorf("failed to add budget_id column: %w", err)
+				}
+				// Create index for budget_id
+				if !migrator.HasIndex(provider, "idx_provider_budget") {
+					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_budget ON config_providers (budget_id)").Error; err != nil {
+						return fmt.Errorf("failed to create budget_id index: %w", err)
+					}
+				}
+			}
+
+			// Add rate_limit_id column if it doesn't exist
+			if !migrator.HasColumn(provider, "rate_limit_id") {
+				if err := migrator.AddColumn(provider, "rate_limit_id"); err != nil {
+					return fmt.Errorf("failed to add rate_limit_id column: %w", err)
+				}
+				// Create index for rate_limit_id
+				if !migrator.HasIndex(provider, "idx_provider_rate_limit") {
+					if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_provider_rate_limit ON config_providers (rate_limit_id)").Error; err != nil {
+						return fmt.Errorf("failed to create rate_limit_id index: %w", err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			provider := &tables.TableProvider{}
+
+			// Drop indexes first
+			if migrator.HasIndex(provider, "idx_provider_rate_limit") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_rate_limit").Error; err != nil {
+					return fmt.Errorf("failed to drop rate_limit_id index: %w", err)
+				}
+			}
+
+			if migrator.HasIndex(provider, "idx_provider_budget") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_provider_budget").Error; err != nil {
+					return fmt.Errorf("failed to drop budget_id index: %w", err)
+				}
+			}
+
+			// Drop rate_limit_id column if it exists
+			if migrator.HasColumn(provider, "rate_limit_id") {
+				if err := migrator.DropColumn(provider, "rate_limit_id"); err != nil {
+					return fmt.Errorf("failed to drop rate_limit_id column: %w", err)
+				}
+			}
+
+			// Drop budget_id column if it exists
+			if migrator.HasColumn(provider, "budget_id") {
+				if err := migrator.DropColumn(provider, "budget_id"); err != nil {
+					return fmt.Errorf("failed to drop budget_id column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add provider governance columns migration: %s", err.Error())
 	}
 	return nil
 }
