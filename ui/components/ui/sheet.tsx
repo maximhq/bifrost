@@ -105,7 +105,7 @@ function SheetContent({
 					onPointerDownOutside={handlePointerDownOutside}
 					onInteractOutside={handleInteractOutside}
 					className={cn(
-						"bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col shadow-lg transition-all ease-in-out data-[state=closed]:duration-100 data-[state=open]:duration-100",
+						"bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col shadow-lg transition-all ease-in-out data-[state=closed]:duration-100 data-[state=open]:duration-100 custom-scrollbar",
 						side === "right" &&
 							"data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right top-2 right-0 bottom-2 h-auto w-3/4 rounded-l-lg border-l",
 						side === "right" && (!expandable || !expanded) && "sm:max-w-2xl",

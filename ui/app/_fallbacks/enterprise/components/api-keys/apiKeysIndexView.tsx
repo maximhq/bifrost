@@ -31,11 +31,6 @@ curl --location 'http://localhost:8080/v1/chat/completions'
   ] 
 }'`;
 
-	const maskToken = (token: string, revealed: boolean) => {
-		if (revealed) return token;
-		return token.substring(0, 8) + "•".repeat(Math.max(0, token.length - 8));
-	};
-
 	const copyToClipboard = (text: string) => {
 		navigator.clipboard.writeText(text);
 		toast.success("Copied to clipboard");
