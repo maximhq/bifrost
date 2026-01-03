@@ -50,6 +50,7 @@ const (
 	Elevenlabs  ModelProvider = "elevenlabs"
 	HuggingFace ModelProvider = "huggingface"
 	Nebius      ModelProvider = "nebius"
+	XAI         ModelProvider = "xai"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.

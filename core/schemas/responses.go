@@ -442,8 +442,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations,omitempty"` // Citations and references
-	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitempty"`    // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"`        // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitempty"` // Token log probabilities
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {

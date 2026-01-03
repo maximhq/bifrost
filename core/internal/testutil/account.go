@@ -114,6 +114,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.OpenRouter,
 		schemas.HuggingFace,
 		schemas.Nebius,
+		schemas.XAI,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -341,6 +342,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:          os.Getenv("NEBIUS_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.XAI:
+		return []schemas.Key{
+			{
+				Value:          os.Getenv("XAI_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -605,6 +615,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Nebius:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.XAI:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
@@ -1054,6 +1077,31 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	},
+	{
+		Provider:  schemas.XAI,
+		ChatModel: "grok-4-0709",
+		TextModel: "", // XAI focuses on chat
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not typical
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			Embedding:             false, // Not supported
+			ListModels:            true,
 		},
 	},
 }

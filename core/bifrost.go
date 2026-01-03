@@ -34,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
+	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -1927,6 +1928,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return nebius.NewNebiusProvider(config, bifrost.logger)
 	case schemas.HuggingFace:
 		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
+	case schemas.XAI:
+		return xai.NewXAIProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}

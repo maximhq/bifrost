@@ -5,7 +5,6 @@ import (
 	"os"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -28,6 +27,9 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 			Model:    testConfig.TextModel,
 			Input: &schemas.TextCompletionInput{
 				PromptStr: &prompt,
+			},
+			Params: &schemas.TextCompletionParameters{
+				MaxTokens: bifrost.Ptr(100),
 			},
 			Fallbacks: testConfig.TextCompletionFallbacks,
 		}

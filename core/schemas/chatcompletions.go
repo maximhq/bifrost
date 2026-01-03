@@ -283,6 +283,32 @@ type ToolFunctionParameters struct {
 	AdditionalProperties *bool       `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
+// It handles both JSON object format (standard) and JSON string format (used by some providers like xAI).
+func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
+	// First, try to unmarshal as a JSON string (xAI format)
+	var jsonStr string
+	if err := sonic.Unmarshal(data, &jsonStr); err == nil {
+		// It's a string, so parse the string as JSON
+		type Alias ToolFunctionParameters
+		var temp Alias
+		if err := sonic.Unmarshal([]byte(jsonStr), &temp); err != nil {
+			return fmt.Errorf("failed to unmarshal parameters string: %w", err)
+		}
+		*t = ToolFunctionParameters(temp)
+		return nil
+	}
+
+	// Otherwise, unmarshal as a normal JSON object
+	type Alias ToolFunctionParameters
+	var temp Alias
+	if err := sonic.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+	*t = ToolFunctionParameters(temp)
+	return nil
+}
+
 type OrderedMap map[string]interface{}
 
 // normalizeOrderedMap recursively converts JSON-like data into a tree where
@@ -676,13 +702,24 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	// Alias to avoid infinite recursion
 	type Alias ChatAssistantMessage
 
-	var aux Alias
+	// Auxiliary struct to capture xAI's reasoning_content field
+	var aux struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"` // xAI uses this field name
+	}
+
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
 	// Copy decoded data back into the original type
-	*cm = ChatAssistantMessage(aux)
+	*cm = ChatAssistantMessage(aux.Alias)
+
+	// Map xAI's reasoning_content to Bifrost's Reasoning field
+	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
+	if aux.ReasoningContent != nil && cm.Reasoning == nil {
+		cm.Reasoning = aux.ReasoningContent
+	}
 
 	// If Reasoning is present and there are no reasoning_details,
 	// synthesize a text reasoning_details entry.
@@ -812,13 +849,24 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 	// Alias to avoid infinite recursion
 	type Alias ChatStreamResponseChoiceDelta
 
-	var aux Alias
+	// Auxiliary struct to capture xAI's reasoning_content field
+	var aux struct {
+		Alias
+		ReasoningContent *string `json:"reasoning_content,omitempty"` // xAI uses this field name
+	}
+
 	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
 	// Copy decoded data back into the original type
-	*d = ChatStreamResponseChoiceDelta(aux)
+	*d = ChatStreamResponseChoiceDelta(aux.Alias)
+
+	// Map xAI's reasoning_content to Bifrost's Reasoning field
+	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
+	if aux.ReasoningContent != nil && d.Reasoning == nil {
+		d.Reasoning = aux.ReasoningContent
+	}
 
 	// If Reasoning is present and there are no reasoning_details,
 	// synthesize a text reasoning_details entry.
