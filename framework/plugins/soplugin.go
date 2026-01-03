@@ -7,7 +7,7 @@ import (
 )
 
 // DynamicPlugin is the interface for a dynamic plugin
-type DynamicPlugin struct {
+type DynamicLLMPlugin struct {
 	Enabled bool
 	Path    string
 
@@ -25,31 +25,31 @@ type DynamicPlugin struct {
 }
 
 // GetName returns the name of the plugin
-func (dp *DynamicPlugin) GetName() string {
+func (dp *DynamicLLMPlugin) GetName() string {
 	return dp.getName()
 }
 
 // HTTPTransportPreHook intercepts HTTP requests at the transport layer before entering Bifrost core
-func (dp *DynamicPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func (dp *DynamicLLMPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return dp.httpTransportPreHook(ctx, req)
 }
 
 // HTTPTransportPostHook intercepts HTTP responses at the transport layer after exiting Bifrost core
-func (dp *DynamicPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+func (dp *DynamicLLMPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
 	return dp.httpTransportPostHook(ctx, req, resp)
 }
 
-// PreHook is not used for dynamic plugins
-func (dp *DynamicPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+// PreLLMHook is not used for dynamic plugins
+func (dp *DynamicLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return dp.preHook(ctx, req)
 }
 
-// PostHook is invoked by PluginPipeline.RunPostHooks in core/bifrost.go
-func (dp *DynamicPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook is invoked by PluginPipeline.RunPostHooks in core/bifrost.go
+func (dp *DynamicLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return dp.postHook(ctx, resp, bifrostErr)
 }
 
 // Cleanup is invoked by core/bifrost.go during plugin unload, reload, and shutdown
-func (dp *DynamicPlugin) Cleanup() error {
+func (dp *DynamicLLMPlugin) Cleanup() error {
 	return dp.cleanup()
 }

@@ -80,7 +80,25 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		clientMap:            make(map[string]*schemas.MCPClientState),
 		healthMonitorManager: NewHealthMonitorManager(),
 	}
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc)
+	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
+	var pluginPipelineProvider func() PluginPipeline
+	var releasePluginPipeline func(pipeline PluginPipeline)
+	
+	if config.PluginPipelineProvider != nil && config.ReleasePluginPipeline != nil {
+		pluginPipelineProvider = func() PluginPipeline {
+			if pipeline := config.PluginPipelineProvider(); pipeline != nil {
+				if pp, ok := pipeline.(PluginPipeline); ok {
+					return pp
+				}
+			}
+			return nil
+		}
+		releasePluginPipeline = func(pipeline PluginPipeline) {
+			config.ReleasePluginPipeline(pipeline)
+		}
+	}
+	
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline)
 	// Process client configs: create client map entries and establish connections
 	if len(config.ClientConfigs) > 0 {
 		for _, clientConfig := range config.ClientConfigs {

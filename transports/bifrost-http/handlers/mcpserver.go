@@ -25,7 +25,7 @@ import (
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
-	ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
@@ -239,7 +239,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			}
 
 			// Execute the tool via tool executor
-			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, toolCall)
+			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}

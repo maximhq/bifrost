@@ -95,7 +95,7 @@ type Config struct {
 	DisableContentLogging *bool `json:"disable_content_logging"`
 }
 
-// LoggerPlugin implements the schemas.Plugin interface
+// LoggerPlugin implements the schemas.LLMPlugin interface
 type LoggerPlugin struct {
 	ctx                   context.Context
 	store                 logstore.LogStore
@@ -203,7 +203,7 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
-// PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
+// PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request
@@ -212,10 +212,10 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if ctx == nil {
 		// Log error but don't fail the request
-		p.logger.Error("context is nil in PreHook")
+		p.logger.Error("context is nil in PreLLMHook")
 		return req, nil, nil
 	}
 
@@ -339,7 +339,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 	return req, nil, nil
 }
 
-// PostHook is called after a response is received - FULLY ASYNC, NO DATABASE I/O
+// PostLLMHook is called after a response is received - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
@@ -349,10 +349,10 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
-func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if ctx == nil {
 		// Log error but don't fail the request
-		p.logger.Error("context is nil in PostHook")
+		p.logger.Error("context is nil in PostLLMHook")
 		return result, bifrostErr, nil
 	}
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)

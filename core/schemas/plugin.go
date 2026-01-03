@@ -169,22 +169,22 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 //
 // Execution order:
 // 1. HTTPTransportPreHook (HTTP transport only, executed in registration order)
-// 2. PreHook (executed in registration order)
+// 2. PreLLMHook (executed in registration order)
 // 3. Provider call
-// 4. PostHook (executed in reverse order of PreHooks)
+// 4. PostLLMHook (executed in reverse order of PreHooks)
 // 5. HTTPTransportPostHook (HTTP transport only, executed in reverse order)
 //
 // Common use cases: rate limiting, caching, logging, monitoring, request transformation, governance.
 //
 // Plugin error handling:
 // - No Plugin errors are returned to the caller; they are logged as warnings by the Bifrost instance.
-// - PreHook and PostHook can both modify the request/response and the error. Plugins can recover from errors (set error to nil and provide a response), or invalidate a response (set response to nil and provide an error).
-// - PostHook is always called with both the current response and error, and should handle either being nil.
+// - PreLLMHook and PostLLMHook can both modify the request/response and the error. Plugins can recover from errors (set error to nil and provide a response), or invalidate a response (set response to nil and provide an error).
+// - PostLLMHook is always called with both the current response and error, and should handle either being nil.
 // - Only truly empty errors (no message, no error, no status code, no type) are treated as recoveries by the pipeline.
-// - If a PreHook returns a LLMPluginShortCircuit, the provider call may be skipped and only the PostHook methods of plugins that had their PreHook executed are called in reverse order.
-// - The plugin pipeline ensures symmetry: for every PreHook executed, the corresponding PostHook will be called in reverse order.
+// - If a PreLLMHook returns a LLMPluginShortCircuit, the provider call may be skipped and only the PostLLMHook methods of plugins that had their PreLLMHook executed are called in reverse order.
+// - The plugin pipeline ensures symmetry: for every PreLLMHook executed, the corresponding PostLLMHook will be called in reverse order.
 //
-// IMPORTANT: When returning BifrostError from PreHook or PostHook:
+// IMPORTANT: When returning BifrostError from PreLLMHook or PostLLMHook:
 // - You can set the AllowFallbacks field to control fallback behavior
 // - AllowFallbacks = &true: Allow Bifrost to try fallback providers
 // - AllowFallbacks = &false: Do not try fallbacks, return error immediately
@@ -234,15 +234,15 @@ type HTTPTransportPlugin interface {
 type LLMPlugin interface {
 	BasePlugin
 
-	PreHook(ctx *BifrostContext, req *BifrostRequest) (*BifrostRequest, *LLMPluginShortCircuit, error)
-	PostHook(ctx *BifrostContext, resp *BifrostResponse, bifrostErr *BifrostError) (*BifrostResponse, *BifrostError, error)
+	PreLLMHook(ctx *BifrostContext, req *BifrostRequest) (*BifrostRequest, *LLMPluginShortCircuit, error)
+	PostLLMHook(ctx *BifrostContext, resp *BifrostResponse, bifrostErr *BifrostError) (*BifrostResponse, *BifrostError, error)
 }
 
 type MCPPlugin interface {
 	BasePlugin
 
-	PreHook(ctx *BifrostContext, req *BifrostMCPRequest) (*BifrostMCPRequest, *MCPPluginShortCircuit, error)
-	PostHook(ctx *BifrostContext, resp *BifrostResponse, bifrostErr *BifrostError) (*BifrostResponse, *BifrostError, error)
+	PreMCPHook(ctx *BifrostContext, req *BifrostMCPRequest) (*BifrostMCPRequest, *MCPPluginShortCircuit, error)
+	PostMCPHook(ctx *BifrostContext, resp *BifrostMCPResponse, bifrostErr *BifrostError) (*BifrostMCPResponse, *BifrostError, error)
 }
 
 // PluginConfig is the configuration for a plugin.
@@ -262,7 +262,7 @@ type PluginConfig struct {
 // written to the wire, ensuring they don't add latency to the client response.
 //
 // Plugins implementing this interface will:
-// 1. Continue to work as regular plugins via PreHook/PostHook
+// 1. Continue to work as regular plugins via PreLLMHook/PostLLMHook
 // 2. Additionally receive completed traces via the Inject method
 //
 // Example backends: OpenTelemetry collectors, Datadog, Jaeger, Maxim, etc.

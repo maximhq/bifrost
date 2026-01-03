@@ -1,2 +1,1 @@
-- feat: allowed provider config to use in-memory usage tracking for expired counters
-- feat: added retries on network lookup errors
+- fix: separate mcp inference handler from mcp handler for consistency in auth middlewares
