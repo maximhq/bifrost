@@ -10,9 +10,10 @@ interface Props {
 	required?: boolean;
 	disabled?: boolean;
 	caption?: string;
+	'data-testid'?: string;
 }
 
-const Toggle = ({ className, label, val, setVal, required = false, disabled = false, caption }: Props) => {
+const Toggle = ({ className, label, val, setVal, required = false, disabled = false, caption, 'data-testid': testId }: Props) => {
 	return (
 		<div className="w-full">
 			<label
@@ -26,7 +27,7 @@ const Toggle = ({ className, label, val, setVal, required = false, disabled = fa
 						{label} {required && "*"}
 					</div>
 				)}
-				<Switch checked={val} onCheckedChange={setVal} />
+				<Switch checked={val} onCheckedChange={setVal} data-testid={testId} />
 			</label>
 			{caption && <div className="mt-1 text-xs text-gray-400">{caption}</div>}
 		</div>
