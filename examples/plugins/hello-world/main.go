@@ -19,22 +19,22 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 	fmt.Println("HTTPTransportIntercept called")
 	// Modify request in-place
 	req.Headers["x-hello-world-plugin"] = "transport-interceptor-value"
-	// Store value in context for PreHook/PostHook
+	// Store value in context for PreLLMHook/PostLLMHook
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"), "transport-interceptor-value")
 	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit
 	return nil, nil
 }
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"))
 	fmt.Println("value1:", value1)
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-pre-hook"), "pre-hook-value")
-	fmt.Println("PreHook called")
+	fmt.Println("PreLLMHook called")
 	return req, nil, nil
 }
 
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	fmt.Println("PostHook called")
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostLLMHook called")
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"))
 	fmt.Println("value1:", value1)
 	value2 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-pre-hook"))

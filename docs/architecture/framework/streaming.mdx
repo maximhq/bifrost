@@ -14,7 +14,7 @@ sequenceDiagram
     participant BC as Bifrost Core
     participant Accumulator
 
-    BC->>Plugin: PreHook(StreamingRequest)
+    BC->>Plugin: PreLLMHook(StreamingRequest)
     activate Plugin
     Plugin->>Accumulator: CreateStreamAccumulator(requestID)
     activate Accumulator
@@ -24,7 +24,7 @@ sequenceDiagram
     deactivate Plugin
 
     loop For each response chunk
-        BC->>Plugin: PostHook(StreamChunk)
+        BC->>Plugin: PostLLMHook(StreamChunk)
         activate Plugin
         Plugin->>Accumulator: ProcessStreamingResponse(StreamChunk)
         activate Accumulator
@@ -50,9 +50,9 @@ The streaming package uses an `Accumulator` to manage the lifecycle of a streami
 
 1.  **Initialization**: When a plugin that needs to process streams (like `logging` or `otel`) is initialized, it creates a new `streaming.Accumulator`.
 
-2.  **Stream Start**: In the `PreHook` phase of a request, if the request is identified as a streaming type, the plugin calls `accumulator.CreateStreamAccumulator(requestID, timestamp)` to prepare a dedicated buffer for the incoming chunks of that request.
+2.  **Stream Start**: In the `PreLLMHook` phase of a request, if the request is identified as a streaming type, the plugin calls `accumulator.CreateStreamAccumulator(requestID, timestamp)` to prepare a dedicated buffer for the incoming chunks of that request.
 
-3.  **Chunk Processing**: In the `PostHook` phase, as each chunk of the streaming response arrives, the plugin passes it to `accumulator.ProcessStreamingResponse()`.
+3.  **Chunk Processing**: In the `PostLLMHook` phase, as each chunk of the streaming response arrives, the plugin passes it to `accumulator.ProcessStreamingResponse()`.
     *   For each `delta` chunk, the accumulator appends it to the buffer associated with the request ID.
     *   The accumulator handles different types of streams, including chat, audio, and transcriptions, using specialized logic to correctly piece together the data. For example, it accumulates text deltas, tool call argument deltas, and other parts of the message.
 
@@ -89,12 +89,12 @@ The package includes internal logic to correctly build complete messages from ch
 
 ## Usage Example
 
-The following snippet from the `logging` plugin shows how the `streaming` package is used in practice within a plugin's `PostHook`.
+The following snippet from the `logging` plugin shows how the `streaming` package is used in practice within a plugin's `PostLLMHook`.
 
 ```go
 // In plugins/logging/main.go
 
-func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
     // ... setup, get requestID ...
 
     go func() {

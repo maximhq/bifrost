@@ -483,9 +483,9 @@ func (p *MockerPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *
 	return nil, nil
 }
 
-// PreHook intercepts requests and applies mocking rules based on configuration
+// PreLLMHook intercepts requests and applies mocking rules based on configuration
 // This is called before the actual provider request and can short-circuit the flow
-func (p *MockerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Skip processing if plugin is disabled
 	if !p.config.Enabled {
 		return req, nil, nil
@@ -551,8 +551,8 @@ func (p *MockerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 	return req, nil, nil
 }
 
-// PostHook processes responses after provider calls
-func (p *MockerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+// PostLLMHook processes responses after provider calls
+func (p *MockerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return result, err, nil
 }
 
