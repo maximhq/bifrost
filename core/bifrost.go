@@ -223,7 +223,17 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	// Initialize MCP manager if configured
 	if config.MCPConfig != nil {
 		bifrost.mcpInitOnce.Do(func() {
-			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, *config.MCPConfig, bifrost.logger)
+			// Set up plugin pipeline provider functions for executeCode tool hooks
+			mcpConfig := *config.MCPConfig
+			mcpConfig.PluginPipelineProvider = func() interface{} {
+				return bifrost.getPluginPipeline()
+			}
+			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			}
+			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.logger)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -277,10 +287,25 @@ func (bifrost *Bifrost) getTracer() schemas.Tracer {
 }
 
 // ReloadConfig reloads the config from DB
-// Currently we only update account and drop excess requests
+// Currently we update account, drop excess requests, and plugin lists
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+
+	// Update LLM plugins atomically
+	if config.LLMPlugins != nil {
+		llmPluginsCopy := make([]schemas.LLMPlugin, len(config.LLMPlugins))
+		copy(llmPluginsCopy, config.LLMPlugins)
+		bifrost.llmPlugins.Store(&llmPluginsCopy)
+	}
+
+	// Update MCP plugins atomically
+	if config.MCPPlugins != nil {
+		mcpPluginsCopy := make([]schemas.MCPPlugin, len(config.MCPPlugins))
+		copy(mcpPluginsCopy, config.MCPPlugins)
+		bifrost.mcpPlugins.Store(&mcpPluginsCopy)
+	}
+
 	return nil
 }
 
@@ -1534,6 +1559,120 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 	return response.FileContentResponse, nil
 }
 
+// ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
+// This is the main public API for manual MCP tool execution in Chat format.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - *schemas.ChatMessage: Tool message with execution result
+//   - *schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+	// Handle nil context early to prevent issues downstream
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	// Validate toolCall is not nil
+	if toolCall == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "toolCall cannot be nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+			},
+		}
+	}
+
+	// Get MCP request from pool and populate
+	mcpRequest := bifrost.getMCPRequest()
+	mcpRequest.RequestType = schemas.MCPRequestTypeChatToolCall
+	mcpRequest.ChatAssistantMessageToolCall = toolCall
+	defer bifrost.releaseMCPRequest(mcpRequest)
+
+	// Execute with common handler
+	result, err := bifrost.handleMCPToolExecution(ctx, mcpRequest, schemas.ChatCompletionRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate and extract chat message from result
+	if result == nil || result.ChatMessage == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP tool execution returned nil chat message",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+			},
+		}
+	}
+
+	return result.ChatMessage, nil
+}
+
+// ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
+// This is the main public API for manual MCP tool execution in Responses format.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - toolCall: The tool call to execute (from assistant message)
+//
+// Returns:
+//   - *schemas.ResponsesMessage: Tool message with execution result
+//   - *schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
+	// Handle nil context early to prevent issues downstream
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	// Validate toolCall is not nil
+	if toolCall == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "toolCall cannot be nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest,
+			},
+		}
+	}
+
+	// Get MCP request from pool and populate
+	mcpRequest := bifrost.getMCPRequest()
+	mcpRequest.RequestType = schemas.MCPRequestTypeResponsesToolCall
+	mcpRequest.ResponsesToolMessage = toolCall
+	defer bifrost.releaseMCPRequest(mcpRequest)
+
+	// Execute with common handler
+	result, err := bifrost.handleMCPToolExecution(ctx, mcpRequest, schemas.ResponsesRequest)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate and extract responses message from result
+	if result == nil || result.ResponsesMessage == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP tool execution returned nil responses message",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ResponsesRequest,
+			},
+		}
+	}
+
+	return result.ResponsesMessage, nil
+}
+
 // RemovePlugin removes a plugin from the server.
 func (bifrost *Bifrost) RemovePlugin(name string, pluginType schemas.PluginType) error {
 	switch pluginType {
@@ -1984,128 +2123,6 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 	return bifrost.mcpManager.RegisterTool(name, description, handler, toolSchema)
 }
 
-// ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
-// This is the main public API for manual MCP tool execution in Chat format.
-//
-// Parameters:
-//   - ctx: Execution context
-//   - toolCall: The tool call to execute (from assistant message)
-//
-// Returns:
-//   - *schemas.ChatMessage: Tool message with execution result
-//   - *schemas.BifrostError: Any execution error
-func (bifrost *Bifrost) ExecuteChatMCPTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
-	if bifrost.mcpManager == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "MCP is not configured in this Bifrost instance",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ChatCompletionRequest,
-			},
-		}
-	}
-
-	// Get MCP request from pool
-	mcpRequest := bifrost.getMCPRequest()
-	mcpRequest.RequestType = schemas.MCPRequestTypeChatToolCall
-	mcpRequest.ChatAssistantMessageToolCall = &toolCall
-
-	// Execute tool
-	result, err := bifrost.mcpManager.ExecuteToolCall(ctx, mcpRequest)
-
-	// Release MCP request back to pool
-	bifrost.releaseMCPRequest(mcpRequest)
-
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: err.Error(),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ChatCompletionRequest,
-			},
-		}
-	}
-
-	if result == nil || result.ChatMessage == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "tool execution returned nil chat message",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ChatCompletionRequest,
-			},
-		}
-	}
-
-	return result.ChatMessage, nil
-}
-
-// ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
-// This is the main public API for manual MCP tool execution in Responses format.
-//
-// Parameters:
-//   - ctx: Execution context
-//   - toolCall: The tool call to execute (from assistant message)
-//
-// Returns:
-//   - *schemas.ResponsesMessage: Tool message with execution result
-//   - *schemas.BifrostError: Any execution error
-func (bifrost *Bifrost) ExecuteResponsesMCPTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
-	if bifrost.mcpManager == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "MCP is not configured in this Bifrost instance",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ResponsesRequest,
-			},
-		}
-	}
-
-	// Get MCP request from pool
-	mcpRequest := bifrost.getMCPRequest()
-	mcpRequest.RequestType = schemas.MCPRequestTypeResponsesToolCall
-	mcpRequest.ResponsesToolMessage = toolCall
-
-	// Execute tool
-	result, err := bifrost.mcpManager.ExecuteToolCall(ctx, mcpRequest)
-
-	// Release MCP request back to pool
-	bifrost.releaseMCPRequest(mcpRequest)
-
-	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: err.Error(),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ResponsesRequest,
-			},
-		}
-	}
-
-	if result == nil || result.ResponsesMessage == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "tool execution returned nil responses message",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ResponsesRequest,
-			},
-		}
-	}
-
-	return result.ResponsesMessage, nil
-}
-
 // IMPORTANT: Running the MCP client management operations (GetMCPClients, AddMCPClient, RemoveMCPClient, EditMCPClientTools)
 // may temporarily increase latency for incoming requests while the operations are being processed.
 // These operations involve network I/O and connection management that require mutex locks
@@ -2177,9 +2194,19 @@ func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 	if bifrost.mcpManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
 		bifrost.mcpInitOnce.Do(func() {
-			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, schemas.MCPConfig{
+			mcpConfig := schemas.MCPConfig{
 				ClientConfigs: []schemas.MCPClientConfig{config},
-			}, bifrost.logger)
+			}
+			// Set up plugin pipeline provider functions for executeCode tool hooks
+			mcpConfig.PluginPipelineProvider = func() interface{} {
+				return bifrost.getPluginPipeline()
+			}
+			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			}
+			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.logger)
 		})
 	}
 
@@ -3637,6 +3664,118 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 	}
 }
 
+// handleMCPToolExecution is the common handler for MCP tool execution with plugin pipeline support.
+// It handles pre-hooks, execution, post-hooks, and error handling for both Chat and Responses formats.
+//
+// Parameters:
+//   - ctx: Execution context
+//   - mcpRequest: The MCP request to execute (already populated with tool call)
+//   - requestType: The request type for error reporting (ChatCompletionRequest or ResponsesRequest)
+//
+// Returns:
+//   - *schemas.BifrostMCPResponse: The MCP response after all hooks
+//   - *schemas.BifrostError: Any execution error
+func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpRequest *schemas.BifrostMCPRequest, requestType schemas.RequestType) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	if bifrost.mcpManager == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP is not configured in this Bifrost instance",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: requestType,
+			},
+		}
+	}
+
+	// Get plugin pipeline for MCP hooks
+	pipeline := bifrost.getPluginPipeline()
+	defer bifrost.releasePluginPipeline(pipeline)
+
+	// Run pre-hooks
+	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(ctx, mcpRequest)
+
+	// Handle short-circuit cases
+	if shortCircuit != nil {
+		// Handle short-circuit with response (success case)
+		if shortCircuit.Response != nil {
+			finalMcpResp, bifrostErr := pipeline.RunMCPPostHooks(ctx, shortCircuit.Response, nil, preCount)
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			return finalMcpResp, nil
+		}
+		// Handle short-circuit with error
+		if shortCircuit.Error != nil {
+			// Capture post-hook results to respect transformations or recovery
+			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, nil, shortCircuit.Error, preCount)
+			// Return post-hook error if present (post-hook may have transformed the error)
+			if finalErr != nil {
+				return nil, finalErr
+			}
+			// Return post-hook response if present (post-hook may have recovered from error)
+			if finalResp != nil {
+				return finalResp, nil
+			}
+			// Fall back to original short-circuit error if post-hooks returned nil/nil
+			return nil, shortCircuit.Error
+		}
+	}
+
+	if preReq == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "MCP request after plugin hooks cannot be nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: requestType,
+			},
+		}
+	}
+
+	// Execute tool with modified request
+	result, err := bifrost.mcpManager.ExecuteToolCall(ctx, preReq)
+
+	// Prepare MCP response and error for post-hooks
+	var mcpResp *schemas.BifrostMCPResponse
+	var bifrostErr *schemas.BifrostError
+
+	if err != nil {
+		bifrostErr = &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: err.Error(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: requestType,
+			},
+		}
+	} else if result == nil {
+		bifrostErr = &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "tool execution returned nil result",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: requestType,
+			},
+		}
+	} else {
+		// Use the MCP response directly
+		mcpResp = result
+	}
+
+	// Run post-hooks
+	finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, mcpResp, bifrostErr, preCount)
+
+	if finalErr != nil {
+		return nil, finalErr
+	}
+
+	return finalResp, nil
+}
+
 // PLUGIN MANAGEMENT
 
 // RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
@@ -3648,7 +3787,7 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	for i, plugin := range p.llmPlugins {
 		pluginName := plugin.GetName()
 		p.logger.Debug("running pre-hook for plugin %s", pluginName)
-		// Start span for this plugin's PreHook
+		// Start span for this plugin's PreLLMHook
 		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
 		// Update pluginCtx with span context for nested operations
 		if spanCtx != nil {
@@ -3657,14 +3796,14 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 			}
 		}
 
-		req, shortCircuit, err = plugin.PreHook(ctx, req)
+		req, shortCircuit, err = plugin.PreLLMHook(ctx, req)
 
 		// End span with appropriate status
 		if err != nil {
 			p.tracer.SetAttribute(handle, "error", err.Error())
 			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
 			p.preHookErrors = append(p.preHookErrors, err)
-			p.logger.Warn("error in PreHook for plugin %s: %s", pluginName, err.Error())
+			p.logger.Warn("error in PreLLMHook for plugin %s: %s", pluginName, err.Error())
 		} else if shortCircuit != nil {
 			p.tracer.SetAttribute(handle, "short_circuit", true)
 			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "short-circuit")
@@ -3680,7 +3819,7 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	return req, nil, p.executedPreHooks
 }
 
-// RunPostHooks executes PostHooks in reverse order for the plugins whose PreHook ran.
+// RunPostHooks executes PostHooks in reverse order for the plugins whose PreLLMHook ran.
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
@@ -3705,13 +3844,13 @@ func (p *PluginPipeline) RunPostHooks(ctx *schemas.BifrostContext, resp *schemas
 		if isStreaming {
 			// For streaming: accumulate timing, don't create individual spans per chunk
 			start := time.Now()
-			resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
+			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
 			duration := time.Since(start)
 
 			p.accumulatePluginTiming(pluginName, duration, err != nil)
 			if err != nil {
 				p.postHookErrors = append(p.postHookErrors, err)
-				p.logger.Warn("error in PostHook for plugin %s: %v", pluginName, err)
+				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
 			}
 		} else {
 			// For non-streaming: create span per plugin (existing behavior)
@@ -3722,13 +3861,13 @@ func (p *PluginPipeline) RunPostHooks(ctx *schemas.BifrostContext, resp *schemas
 					ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
 				}
 			}
-			resp, bifrostErr, err = plugin.PostHook(ctx, resp, bifrostErr)
+			resp, bifrostErr, err = plugin.PostLLMHook(ctx, resp, bifrostErr)
 			// End span with appropriate status
 			if err != nil {
 				p.tracer.SetAttribute(handle, "error", err.Error())
 				p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
 				p.postHookErrors = append(p.postHookErrors, err)
-				p.logger.Warn("error in PostHook for plugin %s: %v", pluginName, err)
+				p.logger.Warn("error in PostLLMHook for plugin %s: %v", pluginName, err)
 			} else {
 				p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 			}
@@ -3750,6 +3889,103 @@ func (p *PluginPipeline) RunPostHooks(ctx *schemas.BifrostContext, resp *schemas
 		return resp, bifrostErr
 	}
 	return resp, nil
+}
+
+// RunMCPPreHooks executes MCP PreHooks in order for all registered MCP plugins.
+// Returns the modified request, any short-circuit decision, and the count of hooks that ran.
+// If a plugin short-circuits, only PostHooks for plugins up to and including that plugin will run.
+func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	var shortCircuit *schemas.MCPPluginShortCircuit
+	var err error
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+	for i, plugin := range p.mcpPlugins {
+		pluginName := plugin.GetName()
+		p.logger.Debug("running MCP pre-hook for plugin %s", pluginName)
+		// Start span for this plugin's PreMCPHook
+		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_prehook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		// Update pluginCtx with span context for nested operations
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
+		}
+
+		req, shortCircuit, err = plugin.PreMCPHook(ctx, req)
+
+		// End span with appropriate status
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.preHookErrors = append(p.preHookErrors, err)
+			p.logger.Warn("error in PreMCPHook for plugin %s: %s", pluginName, err.Error())
+		} else if shortCircuit != nil {
+			p.tracer.SetAttribute(handle, "short_circuit", true)
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "short-circuit")
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		}
+
+		p.executedPreHooks = i + 1
+		if shortCircuit != nil {
+			return req, shortCircuit, p.executedPreHooks // short-circuit: only plugins up to and including i ran
+		}
+	}
+	return req, nil, p.executedPreHooks
+}
+
+// RunMCPPostHooks executes MCP PostHooks in reverse order for the plugins whose PreMCPHook ran.
+// Accepts the MCP response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
+// Returns the final MCP response and error after all hooks. If both are set, error takes precedence unless error is nil.
+// runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
+func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	// Defensive: ensure count is within valid bounds
+	if runFrom < 0 {
+		runFrom = 0
+	}
+	if runFrom > len(p.mcpPlugins) {
+		runFrom = len(p.mcpPlugins)
+	}
+	ctx.BlockRestrictedWrites()
+	defer ctx.UnblockRestrictedWrites()
+	var err error
+	for i := runFrom - 1; i >= 0; i-- {
+		plugin := p.mcpPlugins[i]
+		pluginName := plugin.GetName()
+		p.logger.Debug("running MCP post-hook for plugin %s", pluginName)
+		// Create span per plugin
+		spanCtx, handle := p.tracer.StartSpan(ctx, fmt.Sprintf("plugin.%s.mcp_posthook", sanitizeSpanName(pluginName)), schemas.SpanKindPlugin)
+		// Update pluginCtx with span context for nested operations
+		if spanCtx != nil {
+			if spanID, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok {
+				ctx.SetValue(schemas.BifrostContextKeySpanID, spanID)
+			}
+		}
+
+		mcpResp, bifrostErr, err = plugin.PostMCPHook(ctx, mcpResp, bifrostErr)
+
+		// End span with appropriate status
+		if err != nil {
+			p.tracer.SetAttribute(handle, "error", err.Error())
+			p.tracer.EndSpan(handle, schemas.SpanStatusError, err.Error())
+			p.postHookErrors = append(p.postHookErrors, err)
+			p.logger.Warn("error in PostMCPHook for plugin %s: %v", pluginName, err)
+		} else {
+			p.tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+		}
+		// If a plugin recovers from an error (sets bifrostErr to nil and sets mcpResp), allow that
+		// If a plugin invalidates a response (sets mcpResp to nil and sets bifrostErr), allow that
+	}
+	// Final logic: if both are set, error takes precedence, unless error is nil
+	if bifrostErr != nil {
+		if mcpResp != nil && bifrostErr.StatusCode == nil && bifrostErr.Error != nil && bifrostErr.Error.Type == nil &&
+			bifrostErr.Error.Message == "" && bifrostErr.Error.Error == nil {
+			// Defensive: treat as recovery if error is empty
+			return mcpResp, nil
+		}
+		return mcpResp, bifrostErr
+	}
+	return mcpResp, nil
 }
 
 // resetPluginPipeline resets a PluginPipeline instance for reuse

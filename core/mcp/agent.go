@@ -304,7 +304,13 @@ func executeAgent(
 					channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 				} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
 					channelToolResults <- mcpResponse.ChatMessage
-					}
+				} else if mcpResponse != nil && mcpResponse.ChatMessage == nil {
+					// Send empty result when mcpResponse is non-nil but ChatMessage is nil
+					channelToolResults <- createToolResultMessage(toolCall, "", nil)
+				} else {
+					// Fallback: send empty result when both mcpResponse and toolErr are nil
+					channelToolResults <- createToolResultMessage(toolCall, "", nil)
+				}
 				}(toolCall)
 			}
 			wg.Wait()

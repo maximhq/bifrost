@@ -96,7 +96,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, req *sc
 		return nil, fmt.Errorf("failed to generate embedding: %w", err)
 	}
 
-	// Store embedding and metadata in context for PostHook
+	// Store embedding and metadata in context for PostLLMHook
 	ctx.SetValue(requestEmbeddingKey, embedding)
 	ctx.SetValue(requestEmbeddingTokensKey, inputTokens)
 	ctx.SetValue(requestParamsHashKey, paramsHash)

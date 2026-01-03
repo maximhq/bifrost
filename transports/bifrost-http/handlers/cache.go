@@ -12,7 +12,7 @@ type CacheHandler struct {
 	plugin *semanticcache.Plugin
 }
 
-func NewCacheHandler(plugin schemas.Plugin) *CacheHandler {
+func NewCacheHandler(plugin schemas.LLMPlugin) *CacheHandler {
 	semanticCachePlugin, ok := plugin.(*semanticcache.Plugin)
 	if !ok {
 		logger.Fatal("Cache handler requires a semantic cache plugin")

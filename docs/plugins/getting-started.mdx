@@ -54,16 +54,16 @@ This generates a `.so` file that exports specific functions matching Bifrost's p
     - `GetName() string` - Return the plugin name
     - `HTTPTransportPreHook()` - Intercept HTTP requests before they enter Bifrost core (HTTP transport only)
     - `HTTPTransportPostHook()` - Intercept HTTP responses after they exit Bifrost core (HTTP transport only)
-    - `PreHook()` - Intercept requests before they reach providers
-    - `PostHook()` - Process responses after provider calls
+    - `PreLLMHook()` - Intercept requests before they reach providers
+    - `PostLLMHook()` - Process responses after provider calls
     - `Cleanup() error` - Clean up resources on shutdown
   </Tab>
   <Tab title="v1.3.x">
     - `Init(config any) error` - Initialize the plugin with configuration
     - `GetName() string` - Return the plugin name
     - `TransportInterceptor()` - Modify raw HTTP headers/body (HTTP transport only)
-    - `PreHook()` - Intercept requests before they reach providers
-    - `PostHook()` - Process responses after provider calls
+    - `PreLLMHook()` - Intercept requests before they reach providers
+    - `PostLLMHook()` - Process responses after provider calls
     - `Cleanup() error` - Clean up resources on shutdown
   </Tab>
 </Tabs>
@@ -83,7 +83,7 @@ This means if you're running Bifrost on Linux AMD64, you must build your plugin 
 
 1. **Load** - Bifrost loads the `.so` file using Go's `plugin.Open()`
 2. **Initialize** - Calls `Init()` with configuration from `config.json`
-3. **Hook Execution** - Calls `PreHook()` and `PostHook()` for each request
+3. **Hook Execution** - Calls `PreLLMHook()` and `PostLLMHook()` for each request
 4. **Cleanup** - Calls `Cleanup()` when Bifrost shuts down
 
 Plugins execute in a specific order:
@@ -91,9 +91,9 @@ Plugins execute in a specific order:
 <Tabs>
   <Tab title="v1.4.x+">
     1. `HTTPTransportPreHook` - Intercept HTTP requests (HTTP transport only)
-    2. `PreHook` - Executes in registration order, can short-circuit requests
+    2. `PreLLMHook`/`PreMCPHook` - Executes in registration order, can short-circuit requests
     3. Provider call (if not short-circuited)
-    4. `PostHook` - Executes in reverse order of PreHooks
+    4. `PostLLMHook`/`PostMCPHook` - Executes in reverse order of PreHooks
     5. `HTTPTransportPostHook` - Intercept HTTP responses (HTTP transport only, reverse order)
   </Tab>
   <Tab title="v1.3.x">

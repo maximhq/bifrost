@@ -46,8 +46,8 @@ type BaseGovernancePlugin interface {
 	GetName() string
 	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
-	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
-	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
+	PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
 }
@@ -86,7 +86,7 @@ type GovernancePlugin struct {
 //     (no persistence). Init constructs a LocalGovernanceStore internally when
 //     configStore is nil.
 //   - If `modelCatalog` is nil, cost calculation is skipped.
-//   - `config.IsVkMandatory` controls whether `x-bf-vk` is required in PreHook.
+//   - `config.IsVkMandatory` controls whether `x-bf-vk` is required in PreLLMHook.
 //   - `inMemoryStore` is used by TransportInterceptor to validate configured providers
 //     and build provider-prefixed models; it may be nil. When nil, transport-level
 //     provider validation/routing is skipped and existing model strings are left
@@ -263,36 +263,6 @@ func InitFromStore(
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
-}
-
-func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
-	var virtualKeyValue string
-	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
-	if vkHeader != "" {
-		return bifrost.Ptr(vkHeader)
-	}
-	authHeader := req.CaseInsensitiveHeaderLookup("authorization")
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-				virtualKeyValue = authHeaderValue
-			}
-		}
-	}
-	if virtualKeyValue != "" {
-		return bifrost.Ptr(virtualKeyValue)
-	}
-	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
-		return bifrost.Ptr(xAPIKey)
-	}
-	// Checking x-goog-api-key header
-	xGoogleAPIKey := req.CaseInsensitiveHeaderLookup("x-goog-api-key")
-	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
-		return bifrost.Ptr(xGoogleAPIKey)
-	}
-	return nil
 }
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
@@ -543,7 +513,7 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 	return headers, nil
 }
 
-// PreHook intercepts requests before they are processed (governance decision point)
+// PreLLMHook intercepts requests before they are processed (governance decision point)
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request to be processed
@@ -552,10 +522,10 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
-	virtualKeyValue := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	if virtualKeyValue == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
 			return req, &schemas.LLMPluginShortCircuit{
@@ -644,7 +614,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 }
 
-// PostHook processes the response and updates usage tracking (business logic execution)
+// PostLLMHook processes the response and updates usage tracking (business logic execution)
 // Parameters:
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
@@ -654,14 +624,14 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
-func (p *GovernancePlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if _, ok := ctx.Value(governanceRejectedContextKey).(bool); ok {
 		return result, err, nil
 	}
 
 	// Extract governance information
-	virtualKey := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 
 	// Skip if no virtual key
 	if virtualKey == "" {

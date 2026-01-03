@@ -31,6 +31,20 @@ type ToolsManager struct {
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provided, same request ID is used for all tool call result messages without any overrides.
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
+
+	// Function to get a plugin pipeline from the pool for running MCP plugin hooks
+	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them
+	pluginPipelineProvider func() PluginPipeline
+
+	// Function to release a plugin pipeline back to the pool
+	releasePluginPipeline func(pipeline PluginPipeline)
+}
+
+// PluginPipeline represents the plugin execution pipeline interface
+// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost
+type PluginPipeline interface {
+	RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int)
+	RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
 }
 
 const (
@@ -47,10 +61,18 @@ const (
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
+//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
+//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //
 // Returns:
 //   - *ToolsManager: Initialized tools manager instance
-func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientManager, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string) *ToolsManager {
+func NewToolsManager(
+	config *schemas.MCPToolManagerConfig,
+	clientManager ClientManager,
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
+	pluginPipelineProvider func() PluginPipeline,
+	releasePluginPipeline func(pipeline PluginPipeline),
+) *ToolsManager {
 	if config == nil {
 		config = &schemas.MCPToolManagerConfig{
 			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
@@ -69,8 +91,10 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 		config.CodeModeBindingLevel = schemas.CodeModeBindingLevelServer
 	}
 	manager := &ToolsManager{
-		clientManager:         clientManager,
-		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
+		clientManager:          clientManager,
+		fetchNewRequestIDFunc:  fetchNewRequestIDFunc,
+		pluginPipelineProvider: pluginPipelineProvider,
+		releasePluginPipeline:  releasePluginPipeline,
 	}
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
@@ -316,12 +340,21 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 //   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
 //   - error: Any execution error
 func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	// Validate request is not nil
+	if request == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
 	// Extract tool call based on request type
 	var toolCall *schemas.ChatAssistantMessageToolCall
 	switch request.RequestType {
 	case schemas.MCPRequestTypeChatToolCall:
 		toolCall = request.ChatAssistantMessageToolCall
 	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate ResponsesToolMessage is not nil before conversion
+		if request.ResponsesToolMessage == nil {
+			return nil, fmt.Errorf("ResponsesToolMessage cannot be nil for ResponsesToolCall request type")
+		}
 		// Convert Responses format to Chat format for internal execution
 		toolCall = request.ResponsesToolMessage.ToChatAssistantMessageToolCall()
 		if toolCall == nil {
@@ -331,10 +364,28 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
 	}
 
+	// Validate toolCall and nested fields
+	if toolCall == nil {
+		return nil, fmt.Errorf("tool call cannot be nil")
+	}
+	// Function is a struct value (not a pointer), so it always exists, but Name can be nil
+	if toolCall.Function.Name == nil {
+		return nil, fmt.Errorf("tool call missing function name")
+	}
+
+	now := time.Now()
+
 	// Execute the tool in Chat format (internal execution format)
 	chatResult, err := m.executeToolInternal(ctx, toolCall)
 	if err != nil {
 		return nil, err
+	}
+
+	latency := time.Since(now).Milliseconds()
+
+	extraFields := schemas.BifrostMCPResponseExtraFields{
+		ToolName: *toolCall.Function.Name,
+		Latency:  latency,
 	}
 
 	// Return result in the appropriate format
@@ -342,14 +393,20 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 	case schemas.MCPRequestTypeChatToolCall:
 		return &schemas.BifrostMCPResponse{
 			ChatMessage: chatResult,
+			ExtraFields: extraFields,
 		}, nil
 	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate chatResult is not nil before conversion
+		if chatResult == nil {
+			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
+		}
 		responsesMessage := chatResult.ToResponsesToolMessage()
 		if responsesMessage == nil {
 			return nil, fmt.Errorf("failed to convert tool result to Responses format")
 		}
 		return &schemas.BifrostMCPResponse{
 			ResponsesMessage: responsesMessage,
+			ExtraFields:      extraFields,
 		}, nil
 	default:
 		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
@@ -359,9 +416,6 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 // executeToolInternal is the internal tool executor that works with Chat format.
 // This is used internally by ExecuteTool after format conversion.
 func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	if toolCall.Function.Name == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
 	toolName := *toolCall.Function.Name
 
 	// Handle code mode tools

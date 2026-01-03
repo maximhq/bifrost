@@ -93,7 +93,7 @@ func (p *JsonParserPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 	return nil
 }
 
-// PreHook is not used for this plugin as we only process responses
+// PreLLMHook is not used for this plugin as we only process responses
 // Parameters:
 //   - ctx: The Bifrost context
 //   - req: The Bifrost request
@@ -102,11 +102,11 @@ func (p *JsonParserPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 //   - *schemas.BifrostRequest: The processed request
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+func (p *JsonParserPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
 
-// PostHook processes streaming responses by accumulating chunks and making accumulated content valid JSON
+// PostLLMHook processes streaming responses by accumulating chunks and making accumulated content valid JSON
 // Parameters:
 //   - ctx: The Bifrost context
 //   - result: The Bifrost response to be processed
@@ -116,7 +116,7 @@ func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 //   - *schemas.BifrostResponse: The processed response
 //   - *schemas.BifrostError: The processed error
 //   - error: Any error that occurred during processing
-func (p *JsonParserPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *JsonParserPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// If there's an error, don't process
 	if err != nil {
 		return result, err, nil

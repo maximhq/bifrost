@@ -1,2 +1,1 @@
-- fix: fixes tool call-based structured output flow for Bedrock streaming requests (Chat and Responses API)
-- chore: updates test cases to assert content and tool_calls validations
+- fix: separate mcp inference handler from mcp handler for consistency in auth middlewares

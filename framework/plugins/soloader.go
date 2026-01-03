@@ -11,9 +11,9 @@ import (
 // SharedObjectPluginLoader is the loader for shared object plugins
 type SharedObjectPluginLoader struct{}
 
-// LoadDynamicPlugin loads a dynamic plugin from a shared object file
-func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (schemas.Plugin, error) {
-	dp := &DynamicPlugin{
+// LoadDynamicLLMPlugin loads a dynamic LLM plugin from a shared object file
+func (l *SharedObjectPluginLoader) LoadDynamicLLMPlugin(path string, config any) (schemas.LLMPlugin, error) {
+	dp := &DynamicLLMPlugin{
 		Path: path,
 	}
 	// Checking if path is URL or file path
@@ -73,21 +73,21 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 	if dp.httpTransportPostHook, ok = httpTransportPostHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error); !ok {
 		return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error")
 	}
-	// Looking up for PreHook method
-	preHookSym, err := plugin.Lookup("PreHook")
+	// Looking up for PreLLMHook method
+	preHookSym, err := plugin.Lookup("PreLLMHook")
 	if err != nil {
 		return nil, err
 	}
 	if dp.preHook, ok = preHookSym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)")
+		return nil, fmt.Errorf("failed to cast PreLLMHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)")
 	}
-	// Looking up for PostHook method
-	postHookSym, err := plugin.Lookup("PostHook")
+	// Looking up for PostLLMHook method
+	postHookSym, err := plugin.Lookup("PostLLMHook")
 	if err != nil {
 		return nil, err
 	}
 	if dp.postHook, ok = postHookSym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PostHook to func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)")
+		return nil, fmt.Errorf("failed to cast PostLLMHook to func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)")
 	}
 	// Looking up for Cleanup method
 	cleanupSym, err := plugin.Lookup("Cleanup")

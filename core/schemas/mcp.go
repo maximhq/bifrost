@@ -23,6 +23,15 @@ type MCPConfig struct {
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provider, same request ID is used for all tool call result messages without any overrides.
 	FetchNewRequestIDFunc func(ctx *BifrostContext) string `json:"-"`
+
+	// PluginPipelineProvider returns a plugin pipeline for running MCP plugin hooks.
+	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them.
+	// The plugin pipeline should be released back to the pool using ReleasePluginPipeline.
+	PluginPipelineProvider func() interface{} `json:"-"`
+
+	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
+	// This should be called after the plugin pipeline is no longer needed.
+	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
 }
 
 type MCPToolManagerConfig struct {

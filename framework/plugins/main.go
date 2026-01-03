@@ -5,7 +5,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-type DynamicPluginConfig struct {
+type DynamicLLMPluginConfig struct {
 	Path    string `json:"path"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
@@ -14,21 +14,38 @@ type DynamicPluginConfig struct {
 
 // Config is the configuration for the plugins framework
 type Config struct {
-	
-	Plugins []DynamicPluginConfig `json:"plugins"`
+	LLMPlugins []DynamicLLMPluginConfig `json:"llm_plugins"`
 }
 
-// LoadPlugins loads the plugins from the config
-func LoadPlugins(loader PluginLoader, config *Config) ([]schemas.Plugin, error) {
-	plugins := []schemas.Plugin{}
+// AsLLMPlugin checks if a base plugin implements LLMPlugin and returns it.
+// Returns nil if the plugin does not implement the interface.
+func AsLLMPlugin(plugin schemas.BasePlugin) schemas.LLMPlugin {
+	if llmPlugin, ok := plugin.(schemas.LLMPlugin); ok {
+		return llmPlugin
+	}
+	return nil
+}
+
+// AsMCPPlugin checks if a base plugin implements MCPPlugin and returns it.
+// Returns nil if the plugin does not implement the interface.
+func AsMCPPlugin(plugin schemas.BasePlugin) schemas.MCPPlugin {
+	if mcpPlugin, ok := plugin.(schemas.MCPPlugin); ok {
+		return mcpPlugin
+	}
+	return nil
+}
+
+// LoadLLMPlugins loads the LLM plugins from the config
+func LoadLLMPlugins(loader PluginLoader, config *Config) ([]schemas.LLMPlugin, error) {
+	plugins := []schemas.LLMPlugin{}
 	if config == nil {
 		return plugins, nil
 	}
-	for _, dp := range config.Plugins {
+	for _, dp := range config.LLMPlugins {
 		if !dp.Enabled {
 			continue
 		}
-		plugin, err := loader.LoadDynamicPlugin(dp.Path, dp.Config)
+		plugin, err := loader.LoadDynamicLLMPlugin(dp.Path, dp.Config)
 		if err != nil {
 			return nil, err
 		}

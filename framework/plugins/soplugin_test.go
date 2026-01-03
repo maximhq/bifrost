@@ -28,7 +28,7 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 
 	// Test loading the plugin
 	config := &Config{
-		Plugins: []DynamicPluginConfig{
+		LLMPlugins: []DynamicLLMPluginConfig{
 			{
 				Path:    pluginPath,
 				Name:    "hello-world",
@@ -39,7 +39,7 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 	}
 
 	loader := &SharedObjectPluginLoader{}
-	plugins, err := LoadPlugins(loader, config)
+	plugins, err := LoadLLMPlugins(loader, config)
 	require.NoError(t, err, "Failed to load plugins")
 	require.Len(t, plugins, 1, "Expected exactly one plugin to be loaded")
 
@@ -70,7 +70,9 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		}
 
 		// Call HTTPTransportPreHook
-		resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+		httpTransportPlugin, ok := plugin.(schemas.HTTPTransportPlugin)
+		require.True(t, ok, "Plugin should be a HTTPTransportPlugin")
+		resp, err := httpTransportPlugin.HTTPTransportPreHook(pluginCtx, req)
 		require.NoError(t, err, "HTTPTransportPreHook should not return error")
 		assert.Nil(t, resp, "HTTPTransportPreHook should return nil response to continue")
 
@@ -110,8 +112,8 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, "transport-post-hook-value", resp.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
 	})
 
-	// Test PreHook
-	t.Run("PreHook", func(t *testing.T) {
+	// Test PreLLMHook
+	t.Run("PreLLMHook", func(t *testing.T) {
 		ctx := context.Background()
 		req := &schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionRequest,
@@ -131,14 +133,14 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 
 		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		modifiedReq, shortCircuit, err := plugin.PreHook(pluginCtx, req)
-		require.NoError(t, err, "PreHook should not return error")
-		assert.Nil(t, shortCircuit, "PreHook should not return short circuit")
+		modifiedReq, shortCircuit, err := plugin.PreLLMHook(pluginCtx, req)
+		require.NoError(t, err, "PreLLMHook should not return error")
+		assert.Nil(t, shortCircuit, "PreLLMHook should not return short circuit")
 		assert.Equal(t, req, modifiedReq, "Request should be unchanged")
 	})
 
-	// Test PostHook
-	t.Run("PostHook", func(t *testing.T) {
+	// Test PostLLMHook
+	t.Run("PostLLMHook", func(t *testing.T) {
 		ctx := context.Background()
 		resp := &schemas.BifrostResponse{
 			ChatResponse: &schemas.BifrostChatResponse{
@@ -162,13 +164,13 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		bifrostErr := (*schemas.BifrostError)(nil)
 		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		modifiedResp, modifiedErr, err := plugin.PostHook(pluginCtx, resp, bifrostErr)
-		require.NoError(t, err, "PostHook should not return error")
+		modifiedResp, modifiedErr, err := plugin.PostLLMHook(pluginCtx, resp, bifrostErr)
+		require.NoError(t, err, "PostLLMHook should not return error")
 		assert.Equal(t, resp, modifiedResp, "Response should be unchanged")
 		assert.Equal(t, bifrostErr, modifiedErr, "Error should be unchanged")
 	})
 
-	// Test PostHook with error
+	// Test PostLLMHook with error
 	t.Run("PostHook_WithError", func(t *testing.T) {
 		ctx := context.Background()
 		statusCode := 500
@@ -181,8 +183,8 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 
 		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		modifiedResp, modifiedErr, err := plugin.PostHook(pluginCtx, nil, bifrostErr)
-		require.NoError(t, err, "PostHook should not return error")
+		modifiedResp, modifiedErr, err := plugin.PostLLMHook(pluginCtx, nil, bifrostErr)
+		require.NoError(t, err, "PostLLMHook should not return error")
 		assert.Nil(t, modifiedResp, "Response should be nil")
 		assert.Equal(t, bifrostErr, modifiedErr, "Error should be unchanged")
 	})
@@ -200,7 +202,7 @@ func TestLoadPlugins_DisabledPlugin(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	config := &Config{
-		Plugins: []DynamicPluginConfig{
+		LLMPlugins: []DynamicLLMPluginConfig{
 			{
 				Path:    pluginPath,
 				Name:    "hello-world",
@@ -211,7 +213,7 @@ func TestLoadPlugins_DisabledPlugin(t *testing.T) {
 	}
 
 	loader := &SharedObjectPluginLoader{}
-	plugins, err := LoadPlugins(loader, config)
+	plugins, err := LoadLLMPlugins(loader, config)
 	require.NoError(t, err, "LoadPlugins should not error for disabled plugins")
 	assert.Len(t, plugins, 0, "No plugins should be loaded when all are disabled")
 }
@@ -222,7 +224,7 @@ func TestLoadPlugins_MultiplePlugins(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	config := &Config{
-		Plugins: []DynamicPluginConfig{
+		LLMPlugins: []DynamicLLMPluginConfig{
 			{
 				Path:    pluginPath,
 				Name:    "hello-world-1",
@@ -239,7 +241,7 @@ func TestLoadPlugins_MultiplePlugins(t *testing.T) {
 	}
 
 	loader := &SharedObjectPluginLoader{}
-	plugins, err := LoadPlugins(loader, config)
+	plugins, err := LoadLLMPlugins(loader, config)
 	require.NoError(t, err, "LoadPlugins should succeed for multiple plugins")
 	assert.Len(t, plugins, 2, "Two plugins should be loaded")
 
@@ -251,7 +253,7 @@ func TestLoadPlugins_MultiplePlugins(t *testing.T) {
 // TestLoadPlugins_InvalidPath tests loading a plugin with invalid path
 func TestLoadPlugins_InvalidPath(t *testing.T) {
 	config := &Config{
-		Plugins: []DynamicPluginConfig{
+		LLMPlugins: []DynamicLLMPluginConfig{
 			{
 				Path:    "/nonexistent/path/plugin.so",
 				Name:    "invalid-plugin",
@@ -262,7 +264,7 @@ func TestLoadPlugins_InvalidPath(t *testing.T) {
 	}
 
 	loader := &SharedObjectPluginLoader{}
-	plugins, err := LoadPlugins(loader, config)
+	plugins, err := LoadLLMPlugins(loader, config)
 	assert.Error(t, err, "LoadPlugins should return error for invalid path")
 	assert.Nil(t, plugins, "No plugins should be loaded on error")
 }
@@ -270,10 +272,10 @@ func TestLoadPlugins_InvalidPath(t *testing.T) {
 // TestLoadPlugins_EmptyConfig tests loading plugins with empty config
 func TestLoadPlugins_EmptyConfig(t *testing.T) {
 	config := &Config{
-		Plugins: []DynamicPluginConfig{},
+		LLMPlugins: []DynamicLLMPluginConfig{},
 	}
 	loader := &SharedObjectPluginLoader{}
-	plugins, err := LoadPlugins(loader, config)
+	plugins, err := LoadLLMPlugins(loader, config)
 	require.NoError(t, err, "LoadPlugins should succeed with empty config")
 	assert.Len(t, plugins, 0, "No plugins should be loaded with empty config")
 }
@@ -284,13 +286,13 @@ func TestDynamicPlugin_ContextPropagation(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(t, err, "Failed to load plugin")
 
 	// Create a context with a value
 	ctx := context.WithValue(context.Background(), "test-key", "test-value")
 
-	// Test PreHook with context
+	// Test PreLLMHook with context
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
@@ -300,18 +302,18 @@ func TestDynamicPlugin_ContextPropagation(t *testing.T) {
 	}
 	pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, _, err = plugin.PreHook(pluginCtx, req)
-	require.NoError(t, err, "PreHook should succeed with context")
+	_, _, err = plugin.PreLLMHook(pluginCtx, req)
+	require.NoError(t, err, "PreLLMHook should succeed with context")
 
-	// Test PostHook with context
+	// Test PostLLMHook with context
 	resp := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
 			ID:    "test-id",
 			Model: "gpt-4",
 		},
 	}
-	_, _, err = plugin.PostHook(pluginCtx, resp, nil)
-	require.NoError(t, err, "PostHook should succeed with context")
+	_, _, err = plugin.PostLLMHook(pluginCtx, resp, nil)
+	require.NoError(t, err, "PostLLMHook should succeed with context")
 }
 
 // TestDynamicPlugin_ConcurrentCalls tests concurrent plugin calls
@@ -320,7 +322,7 @@ func TestDynamicPlugin_ConcurrentCalls(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(t, err, "Failed to load plugin")
 
 	// Run multiple goroutines calling plugin methods
@@ -340,21 +342,21 @@ func TestDynamicPlugin_ConcurrentCalls(t *testing.T) {
 				},
 			}
 
-			// Call PreHook
+			// Call PreLLMHook
 			pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			_, _, err := plugin.PreHook(pluginCtx, req)
-			assert.NoError(t, err, "PreHook should succeed in goroutine %d", id)
+			_, _, err := plugin.PreLLMHook(pluginCtx, req)
+			assert.NoError(t, err, "PreLLMHook should succeed in goroutine %d", id)
 
-			// Call PostHook
+			// Call PostLLMHook
 			resp := &schemas.BifrostResponse{
 				ChatResponse: &schemas.BifrostChatResponse{
 					ID:    "test-id",
 					Model: "gpt-4",
 				},
 			}
-			_, _, err = plugin.PostHook(pluginCtx, resp, nil)
-			assert.NoError(t, err, "PostHook should succeed in goroutine %d", id)
+			_, _, err = plugin.PostLLMHook(pluginCtx, resp, nil)
+			assert.NoError(t, err, "PostLLMHook should succeed in goroutine %d", id)
 
 			// Call GetName
 			name := plugin.GetName()
@@ -434,14 +436,14 @@ func TestLoadDynamicPlugin_DirectCall(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, map[string]interface{}{
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, map[string]interface{}{
 		"test": "config",
 	})
 	require.NoError(t, err, "loadDynamicPlugin should succeed")
 	assert.NotNil(t, plugin, "Plugin should not be nil")
 
 	// Verify it's a DynamicPlugin
-	dynamicPlugin, ok := plugin.(*DynamicPlugin)
+	dynamicPlugin, ok := plugin.(*DynamicLLMPlugin)
 	assert.True(t, ok, "Plugin should be a DynamicPlugin")
 	assert.Equal(t, pluginPath, dynamicPlugin.Path)
 }
@@ -452,7 +454,7 @@ func TestDynamicPlugin_NilConfig(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(t, err, "loadDynamicPlugin should succeed with nil config")
 	assert.NotNil(t, plugin, "Plugin should not be nil")
 
@@ -467,7 +469,7 @@ func TestDynamicPlugin_ShortCircuitNil(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(t, err, "Failed to load plugin")
 
 	ctx := context.Background()
@@ -481,19 +483,19 @@ func TestDynamicPlugin_ShortCircuitNil(t *testing.T) {
 
 	pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	modifiedReq, shortCircuit, err := plugin.PreHook(pluginCtx, req)
-	require.NoError(t, err, "PreHook should succeed")
+	modifiedReq, shortCircuit, err := plugin.PreLLMHook(pluginCtx, req)
+	require.NoError(t, err, "PreLLMHook should succeed")
 	assert.Nil(t, shortCircuit, "Short circuit should be nil")
 	assert.NotNil(t, modifiedReq, "Modified request should not be nil")
 }
 
-// BenchmarkDynamicPlugin_PreHook benchmarks the PreHook method
+// BenchmarkDynamicPlugin_PreHook benchmarks the PreLLMHook method
 func BenchmarkDynamicPlugin_PreHook(b *testing.B) {
 	pluginPath := buildHelloWorldPluginForBenchmark(b)
 	defer cleanupHelloWorldPluginForBenchmark(b)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(b, err, "Failed to load plugin")
 
 	ctx := context.Background()
@@ -509,17 +511,17 @@ func BenchmarkDynamicPlugin_PreHook(b *testing.B) {
 	pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(pluginCtx, req)
+		_, _, _ = plugin.PreLLMHook(pluginCtx, req)
 	}
 }
 
-// BenchmarkDynamicPlugin_PostHook benchmarks the PostHook method
+// BenchmarkDynamicPlugin_PostHook benchmarks the PostLLMHook method
 func BenchmarkDynamicPlugin_PostHook(b *testing.B) {
 	pluginPath := buildHelloWorldPluginForBenchmark(b)
 	defer cleanupHelloWorldPluginForBenchmark(b)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(b, err, "Failed to load plugin")
 
 	ctx := context.Background()
@@ -533,7 +535,7 @@ func BenchmarkDynamicPlugin_PostHook(b *testing.B) {
 	defer cancel()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PostHook(pluginCtx, resp, nil)
+		_, _, _ = plugin.PostLLMHook(pluginCtx, resp, nil)
 	}
 }
 
@@ -543,7 +545,7 @@ func BenchmarkDynamicPlugin_GetName(b *testing.B) {
 	defer cleanupHelloWorldPluginForBenchmark(b)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(b, err, "Failed to load plugin")
 
 	b.ResetTimer()
@@ -612,7 +614,7 @@ func TestDynamicPlugin_GetNameNotEmpty(t *testing.T) {
 	defer cleanupHelloWorldPlugin(t)
 
 	loader := &SharedObjectPluginLoader{}
-	plugin, err := loader.LoadDynamicPlugin(pluginPath, nil)
+	plugin, err := loader.LoadDynamicLLMPlugin(pluginPath, nil)
 	require.NoError(t, err, "Failed to load plugin")
 
 	name := plugin.GetName()

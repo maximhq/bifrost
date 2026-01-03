@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -98,7 +99,8 @@ type BifrostHTTPServer struct {
 	LogOutputStyle string
 
 	PluginsMutex      sync.RWMutex
-	Plugins           []schemas.Plugin
+	LLMPlugins        []schemas.LLMPlugin
+	MCPPlugins        []schemas.MCPPlugin
 	pluginStatusMutex sync.RWMutex
 	pluginStatus      []schemas.PluginStatus
 
@@ -215,14 +217,15 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 	return s.Config.Providers
 }
 
-// LoadPlugin loads a plugin by name and returns it as type T.
-func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string, pluginConfig any, bifrostConfig *lib.Config) (T, error) {
-	var zero T
+// LoadPlugin loads a plugin by name and returns it as schemas.BasePlugin.
+// The caller should use dynamicPlugins.AsLLMPlugin and dynamicPlugins.AsMCPPlugin
+// to check which interfaces the plugin implements and handle each independently.
+func LoadPlugin(ctx context.Context, name string, path *string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	if path != nil {
 		logger.Info("loading dynamic plugin %s from path %s", name, *path)
 		// Load dynamic plugin
-		plugins, err := dynamicPlugins.LoadPlugins(bifrostConfig.PluginLoader, &dynamicPlugins.Config{
-			Plugins: []dynamicPlugins.DynamicPluginConfig{
+		plugins, err := dynamicPlugins.LoadLLMPlugins(bifrostConfig.PluginLoader, &dynamicPlugins.Config{
+			LLMPlugins: []dynamicPlugins.DynamicLLMPluginConfig{
 				{
 					Path:    *path,
 					Name:    name,
@@ -232,15 +235,12 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 			},
 		})
 		if err != nil {
-			return zero, fmt.Errorf("failed to load dynamic plugin %s: %v", name, err)
+			return nil, fmt.Errorf("failed to load dynamic plugin %s: %v", name, err)
 		}
 		if len(plugins) == 0 {
-			return zero, fmt.Errorf("dynamic plugin %s returned no instances", name)
+			return nil, fmt.Errorf("dynamic plugin %s returned no instances", name)
 		}
-		if p, ok := any(plugins[0]).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("dynamic plugin type mismatch")
+		return plugins[0], nil
 	}
 	switch name {
 	case telemetry.PluginName:
@@ -248,105 +248,97 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
 		}, bifrostConfig.PricingManager, logger)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("telemetry plugin type mismatch")
+		return plugin, nil
 	case logging.PluginName:
 		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal logging plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal logging plugin config: %v", err)
 		}
 		plugin, err := logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("logging plugin type mismatch")
+		return plugin, nil
 	case governance.PluginName:
 		governanceConfig, err := MarshalPluginConfig[governance.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal governance plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal governance plugin config: %v", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{
 			Config: bifrostConfig,
 		}
 		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager, inMemoryStore)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("governance plugin type mismatch")
+		return plugin, nil
 	case maxim.PluginName:
 		// And keep backward compatibility for ENV variables
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal maxim plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal maxim plugin config: %v", err)
 		}
 		plugin, err := maxim.Init(maximConfig, logger)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("maxim plugin type mismatch")
+		return plugin, nil
 	case semanticcache.PluginName:
 		semanticcacheConfig, err := MarshalPluginConfig[semanticcache.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal semantic cache plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal semantic cache plugin config: %v", err)
 		}
 		plugin, err := semanticcache.Init(ctx, semanticcacheConfig, logger, bifrostConfig.VectorStore)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("semantic cache plugin type mismatch")
+		return plugin, nil
 	case otel.PluginName:
 		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal otel plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal otel plugin config: %v", err)
 		}
 		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.PricingManager, handlers.GetVersion())
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("otel plugin type mismatch")
+		return plugin, nil
 	case litellmcompat.PluginName:
 		litellmConfig, err := MarshalPluginConfig[litellmcompat.Config](pluginConfig)
 		if err != nil {
-			return zero, fmt.Errorf("failed to marshal litellmcompat plugin config: %v", err)
+			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %v", err)
 		}
 		plugin, err := litellmcompat.Init(*litellmConfig, logger)
 		if err != nil {
-			return zero, err
+			return nil, err
 		}
-		if p, ok := any(plugin).(T); ok {
-			return p, nil
-		}
-		return zero, fmt.Errorf("litellmcompat plugin type mismatch")
+		return plugin, nil
 	}
-	return zero, fmt.Errorf("plugin %s not found", name)
+	return nil, fmt.Errorf("plugin %s not found", name)
 }
 
-// LoadPlugins loads the plugins for the server.
-func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []schemas.PluginStatus, error) {
-	var err error
+// LoadPlugins loads all plugins for the server and categorizes them by interface.
+// Each plugin is checked for LLM and MCP interface implementation independently.
+// A plugin can implement both interfaces and will be added to both arrays.
+func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.LLMPlugin, []schemas.MCPPlugin, []schemas.PluginStatus, error) {
 	pluginStatus := []schemas.PluginStatus{}
-	plugins := []schemas.Plugin{}
+	llmPlugins := []schemas.LLMPlugin{}
+	mcpPlugins := []schemas.MCPPlugin{}
+
+	// Helper to add plugin to appropriate arrays based on implemented interfaces
+	addPluginToArrays := func(plugin schemas.BasePlugin) {
+		if llmPlugin := dynamicPlugins.AsLLMPlugin(plugin); llmPlugin != nil {
+			llmPlugins = append(llmPlugins, llmPlugin)
+		}
+		if mcpPlugin := dynamicPlugins.AsMCPPlugin(plugin); mcpPlugin != nil {
+			mcpPlugins = append(mcpPlugins, mcpPlugin)
+		}
+	}
+
 	// Initialize telemetry plugin
-	promPlugin, err := LoadPlugin[*telemetry.PrometheusPlugin](ctx, telemetry.PluginName, nil, nil, config)
+	promPlugin, err := LoadPlugin(ctx, telemetry.PluginName, nil, nil, config)
 	if err != nil {
 		logger.Error("failed to initialize telemetry plugin: %v", err)
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -355,18 +347,18 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 			Logs:   []string{fmt.Sprintf("error initializing telemetry plugin %v", err)},
 		})
 	} else {
-		plugins = append(plugins, promPlugin)
+		addPluginToArrays(promPlugin)
 		pluginStatus = append(pluginStatus, schemas.PluginStatus{
 			Name:   telemetry.PluginName,
 			Status: schemas.PluginStatusActive,
 			Logs:   []string{"telemetry plugin initialized successfully"},
 		})
 	}
+
 	// Initializing logger plugin
-	var loggingPlugin *logging.LoggerPlugin
 	if config.ClientConfig.EnableLogging && config.LogsStore != nil {
 		// Use dedicated logs database with high-scale optimizations
-		loggingPlugin, err = LoadPlugin[*logging.LoggerPlugin](ctx, logging.PluginName, nil, &logging.Config{
+		loggingPlugin, err := LoadPlugin(ctx, logging.PluginName, nil, &logging.Config{
 			DisableContentLogging: &config.ClientConfig.DisableContentLogging,
 		}, config)
 		if err != nil {
@@ -377,7 +369,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("error initializing logging plugin %v", err)},
 			})
 		} else {
-			plugins = append(plugins, loggingPlugin)
+			addPluginToArrays(loggingPlugin)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
 				Name:   logging.PluginName,
 				Status: schemas.PluginStatusActive,
@@ -391,10 +383,11 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 			Logs:   []string{"logging plugin disabled"},
 		})
 	}
+
 	// Initializing governance plugin
 	if config.ClientConfig.EnableGovernance && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		// Initialize governance plugin
-		governancePlugin, err := LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, nil, &governance.Config{
+		governancePlugin, err := LoadPlugin(ctx, governance.PluginName, nil, &governance.Config{
 			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,
 		}, config)
 		if err != nil {
@@ -405,7 +398,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("error initializing governance plugin %v", err)},
 			})
 		} else if governancePlugin != nil {
-			plugins = append(plugins, governancePlugin)
+			addPluginToArrays(governancePlugin)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
 				Name:   governance.PluginName,
 				Status: schemas.PluginStatusActive,
@@ -419,43 +412,44 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 			Logs:   []string{"governance plugin disabled"},
 		})
 	}
-	for _, plugin := range config.PluginConfigs {
+
+	for _, pluginConfig := range config.PluginConfigs {
 		// Skip built-in plugins that are already handled above
-		if plugin.Name == telemetry.PluginName || plugin.Name == logging.PluginName || plugin.Name == governance.PluginName {
+		if pluginConfig.Name == telemetry.PluginName || pluginConfig.Name == logging.PluginName || pluginConfig.Name == governance.PluginName {
 			continue
 		}
-		if !plugin.Enabled {
+		if !pluginConfig.Enabled {
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   plugin.Name,
+				Name:   pluginConfig.Name,
 				Status: schemas.PluginStatusDisabled,
-				Logs:   []string{fmt.Sprintf("plugin %s disabled", plugin.Name)},
+				Logs:   []string{fmt.Sprintf("plugin %s disabled", pluginConfig.Name)},
 			})
 			continue
 		}
-		pluginInstance, err := LoadPlugin[schemas.Plugin](ctx, plugin.Name, plugin.Path, plugin.Config, config)
+		pluginInstance, err := LoadPlugin(ctx, pluginConfig.Name, pluginConfig.Path, pluginConfig.Config, config)
 		if err != nil {
-			if slices.Contains(enterprisePlugins, plugin.Name) {
+			if slices.Contains(enterprisePlugins, pluginConfig.Name) {
 				continue
 			}
-			logger.Error("failed to load plugin %s: %v", plugin.Name, err)
+			logger.Error("failed to load plugin %s: %v", pluginConfig.Name, err)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   plugin.Name,
+				Name:   pluginConfig.Name,
 				Status: schemas.PluginStatusError,
-				Logs:   []string{fmt.Sprintf("error loading plugin %s: %v", plugin.Name, err)},
+				Logs:   []string{fmt.Sprintf("error loading plugin %s: %v", pluginConfig.Name, err)},
 			})
 		} else {
-			plugins = append(plugins, pluginInstance)
+			addPluginToArrays(pluginInstance)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
-				Name:   plugin.Name,
+				Name:   pluginConfig.Name,
 				Status: schemas.PluginStatusActive,
-				Logs:   []string{fmt.Sprintf("plugin %s initialized successfully", plugin.Name)},
+				Logs:   []string{fmt.Sprintf("plugin %s initialized successfully", pluginConfig.Name)},
 			})
 		}
 	}
 	// Initialize litellmcompat plugin if LiteLLM fallbacks are enabled
 	// We initialize litellm plugin at the end to make sure it runs after all the load-balancing plugins
 	if config.ClientConfig.EnableLiteLLMFallbacks {
-		litellmCompatPlugin, err := LoadPlugin[schemas.Plugin](ctx, litellmcompat.PluginName, nil, &litellmcompat.Config{Enabled: true}, config)
+		litellmCompatPlugin, err := LoadPlugin(ctx, litellmcompat.PluginName, nil, &litellmcompat.Config{Enabled: true}, config)
 		if err != nil {
 			logger.Error("failed to initialize litellmcompat plugin: %v", err)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
@@ -464,7 +458,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("error initializing litellmcompat plugin %v", err)},
 			})
 		} else {
-			plugins = append(plugins, litellmCompatPlugin)
+			addPluginToArrays(litellmCompatPlugin)
 			pluginStatus = append(pluginStatus, schemas.PluginStatus{
 				Name:   litellmcompat.PluginName,
 				Status: schemas.PluginStatusActive,
@@ -479,25 +473,53 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 		})
 	}
 
-	// Atomically publish the plugin state
-	config.Plugins.Store(&plugins)
+	config.LLMPlugins.Store(&llmPlugins)
+	config.MCPPlugins.Store(&mcpPlugins)
 
-	return plugins, pluginStatus, nil
+	return llmPlugins, mcpPlugins, pluginStatus, nil
 }
 
-// FindPluginByName retrieves a plugin by name and returns it as type T.
-// T must satisfy schemas.Plugin.
-func FindPluginByName[T schemas.Plugin](plugins []schemas.Plugin, name string) (T, error) {
+// FindPluginByName retrieves a plugin by name from a slice of LLM plugins and returns it as type T.
+// T must satisfy schemas.LLMPlugin or be a more specific type that implements LLMPlugin.
+func FindPluginByName[T schemas.LLMPlugin](plugins []schemas.LLMPlugin, name string) (T, error) {
+	var zero T
 	for _, plugin := range plugins {
 		if plugin.GetName() == name {
+			// Try type assertion
 			if p, ok := plugin.(T); ok {
 				return p, nil
 			}
-			var zero T
+			// If T is an interface type and plugin implements it, return directly
+			zeroType := reflect.TypeOf((*T)(nil)).Elem()
+			pluginType := reflect.TypeOf(plugin)
+			if zeroType.Kind() == reflect.Interface && pluginType.Implements(zeroType) {
+				return plugin.(T), nil
+			}
 			return zero, fmt.Errorf("plugin %q found but type mismatch", name)
 		}
 	}
+	return zero, fmt.Errorf("plugin %q not found", name)
+}
+
+// FindMCPPluginByName retrieves a plugin by name from a slice of MCP plugins and returns it as type T.
+// T must satisfy schemas.MCPPlugin or be a more specific type that implements MCPPlugin.
+func FindMCPPluginByName[T schemas.MCPPlugin](plugins []schemas.MCPPlugin, name string) (T, error) {
 	var zero T
+	for _, plugin := range plugins {
+		if plugin.GetName() == name {
+			// Try type assertion
+			if p, ok := plugin.(T); ok {
+				return p, nil
+			}
+			// If T is an interface type and plugin implements it, return directly
+			zeroType := reflect.TypeOf((*T)(nil)).Elem()
+			pluginType := reflect.TypeOf(plugin)
+			if zeroType.Kind() == reflect.Interface && pluginType.Implements(zeroType) {
+				return plugin.(T), nil
+			}
+			return zero, fmt.Errorf("plugin %q found but type mismatch", name)
+		}
+	}
 	return zero, fmt.Errorf("plugin %q not found", name)
 }
 
@@ -544,7 +566,7 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
-func (s *BifrostHTTPServer) ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+func (s *BifrostHTTPServer) ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
 	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	return s.Client.ExecuteChatMCPTool(bifrostCtx, toolCall)
 }
@@ -568,7 +590,7 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 		governancePluginName = name
 	}
 	s.PluginsMutex.RLock()
-	plugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
+	plugin, err := FindPluginByName[schemas.LLMPlugin](s.LLMPlugins, governancePluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil, err
@@ -719,7 +741,7 @@ func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
 		governancePluginName = name
 	}
 	s.PluginsMutex.RLock()
-	governancePlugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
+	governancePlugin, err := FindPluginByName[schemas.LLMPlugin](s.LLMPlugins, governancePluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil
@@ -748,7 +770,8 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			Account:            account,
 			InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-			Plugins:            s.Config.GetLoadedPlugins(),
+			LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
+			MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
 			MCPConfig:          s.Config.MCPConfig,
 			Logger:             logger,
 		})
@@ -857,78 +880,149 @@ func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) []schemas.Plugi
 	return result
 }
 
-// SyncLoadedPlugin syncs the loaded plugin to the Bifrost core.
+// SyncLoadedPlugin syncs a loaded plugin to the Bifrost core and config.
+// It checks each interface (LLM, MCP) independently and registers the plugin
+// to the appropriate arrays based on which interfaces it implements.
 // configName is the name from the configuration/database, used for status tracking.
-func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, configName string, plugin schemas.Plugin) error {
-	if err := s.Client.ReloadPlugin(plugin); err != nil {
-		s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", configName, err)})
-		return err
-	}
-	s.UpdatePluginStatus(configName, schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", configName)})
-	// CAS retry loop (matching bifrost.go pattern)
-	for {
-		oldPlugins := s.Config.Plugins.Load()
-		oldPluginsSlice := []schemas.Plugin{}
-		if oldPlugins != nil {
-			oldPluginsSlice = *oldPlugins
-		}
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, configName string, plugin schemas.BasePlugin) error {
+	// Check each interface independently
+	llmPlugin := dynamicPlugins.AsLLMPlugin(plugin)
+	mcpPlugin := dynamicPlugins.AsMCPPlugin(plugin)
 
-		// Create new slice with replaced/appended plugin
-		newPlugins := make([]schemas.Plugin, len(oldPluginsSlice))
-		copy(newPlugins, oldPluginsSlice)
+	// Update server's plugin lists based on implemented interfaces
+	s.PluginsMutex.Lock()
 
+	pluginName := plugin.GetName()
+
+	// Handle LLM interface
+	if llmPlugin == nil {
+		// Remove stale entry if plugin no longer implements LLM interface
+		s.LLMPlugins = slices.DeleteFunc(s.LLMPlugins, func(p schemas.LLMPlugin) bool {
+			return p.GetName() == pluginName
+		})
+	} else {
+		// Add or replace LLM plugin entry
 		found := false
-		for i, existing := range newPlugins {
-			if existing.GetName() == plugin.GetName() {
-				newPlugins[i] = plugin
+		for i, existing := range s.LLMPlugins {
+			if existing.GetName() == llmPlugin.GetName() {
+				s.LLMPlugins[i] = llmPlugin
 				found = true
 				break
 			}
 		}
 		if !found {
-			newPlugins = append(newPlugins, plugin)
+			s.LLMPlugins = append(s.LLMPlugins, llmPlugin)
 		}
-
-		// Atomic compare-and-swap
-		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
-			s.PluginsMutex.Lock()
-			defer s.PluginsMutex.Unlock()
-			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
-			return nil
-		}
-		// Retry on contention (extremely rare for plugin updates)
 	}
+
+	// Handle MCP interface
+	if mcpPlugin == nil {
+		// Remove stale entry if plugin no longer implements MCP interface
+		s.MCPPlugins = slices.DeleteFunc(s.MCPPlugins, func(p schemas.MCPPlugin) bool {
+			return p.GetName() == pluginName
+		})
+	} else {
+		// Add or replace MCP plugin entry
+		found := false
+		for i, existing := range s.MCPPlugins {
+			if existing.GetName() == mcpPlugin.GetName() {
+				s.MCPPlugins[i] = mcpPlugin
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.MCPPlugins = append(s.MCPPlugins, mcpPlugin)
+		}
+	}
+
+	// Make shallow copies of plugin slices under lock to avoid races after unlock
+	llmPluginsCopy := slices.Clone(s.LLMPlugins)
+	mcpPluginsCopy := slices.Clone(s.MCPPlugins)
+
+	s.PluginsMutex.Unlock()
+
+	// Add to config for each implemented interface
+	if llmPlugin != nil {
+		if err := s.Config.AddLoadedPlugin(llmPlugin, schemas.PluginTypeLLM); err != nil {
+			s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error adding LLM plugin %s: %v", configName, err)})
+			return fmt.Errorf("failed to add LLM plugin to config: %w", err)
+		}
+	}
+	if mcpPlugin != nil {
+		if err := s.Config.AddLoadedPlugin(mcpPlugin, schemas.PluginTypeMCP); err != nil {
+			s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error adding MCP plugin %s: %v", configName, err)})
+			return fmt.Errorf("failed to add MCP plugin to config: %w", err)
+		}
+	}
+
+	// Reload the Bifrost config with updated plugins
+	account := lib.NewBaseAccount(s.Config)
+	if err := s.Client.ReloadConfig(schemas.BifrostConfig{
+		Account:            account,
+		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
+		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
+		LLMPlugins:         llmPluginsCopy,
+		MCPPlugins:         mcpPluginsCopy,
+		MCPConfig:          s.Config.MCPConfig,
+		Logger:             logger,
+	}); err != nil {
+		s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", configName, err)})
+		return err
+	}
+
+	s.UpdatePluginStatus(configName, schemas.PluginStatusActive, []string{fmt.Sprintf("plugin %s reloaded successfully", configName)})
+	return nil
 }
 
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
-// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
+// The plugin is checked for LLM and MCP interfaces independently and registered
+// to the appropriate arrays based on which interfaces it implements.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
-	newPlugin, err := LoadPlugin[schemas.Plugin](ctx, name, path, pluginConfig, s.Config)
+
+	// Load plugin as BasePlugin
+	plugin, err := LoadPlugin(ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
 		s.UpdatePluginStatus(name, schemas.PluginStatusError, []string{fmt.Sprintf("error loading plugin %s: %v", name, err)})
 		return err
 	}
-	err = s.SyncLoadedPlugin(ctx, name, newPlugin)
-	if err != nil {
+
+	// Sync plugin to appropriate arrays based on implemented interfaces
+	if err := s.SyncLoadedPlugin(ctx, name, plugin); err != nil {
 		return err
 	}
-	// Here if its observability plugin, we need to reload it
-	if _, ok := newPlugin.(schemas.ObservabilityPlugin); ok {
-		// We will re-collect the observability plugins from the plugins list
-		observabilityPlugins := []schemas.ObservabilityPlugin{}
-		s.PluginsMutex.RLock()
-		defer s.PluginsMutex.RUnlock()
-		for _, plugin := range s.Plugins {
-			if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
-				observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
-			}
-		}
-		if len(observabilityPlugins) > 0 {
-			s.tracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
+
+	// Reload observability plugins if applicable
+	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
+		s.reloadObservabilityPlugins()
+	}
+
+	return nil
+}
+
+// reloadObservabilityPlugins reloads all observability plugins in the tracing middleware
+func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
+	observabilityPlugins := []schemas.ObservabilityPlugin{}
+	s.PluginsMutex.RLock()
+	defer s.PluginsMutex.RUnlock()
+
+	// Check LLM plugins
+	for _, plugin := range s.LLMPlugins {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
 		}
 	}
-	return nil
+
+	// Check MCP plugins
+	for _, plugin := range s.MCPPlugins {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+		}
+	}
+
+	// Always update the tracing middleware, even with empty slice, to clear stale plugins
+	s.tracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
 }
 
 // ReloadPricingManager reloads the pricing manager
@@ -1018,13 +1112,44 @@ func (s *BifrostHTTPServer) GetModelsForProvider(provider schemas.ModelProvider)
 }
 
 // RemovePlugin removes a plugin from the server.
-// Uses atomic CompareAndSwap with retry loop to handle concurrent updates safely.
+// The plugin is removed from both LLM and MCP arrays independently if it exists in them.
 func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error {
-	// Get plugin
-	plugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, name)
-	if err := s.Client.RemovePlugin(name); err != nil {
-		return err
+	// Check each plugin array independently
+	var foundInLLM, foundInMCP bool
+	var isObservability bool
+
+	s.PluginsMutex.RLock()
+	// Check if plugin exists in LLM plugins
+	llmPlugin, llmErr := FindPluginByName[schemas.LLMPlugin](s.LLMPlugins, name)
+	if llmErr == nil {
+		foundInLLM = true
+		if _, ok := llmPlugin.(schemas.ObservabilityPlugin); ok {
+			isObservability = true
+		}
 	}
+	// Check if plugin exists in MCP plugins
+	mcpPlugin, mcpErr := FindMCPPluginByName[schemas.MCPPlugin](s.MCPPlugins, name)
+	if mcpErr == nil {
+		foundInMCP = true
+		if _, ok := mcpPlugin.(schemas.ObservabilityPlugin); ok {
+			isObservability = true
+		}
+	}
+	s.PluginsMutex.RUnlock()
+
+	// Remove from Bifrost core for each type where the plugin exists
+	if foundInLLM {
+		if err := s.Client.RemovePlugin(name, schemas.PluginTypeLLM); err != nil {
+			logger.Warn("failed to remove LLM plugin %s from Bifrost core: %v", name, err)
+		}
+	}
+	if foundInMCP {
+		if err := s.Client.RemovePlugin(name, schemas.PluginTypeMCP); err != nil {
+			logger.Warn("failed to remove MCP plugin %s from Bifrost core: %v", name, err)
+		}
+	}
+
+	// Update plugin status
 	isDisabled := ctx.Value("isDisabled")
 	if isDisabled != nil && isDisabled.(bool) {
 		s.UpdatePluginStatus(name, schemas.PluginStatusDisabled, []string{fmt.Sprintf("plugin %s is disabled", name)})
@@ -1033,42 +1158,45 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 		s.DeletePluginStatus(name)
 	}
 
-	// CAS retry loop (matching bifrost.go pattern)
-	for {
-		oldPlugins := s.Config.Plugins.Load()
-		oldPluginsSlice := []schemas.Plugin{}
-		if oldPlugins != nil {
-			oldPluginsSlice = *oldPlugins
+	// Remove from config for each type where the plugin exists
+	if foundInLLM {
+		if err := s.Config.RemoveLoadedPlugin(name, schemas.PluginTypeLLM); err != nil {
+			logger.Warn("failed to remove LLM plugin %s from config: %v", name, err)
 		}
-		// Create new slice without the removed plugin
-		newPlugins := make([]schemas.Plugin, 0, len(oldPluginsSlice))
-		for _, existing := range oldPluginsSlice {
+	}
+	if foundInMCP {
+		if err := s.Config.RemoveLoadedPlugin(name, schemas.PluginTypeMCP); err != nil {
+			logger.Warn("failed to remove MCP plugin %s from config: %v", name, err)
+		}
+	}
+
+	// Remove from server's plugin lists
+	s.PluginsMutex.Lock()
+	if foundInLLM {
+		newPlugins := make([]schemas.LLMPlugin, 0, len(s.LLMPlugins))
+		for _, existing := range s.LLMPlugins {
 			if existing.GetName() != name {
 				newPlugins = append(newPlugins, existing)
 			}
 		}
-		// Atomic compare-and-swap
-		if s.Config.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
-			s.PluginsMutex.Lock()
-			s.Plugins = newPlugins // Keep BifrostHTTPServer.Plugins in sync
-			s.PluginsMutex.Unlock()
-			break
-		}
-		// Retry on contention (extremely rare for plugin updates)
+		s.LLMPlugins = newPlugins
 	}
-	// Here if its observability plugin, we need to reload it
-	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
-		// We will re-collect the observability plugins from the plugins list
-		observabilityPlugins := []schemas.ObservabilityPlugin{}
-		s.PluginsMutex.RLock()
-		defer s.PluginsMutex.RUnlock()
-		for _, plugin := range s.Plugins {
-			if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
-				observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+	if foundInMCP {
+		newPlugins := make([]schemas.MCPPlugin, 0, len(s.MCPPlugins))
+		for _, existing := range s.MCPPlugins {
+			if existing.GetName() != name {
+				newPlugins = append(newPlugins, existing)
 			}
 		}
-		s.tracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
+		s.MCPPlugins = newPlugins
 	}
+	s.PluginsMutex.Unlock()
+
+	// Reload observability plugins if the removed plugin was one
+	if isObservability {
+		s.reloadObservabilityPlugins()
+	}
+
 	return nil
 }
 
@@ -1076,9 +1204,11 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
+	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	return nil
 }
 
@@ -1087,7 +1217,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	var err error
 	// Initializing plugin specific handlers
 	var loggingHandler *handlers.LoggingHandler
-	loggerPlugin, _ := FindPluginByName[*logging.LoggerPlugin](s.Plugins, logging.PluginName)
+	loggerPlugin, _ := FindPluginByName[*logging.LoggerPlugin](s.LLMPlugins, logging.PluginName)
 	if loggerPlugin != nil {
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
 	}
@@ -1096,7 +1226,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if name, ok := ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
 		governancePluginName = name
 	}
-	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
+	governancePlugin, _ := FindPluginByName[schemas.LLMPlugin](s.LLMPlugins, governancePluginName)
 	if governancePlugin != nil {
 		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
@@ -1104,7 +1234,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		}
 	}
 	var cacheHandler *handlers.CacheHandler
-	semanticCachePlugin, _ := FindPluginByName[*semanticcache.Plugin](s.Plugins, semanticcache.PluginName)
+	semanticCachePlugin, _ := FindPluginByName[*semanticcache.Plugin](s.LLMPlugins, semanticcache.PluginName)
 	if semanticCachePlugin != nil {
 		cacheHandler = handlers.NewCacheHandler(semanticCachePlugin)
 	}
@@ -1168,7 +1298,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.devPprofHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	// Add Prometheus /metrics endpoint
-	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
+	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.LLMPlugins, telemetry.PluginName)
 	if err == nil && prometheusPlugin.GetRegistry() != nil {
 		// Use the plugin's dedicated registry if available
 		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetRegistry(), promhttp.HandlerOpts{}))
@@ -1220,7 +1350,7 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
 	// Preparing middlewares
 	// Initializing prometheus plugin
-	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.Plugins, telemetry.PluginName)
+	prometheusPlugin, err := FindPluginByName[*telemetry.PrometheusPlugin](s.LLMPlugins, telemetry.PluginName)
 	if err == nil {
 		commonMiddlewares = append(commonMiddlewares, prometheusPlugin.HTTPMiddleware)
 	} else {
@@ -1290,13 +1420,26 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			}
 		}
 	}
-	// Load plugins
+	// Load plugins - each plugin is checked for LLM and MCP interfaces independently
 	s.pluginStatusMutex.Lock()
 	defer s.pluginStatusMutex.Unlock()
-	s.Plugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config)
+	s.LLMPlugins, s.MCPPlugins, s.pluginStatus, err = LoadPlugins(ctx, s.Config)
 	if err != nil {
 		return fmt.Errorf("failed to load plugins %v", err)
 	}
+
+	// Add loaded plugins to config so they can be tracked in HTTPTransportPlugins cache
+	for _, plugin := range s.LLMPlugins {
+		if err := s.Config.AddLoadedPlugin(plugin, schemas.PluginTypeLLM); err != nil {
+			logger.Warn("failed to add LLM plugin %s to config: %v", plugin.GetName(), err)
+		}
+	}
+	for _, plugin := range s.MCPPlugins {
+		if err := s.Config.AddLoadedPlugin(plugin, schemas.PluginTypeMCP); err != nil {
+			logger.Warn("failed to add MCP plugin %s to config: %v", plugin.GetName(), err)
+		}
+	}
+
 	mcpConfig := s.Config.MCPConfig
 	if mcpConfig != nil {
 		mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
@@ -1311,7 +1454,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Account:            account,
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-		Plugins:            s.Plugins,
+		LLMPlugins:         s.LLMPlugins,
+		MCPPlugins:         s.MCPPlugins,
 		MCPConfig:          mcpConfig,
 		Logger:             logger,
 	})
@@ -1363,7 +1507,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
 	// Curating observability plugins
 	observabilityPlugins := []schemas.ObservabilityPlugin{}
-	for _, plugin := range s.Plugins {
+	// Check LLM plugins
+	for _, plugin := range s.LLMPlugins {
+		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
+			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
+		}
+	}
+	// Check MCP plugins
+	for _, plugin := range s.MCPPlugins {
 		if observabilityPlugin, ok := plugin.(schemas.ObservabilityPlugin); ok {
 			observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
 		}
