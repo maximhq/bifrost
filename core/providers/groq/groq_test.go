@@ -49,6 +49,8 @@ func TestGroq(t *testing.T) {
 			ImageURL:              false,
 			ImageBase64:           false,
 			MultipleImages:        false,
+			FileBase64:            false, // Not supported
+			FileURL:               false, // Not supported
 			CompleteEnd2End:       true,
 			Embedding:             false,
 			ListModels:            true,

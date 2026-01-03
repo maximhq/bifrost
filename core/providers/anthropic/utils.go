@@ -168,6 +168,13 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		documentBlock.Title = file.Filename
 	}
 
+	// Handle file URL
+	if file.FileURL != nil && *file.FileURL != "" {
+		documentBlock.Source.Type = "url"
+		documentBlock.Source.URL = file.FileURL
+		return documentBlock
+	}
+
 	// Handle file_data (base64 encoded data)
 	if file.FileData != nil && *file.FileData != "" {
 		fileData := *file.FileData
@@ -282,10 +289,6 @@ func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessa
 	if fileBlock.FileURL != nil && *fileBlock.FileURL != "" {
 		documentBlock.Source.Type = "url"
 		documentBlock.Source.URL = fileBlock.FileURL
-
-		if fileBlock.FileType != nil {
-			documentBlock.Source.MediaType = fileBlock.FileType
-		}
 		return documentBlock
 	}
 

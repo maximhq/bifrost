@@ -46,6 +46,8 @@ func TestMistral(t *testing.T) {
 			ImageURL:              true,
 			ImageBase64:           true,
 			MultipleImages:        true,
+			FileBase64:            false, // supports documents url
+			FileURL:               false, // bifrost limitation: native mistral api converter needed
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			Transcription:         true,

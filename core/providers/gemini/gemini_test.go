@@ -49,6 +49,8 @@ func TestGemini(t *testing.T) {
 			ImageURL:              false,
 			ImageBase64:           true,
 			MultipleImages:        false,
+			FileBase64:            true,
+			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			Transcription:         false,

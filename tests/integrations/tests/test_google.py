@@ -71,6 +71,7 @@ from .utils.common import (
     CALCULATOR_TOOL,
     COMPARISON_KEYWORDS,
     EMBEDDINGS_SINGLE_TEXT,
+    FILE_DATA_BASE64,
     # Gemini-specific test data
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
@@ -609,6 +610,68 @@ class TestGoogleIntegration:
             word in content for word in COMPARISON_KEYWORDS
         ), f"Response should contain comparison keywords. Got content: {content}"
 
+    @skip_if_no_api_key("gemini")
+    def test_pdf_file_input(self, test_config):
+        """Test Case 9b: PDF file input - Upload and analyze PDF document"""
+        import base64
+        
+        # Create direct Google client (without Bifrost) for file upload
+        direct_client = genai.Client(
+            api_key=os.getenv("GEMINI_API_KEY")
+        )
+        
+        # Get Bifrost client for generate_content
+        bifrost_client = get_provider_google_client("gemini")
+        
+        # Decode base64 PDF to bytes
+        pdf_bytes = base64.b64decode(FILE_DATA_BASE64)
+        
+        # Write to a temporary PDF file
+        with tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False) as f:
+            f.write(pdf_bytes)
+            temp_pdf_path = f.name
+        
+        uploaded_file = None
+        
+        try:
+            # Upload the PDF file using direct Google client (not through Bifrost)
+            uploaded_file = direct_client.files.upload(
+                file=temp_pdf_path,
+                config=types.UploadFileConfig(display_name='test_pdf_gemini')
+            )
+            
+            # Use the uploaded file in a generate_content request through Bifrost
+            response = bifrost_client.models.generate_content(
+                model="gemini/gemini-2.5-flash",
+                contents=["What is the main content of this PDF document? Summarize it.", uploaded_file],
+            )
+            
+            # Validate response
+            assert_valid_chat_response(response)
+            assert response.text is not None
+            assert len(response.text) > 0
+            
+            # Check for "hello world" keywords from the PDF content
+            content_lower = response.text.lower()
+            keywords = ["hello", "world", "testing", "pdf", "document"]
+            assert any(
+                keyword in content_lower for keyword in keywords
+            ), f"Response should reference PDF document content. Got: {content_lower}"
+            
+            print(f"Success: PDF file input test passed")
+            
+        finally:
+            # Clean up local temp file
+            if os.path.exists(temp_pdf_path):
+                os.remove(temp_pdf_path)
+            
+            # Clean up uploaded file using direct client
+            if uploaded_file is not None:
+                try:
+                    direct_client.files.delete(name=uploaded_file.name)
+                    print(f"Cleaned up file: {uploaded_file.name}")
+                except Exception as e:
+                    print(f"Warning: Failed to clean up file: {e}")
 
     def test_10_complex_end2end(self, google_client, test_config):
         """Test Case 10: Complex end-to-end with conversation, images, and tools"""

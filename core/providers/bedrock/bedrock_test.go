@@ -144,6 +144,8 @@ func TestBedrock(t *testing.T) {
 			ImageURL:              false, // Bedrock doesn't support image URL
 			ImageBase64:           true,
 			MultipleImages:        false, // Since one of the image is URL
+			FileBase64:            true,
+			FileURL:               false, // S3 urls supported for nova models
 			CompleteEnd2End:       true,
 			Embedding:             true,
 			ListModels:            true,

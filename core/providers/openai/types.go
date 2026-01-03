@@ -120,10 +120,11 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 					if needsBlockCopy {
 						blockCopy := block
 						blockCopy.CacheControl = nil
-						// Strip FileType from file block
-						if blockCopy.File != nil && blockCopy.File.FileType != nil {
+						// Strip FileType and FileURL from file block
+						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
 							fileCopy := *blockCopy.File
 							fileCopy.FileType = nil
+							fileCopy.FileURL = nil
 							blockCopy.File = &fileCopy
 						}
 						contentCopy.ContentBlocks[j] = blockCopy
@@ -366,7 +367,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 			if block.CacheControl != nil {
 				return true
 			}
-			if block.File != nil && block.File.FileType != nil {
+			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
 				return true
 			}
 		}

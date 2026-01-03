@@ -2422,6 +2422,7 @@ func (provider *GeminiProvider) FileUpload(ctx context.Context, key schemas.Key,
 			expiresAt = &exp
 		}
 	}
+
 	return &schemas.BifrostFileUploadResponse{
 		ID:             geminiResp.Name,
 		Object:         "file",
