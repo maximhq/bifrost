@@ -2214,6 +2214,11 @@ func (bifrost *Bifrost) handleRequest(ctx context.Context, req *schemas.BifrostR
 
 	// Try the primary provider first
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
+	// Ensure request ID is set in context before PreHooks
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
+		requestID := uuid.New().String()
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, requestID)
+	}
 	primaryResult, primaryErr := bifrost.tryRequest(ctx, req)
 	if primaryErr != nil {
 		if primaryErr.Error != nil {
@@ -2307,6 +2312,11 @@ func (bifrost *Bifrost) handleStreamRequest(ctx context.Context, req *schemas.Bi
 
 	// Try the primary provider first
 	ctx = context.WithValue(ctx, schemas.BifrostContextKeyFallbackIndex, 0)
+	// Ensure request ID is set in context before PreHooks
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
+		requestID := uuid.New().String()
+		ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, requestID)
+	}
 	primaryResult, primaryErr := bifrost.tryStreamRequest(ctx, req)
 
 	// Check if we should proceed with fallbacks

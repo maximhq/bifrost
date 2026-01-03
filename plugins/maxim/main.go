@@ -398,11 +398,11 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 		ctx.SetValue(GenerationIDKey, generationID)
 
 		// Extract request ID from context, if not present, create a new one
-		var ok bool
-		requestID, ok = ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+		requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 		if !ok || requestID == "" {
+			// This should never happen since core/bifrost.go guarantees it's set before PreHooks
 			requestID = uuid.New().String()
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+			plugin.logger.Warn("%s request ID missing in PreHook, using fallback: %s", PluginLoggerPrefix, requestID)
 		}
 	}
 
