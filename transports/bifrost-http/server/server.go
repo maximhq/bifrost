@@ -1003,9 +1003,11 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
 	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
+	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
+	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	return nil
 }
 

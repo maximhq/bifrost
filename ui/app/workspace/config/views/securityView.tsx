@@ -271,7 +271,7 @@ export default function SecurityView() {
 								Enforce Virtual Keys
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
+								Enforce the use of a virtual key for all requests. If enabled, requests without the virtual key header will be rejected.
 							</p>
 						</div>
 						<Switch
