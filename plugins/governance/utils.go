@@ -2,17 +2,46 @@
 package governance
 
 import (
-	"context"
+	"strings"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/valyala/fasthttp"
 )
 
-// getStringFromContext safely extracts a string value from context
-func getStringFromContext(ctx context.Context, key any) string {
-	if value := ctx.Value(key); value != nil {
-		if str, ok := value.(string); ok {
-			return str
+// parseVirtualKey parses the virtual key from the request context
+// Parameters:
+//   - ctx: The FastHTTP request context
+//
+// Returns:
+//   - *string: The virtual key
+func parseVirtualKey(ctx *fasthttp.RequestCtx) *string {
+	var virtualKeyValue string
+	vkHeader := ctx.Request.Header.Peek("x-bf-vk")
+	if string(vkHeader) != "" {
+		return bifrost.Ptr(string(vkHeader))
+	}
+	authHeader := string(ctx.Request.Header.Peek("Authorization"))
+	if authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+				virtualKeyValue = authHeaderValue
+			}
 		}
 	}
-	return ""
+	if virtualKeyValue != "" {
+		return bifrost.Ptr(virtualKeyValue)
+	}
+	xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
+	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xAPIKey)
+	}
+	// Checking x-goog-api-key header
+	xGoogleAPIKey := string(ctx.Request.Header.Peek("x-goog-api-key"))
+	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xGoogleAPIKey)
+	}
+	return nil
 }
 
 // equalPtr compares two pointers of comparable type for value equality
