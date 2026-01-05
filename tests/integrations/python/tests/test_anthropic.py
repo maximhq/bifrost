@@ -1773,6 +1773,471 @@ This document is used to verify that the AI can read and understand text documen
         assert any(word in content for word in document_keywords), \
             f"Response should reference document features. Got: {content}"
 
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_33_citations_pdf(self, anthropic_client, test_config, provider, model):
+        """Test Case 33: PDF document citations"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What does this PDF document say? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Test PDF Document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": FILE_DATA_BASE64
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        # Validate basic response
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        
+        # Check for citations
+        has_citations = False
+        for block in response.content:
+            if hasattr(block, "citations") and block.citations:
+                has_citations = True
+                # Validate PDF citation structure
+                for citation in block.citations:
+                    assert hasattr(citation, "type"), "Citation should have type"
+                    assert citation.type == "page_location", \
+                        f"PDF citation should be page_location, got {citation.type}"
+                    assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+                    assert hasattr(citation, "document_index"), "Citation should have document_index"
+                    assert citation.document_index == 0, "First document should be index 0"
+                    assert hasattr(citation, "start_page_number"), \
+                        "PDF citation should have start_page_number"
+                    assert hasattr(citation, "end_page_number"), \
+                        "PDF citation should have end_page_number"
+                    # Page numbers are 1-indexed
+                    assert citation.start_page_number >= 1, \
+                        "Page numbers should be 1-indexed"
+                    
+                    print(f"✓ Found PDF citation: pages {citation.start_page_number}-{citation.end_page_number}, "
+                          f"text: '{citation.cited_text[:50]}...'")
+        
+        assert has_citations, "Response should contain citations for PDF document"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_34_citations_text(self, anthropic_client, test_config, provider, model):
+        """Test Case 34: Plain text document citations"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        text_content = """The Theory of Relativity was developed by Albert Einstein in the early 20th century.
+It consists of two parts: Special Relativity published in 1905, and General Relativity published in 1915.
+
+Special Relativity deals with objects moving at constant velocities and introduced the famous equation E=mc².
+General Relativity extends this to accelerating objects and provides a new understanding of gravity.
+
+Einstein's work revolutionized our understanding of space, time, and gravity, and its predictions have been
+confirmed by numerous experiments and observations over the past century."""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "When was General Relativity published and what does it deal with? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Theory of Relativity Overview",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": text_content
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        # Validate basic response
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        
+        # Check for citations
+        has_citations = False
+        for block in response.content:
+            if hasattr(block, "citations") and block.citations:
+                has_citations = True
+                # Validate text citation structure
+                for citation in block.citations:
+                    assert hasattr(citation, "type"), "Citation should have type"
+                    assert citation.type == "char_location", \
+                        f"Text citation should be char_location, got {citation.type}"
+                    assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+                    assert hasattr(citation, "document_index"), "Citation should have document_index"
+                    assert citation.document_index == 0, "First document should be index 0"
+                    assert hasattr(citation, "start_char_index"), \
+                        "Text citation should have start_char_index"
+                    assert hasattr(citation, "end_char_index"), \
+                        "Text citation should have end_char_index"
+                    # Character indices are 0-indexed
+                    assert citation.start_char_index >= 0, \
+                        "Character indices should be 0-indexed"
+                    assert citation.end_char_index > citation.start_char_index, \
+                        "End index should be greater than start index"
+                    
+                    print(f"✓ Found text citation: chars {citation.start_char_index}-{citation.end_char_index}, "
+                          f"text: '{citation.cited_text[:50]}...'")
+        
+        assert has_citations, "Response should contain citations for text document"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_35_citations_streaming(self, anthropic_client, test_config, provider, model):
+        """Test Case 35: Citations with streaming"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        # Use a text document for streaming test
+        text_content = """Machine learning is a subset of artificial intelligence that enables systems to learn from data.
+Deep learning is a specialized form of machine learning that uses neural networks with multiple layers.
+
+Neural networks are inspired by the human brain and consist of interconnected nodes called neurons.
+These networks can identify patterns in data and make predictions or classifications based on those patterns.
+
+Modern deep learning has achieved remarkable success in areas such as image recognition, natural language
+processing, and game playing."""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What is deep learning and how does it relate to neural networks? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Machine Learning Introduction",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": text_content
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        stream = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500,
+            stream=True
+        )
+        
+        # Collect streaming content and citations
+        text_parts = []
+        citations = []
+        chunk_count = 0
+        has_citation_delta = False
+        
+        for event in stream:
+            chunk_count += 1
+            
+            if hasattr(event, "type"):
+                event_type = event.type
+                
+                # Handle content_block_delta events
+                if event_type == "content_block_delta":
+                    if hasattr(event, "delta") and event.delta:
+                        # Check for text delta
+                        if hasattr(event.delta, "type"):
+                            if event.delta.type == "text_delta":
+                                if hasattr(event.delta, "text"):
+                                    text_parts.append(str(event.delta.text))
+                            # Check for citations delta
+                            elif event.delta.type == "citations_delta":
+                                has_citation_delta = True
+                                if hasattr(event.delta, "citation"):
+                                    citation = event.delta.citation
+                                    citations.append(citation)
+                                    print(f"✓ Received citation delta: {citation.type if hasattr(citation, 'type') else 'unknown type'}")
+            
+            # Safety check
+            if chunk_count > 2000:
+                break
+        
+        # Validate results
+        complete_text = "".join(text_parts)
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(complete_text) > 0, "Should receive text content"
+        
+        # Check for citations
+        assert has_citation_delta, "Should receive citations_delta events in streaming"
+        assert len(citations) > 0, "Should collect at least one citation from stream"
+        
+        # Validate citation structure
+        for citation in citations:
+            assert hasattr(citation, "type"), "Citation should have type"
+            assert citation.type == "char_location", \
+                f"Text citation should be char_location, got {citation.type if hasattr(citation, 'type') else 'no type'}"
+            assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+            assert hasattr(citation, "document_index"), "Citation should have document_index"
+            
+            if hasattr(citation, "start_char_index") and hasattr(citation, "end_char_index"):
+                print(f"  Citation: chars {citation.start_char_index}-{citation.end_char_index}, "
+                      f"text: '{citation.cited_text[:50] if len(citation.cited_text) > 50 else citation.cited_text}...'")
+        
+        print(f"✓ Streaming with citations validated - Received {len(citations)} citations in {chunk_count} chunks")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("web_search"))
+    def test_36_web_search_non_streaming(self, anthropic_client, test_config, provider, model):
+        """Test Case 36: Web search tool (non-streaming)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for web_search scenario")
+        
+        print(f"\n=== Testing Web Search (Non-Streaming) for provider {provider} ===")
+        
+        # Create web search tool
+        web_search_tool = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5
+        }
+        
+        messages = [
+            {
+                "role": "user",
+                "content": "What is a positive news story from today?"
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            tools=[web_search_tool],
+            max_tokens=2048
+        )
+        
+        # Validate basic response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "content"), "Response should have content"
+        assert len(response.content) > 0, "Content should not be empty"
+        
+        # Check for web search tool use
+        has_web_search = False
+        has_search_results = False
+        has_citations = False
+        search_query = None
+        
+        for block in response.content:
+            if hasattr(block, "type"):
+                # Check for server_tool_use with web_search
+                if block.type == "server_tool_use" and hasattr(block, "name") and block.name == "web_search":
+                    has_web_search = True
+                    if hasattr(block, "input") and "query" in block.input:
+                        search_query = block.input["query"]
+                        print(f"✓ Found web search with query: {search_query}")
+                
+                # Check for web_search_tool_result
+                elif block.type == "web_search_tool_result":
+                    has_search_results = True
+                    if hasattr(block, "content") and block.content:
+                        result_count = len(block.content)
+                        print(f"✓ Found {result_count} search results")
+                        
+                        # Log first few results
+                        for i, result in enumerate(block.content[:3]):
+                            if hasattr(result, "url") and hasattr(result, "title"):
+                                print(f"  Result {i+1}: {result.title}")
+                
+                # Check for text with citations
+                elif block.type == "text":
+                    if hasattr(block, "citations") and block.citations:
+                        has_citations = True
+                        citation_count = len(block.citations)
+                        print(f"✓ Found {citation_count} citations in response")
+                        
+                        # Validate citation structure
+                        for citation in block.citations[:3]:
+                            assert hasattr(citation, "type"), "Citation should have type"
+                            assert hasattr(citation, "url"), "Citation should have URL"
+                            assert hasattr(citation, "title"), "Citation should have title"
+                            assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+                            print(f"  Citation: {citation.title}")
+        
+        # Validate that web search was performed
+        assert has_web_search, "Response should contain web_search tool use"
+        assert has_search_results, "Response should contain web search results"
+        assert search_query is not None, "Web search should have a query"
+        
+        
+        print(f"✓ Web search (non-streaming) test passed!")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("web_search"))
+    def test_37_web_search_streaming(self, anthropic_client, test_config, provider, model):
+        """Test Case 37: Web search tool (streaming)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for web_search scenario")
+        
+        print(f"\n=== Testing Web Search (Streaming) for provider {provider} ===")
+        
+        # Create web search tool with user location
+        web_search_tool = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5,
+            "user_location": {
+                "type": "approximate",
+                "city": "New York",
+                "region": "New York",
+                "country": "US",
+                "timezone": "America/New_York"
+            }
+        }
+        
+        messages = [
+            {
+                "role": "user",
+                "content": "what was a positive news story from today??"
+            }
+        ]
+        
+        stream = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            tools=[web_search_tool],
+            max_tokens=2048,
+            stream=True
+        )
+        
+        # Collect streaming events
+        text_parts = []
+        search_queries = []
+        search_results = []
+        citations = []
+        chunk_count = 0
+        has_server_tool_use = False
+        has_search_tool_result = False
+        has_citation_delta = False
+        
+        for event in stream:
+            chunk_count += 1
+            
+            if hasattr(event, "type"):
+                event_type = event.type
+                
+                # Handle content_block_start for tool use
+                if event_type == "content_block_start":
+                    if hasattr(event, "content_block") and event.content_block:
+                        block = event.content_block
+                        
+                        # Check for server_tool_use
+                        if hasattr(block, "type") and block.type == "server_tool_use":
+                            if hasattr(block, "name") and block.name == "web_search":
+                                has_server_tool_use = True
+                                print(f"✓ Web search tool use started (block id: {block.id if hasattr(block, 'id') else 'unknown'})")
+                        
+                        # Check for web_search_tool_result
+                        elif hasattr(block, "type") and block.type == "web_search_tool_result":
+                            print(f"block: {block}")
+                            has_search_tool_result = True
+                            if hasattr(block, "content") and block.content:
+                                result_count = len(block.content)
+                                print(f"✓ Received {result_count} search results")
+                                
+                                # Collect search results
+                                for result in block.content:
+                                    if hasattr(result, "url") and hasattr(result, "title"):
+                                        search_results.append({
+                                            "url": result.url,
+                                            "title": result.title
+                                        })
+                
+                # Handle content_block_delta for queries and text
+                elif event_type == "content_block_delta":
+                    if hasattr(event, "delta") and event.delta:
+                        delta = event.delta
+                        
+                        # Check for input_json_delta (tool input)
+                        if hasattr(delta, "type") and delta.type == "input_json_delta":
+                            if hasattr(delta, "partial_json"):
+                                # Try to extract query from partial JSON
+                                try:
+                                    import json
+                                    partial = delta.partial_json
+                                    if "query" in partial:
+                                        # Accumulate JSON to parse later
+                                        pass
+                                except:
+                                    pass
+                        
+                        # Check for text_delta
+                        elif hasattr(delta, "type") and delta.type == "text_delta":
+                            if hasattr(delta, "text"):
+                                text_parts.append(delta.text)
+                        
+                        # Check for citations_delta
+                        elif hasattr(delta, "type") and delta.type == "citations_delta":
+                            has_citation_delta = True
+                            if hasattr(delta, "citation"):
+                                citation = delta.citation
+                                citations.append(citation)
+                                
+                                if hasattr(citation, "title"):
+                                    print(f"  Received citation: {citation.title}")
+            
+            # Safety check
+            if chunk_count > 5000:
+                break
+        
+        # Combine collected content
+        complete_text = "".join(text_parts)
+        
+        # Validate results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert has_server_tool_use, "Should detect web search tool use in streaming"
+        assert has_search_tool_result, "Should receive search results in streaming"
+        assert len(search_results) > 0, "Should collect search results from stream"
+        assert len(complete_text) > 0, "Should receive text content about weather"
+        
+        print(f"✓ Streaming validation:")
+        print(f"  - Chunks received: {chunk_count}")
+        print(f"  - Search results: {len(search_results)}")
+        print(f"  - Citations: {len(citations)}")
+        print(f"  - Text length: {len(complete_text)} characters")
+        print(f"  - First 150 chars: {complete_text[:150]}...")
+        
+        # Log a few search results
+        if len(search_results) > 0:
+            print(f"✓ Search results:")
+            for i, result in enumerate(search_results[:3]):
+                print(f"  {i+1}. {result['title']}")
+        
+        print(f"✓ Web search (streaming) test passed!")
+
 
 # Additional helper functions specific to Anthropic
 def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:

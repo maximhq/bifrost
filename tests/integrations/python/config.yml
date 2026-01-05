@@ -183,6 +183,7 @@ provider_scenarios:
     multiple_tool_calls: true
     end2end_tool_calling: true
     automatic_function_calling: true
+    "web_search": true
     image_url: true
     image_base64: true
     file_input: true
@@ -194,6 +195,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: false
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -244,6 +246,7 @@ provider_scenarios:
     multiple_tool_calls: true
     end2end_tool_calling: true
     automatic_function_calling: true
+    web_search: true
     image_url: true
     image_base64: true
     file_input: true
@@ -256,6 +259,7 @@ provider_scenarios:
     embeddings: false
     thinking: true
     prompt_caching: true
+    citations: true
     list_models: true
     responses: true
     responses_image: true
@@ -296,6 +300,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: false
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -377,6 +382,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: true
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -415,6 +421,7 @@ provider_scenarios:
     embeddings: true
     thinking: false
     prompt_caching: false
+    citations: false
     list_models: false
     responses: true
     responses_image: true
@@ -449,6 +456,7 @@ scenario_capabilities:
   multiple_tool_calls: "tools"
   end2end_tool_calling: "tools"
   automatic_function_calling: "tools"
+  web_search: "chat"
   image_url: "vision"
   image_base64: "vision"
   file_input: "file"
@@ -461,6 +469,7 @@ scenario_capabilities:
   embeddings: "embeddings"
   thinking: "thinking"
   prompt_caching: "chat"
+  citations: "chat"
   list_models: "chat"
   langchain_structured_output: "chat"  # LangChain structured output uses chat capability
   pydantic_structured_output: "chat"  # Structured output uses chat capability

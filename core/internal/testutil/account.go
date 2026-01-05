@@ -58,6 +58,7 @@ type TestScenarios struct {
 	CountTokens           bool // Count tokens functionality
 	ChatAudio             bool // Chat completion with audio input/output functionality
 	StructuredOutputs     bool // Structured outputs (JSON schema) functionality
+	WebSearchTool         bool // Web search tool functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios

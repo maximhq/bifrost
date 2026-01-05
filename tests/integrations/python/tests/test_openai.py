@@ -2832,3 +2832,213 @@ class TestOpenAIIntegration:
             f"Long text should have >100 tokens, got {response.input_tokens}"
         )
 
+    # =========================================================================
+    # WEB SEARCH TOOL TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("web_search"))
+    def test_52_web_search_non_streaming(self, provider, model, vk_enabled):
+        """Test Case 52: Web search tool (non-streaming) using Responses API"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for web_search scenario")
+        
+        print(f"\n=== Testing Web Search (Non-Streaming) for provider {provider} ===")
+        
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        # Use Responses API with web search tool
+        response = client.responses.create(
+            model=format_provider_model(provider, model),
+            tools=[{"type": "web_search"}],
+            input="What is the current weather in New York City today?",
+            max_output_tokens=1200,
+        )
+        
+        # Validate basic response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "output"), "Response should have output"
+        assert response.output is not None, "Output should not be None"
+        assert len(response.output) > 0, "Output should not be empty"
+        
+        # Check for web_search_call in output
+        has_web_search_call = False
+        has_message_output = False
+        has_citations = False
+        search_status = None
+        output_text = ""
+        
+        for output_item in response.output:
+            # Check for web_search_call
+            if hasattr(output_item, "type") and output_item.type == "web_search_call":
+                has_web_search_call = True
+                if hasattr(output_item, "status"):
+                    search_status = output_item.status
+                print(f"✓ Found web_search_call with status: {search_status}")
+                
+                # Check for search action details
+                if hasattr(output_item, "action"):
+                    action = output_item.action
+                    if hasattr(action, "query"):
+                        print(f"✓ Search query: {action.query}")
+                    if hasattr(action, "sources") and action.sources:
+                        print(f"✓ Found {len(action.sources)} sources")
+            
+            # Check for message output with content
+            elif hasattr(output_item, "type") and output_item.type == "message":
+                has_message_output = True
+                if hasattr(output_item, "content") and output_item.content:
+                    for content_block in output_item.content:
+                        if hasattr(content_block, "type") and content_block.type == "output_text":
+                            if hasattr(content_block, "text"):
+                                output_text = content_block.text
+                                print(f"✓ Found text output (first 150 chars): {output_text[:150]}...")
+                            
+                            # Check for annotations (citations)
+                            if hasattr(content_block, "annotations") and content_block.annotations:
+                                has_citations = True
+                                citation_count = len(content_block.annotations)
+                                print(f"✓ Found {citation_count} citations")
+                                
+                                # Validate citation structure
+                                for i, annotation in enumerate(content_block.annotations[:3]):
+                                    if hasattr(annotation, "type"):
+                                        assert annotation.type == "url_citation", \
+                                            f"Annotation should be url_citation, got {annotation.type}"
+                                    if hasattr(annotation, "url"):
+                                        print(f"  Citation {i+1}: {annotation.url}")
+        
+        # Validate web search was performed
+        assert has_web_search_call, "Response should contain web_search_call"
+        assert search_status == "completed", f"Web search should be completed, got status: {search_status}"
+        assert has_message_output, "Response should contain message output"
+        assert len(output_text) > 0, "Message should have text content"
+        
+        # Validate content mentions weather
+        text_lower = output_text.lower()
+        weather_keywords = ["weather", "temperature", "forecast", "rain", "snow", "wind", "sunny", "cloudy", "degrees"]
+        assert any(keyword in text_lower for keyword in weather_keywords), \
+            f"Response should mention weather-related information. Got: {output_text[:300]}..."
+        
+        # Validate usage information
+        if hasattr(response, "usage"):
+            print(f"✓ Token usage - Input: {response.usage.input_tokens}, Output: {response.usage.output_tokens}")
+        
+        print(f"✓ Web search (non-streaming) test passed!")
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("web_search"))
+    def test_53_web_search_streaming(self, provider, model, vk_enabled):
+        """Test Case 53: Web search tool (streaming) using Responses API"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for web_search scenario")
+        
+        print(f"\n=== Testing Web Search (Streaming) for provider {provider} ===")
+        
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        # Use Responses API with web search tool and user location
+        stream = client.responses.create(
+            model=format_provider_model(provider, model),
+            tools=[{
+                "type": "web_search",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "city": "New York",
+                    "region": "New York",
+                    "timezone": "America/New_York"
+                }
+            }],
+            input="What's the weather in NYC today?",
+            max_output_tokens=1200,
+            stream=True
+        )
+        
+        # Collect streaming events
+        text_parts = []
+        chunk_count = 0
+        has_web_search_call = False
+        has_message_output = False
+        citations = []
+        search_queries = []
+        
+        for chunk in stream:
+            chunk_count += 1
+            
+            if hasattr(chunk, "type"):
+                chunk_type = chunk.type
+                
+                # Handle output_item.added event
+                if chunk_type == "response.output_item.added":
+                    if hasattr(chunk, "item"):
+                        item = chunk.item
+                        # Check for web_search_call
+                        if hasattr(item, "type") and item.type == "web_search_call":
+                            has_web_search_call = True
+                            print(f"✓ Web search call started (id: {item.id if hasattr(item, 'id') else 'unknown'})")
+                        
+                        # Check for message output
+                        elif hasattr(item, "type") and item.type == "message":
+                            has_message_output = True
+                
+                # Handle output_item.done event for completed items
+                elif chunk_type == "response.output_item.done":
+                    if hasattr(chunk, "item"):
+                        item = chunk.item
+                        
+                        # Check web_search_call completion with action details
+                        if hasattr(item, "type") and item.type == "web_search_call":
+                            if hasattr(item, "action"):
+                                action = item.action
+                                if hasattr(action, "query"):
+                                    search_queries.append(action.query)
+                                    print(f"✓ Search query: {action.query}")
+                                if hasattr(action, "sources") and action.sources:
+                                    print(f"✓ Found {len(action.sources)} sources")
+                
+                # Handle content.text.delta for streaming text
+                elif chunk_type == "response.output_text.delta":
+                    if hasattr(chunk, "delta"):
+                        text_parts.append(chunk.delta)
+                
+                # Handle content.annotation.added for citations
+                elif chunk_type == "response.output_text.annotation.added":
+                    if hasattr(chunk, "annotation"):
+                        annotation = chunk.annotation
+                        citations.append(annotation)
+                        
+                        # Validate citation
+                        if hasattr(annotation, "type"):
+                            assert annotation.type == "url_citation", \
+                                f"Annotation should be url_citation, got {annotation.type}"
+                        
+                        if hasattr(annotation, "url") and hasattr(annotation, "title"):
+                            print(f"  Citation received: {annotation.title}")
+            
+            # Safety check
+            if chunk_count > 5000:
+                break
+        
+        # Combine collected text
+        complete_text = "".join(text_parts)
+        
+        # Validate results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert has_web_search_call, "Should detect web search call in streaming"
+        assert has_message_output, "Should detect message output in streaming"
+        assert len(complete_text) > 0, "Should receive text content"
+        
+        # Validate text mentions weather
+        text_lower = complete_text.lower()
+        weather_keywords = ["weather", "temperature", "forecast", "rain", "snow", "wind", "sunny", "cloudy", "degrees"]
+        assert any(keyword in text_lower for keyword in weather_keywords), \
+            f"Response should mention weather-related information. Got: {complete_text[:200]}..."
+        
+        print(f"✓ Streaming validation:")
+        print(f"  - Chunks received: {chunk_count}")
+        print(f"  - Search queries: {len(search_queries)}")
+        print(f"  - Citations: {len(citations)}")
+        print(f"  - Text length: {len(complete_text)} characters")
+        print(f"  - First 150 chars: {complete_text[:150]}...")
+        
+        print(f"✓ Web search (streaming) test passed!")
+

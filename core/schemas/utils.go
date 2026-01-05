@@ -639,23 +639,23 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 			for i, annotation := range original.ChatAssistantMessage.Annotations {
 				copyAnnotation := ChatAssistantMessageAnnotation{
 					Type: annotation.Type,
-					Citation: ChatAssistantMessageAnnotationCitation{
-						StartIndex: annotation.Citation.StartIndex,
-						EndIndex:   annotation.Citation.EndIndex,
-						Title:      annotation.Citation.Title,
+					URLCitation: ChatAssistantMessageAnnotationCitation{
+						StartIndex: annotation.URLCitation.StartIndex,
+						EndIndex:   annotation.URLCitation.EndIndex,
+						Title:      annotation.URLCitation.Title,
 					},
 				}
-				if annotation.Citation.URL != nil {
-					copyURL := *annotation.Citation.URL
-					copyAnnotation.Citation.URL = &copyURL
+				if annotation.URLCitation.URL != nil {
+					copyURL := *annotation.URLCitation.URL
+					copyAnnotation.URLCitation.URL = &copyURL
 				}
-				if annotation.Citation.Sources != nil {
-					copySources := *annotation.Citation.Sources
-					copyAnnotation.Citation.Sources = &copySources
+				if annotation.URLCitation.Sources != nil {
+					copySources := *annotation.URLCitation.Sources
+					copyAnnotation.URLCitation.Sources = &copySources
 				}
-				if annotation.Citation.Type != nil {
-					copyType := *annotation.Citation.Type
-					copyAnnotation.Citation.Type = &copyType
+				if annotation.URLCitation.Type != nil {
+					copyType := *annotation.URLCitation.Type
+					copyAnnotation.URLCitation.Type = &copyType
 				}
 				copy.ChatAssistantMessage.Annotations[i] = copyAnnotation
 			}

@@ -50,6 +50,7 @@ func TestOpenAI(t *testing.T) {
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
+			WebSearchTool:         true,
 			ImageURL:              true,
 			ImageBase64:           true,
 			MultipleImages:        true,

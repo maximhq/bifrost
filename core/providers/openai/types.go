@@ -116,10 +116,11 @@ func (r *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
 				for j, block := range msg.Content.ContentBlocks {
-					needsBlockCopy := block.CacheControl != nil || (block.File != nil && block.File.FileType != nil)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.File != nil && block.File.FileType != nil)
 					if needsBlockCopy {
 						blockCopy := block
 						blockCopy.CacheControl = nil
+						blockCopy.Citations = nil
 						// Strip FileType and FileURL from file block
 						if blockCopy.File != nil && (blockCopy.File.FileType != nil || blockCopy.File.FileURL != nil) {
 							fileCopy := *blockCopy.File
@@ -291,17 +292,33 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 			// Copy only this message
 			messagesCopy[i] = msg
 
-			// Strip CacheControl and FileType from content blocks if needed
+			// Strip CacheControl, FileType, and filter unsupported citation types from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
 				hasContentModification := false
 				for j, block := range msg.Content.ContentBlocks {
-					needsBlockCopy := block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
 						blockCopy.CacheControl = nil
+						blockCopy.Citations = nil
+
+						// Filter out unsupported citation types from annotations
+						if blockCopy.ResponsesOutputMessageContentText != nil && len(blockCopy.ResponsesOutputMessageContentText.Annotations) > 0 {
+							textCopy := *blockCopy.ResponsesOutputMessageContentText
+							filteredAnnotations := filterSupportedAnnotations(textCopy.Annotations)
+							if len(filteredAnnotations) > 0 {
+								textCopy.Annotations = filteredAnnotations
+								blockCopy.ResponsesOutputMessageContentText = &textCopy
+							} else {
+								// If no supported annotations remain, remove the annotations array
+								textCopy.Annotations = nil
+								blockCopy.ResponsesOutputMessageContentText = &textCopy
+							}
+						}
+
 						// Strip FileType from file block
 						if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
@@ -323,7 +340,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 					hasToolModification := false
 					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-						if block.CacheControl != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+						if block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
 						}
@@ -338,6 +355,7 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
+								blockCopy.Citations = nil
 								// Strip FileType from file block
 								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
@@ -367,6 +385,9 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage) bool {
 			if block.CacheControl != nil {
 				return true
 			}
+			if block.Citations != nil {
+				return true
+			}
 			if block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil) {
 				return true
 			}
@@ -382,7 +403,13 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.CacheControl != nil {
 				return true
 			}
+			if block.Citations != nil {
+				return true
+			}
 			if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+				return true
+			}
+			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
 				return true
 			}
 		}
@@ -400,6 +427,35 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 		}
 	}
 	return false
+}
+
+// filterSupportedAnnotations filters out unsupported (non-OpenAI native) citation types
+// OpenAI supports: file_citation, url_citation, container_file_citation, file_path
+func filterSupportedAnnotations(annotations []schemas.ResponsesOutputMessageContentTextAnnotation) []schemas.ResponsesOutputMessageContentTextAnnotation {
+	if len(annotations) == 0 {
+		return annotations
+	}
+
+	supportedAnnotations := make([]schemas.ResponsesOutputMessageContentTextAnnotation, 0, len(annotations))
+	for _, annotation := range annotations {
+		switch annotation.Type {
+		case "url_citation":
+			supportedAnnotations = append(supportedAnnotations, schemas.ResponsesOutputMessageContentTextAnnotation{
+				Type:       "url_citation",
+				URL:        annotation.URL,
+				Title:      annotation.Title,
+				StartIndex: annotation.StartIndex,
+				EndIndex:   annotation.EndIndex,
+			})
+		case "file_citation", "container_file_citation", "file_path":
+			// OpenAI native types - keep them
+			supportedAnnotations = append(supportedAnnotations, annotation)
+		default:
+			continue
+		}
+	}
+
+	return supportedAnnotations
 }
 
 type OpenAIResponsesRequest struct {

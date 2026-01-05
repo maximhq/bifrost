@@ -200,6 +200,11 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 				newTool := tool
 				newTool.ResponsesToolComputerUsePreview.EnableZoom = nil
 				filteredTools = append(filteredTools, newTool)
+			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && tool.ResponsesToolWebSearch.MaxUses != nil {
+				// create new tool and assign it to the filtered tools
+				newTool := tool
+				newTool.ResponsesToolWebSearch.MaxUses = nil
+				filteredTools = append(filteredTools, newTool)
 			} else {
 				filteredTools = append(filteredTools, tool)
 			}

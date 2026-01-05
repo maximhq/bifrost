@@ -416,12 +416,12 @@ type ResponsesMessageContentBlock struct {
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Citations    *Citations    `json:"citations,omitempty"`
 }
 
 type Citations struct {
 	Enabled *bool `json:"enabled,omitempty"`
 }
-
 type ResponsesInputMessageContentBlockImage struct {
 	ImageURL *string `json:"image_url,omitempty"`
 	Detail   *string `json:"detail,omitempty"` // "low" | "high" | "auto"
@@ -459,6 +459,16 @@ type ResponsesOutputMessageContentTextAnnotation struct {
 	Title       *string `json:"title,omitempty"`
 	URL         *string `json:"url,omitempty"`
 	ContainerID *string `json:"container_id,omitempty"`
+
+	// Anthropic specific fields
+	StartCharIndex  *int    `json:"start_char_index,omitempty"`
+	EndCharIndex    *int    `json:"end_char_index,omitempty"`
+	StartPageNumber *int    `json:"start_page_number,omitempty"`
+	EndPageNumber   *int    `json:"end_page_number,omitempty"`
+	StartBlockIndex *int    `json:"start_block_index,omitempty"`
+	EndBlockIndex   *int    `json:"end_block_index,omitempty"`
+	Source          *string `json:"source,omitempty"`
+	EncryptedIndex  *string `json:"encrypted_index,omitempty"`
 }
 
 // ResponsesOutputMessageContentTextLogProb represents log probability information for content.
@@ -502,11 +512,14 @@ type ResponsesToolMessageActionStruct struct {
 }
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
+	if action.ResponsesWebSearchToolCallAction != nil {
+		return Marshal(action.ResponsesWebSearchToolCallAction)
+	}
 	if action.ResponsesComputerToolCallAction != nil {
 		return Marshal(action.ResponsesComputerToolCallAction)
 	}
-	if action.ResponsesWebSearchToolCallAction != nil {
-		return Marshal(action.ResponsesWebSearchToolCallAction)
+	if action.ResponsesComputerToolCallAction != nil {
+		return Marshal(action.ResponsesComputerToolCallAction)
 	}
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return Marshal(action.ResponsesLocalShellToolCallAction)
@@ -518,14 +531,14 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
-	var computerToolCallAction ResponsesComputerToolCallAction
-	if err := Unmarshal(data, &computerToolCallAction); err == nil {
-		action.ResponsesComputerToolCallAction = &computerToolCallAction
-		return nil
-	}
 	var webSearchToolCallAction ResponsesWebSearchToolCallAction
 	if err := Unmarshal(data, &webSearchToolCallAction); err == nil {
 		action.ResponsesWebSearchToolCallAction = &webSearchToolCallAction
+		return nil
+	}
+	var computerToolCallAction ResponsesComputerToolCallAction
+	if err := Unmarshal(data, &computerToolCallAction); err == nil {
+		action.ResponsesComputerToolCallAction = &computerToolCallAction
 		return nil
 	}
 	var localShellToolCallAction ResponsesLocalShellToolCallAction
@@ -658,6 +671,7 @@ type ResponsesWebSearchToolCallAction struct {
 	Type    string                                         `json:"type"`          // "search" | "open_page" | "find"
 	URL     *string                                        `json:"url,omitempty"` // Common URL field (OpenPage, Find)
 	Query   *string                                        `json:"query,omitempty"`
+	Queries []string                                       `json:"queries,omitempty"`
 	Sources []ResponsesWebSearchToolCallActionSearchSource `json:"sources,omitempty"`
 	Pattern *string                                        `json:"pattern,omitempty"`
 }
@@ -666,6 +680,11 @@ type ResponsesWebSearchToolCallAction struct {
 type ResponsesWebSearchToolCallActionSearchSource struct {
 	Type string `json:"type"` // always "url"
 	URL  string `json:"url"`
+
+	// Anthropic specific fields
+	Title            *string `json:"title"`
+	EncryptedContent *string `json:"encrypted_content"`
+	PageAge          *string `json:"page_age"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1218,11 +1237,15 @@ type ResponsesToolWebSearch struct {
 	Filters           *ResponsesToolWebSearchFilters      `json:"filters,omitempty"`             // Filters for the search
 	SearchContextSize *string                             `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The approximate location of the user
+
+	// Anthropic only
+	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search
 }
 
 // ResponsesToolWebSearchFilters represents filters for web search
 type ResponsesToolWebSearchFilters struct {
-	AllowedDomains []string `json:"allowed_domains"` // Allowed domains for the search
+	AllowedDomains []string `json:"allowed_domains"`           // Allowed domains for the search
+	BlockedDomains []string `json:"blocked_domains,omitempty"` // Blocked domains for the search, only used in anthropic
 }
 
 // ResponsesToolWebSearchUserLocation - The approximate location of the user
@@ -1403,7 +1426,9 @@ const (
 	ResponsesStreamResponseTypeFileSearchCallSearching        ResponsesStreamResponseType = "response.file_search_call.searching"
 	ResponsesStreamResponseTypeFileSearchCallResultsAdded     ResponsesStreamResponseType = "response.file_search_call.results.added"
 	ResponsesStreamResponseTypeFileSearchCallResultsCompleted ResponsesStreamResponseType = "response.file_search_call.results.completed"
+	ResponsesStreamResponseTypeWebSearchCallInProgress        ResponsesStreamResponseType = "response.web_search_call.in_progress"
 	ResponsesStreamResponseTypeWebSearchCallSearching         ResponsesStreamResponseType = "response.web_search_call.searching"
+	ResponsesStreamResponseTypeWebSearchCallCompleted         ResponsesStreamResponseType = "response.web_search_call.completed"
 	ResponsesStreamResponseTypeWebSearchCallResultsAdded      ResponsesStreamResponseType = "response.web_search_call.results.added"
 	ResponsesStreamResponseTypeWebSearchCallResultsCompleted  ResponsesStreamResponseType = "response.web_search_call.results.completed"
 

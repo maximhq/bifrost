@@ -201,17 +201,18 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText             AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage            AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeDocument         AnthropicContentBlockType = "document"
-	AnthropicContentBlockTypeToolUse          AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse    AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult       AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchResult  AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse       AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult    AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking         AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeText                AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage               AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument            AnthropicContentBlockType = "document"
+	AnthropicContentBlockTypeToolUse             AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse       AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult          AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchToolResult AnthropicContentBlockType = "web_search_tool_result"
+	AnthropicContentBlockTypeWebSearchResult     AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse          AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult       AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking            AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking    AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -513,6 +514,7 @@ const (
 	AnthropicStreamDeltaTypeInputJSON AnthropicStreamDeltaType = "input_json_delta"
 	AnthropicStreamDeltaTypeThinking  AnthropicStreamDeltaType = "thinking_delta"
 	AnthropicStreamDeltaTypeSignature AnthropicStreamDeltaType = "signature_delta"
+	AnthropicStreamDeltaTypeCitations AnthropicStreamDeltaType = "citations_delta"
 )
 
 // AnthropicStreamDelta represents incremental updates to content blocks during streaming (legacy)
@@ -522,6 +524,7 @@ type AnthropicStreamDelta struct {
 	PartialJSON  *string                  `json:"partial_json,omitempty"`
 	Thinking     *string                  `json:"thinking,omitempty"`
 	Signature    *string                  `json:"signature,omitempty"`
+	Citation     *AnthropicTextCitation   `json:"citation,omitempty"`    // For citations_delta
 	StopReason   *AnthropicStopReason     `json:"stop_reason,omitempty"` // only not present in "message_start" events
 	StopSequence *string                  `json:"stop_sequence"`
 }
