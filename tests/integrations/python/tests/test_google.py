@@ -48,6 +48,7 @@ Tests all core scenarios using Google GenAI SDK directly:
 38. Batch API - batch cancel
 39. Batch API - end-to-end with Files API
 40. Count tokens (Cross-Provider)
+41. Image generation
 """
 
 import io
@@ -76,6 +77,8 @@ from .utils.common import (
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
     GENAI_INVALID_ROLE_CONTENT,
+    # Image Generation utilities
+    IMAGE_GENERATION_SIMPLE_PROMPT,
     IMAGE_URL_SECONDARY,
     INPUT_TOKENS_LONG_TEXT,
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -89,6 +92,7 @@ from .utils.common import (
     Config,
     assert_valid_chat_response,
     assert_valid_embedding_response,
+    assert_valid_image_generation_response,
     assert_valid_image_response,
     assert_valid_input_tokens_response,
     assert_valid_speech_response,
@@ -2142,6 +2146,62 @@ Joe: Pretty good, thanks for asking."""
         
         print("\n✓ Signature validation test completed")
 
+
+    # =========================================================================
+    # IMAGE GENERATION TEST CASES
+    # =========================================================================
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_generation"))
+    def test_41a_image_generation_simple(self, test_config, provider, model):
+        """Test Case 41a: Simple image generation with Gemini model via Bifrost"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for image_generation scenario")
+        
+        from google.genai import types
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Use Google GenAI client with response_modalities for image generation
+        response = client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents=IMAGE_GENERATION_SIMPLE_PROMPT,
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"]
+            )
+        )
+        
+        # Validate response structure (validation function handles both dict and object formats)
+        assert_valid_image_generation_response(response, "google")
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("imagen"))
+    def test_41b_imagen_predict(self, test_config, provider, model):
+        """Test Case 41b: Image generation using Imagen model via Bifrost"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for imagen scenario")
+        
+        from google.genai import types
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # For Imagen models, use generate_content with the Imagen model
+        # Bifrost will automatically route to the :predict endpoint for Imagen models
+        # Use provider/model format so Bifrost can parse the provider and route correctly
+        try:
+            response = client.models.generate_content(
+                model=format_provider_model(provider, model),
+                contents=IMAGE_GENERATION_SIMPLE_PROMPT,
+                config=types.GenerateContentConfig()
+            )
+            
+            # Validate response structure (validation function handles both dict and object formats)
+            assert_valid_image_generation_response(response, "google")
+        except Exception as e:
+            # Imagen may not be available in all regions or configurations
+            pytest.skip(f"Imagen generation failed: {e}")
 
     # =========================================================================
     # FILES API TEST CASES

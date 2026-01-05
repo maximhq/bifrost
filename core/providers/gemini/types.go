@@ -79,10 +79,20 @@ type GeminiGenerationRequest struct {
 	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
+	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is an image generation request
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
+
+	// Imagen-specific fields for :predict endpoint
+	Instances  []ImagenInstance        `json:"instances,omitempty"`
+	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// ImagenInstance represents a single instance in an Imagen request
+type ImagenInstance struct {
+	Prompt string `json:"prompt,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1109,69 +1119,10 @@ type Blob struct {
 	// Optional. Display name of the blob. Used to provide a label or filename to distinguish
 	// blobs. This field is not currently used in the Gemini GenerateContent calls.
 	DisplayName string `json:"displayName,omitempty"`
-	// Required. Raw bytes.
-	Data []byte `json:"data,omitempty"`
+	// Required. Base64-encoded string.
+	Data string `json:"data,omitempty"`
 	// Required. The IANA standard MIME type of the source data.
 	MIMEType string `json:"mimeType,omitempty"`
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling for Blob.
-// This handles the data field which can be sent as a base64-encoded string from the Google GenAI SDK.
-func (b *Blob) UnmarshalJSON(data []byte) error {
-	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
-	}
-
-	var aux BlobAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	b.DisplayName = aux.DisplayName
-	b.MIMEType = aux.MIMEType
-
-	if aux.Data != "" {
-		// Convert URL-safe base64 to standard base64
-		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.Data, "_", "/"), "-", "+")
-		// Add padding if necessary
-		switch len(standardBase64) % 4 {
-		case 2:
-			standardBase64 += "=="
-		case 3:
-			standardBase64 += "="
-		}
-		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 data: %v", err)
-		}
-		b.Data = decoded
-	}
-
-	return nil
-}
-
-// MarshalJSON implements custom JSON marshaling for Blob.
-// This ensures the data field is properly base64-encoded when sending to the Gemini API.
-func (b Blob) MarshalJSON() ([]byte, error) {
-	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
-	}
-
-	aux := BlobAlias{
-		DisplayName: b.DisplayName,
-		MIMEType:    b.MIMEType,
-	}
-
-	if len(b.Data) > 0 {
-		// Use standard base64 encoding to match Google GenAI SDK
-		aux.Data = base64.StdEncoding.EncodeToString(b.Data)
-	}
-
-	return json.Marshal(aux)
 }
 
 // VideoMetadata describes how the video in the Part should be used by the model.
@@ -1749,6 +1700,41 @@ type GeminiCountTokensResponse struct {
 	PromptTokensDetails []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 	// Output only. List of modalities that were processed in the cached content.
 	CacheTokensDetails []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
+}
+
+type GeminiImagenRequest struct {
+	Instances  []ImagenInstance       `json:"instances"`
+	Parameters GeminiImagenParameters `json:"parameters"`
+}
+
+type GeminiImagenParameters struct {
+	SampleCount      *int                 `json:"sampleCount,omitempty"`      // 1 - 4
+	SampleImageSize  *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K", "4K"
+	AspectRatio      *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
+	PersonGeneration *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+	Seed             *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
+	NegativePrompt   *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
+	Language         *string              `json:"language,omitempty"`         // Language code for the prompt
+	EnhancePrompt    *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
+	SafetySettings   []SafetySetting      `json:"safetySettings,omitempty"`   // Safety settings for content filtering
+	OutputOptions    *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+}
+
+type ImagenOutputOptions struct {
+	MimeType           *string `json:"mimeType,omitempty"`           // Output format for the image generation
+	CompressionQuality *int    `json:"compressionQuality,omitempty"` // 0 - 100
+}
+
+// GeminiImagenPrediction represents an image object from imagen
+type GeminiImagenPrediction struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
+	MimeType           string `json:"mimeType,omitempty"`
+	RaiFilteredReason  string `json:"raiFilteredReason,omitempty"`
+}
+
+// GeminiImagenResponse represents the complete response from imagen
+type GeminiImagenResponse struct {
+	Predictions []GeminiImagenPrediction `json:"predictions"` // List of Imagen predictions
 }
 
 var GeminiRequestSuffixPaths = []string{

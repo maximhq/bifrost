@@ -1180,6 +1180,11 @@ func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }
 
+// IsImagenModel checks if the model is an Imagen model.
+func IsImagenModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "imagen")
+}
+
 // List of grok reasoning models
 var grokReasoningModels = []string{
 	"grok-3",

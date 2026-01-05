@@ -24,6 +24,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Embeddings | ✅ | - | `/openai/v1/embeddings` |
 | Files | ✅ | - | `/openai/v1/files` |
 | List Models | ✅ | - | `/openai/v1/models` |
+| Image Generation | ✅ | ✅ | `/openai/v1/images/generations` |
 | Batch | ❌ | ❌ | - |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -360,7 +361,75 @@ Files are stored in Azure and can be used with batch operations.
 
 ---
 
-# 5. List Models
+# 5. Image Generation
+
+Image Generation is supported for OpenAI models on Azure and uses the OpenAI-compatible format.
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Azure Handling | Notes |
+|-----------|---|-------|
+| `model` | Mapped to `deployment_id` | Deployment ID must be configured |
+| `prompt` | Direct pass-through | Prompt text for image generation |
+| All other params | Direct pass-through | Uses OpenAI format |
+
+Azure uses the same conversion as OpenAI (see [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation)):
+
+- **Model & Prompt**: `bifrostReq.Model` → `req.Model` (mapped to deployment), `bifrostReq.Prompt` → `req.Prompt`
+- **Parameters**: All other fields from `bifrostReq` are embedded directly into the request struct via struct embedding
+
+### Configuration
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/dall-e-3",
+    "prompt": "A sunset over the mountains",
+    "size": "1024x1024",
+    "n": 1,
+    "deployment": "my-image-gen-deployment"
+  }' \
+  -H "api-key: YOUR_AZURE_API_KEY"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Azure,
+    Model:    "dall-e-3",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A sunset over the mountains",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        Size:    schemas.Ptr("1024x1024"),
+        N:       schemas.Ptr(1),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Response Conversion
+
+- **Non-streaming**: Azure responses are unmarshaled directly into `BifrostImageGenerationResponse` since Bifrost's response schema is a superset of OpenAI's format. All fields are passed through as-is.
+- **Streaming**: Azure streaming responses use Server-Sent Events (SSE) format with the same event types as OpenAI (see [OpenAI Image Generation Streaming](/providers/supported-providers/openai#streaming)).
+
+## Streaming
+
+Image generation streaming is supported and uses OpenAI's streaming format with Server-Sent Events (SSE).
+
+---
+
+# 6. List Models
 
 ## Request Parameters
 

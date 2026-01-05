@@ -44,6 +44,8 @@ type TestScenarios struct {
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
 	PromptCaching         bool // Prompt caching functionality
 	ListModels            bool // List available models functionality
+	ImageGeneration       bool // Image generation functionality
+	ImageGenerationStream bool // Streaming image generation functionality
 	BatchCreate           bool // Batch API create functionality
 	BatchList             bool // Batch API list functionality
 	BatchRetrieve         bool // Batch API retrieve functionality
@@ -80,6 +82,8 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
 	SkipReason               string                 // Reason to skip certain tests
+	ImageGenerationModel     string                 // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
@@ -224,6 +228,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 						"gpt-4o-backup":          "gpt-4o-3",
 						"claude-opus-4-5":        "claude-opus-4-5",
 						"o1":                     "o1",
+						"gpt-image-1":            "gpt-image-1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
 					ClientID:     bifrost.Ptr(os.Getenv("AZURE_CLIENT_ID")),
@@ -251,7 +256,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001"},
+				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
@@ -670,6 +675,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		PromptCachingModel:   "gpt-4.1",
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
+		ImageGenerationModel: "gpt-image-1",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -689,6 +695,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			SpeechSynthesisStream: true, // OpenAI supports streaming TTS
 			Transcription:         true, // OpenAI supports STT with Whisper
 			TranscriptionStream:   true, // OpenAI supports streaming STT
+			ImageGeneration:       true, // OpenAI supports image generation with DALL-E
+			ImageGenerationStream: true, // OpenAI supports streaming image generation
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
 			ListModels:            true,
@@ -731,6 +739,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			ListModels:            true,
 			BatchCreate:           true, // Anthropic supports batch API
 			BatchList:             true, // Anthropic supports batch API
@@ -765,6 +775,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			ListModels:            true,
 			BatchCreate:           true, // Bedrock supports batch via Model Invocation Jobs (requires S3 config)
 			BatchList:             true, // Bedrock supports listing batch jobs
@@ -798,6 +810,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           false, // Check if supported
 			MultipleImages:        false, // Check if supported
 			CompleteEnd2End:       true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -816,6 +830,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
+		ImageGenerationModel: "gpt-image-1",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -834,6 +849,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         true,  // Supported via whisper-1
 			TranscriptionStream:   false, // Not properly supported yet by Azure
 			Embedding:             true,
+			ImageGeneration:       true,
+			ImageGenerationStream: true,
 			ListModels:            true,
 			BatchCreate:           true, // Azure supports batch API
 			BatchList:             true, // Azure supports batch API
@@ -852,9 +869,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Vertex,
-		ChatModel: "gemini-pro",
-		TextModel: "", // Vertex focuses on chat
+		Provider:             schemas.Vertex,
+		ChatModel:            "gemini-pro",
+		TextModel:            "", // Vertex focuses on chat
+		ImageGenerationModel: "imagen-4.0-generate-001",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -868,6 +886,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -901,6 +921,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         true,  // Supported via voxtral-mini-latest
 			TranscriptionStream:   true,  // Supported via voxtral-mini-latest
 			Embedding:             true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -929,6 +951,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -957,6 +981,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -998,6 +1024,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
 		EmbeddingModel:       "text-embedding-004",
+		ImageGenerationModel: "imagen-4.0-generate-001",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -1016,6 +1043,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         true,
 			TranscriptionStream:   true,
 			Embedding:             true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
 			ListModels:            true,
 			BatchCreate:           true,
 			BatchList:             true,
@@ -1049,6 +1078,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
 			SpeechSynthesis:       false,
 			SpeechSynthesisStream: false,
 			Transcription:         false,
@@ -1067,6 +1098,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
 		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
 		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
+		ImageGenerationModel: "fal-ai/fal-ai/flux-2",
 		Scenarios: TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -1083,6 +1115,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			ImageGeneration:       true,
+			ImageGenerationStream: true,
 			Transcription:         true,
 			TranscriptionStream:   false,
 			SpeechSynthesis:       true,
@@ -1095,9 +1129,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.XAI,
-		ChatModel: "grok-4-0709",
-		TextModel: "", // XAI focuses on chat
+		Provider:             schemas.XAI,
+		ChatModel:            "grok-4-0709",
+		TextModel:            "", // XAI focuses on chat
+		ImageGenerationModel: "grok-2-image",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -1117,6 +1152,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false, // Not supported
 			ListModels:            true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
 		},
 	},
 }

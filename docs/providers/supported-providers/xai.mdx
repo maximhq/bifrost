@@ -21,6 +21,7 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
 | Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
+| Image Generation | ✅ | - | `/v1/images/generations` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -120,7 +121,31 @@ Streaming support available via `stream: true`.
 
 ---
 
-# 4. List Models
+# 4. Image Generation
+
+xAI's image generation uses the OpenAI-compatible format.
+
+**Request Conversion**
+
+xAI uses the same conversion as OpenAI (see [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation)):
+
+- **Model & Prompt**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Prompt` → `req.Prompt`
+- **Parameters**: All fields from `bifrostReq` (`ImageGenerationParameters`) are embedded directly into the request struct via struct embedding
+- **Endpoint**: `/v1/images/generations`
+
+<Note>
+**Note** : `quality`, `size` and `style` parameters are not supported by xAI's API at the moment.
+</Note>
+
+**Response Conversion**
+
+Responses are unmarshaled directly into `BifrostImageGenerationResponse`.
+
+**Streaming**: Image generation streaming is not supported by xAI.
+
+---
+
+# 5. List Models
 
 Lists available xAI models with their capabilities and context lengths.
 

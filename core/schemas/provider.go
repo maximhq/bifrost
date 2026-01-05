@@ -165,29 +165,31 @@ type ProxyConfig struct {
 // A nil *AllowedRequests means "all operations allowed."
 // A non-nil value only allows fields set to true; omitted or false fields are disallowed.
 type AllowedRequests struct {
-	ListModels           bool `json:"list_models"`
-	TextCompletion       bool `json:"text_completion"`
-	TextCompletionStream bool `json:"text_completion_stream"`
-	ChatCompletion       bool `json:"chat_completion"`
-	ChatCompletionStream bool `json:"chat_completion_stream"`
-	Responses            bool `json:"responses"`
-	ResponsesStream      bool `json:"responses_stream"`
-	CountTokens          bool `json:"count_tokens"`
-	Embedding            bool `json:"embedding"`
-	Speech               bool `json:"speech"`
-	SpeechStream         bool `json:"speech_stream"`
-	Transcription        bool `json:"transcription"`
-	TranscriptionStream  bool `json:"transcription_stream"`
-	BatchCreate          bool `json:"batch_create"`
-	BatchList            bool `json:"batch_list"`
-	BatchRetrieve        bool `json:"batch_retrieve"`
-	BatchCancel          bool `json:"batch_cancel"`
-	BatchResults         bool `json:"batch_results"`
-	FileUpload           bool `json:"file_upload"`
-	FileList             bool `json:"file_list"`
-	FileRetrieve         bool `json:"file_retrieve"`
-	FileDelete           bool `json:"file_delete"`
-	FileContent          bool `json:"file_content"`
+	ListModels            bool `json:"list_models"`
+	TextCompletion        bool `json:"text_completion"`
+	TextCompletionStream  bool `json:"text_completion_stream"`
+	ChatCompletion        bool `json:"chat_completion"`
+	ChatCompletionStream  bool `json:"chat_completion_stream"`
+	Responses             bool `json:"responses"`
+	ResponsesStream       bool `json:"responses_stream"`
+	CountTokens           bool `json:"count_tokens"`
+	Embedding             bool `json:"embedding"`
+	Speech                bool `json:"speech"`
+	SpeechStream          bool `json:"speech_stream"`
+	Transcription         bool `json:"transcription"`
+	TranscriptionStream   bool `json:"transcription_stream"`
+	ImageGeneration       bool `json:"image_generation"`
+	ImageGenerationStream bool `json:"image_generation_stream"`
+	BatchCreate           bool `json:"batch_create"`
+	BatchList             bool `json:"batch_list"`
+	BatchRetrieve         bool `json:"batch_retrieve"`
+	BatchCancel           bool `json:"batch_cancel"`
+	BatchResults          bool `json:"batch_results"`
+	FileUpload            bool `json:"file_upload"`
+	FileList              bool `json:"file_list"`
+	FileRetrieve          bool `json:"file_retrieve"`
+	FileDelete            bool `json:"file_delete"`
+	FileContent           bool `json:"file_content"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -223,6 +225,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Transcription
 	case TranscriptionStreamRequest:
 		return ar.TranscriptionStream
+	case ImageGenerationRequest:
+		return ar.ImageGeneration
+	case ImageGenerationStreamRequest:
+		return ar.ImageGenerationStream
 	case BatchCreateRequest:
 		return ar.BatchCreate
 	case BatchListRequest:
@@ -343,6 +349,12 @@ type Provider interface {
 	Transcription(ctx *BifrostContext, key Key, request *BifrostTranscriptionRequest) (*BifrostTranscriptionResponse, *BifrostError)
 	// TranscriptionStream performs a transcription stream request
 	TranscriptionStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, request *BifrostTranscriptionRequest) (chan *BifrostStream, *BifrostError)
+	// ImageGeneration performs an image generation request
+	ImageGeneration(ctx *BifrostContext, key Key, request *BifrostImageGenerationRequest) (
+		*BifrostImageGenerationResponse, *BifrostError)
+	// ImageGenerationStream performs an image generation stream request
+	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+		request *BifrostImageGenerationRequest) (chan *BifrostStream, *BifrostError)
 	// BatchCreate creates a new batch job for asynchronous processing
 	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
 	// BatchList lists batch jobs

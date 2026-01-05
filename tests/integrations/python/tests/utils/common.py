@@ -1814,6 +1814,8 @@ def get_api_key(integration: str) -> str:
         "cohere": "COHERE_API_KEY",
         "vertex": "VERTEX_API_KEY",
         "xai": "XAI_API_KEY",
+        "nebius": "NEBIUS_API_KEY",
+        "huggingface": "HUGGING_FACE_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())
@@ -2615,6 +2617,110 @@ def assert_valid_input_tokens_response(response: Any, library: str):
         assert hasattr(response, "input_tokens"), "Response should have input_tokens attribute"
         assert isinstance(response.input_tokens, int), "input_tokens should be an integer"
         assert response.input_tokens > 0, f"input_tokens should be positive, got {response.input_tokens}"
+
+
+# =========================================================================
+# IMAGE GENERATION UTILITIES
+# =========================================================================
+
+# Test prompts for image generation
+IMAGE_GENERATION_SIMPLE_PROMPT = "A serene mountain landscape at sunset with a calm lake in the foreground"
+
+def assert_valid_image_generation_response(response: Any, library: str = "openai"):
+    """
+    Assert that an image generation response is valid.
+    
+    Args:
+        response: The response object from image generation
+        library: Name of the library/integration used (e.g., 'openai', 'google')
+    """
+    assert response is not None, "Image generation response should not be None"
+    
+    if library == "openai":
+        # OpenAI returns ImagesResponse with data array
+        assert hasattr(response, "data"), "Response should have 'data' attribute"
+        assert isinstance(response.data, list), "data should be a list"
+        assert len(response.data) > 0, "data list should not be empty"
+        
+        # Each item in data should have either url or b64_json
+        for i, image in enumerate(response.data):
+            has_url = hasattr(image, "url") and image.url
+            has_b64 = hasattr(image, "b64_json") and image.b64_json
+            assert has_url or has_b64, f"Image {i} should have either 'url' or 'b64_json'"
+            
+            # If b64_json, validate it looks like base64
+            if has_b64:
+                assert len(image.b64_json) > 100, f"Image {i} b64_json seems too short"
+                
+    elif library == "google":
+        # Google GenAI returns GenerateContentResponse with candidates
+        # Handle both dict (raw HTTP) and object (SDK) responses
+        candidates = None
+        if isinstance(response, dict):
+            candidates = response.get("candidates")
+        elif hasattr(response, "candidates"):
+            candidates = response.candidates
+            
+        if candidates:
+            # Native Gemini image generation
+            assert len(candidates) > 0, "Response should have at least one candidate"
+            candidate = candidates[0]
+            
+            # Get content (handle dict or object)
+            content = candidate.get("content") if isinstance(candidate, dict) else getattr(candidate, "content", None)
+            assert content is not None, "Candidate should have content"
+            
+            # Get parts (handle dict or object)
+            parts = content.get("parts") if isinstance(content, dict) else getattr(content, "parts", None)
+            
+            # Check for inline_data with image
+            found_image = False
+            if parts:
+                for part in parts:
+                    inline_data = part.get("inlineData") if isinstance(part, dict) else getattr(part, "inline_data", None)
+                    if inline_data:
+                        found_image = True
+                        mime_type = inline_data.get("mimeType") if isinstance(inline_data, dict) else getattr(inline_data, "mime_type", "")
+                        data = inline_data.get("data") if isinstance(inline_data, dict) else getattr(inline_data, "data", "")
+                        assert mime_type.startswith("image/"), \
+                            f"Expected image mime type, got {mime_type}"
+                        assert len(data) > 100, "Image data seems too short"
+            assert found_image, "Response should contain at least one image"
+        elif (isinstance(response, dict) and "predictions" in response) or hasattr(response, "predictions"):
+            # Imagen response
+            predictions = response.get("predictions") if isinstance(response, dict) else response.predictions
+            assert len(predictions) > 0, "Response should have at least one prediction"
+            for i, prediction in enumerate(predictions):
+                has_b64 = (prediction.get("bytesBase64Encoded") if isinstance(prediction, dict) 
+                          else (hasattr(prediction, "bytesBase64Encoded") or hasattr(prediction, "bytes_base64_encoded")))
+                assert has_b64, f"Prediction {i} should have base64 encoded bytes"
+        else:
+            # Raw dict response - check for candidates or other formats
+            assert "candidates" in response or "data" in response or "predictions" in response, \
+                f"Response should have 'candidates', 'data' or 'predictions'. Got keys: {list(response.keys()) if isinstance(response, dict) else 'N/A'}"
+    else:
+        # Generic validation
+        assert hasattr(response, "data") or hasattr(response, "predictions"), \
+            "Response should have 'data' or 'predictions' attribute"
+
+
+def assert_image_generation_usage(response: Any, library: str = "openai"):
+    """
+    Assert that image generation usage information is present (if supported).
+    
+    Args:
+        response: The response object from image generation
+        library: Name of the library/integration used
+    """
+    if library == "openai":
+        # OpenAI may include usage for some image models
+        if hasattr(response, "usage") and response.usage:
+            if hasattr(response.usage, "total_tokens"):
+                assert response.usage.total_tokens >= 0, "total_tokens should be non-negative"
+    elif library == "google":
+        # Google may include usage metadata
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            pass  # Usage metadata format varies
 
 
 # =========================================================================

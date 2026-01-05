@@ -1,8 +1,1 @@
-- chore: added case-insensitive helper methods for header and query parameter lookups in HTTPRequest
-- feat: added support for path parameter lookups in HTTPRequest
-- fix: missing request type in error response for anthropic SDK integration
-- feat: add raw request data to bifrost error responses
-- fix: add support for AdditionalProperties structures (both boolean and object types)
-- fix: improve thought signature handling in gemini for function calls
-- fix: enhance citations structure to support multiple citation types
-- fix: anthropic streaming events through integration
+feat: added image generation request and response support

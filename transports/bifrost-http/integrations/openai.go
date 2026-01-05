@@ -59,6 +59,8 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAIEmbeddingRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *openai.OpenAIImageGenerationRequest:
+				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *schemas.BifrostListModelsRequest:
 				r.Provider = schemas.Azure
 			}
@@ -402,6 +404,55 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						}
 					}
 					return "", resp, nil
+				},
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+
+	// Image Generation endpoint
+	for _, path := range []string{
+		"/v1/images/generations",
+		"/images/generations",
+		"/openai/deployments/{deployment-id}/images/generations",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIImageGenerationRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if imageGenReq, ok := req.(*openai.OpenAIImageGenerationRequest); ok {
+					return &schemas.BifrostRequest{
+						ImageGenerationRequest: imageGenReq.ToBifrostImageGenerationRequest(),
+					}, nil
+				}
+				return nil, errors.New("invalid image generation request type")
+			},
+			ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			StreamConfig: &StreamConfig{
+				ImageGenerationStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error) {
+					if resp.ExtraFields.Provider == schemas.OpenAI {
+						if resp.ExtraFields.RawResponse != nil {
+							return string(resp.Type), resp.ExtraFields.RawResponse, nil
+						}
+					}
+					return string(resp.Type), resp, nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err

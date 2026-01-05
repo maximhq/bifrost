@@ -29,6 +29,7 @@ type Accumulator struct {
 	responsesStreamChunkPool     sync.Pool // Pool for reusing ResponsesStreamChunk structs
 	audioStreamChunkPool         sync.Pool // Pool for reusing AudioStreamChunk structs
 	transcriptionStreamChunkPool sync.Pool // Pool for reusing TranscriptionStreamChunk structs
+	imageStreamChunkPool         sync.Pool // Pool for reusing ImageStreamChunk structs
 
 	pricingManager *modelcatalog.ModelCatalog
 
@@ -110,6 +111,26 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	a.responsesStreamChunkPool.Put(chunk)
 }
 
+// getImageStreamChunk gets an image stream chunk from the pool
+func (a *Accumulator) getImageStreamChunk() *ImageStreamChunk {
+	return a.imageStreamChunkPool.Get().(*ImageStreamChunk)
+}
+
+// putImageStreamChunk returns an image stream chunk to the pool
+func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
+	chunk.Timestamp = time.Time{}
+	chunk.Delta = nil
+	chunk.FinishReason = nil
+	chunk.ErrorDetails = nil
+	chunk.ChunkIndex = 0
+	chunk.ImageIndex = 0
+	chunk.Cost = nil
+	chunk.SemanticCacheDebug = nil
+	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
+	a.imageStreamChunkPool.Put(chunk)
+}
+
 // createStreamAccumulator creates a new stream accumulator for a request
 // StartTimestamp is set to current time if not provided via CreateStreamAccumulator
 func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulator {
@@ -118,12 +139,14 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		RequestID:                  requestID,
 		ChatStreamChunks:           make([]*ChatStreamChunk, 0),
 		ResponsesStreamChunks:      make([]*ResponsesStreamChunk, 0),
+		ImageStreamChunks:          make([]*ImageStreamChunk, 0),
 		TranscriptionStreamChunks:  make([]*TranscriptionStreamChunk, 0),
 		AudioStreamChunks:          make([]*AudioStreamChunk, 0),
 		ChatChunksSeen:             make(map[int]struct{}),
 		ResponsesChunksSeen:        make(map[int]struct{}),
 		TranscriptionChunksSeen:    make(map[int]struct{}),
 		AudioChunksSeen:            make(map[int]struct{}),
+		ImageChunksSeen:            make(map[string]struct{}),
 		MaxChatChunkIndex:          -1,
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
@@ -207,7 +230,7 @@ func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *Trans
 	return nil
 }
 
-// AddAudioStreamChunk adds an audio stream chunk to the stream accumulator
+// addAudioStreamChunk adds an audio stream chunk to the stream accumulator
 func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamChunk, isFinalChunk bool) error {
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
@@ -267,6 +290,39 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	return nil
 }
 
+// imageChunkKey creates a composite key for image chunk de-duplication
+func imageChunkKey(imageIndex, chunkIndex int) string {
+	return fmt.Sprintf("%d:%d", imageIndex, chunkIndex)
+}
+
+// addImageStreamChunk adds an image stream chunk to the stream accumulator
+func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamChunk, isFinalChunk bool) error {
+	acc := a.getOrCreateStreamAccumulator(requestID)
+	acc.mu.Lock()
+	defer acc.mu.Unlock()
+
+	if acc.StartTimestamp.IsZero() {
+		acc.StartTimestamp = chunk.Timestamp
+	}
+	if acc.FirstChunkTimestamp.IsZero() {
+		acc.FirstChunkTimestamp = chunk.Timestamp
+	}
+
+	// De-dup check - only add if not seen (handles out-of-order arrival and multiple plugins)
+	chunkKey := imageChunkKey(chunk.ImageIndex, chunk.ChunkIndex)
+	if _, seen := acc.ImageChunksSeen[chunkKey]; !seen {
+		acc.ImageChunksSeen[chunkKey] = struct{}{}
+		acc.ImageStreamChunks = append(acc.ImageStreamChunks, chunk)
+	}
+	// Check if this is the final chunk
+	// Set FinalTimestamp when this is the final chunk, regardless of de-dup status
+	// This handles cases where final chunk arrives after duplicates or is itself duplicated
+	if isFinalChunk {
+		acc.FinalTimestamp = chunk.Timestamp
+	}
+	return nil
+}
+
 // cleanupStreamAccumulator removes the stream accumulator for a request.
 // IMPORTANT: Caller must hold accumulator.mu lock before calling this function
 // to prevent races when returning chunks to pools.
@@ -286,6 +342,9 @@ func (a *Accumulator) cleanupStreamAccumulator(requestID string) {
 		}
 		for _, chunk := range acc.TranscriptionStreamChunks {
 			a.putTranscriptionStreamChunk(chunk)
+		}
+		for _, chunk := range acc.ImageStreamChunks {
+			a.putImageStreamChunk(chunk)
 		}
 		a.streamAccumulators.Delete(requestID)
 	}
@@ -377,6 +436,8 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	isAudioStreaming := requestType == schemas.SpeechStreamRequest || requestType == schemas.TranscriptionStreamRequest
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
+	// Edit images/ Image variation requests will be added here
+	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
@@ -392,6 +453,9 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	} else if isResponsesStreaming {
 		// Handle responses streaming with responses accumulation
 		return a.processResponsesStreamingResponse(ctx, result, bifrostErr)
+	} else if isImageStreaming {
+		// Handle image streaming
+		return a.processImageStreamingResponse(ctx, result, bifrostErr)
 	}
 	return nil, fmt.Errorf("request type missing/invalid for accumulator: %s", requestType)
 }
@@ -405,16 +469,19 @@ func (a *Accumulator) Cleanup() {
 		// Lock before accessing chunk slices
 		accumulator.mu.Lock()
 		for _, chunk := range accumulator.ChatStreamChunks {
-			a.chatStreamChunkPool.Put(chunk)
+			a.putChatStreamChunk(chunk)
 		}
 		for _, chunk := range accumulator.ResponsesStreamChunks {
-			a.responsesStreamChunkPool.Put(chunk)
+			a.putResponsesStreamChunk(chunk)
 		}
 		for _, chunk := range accumulator.TranscriptionStreamChunks {
-			a.transcriptionStreamChunkPool.Put(chunk)
+			a.putTranscriptionStreamChunk(chunk)
 		}
 		for _, chunk := range accumulator.AudioStreamChunks {
-			a.audioStreamChunkPool.Put(chunk)
+			a.putAudioStreamChunk(chunk)
+		}
+		for _, chunk := range accumulator.ImageStreamChunks {
+			a.putImageStreamChunk(chunk)
 		}
 		accumulator.mu.Unlock()
 
@@ -517,6 +584,11 @@ func NewAccumulator(pricingManager *modelcatalog.ModelCatalog, logger schemas.Lo
 				return &TranscriptionStreamChunk{}
 			},
 		},
+		imageStreamChunkPool: sync.Pool{
+			New: func() any {
+				return &ImageStreamChunk{}
+			},
+		},
 		pricingManager: pricingManager,
 		logger:         logger,
 		ttl:            30 * time.Minute,
@@ -531,6 +603,7 @@ func NewAccumulator(pricingManager *modelcatalog.ModelCatalog, logger schemas.Lo
 		a.responsesStreamChunkPool.Put(&ResponsesStreamChunk{})
 		a.audioStreamChunkPool.Put(&AudioStreamChunk{})
 		a.transcriptionStreamChunkPool.Put(&TranscriptionStreamChunk{})
+		a.imageStreamChunkPool.Put(&ImageStreamChunk{})
 	}
 	go a.startAccumulatorMapCleanup()
 	return a

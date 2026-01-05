@@ -22,13 +22,14 @@ Parasail is an **OpenAI-compatible provider** offering high-performance inferenc
 | List Models | ✅ | - | `/v1/models` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream Parasail API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Parasail API. These return `UnsupportedOperationError`.
 </Note>
 
 ---
@@ -87,6 +88,7 @@ Lists available Parasail models with capabilities and context information.
 |---------|--------|
 | Text Completions | Not offered by Parasail API |
 | Embedding | Not offered by Parasail API |
+| Image Generation | Not offered by Parasail API |
 | Speech/TTS | Not offered by Parasail API |
 | Transcription/STT | Not offered by Parasail API |
 | Batch Operations | Not offered by Parasail API |

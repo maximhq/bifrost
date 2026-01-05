@@ -22,6 +22,7 @@ Groq is an **OpenAI-compatible provider** offering the same API interface with i
 | Text Completions | ⚠️ | ⚠️ | Via internal conversion |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
@@ -30,7 +31,7 @@ Groq is an **OpenAI-compatible provider** offering the same API interface with i
 <Note>
 **Text Completions (⚠️)**: Not supported natively by Groq. When enabled via `x-litellm-fallback` context, Bifrost internally converts text completion requests to chat completion requests, processes them through Chat Completions, and converts the response back to text completion format.
 
-**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream Groq API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Groq API. These return `UnsupportedOperationError`.
 </Note>
 
 ---

@@ -5,6 +5,7 @@ package handlers
 import (
 	"bufio"
 	"context"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -136,6 +138,27 @@ var speechParamsKnownFields = map[string]bool{
 	"speed":           true,
 }
 
+var imageParamsKnownFields = map[string]bool{
+	"model":               true,
+	"prompt":              true,
+	"fallbacks":           true,
+	"stream":              true,
+	"n":                   true,
+	"background":          true,
+	"moderation":          true,
+	"partial_images":      true,
+	"size":                true,
+	"quality":             true,
+	"output_compression":  true,
+	"output_format":       true,
+	"style":               true,
+	"response_format":     true,
+	"seed":                true,
+	"negative_prompt":     true,
+	"num_inference_steps": true,
+	"user":                true,
+}
+
 var transcriptionParamsKnownFields = map[string]bool{
 	"model":           true,
 	"file":            true,
@@ -220,6 +243,12 @@ func (cr *ChatRequest) UnmarshalJSON(data []byte) error {
 type ResponsesRequestInput struct {
 	ResponsesRequestInputStr   *string
 	ResponsesRequestInputArray []schemas.ResponsesMessage
+}
+
+type ImageGenerationHTTPRequest struct {
+	*schemas.ImageGenerationInput
+	*schemas.ImageGenerationParameters
+	BifrostParams
 }
 
 // UnmarshalJSON unmarshals the responses request input
@@ -423,6 +452,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
+	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, middlewares...))
 	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, middlewares...))
 
 	// Batch API endpoints
@@ -1228,6 +1258,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}()
 
+		var skipDoneMarker bool
+
 		// Process streaming responses
 		for chunk := range stream {
 			if chunk == nil {
@@ -1236,8 +1268,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
-				(chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest) {
+				chunk.BifrostImageGenerationStreamResponse != nil ||
+				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest)) {
 				includeEventType = true
+			}
+
+			// Image generation streams don't use [DONE] marker
+			if chunk.BifrostImageGenerationStreamResponse != nil {
+				skipDoneMarker = true
 			}
 
 			// Convert response to JSON
@@ -1249,10 +1287,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 
 			// Send as SSE data
 			if includeEventType {
-				// For responses API, use OpenAI-compatible format with event line
+				// For responses and image gen API, use OpenAI-compatible format with event line
 				eventType := ""
 				if chunk.BifrostResponsesStreamResponse != nil {
 					eventType = string(chunk.BifrostResponsesStreamResponse.Type)
+				} else if chunk.BifrostImageGenerationStreamResponse != nil {
+					eventType = string(chunk.BifrostImageGenerationStreamResponse.Type)
 				} else if chunk.BifrostError != nil {
 					eventType = string(schemas.ResponsesStreamResponseTypeError)
 				}
@@ -1283,8 +1323,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}
 
-		if !includeEventType {
-			// Send the [DONE] marker to indicate the end of the stream (only for non-responses APIs)
+		if !includeEventType && !skipDoneMarker {
+			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to write SSE [DONE] marker: %v", err))
 				cancel() // Client disconnected (write error), cancel upstream stream
@@ -1372,6 +1412,93 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 	}
 
 	return nil
+}
+
+// imageGeneration handles POST /v1/images/generations - Processes image generation requests
+func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
+
+	var req ImageGenerationHTTPRequest
+
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Parse model format provider/model
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	if req.ImageGenerationInput == nil || req.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
+		return
+	}
+	// Extract extra params
+	if req.ImageGenerationParameters == nil {
+		req.ImageGenerationParameters = &schemas.ImageGenerationParameters{}
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to extract extra params: %v", err))
+		// Continue without extra params
+	} else {
+		req.ImageGenerationParameters.ExtraParams = extraParams
+	}
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Create Bifrost request
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.ImageGenerationInput,
+		Params:    req.ImageGenerationParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		cancel()
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	// Handle streaming image generation
+	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
+		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
+		return
+	}
+	defer cancel()
+
+	// Execute request
+	resp, bifrostErr := h.client.ImageGenerationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// handleStreamingImageGeneration handles streaming image generation requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageGenerationRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
+	// Use the cancellable context from ConvertToBifrostContext
+	// See router.go for detailed explanation of why we need a cancellable context
+	// Pass the context directly instead of copying to avoid copying lock values
+
+	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return h.client.ImageGenerationStreamRequest(bifrostCtx, req)
+	}
+
+	h.handleStreamingResponse(ctx, getStream, cancel)
 }
 
 // batchCreate handles POST /v1/batches - Create a new batch job

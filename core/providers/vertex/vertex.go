@@ -1417,6 +1417,232 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	if key.VertexKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
+	}
+
+	deployment := provider.getModelDeployment(key, request.Model)
+	// strip google/ prefix if present
+	if after, ok := strings.CutPrefix(deployment, "google/"); ok {
+		deployment = after
+	}
+
+	// Validate model type before processing
+	if !schemas.IsGeminiModel(deployment) && !schemas.IsAllDigitsASCII(deployment) && !schemas.IsImagenModel(deployment) {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image generation is only supported for Gemini and Imagen models, got: %s", deployment), providerName)
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			var requestBody map[string]interface{}
+
+			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+				reqBody := gemini.ToGeminiImageGenerationRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("image generation input is not provided")
+				}
+				reqBody.Model = deployment
+				// Strip unsupported fields for Vertex Gemini
+				stripVertexGeminiUnsupportedFields(reqBody)
+				// Convert struct to map for Vertex API
+				reqBytes, err := sonic.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				}
+				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				}
+			} else if schemas.IsImagenModel(deployment) {
+				reqBody := gemini.ToImagenImageGenerationRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("image generation input is not provided")
+				}
+				// Convert struct to map for Vertex API
+				reqBytes, err := sonic.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				}
+				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				}
+			}
+
+			delete(requestBody, "region")
+			return requestBody, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	projectID := key.VertexKeyConfig.ProjectID
+	if projectID == "" {
+		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
+	}
+
+	region := key.VertexKeyConfig.Region
+	if region == "" {
+		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
+	}
+
+	// Auth query is used for fine-tuned models to pass the API key in the query string
+	authQuery := ""
+	// Determine the URL based on model type
+	var completeURL string
+	if schemas.IsAllDigitsASCII(deployment) {
+		// Custom Fine-tuned models use OpenAPI endpoint
+		projectNumber := key.VertexKeyConfig.ProjectNumber
+		if projectNumber == "" {
+			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
+		}
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/%s:generateContent", region, projectNumber, region, deployment)
+		}
+
+	} else if schemas.IsImagenModel(deployment) {
+		// Imagen models are published models, use publishers/google/models path
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predict", projectID, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, deployment)
+		}
+	} else if schemas.IsGeminiModel(deployment) {
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, deployment)
+		}
+	}
+
+	// Create HTTP request for image generation
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// If auth query is set, add it to the URL
+	// Otherwise, get the oauth2 token and set the Authorization header
+	if authQuery != "" {
+		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+	} else {
+		// Getting oauth2 token
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	req.SetRequestURI(completeURL)
+	req.SetBody(jsonBody)
+
+	// Make the request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		// Remove client from pool for authentication/authorization errors
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+		}
+		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ImageGenerationRequest,
+		}), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
+		geminiResponse := gemini.GenerateContentResponse{}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response, err := geminiResponse.ToBifrostImageGenerationResponse()
+		if err != nil {
+			return nil, err
+		}
+
+		response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
+		}
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+	} else {
+		// Handle Imagen responses
+		imagenResponse := gemini.GeminiImagenResponse{}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := imagenResponse.ToBifrostImageGenerationResponse()
+		response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
+		}
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+	}
+}
+
+// ImageGenerationStream is not supported by the Vertex provider.
+func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
@@ -1426,7 +1652,6 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 			if part.FunctionCall != nil {
 				part.FunctionCall.ID = ""
 			}
-
 			// Remove id from function_response
 			if part.FunctionResponse != nil {
 				part.FunctionResponse.ID = ""

@@ -22,13 +22,14 @@ Cerebras is a **fully OpenAI-compatible provider** leveraging the complete set o
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cerebras API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cerebras API. These return `UnsupportedOperationError`.
 </Note>
 
 ---
@@ -103,6 +104,7 @@ Lists available models from Cerebras with capabilities and context length inform
 | Feature | Reason |
 |---------|--------|
 | Embedding | Not offered by Cerebras API |
+| Image Generation | Not offered by Cerebras API |
 | Speech/TTS | Not offered by Cerebras API |
 | Transcription/STT | Not offered by Cerebras API |
 | Batch Operations | Not offered by Cerebras API |

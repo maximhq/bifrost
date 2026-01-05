@@ -1,9 +1,1 @@
-- feat: improved model validation for provider-prefixed model configurations
-- fix: added support for model lookup in Google GenAI integration by path parameter (fixes using VK provider routing for GenAI integration)
-- fix: missing request type in error response for anthropic SDK integration
-- chore: added case-insensitive helper methods for header and query parameter lookups in HTTPRequest
-- feat: add raw request data to bifrost error responses
-- fix: add support for AdditionalProperties structures (both boolean and object types)
-- fix: improve thought signature handling in gemini for function calls
-- fix: enhance citations structure to support multiple citation types
-- fix: anthropic streaming events through integration
+feat: added http handlers for image generation endpoints

@@ -1,6 +1,6 @@
 ---
 title: "Multimodal Support"
-description: "Process multiple types of content including images, audio, and text with AI models. Bifrost supports vision analysis, speech synthesis, and audio transcription across various providers."
+description: "Process multiple types of content including images, audio, and text with AI models. Bifrost supports vision analysis, image generation, speech synthesis, and audio transcription across various providers."
 icon: "images"
 ---
 
@@ -43,6 +43,55 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
             "content": "I can see a beautiful wooden boardwalk extending through a natural landscape..."
         }
     }]
+}
+```
+
+## Image Generation: Generating Images with AI
+
+Generate images from text prompts using OpenAI-compatible image generation models. 
+
+### Basic Image Generation
+
+Generate an image from a text prompt using `dall-e-3`.
+
+```bash
+curl --location 'http://localhost:8080/v1/images/generations' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/dall-e-3",
+    "prompt": "A futuristic city skyline at sunset with flying cars",
+    "size": "1024x1024",
+    "response_format": "url"
+}'
+```
+
+**Response format:**
+```json
+{
+    "created": 1713833628,
+    "data": [
+        {
+            "url": "https://oaidalleapiprodscus.blob.core.windows.net/...",
+            "revised_prompt": "A futuristic city skyline at sunset featuring advanced architecture and flying vehicles.",
+            "index": 0
+        }
+    ],
+    "background": "opaque",
+    "output_format": "png",
+    "quality": "standard",
+    "size": "1024x1024",
+    "usage": {
+        "input_tokens": 15,
+        "output_tokens": 1,
+        "total_tokens": 16
+    },
+    "extra_fields": {
+        "request_type": "image_generation",
+        "provider": "openai",
+        "model_requested": "dall-e-3",
+        "latency": 15265,
+        "chunk_index": 0
+    }
 }
 ```
 

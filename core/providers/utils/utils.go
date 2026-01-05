@@ -988,6 +988,7 @@ func ProcessAndSendResponse(
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
 	}
 	if processedError != nil {
 		streamResponse.BifrostError = processedError
@@ -1345,6 +1346,7 @@ func GetBifrostResponseForStreamResponse(
 	responsesStreamResponse *schemas.BifrostResponsesStreamResponse,
 	speechStreamResponse *schemas.BifrostSpeechStreamResponse,
 	transcriptionStreamResponse *schemas.BifrostTranscriptionStreamResponse,
+	imageGenerationStreamResponse *schemas.BifrostImageGenerationStreamResponse,
 ) *schemas.BifrostResponse {
 	//TODO add bifrost response pooling here
 	bifrostResponse := &schemas.BifrostResponse{}
@@ -1364,6 +1366,9 @@ func GetBifrostResponseForStreamResponse(
 		return bifrostResponse
 	case transcriptionStreamResponse != nil:
 		bifrostResponse.TranscriptionStreamResponse = transcriptionStreamResponse
+		return bifrostResponse
+	case imageGenerationStreamResponse != nil:
+		bifrostResponse.ImageGenerationStreamResponse = imageGenerationStreamResponse
 		return bifrostResponse
 	}
 	return nil

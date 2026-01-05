@@ -1,7 +1,11 @@
 package huggingface
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,6 +117,7 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	jsonData []byte,
 	key string,
 	isHFInferenceAudioRequest bool,
+	isHFInferenceImageRequest bool,
 	inferenceProvider inferenceProvider,
 	originalModelName string,
 	requiredTask string,
@@ -125,17 +130,31 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 		return nil, 0, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
 	}
 
-	modelName, err := provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
-	if err != nil {
-		return nil, 0, err
+	// For fal-ai, nebius, and together image generation, skip validation (model format is already correct)
+	skipValidation := (inferenceProvider == falAI || inferenceProvider == nebius || inferenceProvider == together) && requestType == schemas.ImageGenerationRequest
+	var modelName string
+	var err *schemas.BifrostError
+	if skipValidation {
+		// Use original model name for validation skip case (though we won't use it for these providers)
+		modelName = originalModelName
+	} else {
+		modelName, err = provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
+		if err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// Update the model field in the JSON body if it's not an audio request
 	updatedJSONData := jsonData
-	if !isHFInferenceAudioRequest && requestType == schemas.EmbeddingRequest {
-		// Parse, update model field, and re-encode for embedding requests
+	// Skip body modification for fal-ai, nebius, and together image generation - they have special requirements
+	skipBodyModification := (inferenceProvider == falAI || inferenceProvider == nebius || inferenceProvider == together) && requestType == schemas.ImageGenerationRequest
+	if !isHFInferenceAudioRequest && !skipBodyModification && (requestType == schemas.EmbeddingRequest || requestType == schemas.ImageGenerationRequest) {
+		// Parse, update model field, and re-encode for embedding and image generation requests
+		// NOTE: For fal-ai image generation, model is in URL path, not in body
+		// For nebius and together image generation, use original model name (already set in ToHuggingFaceImageGenerationRequest)
 		var reqBody map[string]interface{}
 		if err := sonic.Unmarshal(jsonData, &reqBody); err == nil {
+			// For other providers (embeddings, hf-inference images), use validated model ID
 			reqBody["model"] = modelName
 			if newJSON, err := sonic.Marshal(reqBody); err == nil {
 				updatedJSONData = newJSON
@@ -144,22 +163,30 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	}
 
 	// Make the request
-	responseBody, latency, err := provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest)
+	responseBody, latency, err := provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
 	if err != nil {
 		// If we got a 404, clear cache and retry once
 		if err.StatusCode != nil && *err.StatusCode == 404 {
 			provider.modelProviderMappingCache.Delete(originalModelName)
 
-			// Retry: re-fetch the validated model ID
-			modelName, retryErr := provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
-			if retryErr != nil {
-				return nil, 0, retryErr
+			// Retry: re-fetch the validated model ID (skip validation for fal-ai, nebius, and together image generation)
+			if skipValidation {
+				// Keep original model name for validation skip case
+				modelName = originalModelName
+			} else {
+				var retryErr *schemas.BifrostError
+				modelName, retryErr = provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
+				if retryErr != nil {
+					return nil, 0, retryErr
+				}
 			}
 
 			// Update the model field in the JSON body for retry
-			if !isHFInferenceAudioRequest && requestType == schemas.EmbeddingRequest {
+			// Skip body modification for fal-ai, nebius, and together image generation - they have special requirements
+			if !isHFInferenceAudioRequest && !skipBodyModification && (requestType == schemas.EmbeddingRequest || requestType == schemas.ImageGenerationRequest) {
 				var reqBody map[string]interface{}
 				if err := sonic.Unmarshal(jsonData, &reqBody); err == nil {
+					// For other providers (embeddings, hf-inference images), use validated model ID
 					reqBody["model"] = modelName
 					if newJSON, err := sonic.Marshal(reqBody); err == nil {
 						updatedJSONData = newJSON
@@ -167,14 +194,18 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 				}
 			}
 
-			// Rebuild URL with new model name
-			url, urlErr = provider.getInferenceProviderRouteURL(ctx, inferenceProvider, modelName, requestType)
+			// Rebuild URL with new model name (use original for fal-ai, nebius, and together since validation is skipped)
+			retryModelName := originalModelName
+			if !skipValidation {
+				retryModelName = modelName
+			}
+			url, urlErr = provider.getInferenceProviderRouteURL(ctx, inferenceProvider, retryModelName, requestType)
 			if urlErr != nil {
 				return nil, 0, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
 			}
 
 			// Retry the request
-			responseBody, latency, err = provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest)
+			responseBody, latency, err = provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -186,7 +217,7 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	return responseBody, latency, nil
 }
 
-func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, isHFInferenceAudioRequest bool) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, isHFInferenceAudioRequest bool, isHFInferenceImageRequest bool) ([]byte, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -218,22 +249,7 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-
-		var errorResp HuggingFaceResponseError
-
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		if strings.TrimSpace(errorResp.Type) != "" {
-			typeCopy := errorResp.Type
-			bifrostErr.Type = &typeCopy
-		}
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		if strings.TrimSpace(errorResp.Message) != "" {
-			bifrostErr.Error.Message = errorResp.Message
-		}
-
-		return nil, latency, bifrostErr
+		return nil, latency, parseHuggingFaceImageError(resp, nil)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -464,7 +480,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	requestURL := provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest)
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, requestURL, key.Value, false)
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, requestURL, key.Value, false, false)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -632,6 +648,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 		jsonBody,
 		key.Value,
 		false,
+		false,
 		inferenceProvider,
 		modelName,
 		"feature-extraction",
@@ -714,6 +731,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 		ctx,
 		jsonData,
 		key.Value,
+		false,
 		false,
 		inferenceProvider,
 		modelName,
@@ -813,6 +831,7 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 		jsonData,
 		key.Value,
 		isHFInferenceAudioRequest,
+		false,
 		inferenceProvider,
 		modelName,
 		"automatic-speech-recognition",
@@ -870,6 +889,429 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 // TranscriptionStream is not supported by the Hugging Face provider.
 func (provider *HuggingFaceProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+}
+
+func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.HuggingFace, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err
+	}
+
+	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
+	if nameErr != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: nameErr.Error(),
+				Error:   nameErr,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider:    provider.GetProviderKey(),
+				RequestType: schemas.ImageGenerationRequest,
+			},
+		}
+	}
+
+	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			req, err := ToHuggingFaceImageGenerationRequest(request)
+			return req, err
+		},
+		provider.GetProviderKey())
+	if err != nil {
+		return nil, err
+	}
+
+	responseBody, latency, err := provider.completeRequestWithModelAliasCache(
+		ctx,
+		jsonBody,
+		key.Value,
+		false,
+		true,
+		inferenceProvider,
+		modelName,
+		"text-to-image",
+		schemas.ImageGenerationRequest,
+	)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Handle raw request/response for tracking
+	var rawResponse interface{}
+	var rawRequest interface{}
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
+			rawRequest = string(jsonBody)
+		}
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+			rawResponse = string(responseBody)
+		}
+	}
+
+	// Unmarshal response using Nebius converter
+	bifrostResponse, convErr := UnmarshalHuggingFaceImageGenerationResponse(responseBody, request.Model)
+	if convErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr, provider.GetProviderKey())
+	}
+
+	bifrostResponse.Created = time.Now().Unix()
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw response if enabled
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+
+	return bifrostResponse, nil
+}
+
+// ImageGenerationStream handles streaming for fal-ai image generation.
+// Only fal-ai inference provider supports streaming for HuggingFace.
+func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.HuggingFace, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
+		return nil, err
+	}
+
+	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
+	if nameErr != nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: nameErr.Error(),
+				Error:   nameErr,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider:    provider.GetProviderKey(),
+				RequestType: schemas.ImageGenerationStreamRequest,
+			},
+		}
+	}
+
+	// Only fal-ai supports streaming for HuggingFace
+	if inferenceProvider != falAI {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("image generation streaming is only supported for fal-ai inference provider, got: %s", inferenceProvider),
+			nil,
+			provider.GetProviderKey(),
+		)
+	}
+
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+
+	// Build streaming URL - append /stream to the fal-ai route, honoring path overrides
+	defaultPath := fmt.Sprintf("/fal-ai/%s/stream", modelName)
+	streamPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, schemas.ImageGenerationStreamRequest)
+	streamURL := provider.networkConfig.BaseURL + streamPath
+
+	return HandleHuggingFaceImageGenerationStreaming(
+		ctx,
+		provider.client,
+		streamURL,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		provider.logger,
+	)
+}
+
+// HandleHuggingFaceImageGenerationStreaming handles image generation streaming for fal-ai through HuggingFace router.
+func HandleHuggingFaceImageGenerationStreaming(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostImageGenerationRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	postHookRunner schemas.PostHookRunner,
+	logger schemas.Logger,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Set headers
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	if authHeader != nil {
+		maps.Copy(headers, authHeader)
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			return ToHuggingFaceImageStreamRequest(request)
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	// Setup request
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	// Set headers
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	req.SetBody(jsonBody)
+
+	// Capture start time before making the HTTP request for latency calculation
+	startTime := time.Now()
+
+	// Make the request
+	err := client.Do(req, resp)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		return nil, providerUtils.EnrichError(ctx, parseHuggingFaceImageError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ImageGenerationStreamRequest,
+		}), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer close(responseChan)
+
+		if resp.BodyStream() == nil {
+			bifrostErr := providerUtils.NewBifrostOperationError(
+				"Provider returned an empty response",
+				fmt.Errorf("provider returned an empty response"),
+				providerName,
+			)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+			return
+		}
+
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
+
+		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
+		lastChunkTime := startTime
+		chunkIndex := 0
+		var lastB64Data, lastURLData, lastJsonData string
+		var lastIndex int
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+
+			// Skip empty lines
+			if line == "" {
+				continue
+			}
+
+			// Skip event type lines
+			if strings.HasPrefix(line, "event:") {
+				continue
+			}
+
+			// Parse data line
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+
+			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if jsonData == "" {
+				continue
+			}
+
+			// Try to parse as error first
+			var errorResp HuggingFaceResponseError
+			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
+				if errorResp.Error != "" || errorResp.Message != "" {
+					bifrostErr := &schemas.BifrostError{
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: errorResp.Message,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							Provider:       providerName,
+							ModelRequested: request.Model,
+							RequestType:    schemas.ImageGenerationStreamRequest,
+						},
+					}
+					if errorResp.Error != "" {
+						bifrostErr.Error.Message = errorResp.Error
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+					return
+				}
+			}
+
+			// Parse fal-ai response
+			var response HuggingFaceFalAIImageStreamResponse
+			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
+				continue
+			}
+			// Process each image in the response
+			for i, img := range response.Images {
+				// Create a fresh chunk for each image to avoid data race
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type: schemas.ImageGenerationEventTypePartial,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
+
+				if img.URL != "" {
+					chunk.URL = img.URL
+				} else if img.B64JSON != "" {
+					chunk.B64JSON = img.B64JSON
+				}
+				chunk.Index = i
+
+				if chunk.CreatedAt == 0 {
+					chunk.CreatedAt = time.Now().Unix()
+				}
+				// Set raw response if enabled
+				if sendBackRawResponse {
+					chunk.ExtraFields.RawResponse = jsonData
+				}
+
+				lastChunkTime = time.Now()
+				chunkIndex++
+
+				// Track last chunk data for completion
+				lastURLData = img.URL
+				lastB64Data = img.B64JSON
+				lastIndex = i
+				lastJsonData = jsonData
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan)
+			}
+		}
+
+		// Stream closed - send completion chunk
+		if chunkIndex > 0 {
+			finalChunk := &schemas.BifrostImageGenerationStreamResponse{
+				Type:  schemas.ImageGenerationEventTypeCompleted,
+				Index: lastIndex,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ImageGenerationStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex,
+					Latency:        time.Since(startTime).Milliseconds(),
+				},
+			}
+			if lastURLData != "" {
+				finalChunk.URL = lastURLData
+			} else if lastB64Data != "" {
+				finalChunk.B64JSON = lastB64Data
+			}
+			if finalChunk.CreatedAt == 0 {
+				finalChunk.CreatedAt = time.Now().Unix()
+			}
+			if sendBackRawRequest {
+				providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonBody)
+			}
+			if sendBackRawResponse {
+				finalChunk.ExtraFields.RawResponse = lastJsonData
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+				providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, finalChunk),
+				responseChan)
+
+		}
+
+		if err := scanner.Err(); err != nil {
+			bifrostErr := providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("Error reading fal-ai stream: %v", err),
+				err,
+				providerName,
+			)
+			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				RequestType:    schemas.ImageGenerationStreamRequest,
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+		}
+	}()
+
+	return responseChan, nil
 }
 
 // BatchCreate is not supported by the Hugging Face provider.

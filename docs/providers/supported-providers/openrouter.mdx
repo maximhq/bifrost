@@ -22,13 +22,14 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
 
 **Note**: OpenRouter's Responses API is currently in **beta**.
 </Note>
@@ -135,6 +136,7 @@ Lists 100+ models available through OpenRouter, including:
 | Feature | Reason |
 |---------|--------|
 | Embedding | Not offered by OpenRouter API |
+| Image Generation | Not offered by OpenRouter API |
 | Speech/TTS | Not offered by OpenRouter API |
 | Transcription/STT | Not offered by OpenRouter API |
 | Batch Operations | Not offered by OpenRouter API |

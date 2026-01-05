@@ -34,6 +34,7 @@ import LogEntryDetailsView from "./logEntryDetailsView";
 import LogResponsesMessageView from "./logResponsesMessageView";
 import SpeechView from "./speechView";
 import TranscriptionView from "./transcriptionView";
+import ImageView from "./imageView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -534,6 +535,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						transcriptionInput={log.transcription_input}
 						transcriptionOutput={log.transcription_output}
 						isStreaming={log.stream}
+					/>
+				)}
+
+				{(log.image_generation_input || log.image_generation_output) && (
+					<ImageView
+						imageInput={log.image_generation_input}
+						imageOutput={log.image_generation_output}
 					/>
 				)}
 

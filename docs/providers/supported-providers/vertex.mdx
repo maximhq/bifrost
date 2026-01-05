@@ -22,6 +22,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Chat Completions | ✅ | ✅ | `/generate` |
 | Responses API | ✅ | ✅ | `/messages` |
 | Embeddings | ✅ | - | `/embeddings` |
+| Image Generation | ✅ | - | `/generateContent` or `/predict` (Imagen) |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -310,7 +311,95 @@ Embeddings response includes vectors and truncation information:
 
 ---
 
-# 4. List Models
+# 4. Image Generation
+
+Image Generation is supported for Gemini and Imagen on Vertex AI. The provider automatically routes to the appropriate format based on the model type.
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | Vertex Handling | Notes |
+|-----------|---|-------|
+| `model` | Mapped to deployment/model identifier | Model type detected automatically |
+| `prompt` | Model-specific conversion | Converted per underlying provider (Gemini/Imagen) |
+| All other params | Model-specific conversion | Converted per underlying provider |
+
+### Model Type Detection
+
+Vertex automatically detects the model type and uses the appropriate conversion:
+
+1. **Gemini Models**: Uses Gemini format (same as [Gemini Image Generation](/providers/supported-providers/gemini#8-image-generation))
+2. **Imagen Models**: Uses Imagen format (detected via `IsImagenModel()`)
+
+### Configuration
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/imagen-4.0-generate-001",
+    "prompt": "A sunset over the mountains",
+    "size": "1024x1024",
+    "n": 2,
+    "project_id": "my-gcp-project",
+    "region": "us-central1"
+  }' \
+  -H "X-Goog-Authorization: Bearer {token}"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Vertex,
+    Model:    "imagen-4.0-generate-001",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A sunset over the mountains",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        Size: schemas.Ptr("1024x1024"),
+        N:    schemas.Ptr(2),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Request Conversion
+
+Vertex converts requests based on model type:
+
+- **Gemini Models**: Uses `gemini.ToGeminiImageGenerationRequest()` - same conversion as standard Gemini (see [Gemini Image Generation](/providers/supported-providers/gemini#8-image-generation))
+- **Imagen Models**: Uses `gemini.ToImagenImageGenerationRequest()` - Imagen-specific format with size/aspect ratio conversion
+
+All request bodies are converted to `map[string]interface{}` and the `region` field is removed before sending to Vertex API.
+
+## Response Conversion
+
+- **Gemini Models**: Responses converted using `GenerateContentResponse.ToBifrostImageGenerationResponse()` - same as standard Gemini
+- **Imagen Models**: Responses converted using `GeminiImagenResponse.ToBifrostImageGenerationResponse()` - Imagen-specific format
+
+## Endpoint Selection
+
+The provider automatically selects the endpoint based on model type:
+
+- **Fine-tuned models**: `/v1beta1/projects/{projectNumber}/locations/{region}/endpoints/{deployment}:generateContent`
+- **Imagen models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:predict`
+- **Gemini models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:generateContent`
+
+## Streaming
+
+Image generation streaming is not supported by Vertex AI.
+
+---
+
+# 5. List Models
 
 ## Request Parameters
 

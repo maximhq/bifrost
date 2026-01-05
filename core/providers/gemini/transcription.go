@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -8,7 +9,7 @@ import (
 )
 
 // ToBifrostTranscriptionRequest converts a GeminiGenerationRequest to a BifrostTranscriptionRequest
-func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas.BifrostTranscriptionRequest {
+func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() (*schemas.BifrostTranscriptionRequest, error) {
 	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
 
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
@@ -33,7 +34,11 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 
 			// Extract audio data from inline data
 			if part.InlineData != nil && strings.HasPrefix(strings.ToLower(part.InlineData.MIMEType), "audio/") {
-				audioData = append(audioData, part.InlineData.Data...)
+				decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decode base64 audio data: %v", err)
+				}
+				audioData = append(audioData, decodedData...)
 				if audioMimeType == "" {
 					audioMimeType = part.InlineData.MIMEType
 				}
@@ -95,7 +100,7 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 		bifrostReq.Params.ExtraParams["labels"] = request.Labels
 	}
 
-	return bifrostReq
+	return bifrostReq, nil
 }
 
 func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *GeminiGenerationRequest {
@@ -154,7 +159,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		parts = append(parts, &Part{
 			InlineData: &Blob{
 				MIMEType: utils.DetectAudioMimeType(bifrostReq.Input.File),
-				Data:     bifrostReq.Input.File,
+				Data:     encodeBytesToBase64String(bifrostReq.Input.File),
 			},
 		})
 	}

@@ -110,6 +110,8 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		hashInput.Params = req.EmbeddingRequest.Params
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		hashInput.Params = req.TranscriptionRequest.Params
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		hashInput.Params = req.ImageGenerationRequest.Params
 	}
 
 	// Marshal to JSON for consistent hashing
@@ -164,6 +166,10 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
+			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
 	}
 
@@ -322,6 +328,16 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		// Skip semantic caching for transcription requests
 		return "", "", fmt.Errorf("transcription requests are not supported for semantic caching")
 
+	case req.ImageGenerationRequest != nil:
+		if req.ImageGenerationRequest.Input == nil || req.ImageGenerationRequest.Input.Prompt == "" {
+			return "", "", fmt.Errorf("no prompt found in image generation request")
+		}
+		metadataHash, err := getMetadataHash(metadata)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
+		}
+		return normalizeText(req.ImageGenerationRequest.Input.Prompt), metadataHash, nil
+
 	default:
 		return "", "", fmt.Errorf("unsupported input type for semantic caching")
 	}
@@ -469,6 +485,8 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 		return req.EmbeddingRequest.Input
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		return req.ImageGenerationRequest.Input
 	default:
 		return nil
 	}
@@ -605,6 +623,13 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 		return copiedInput
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Input != nil {
+			return &schemas.ImageGenerationInput{
+				Prompt: normalizeText(req.ImageGenerationRequest.Input.Prompt),
+			}
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -899,6 +924,60 @@ func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.T
 	if params.Format != nil {
 		metadata["file_format"] = *params.Format
 	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
+// extractImageGenerationParametersToMetadata extracts Image Generation parameters into metadata map
+func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas.ImageGenerationParameters, metadata map[string]interface{}) {
+	if params == nil {
+		return
+	}
+
+	if params.N != nil {
+		metadata["n"] = *params.N
+	}
+	if params.Background != nil {
+		metadata["background"] = *params.Background
+	}
+	if params.Moderation != nil {
+		metadata["moderation"] = *params.Moderation
+	}
+	if params.PartialImages != nil {
+		metadata["partial_images"] = *params.PartialImages
+	}
+	if params.Size != nil {
+		metadata["size"] = *params.Size
+	}
+	if params.Quality != nil {
+		metadata["quality"] = *params.Quality
+	}
+	if params.OutputCompression != nil {
+		metadata["output_compression"] = *params.OutputCompression
+	}
+	if params.OutputFormat != nil {
+		metadata["output_format"] = *params.OutputFormat
+	}
+	if params.Style != nil {
+		metadata["style"] = *params.Style
+	}
+	if params.ResponseFormat != nil {
+		metadata["response_format"] = *params.ResponseFormat
+	}
+	if params.Seed != nil {
+		metadata["seed"] = *params.Seed
+	}
+	if params.NegativePrompt != nil {
+		metadata["negative_prompt"] = *params.NegativePrompt
+	}
+	if params.NumInferenceSteps != nil {
+		metadata["num_inference_steps"] = *params.NumInferenceSteps
+	}
+	if params.User != nil {
+		metadata["user"] = *params.User
+	}
+
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

@@ -22,10 +22,32 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Responses API | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Speech (TTS) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
+| Image Generation | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
 | Embeddings | ✅ | - | `/v1beta/models/{model}:embedContent` |
 | Files | ✅ | - | `/upload/storage/v1beta/files` |
 | Batch | ✅ | - | `/v1beta/batchJobs` |
 | List Models | ✅ | - | `/v1beta/models` |
+
+---
+
+## Authentication
+
+Gemini supports API key authentication in addition to OAuth2 Bearer token authentication. The implementation conditionally uses the appropriate method based on the endpoint type.
+
+### API Key Authentication
+
+API key authentication is supported via two methods:
+
+1. **Header Method** (standard Gemini endpoints):
+   - Format: `x-goog-api-key: YOUR_API_KEY` header
+   - Used for: Standard Gemini endpoints (e.g., `/v1beta/models/{model}:generateContent`)
+
+2. **Query Parameter Method** (Imagen and custom endpoints):
+   - Format: `?key=YOUR_API_KEY` appended to request URLs
+   - Used for: Imagen models and custom endpoints
+   - Example: `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=YOUR_API_KEY`
+
+Bifrost automatically selects the appropriate authentication method based on the endpoint type.
 
 ---
 
@@ -485,7 +507,129 @@ Supports file upload for batch processing and multimodal requests.
 
 ---
 
-# 8. List Models
+# 8. Image Generation
+
+Gemini supports two image generation formats depending on the model:
+
+1. **Standard Gemini Format**: Uses the `/v1beta/models/{model}:generateContent` endpoint
+2. **Imagen Format**: Uses the `/v1beta/models/{model}:predict` endpoint for Imagen models (detected automatically)
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `prompt` | Text description of the image to generate |
+| `n` | Number of images (mapped to `sampleCount` for Imagen, `candidateCount` for Gemini) |
+| `size` | Image size in WxH format (e.g., `"1024x1024"`). Converted to Imagen's `imageSize` + `aspectRatio` format |
+| `output_format` | Output format: `"png"`, `"jpeg"`, `"webp"`. Converted to MIME type for Imagen |
+| `seed` | Seed for reproducible generation (passed directly) |
+| `negative_prompt` | Negative prompt (passed directly) |
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway) for Gemini-specific fields:
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `personGeneration` | string | Person generation setting (Imagen only) |
+| `language` | string | Language code (Imagen only) |
+| `enhancePrompt` | bool | Prompt enhancement flag (Imagen only) |
+| `safetySettings` / `safety_settings` | string/array | Safety settings configuration |
+| `cachedContent` / `cached_content` | string | Cached content ID |
+| `labels` | object | Custom labels map |
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini/imagen-4.0-generate-001",
+    "prompt": "A sunset over the mountains",
+    "size": "1024x1024",
+    "n": 2,
+    "output_format": "png"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Gemini,
+    Model:    "imagen-4.0-generate-001",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A sunset over the mountains",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        Size:         schemas.Ptr("1024x1024"),
+        N:            schemas.Ptr(2),
+        OutputFormat: schemas.Ptr("png"),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Request Conversion
+
+### Standard Gemini Format
+
+- **Model mapping**: `bifrostReq.Model` → `req.Model`, with `bifrostReq.Input.Prompt` → `req.Contents[0].Parts[0].Text`
+- **Response modality**: Set by bifrost internally to `generationConfig.responseModalities = ["IMAGE"]` to indicate image generation
+- **Image count**: Specify number of images via `n` → `generationConfig.candidateCount`
+- **Extra parameters**: Include `safetySettings`, `cachedContent`, and `labels` mapped directly
+
+### Imagen Format
+
+- **Prompt**: `bifrostReq.Prompt` → `req.Instances[0].Prompt`
+- **Number of Images**: `n` → `req.Parameters.SampleCount`
+- **Size Conversion**: `size` (WxH format) converted to:
+  - `imageSize`: `"1k"` (if dimensions ≤ 1024), `"2k"` (if dimensions ≤ 2048). Sizes larger than `"2k"` are not supported by Imagen models.
+  - `aspectRatio`: `"1:1"`, `"3:4"`, `"4:3"`, `"9:16"`, or `"16:9"` (based on width/height ratio)
+- **Output Format**: `output_format` (`"png"`, `"jpeg"`) → `parameters.outputOptions.mimeType` (`"image/png"`, `"image/jpeg"`)
+- **Seed & Negative Prompt**: Passed directly to `seed` and `parameters.negativePrompt`
+- **Extra Parameters**: `personGeneration`, `language`, `enhancePrompt`, `safetySettings` mapped to parameters
+
+## Response Conversion
+
+### Standard Gemini Format
+
+- **Image Data**: Extracts `InlineData` from `candidates[0].content.parts[]` with MIME type `image/*`
+- **Output Format**: Converts MIME type (`image/png`, `image/jpeg`, `image/webp`) → file extension (`png`, `jpeg`, `webp`)
+- **Usage**: Extracts token usage from `usageMetadata`
+- **Multiple Images**: Each image part becomes an `ImageData` entry in the response array
+
+### Imagen Format
+
+- **Image Data**: Each `prediction` in `response.predictions[]` → `ImageData` with `b64_json` from `bytesBase64Encoded`
+- **Output Format**: Converts `prediction.mimeType` → file extension for `outputFormat` field (Imagen doesnt support webp)
+- **Index**: Each prediction gets an `index` (0, 1, 2, ...) in the response array
+
+## Size Conversion
+
+For Imagen format, size is converted between formats:
+
+**Supported Image Sizes**: `"1k"` (≤1024), `"2k"` (≤2048)
+
+**Supported Aspect Ratios**: `"1:1"`, `"3:4"`, `"4:3"`, `"9:16"`, `"16:9"`
+
+## Endpoint Selection
+
+The provider automatically selects the endpoint based on model name:
+- **Imagen models** (detected via `schemas.IsImagenModel()`): Uses `/v1beta/models/{model}:predict` endpoint
+- **Other models**: Uses `/v1beta/models/{model}:generateContent` endpoint with image response modality
+
+## Streaming
+
+Image generation streaming is not supported by Gemini.
+
+---
+
+# 9. List Models
 
 **Request**: GET `/v1beta/models?pageSize={limit}&pageToken={token}` (no body)
 

@@ -126,6 +126,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAdd200kTokenPricingColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddImagePricingColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddUseForBatchAPIColumnAndS3BucketsConfig(ctx, db); err != nil {
 		return err
 	}
@@ -2058,6 +2061,56 @@ func migrationAdd200kTokenPricingColumns(ctx context.Context, db *gorm.DB) error
 				"output_cost_per_token_above_200k_tokens",
 				"cache_creation_input_token_cost_above_200k_tokens",
 				"cache_read_input_token_cost_above_200k_tokens",
+			}
+
+			for _, field := range columns {
+				if migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddImagePricingColumns adds the image generation pricing columns to the model_pricing table
+func migrationAddImagePricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_image_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_image_token",
+				"output_cost_per_image_token",
+				"input_cost_per_image",
+				"output_cost_per_image",
+				"cache_read_input_image_token_cost",
+			}
+
+			for _, field := range columns {
+				if !migrator.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := migrator.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_image_token",
+				"output_cost_per_image_token",
+				"input_cost_per_image",
+				"output_cost_per_image",
+				"cache_read_input_image_token_cost",
 			}
 
 			for _, field := range columns {

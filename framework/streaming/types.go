@@ -14,31 +14,33 @@ const (
 	StreamTypeText          StreamType = "text.completion"
 	StreamTypeChat          StreamType = "chat.completion"
 	StreamTypeAudio         StreamType = "audio.speech"
+	StreamTypeImage         StreamType = "image.generation"
 	StreamTypeTranscription StreamType = "audio.transcription"
 	StreamTypeResponses     StreamType = "responses"
 )
 
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
-	RequestID           string
-	Model               string
-	Status              string
-	Stream              bool
-	Latency             int64 // in milliseconds
-	TimeToFirstToken    int64 // Time to first token in milliseconds (streaming only)
-	StartTimestamp      time.Time
-	EndTimestamp        time.Time
-	OutputMessage       *schemas.ChatMessage
-	OutputMessages      []schemas.ResponsesMessage // For responses API
-	ToolCalls           []schemas.ChatAssistantMessageToolCall
-	ErrorDetails        *schemas.BifrostError
-	TokenUsage          *schemas.BifrostLLMUsage
-	CacheDebug          *schemas.BifrostCacheDebug
-	Cost                *float64
-	AudioOutput         *schemas.BifrostSpeechResponse
-	TranscriptionOutput *schemas.BifrostTranscriptionResponse
-	FinishReason        *string
-	RawResponse         *string
+	RequestID             string
+	Model                 string
+	Status                string
+	Stream                bool
+	Latency               int64 // in milliseconds
+	TimeToFirstToken      int64 // Time to first token in milliseconds (streaming only)
+	StartTimestamp        time.Time
+	EndTimestamp          time.Time
+	OutputMessage         *schemas.ChatMessage
+	OutputMessages        []schemas.ResponsesMessage // For responses API
+	ToolCalls             []schemas.ChatAssistantMessageToolCall
+	ErrorDetails          *schemas.BifrostError
+	TokenUsage            *schemas.BifrostLLMUsage
+	CacheDebug            *schemas.BifrostCacheDebug
+	Cost                  *float64
+	AudioOutput           *schemas.BifrostSpeechResponse
+	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
+	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
+	FinishReason          *string
+	RawResponse           *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -93,6 +95,20 @@ type ResponsesStreamChunk struct {
 	RawResponse        *string
 }
 
+// ImageStreamChunk represents a single image streaming chunk
+type ImageStreamChunk struct {
+	Timestamp          time.Time                                     // When chunk was received
+	Delta              *schemas.BifrostImageGenerationStreamResponse // The actual stream response
+	FinishReason       *string                                       // If this is the final chunk
+	ChunkIndex         int                                           // Index of the chunk in the stream
+	ImageIndex         int                                           // Index of the image in the stream
+	ErrorDetails       *schemas.BifrostError                         // Error if any
+	Cost               *float64                                      // Cost in dollars from pricing plugin
+	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
+	TokenUsage         *schemas.ImageUsage                           // Token usage if available
+	RawResponse        *string                                       // Raw response if available
+}
+
 // StreamAccumulator manages accumulation of streaming chunks
 type StreamAccumulator struct {
 	RequestID                 string
@@ -102,12 +118,14 @@ type StreamAccumulator struct {
 	ResponsesStreamChunks     []*ResponsesStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk
 	AudioStreamChunks         []*AudioStreamChunk
+	ImageStreamChunks         []*ImageStreamChunk
 
 	// De-dup maps to prevent chunk loss on out-of-order arrival
 	ChatChunksSeen          map[int]struct{}
 	ResponsesChunksSeen     map[int]struct{}
 	TranscriptionChunksSeen map[int]struct{}
 	AudioChunksSeen         map[int]struct{}
+	ImageChunksSeen         map[string]struct{} // Composite key: "imageIndex:chunkIndex" to scope de-dup per image
 
 	// Track highest ChunkIndex for metadata extraction (TokenUsage, Cost, FinishReason)
 	MaxChatChunkIndex          int
@@ -124,6 +142,8 @@ type StreamAccumulator struct {
 
 // getLastChatChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
 	if sa.MaxChatChunkIndex < 0 {
 		return nil
 	}
@@ -137,6 +157,8 @@ func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
 
 // getLastResponsesChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
 	if sa.MaxResponsesChunkIndex < 0 {
 		return nil
 	}
@@ -150,6 +172,8 @@ func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
 
 // getLastTranscriptionChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastTranscriptionChunk() *TranscriptionStreamChunk {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
 	if sa.MaxTranscriptionChunkIndex < 0 {
 		return nil
 	}
@@ -163,6 +187,8 @@ func (sa *StreamAccumulator) getLastTranscriptionChunk() *TranscriptionStreamChu
 
 // getLastAudioChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastAudioChunk() *AudioStreamChunk {
+	sa.mu.Lock()
+	defer sa.mu.Unlock()
 	if sa.MaxAudioChunkIndex < 0 {
 		return nil
 	}
@@ -331,12 +357,40 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
+	case StreamTypeImage:
+		imageResp := p.Data.ImageGenerationOutput
+		if imageResp == nil {
+			imageResp = &schemas.BifrostImageGenerationResponse{
+				Data: make([]schemas.ImageData, 0),
+			}
+			if p.RequestID != "" {
+				imageResp.ID = p.RequestID
+			}
+			if p.Model != "" {
+				imageResp.Model = p.Model
+			}
+		}
+		// Ensure Data is never nil to serialize as [] instead of null
+		if imageResp.Data == nil {
+			imageResp.Data = make([]schemas.ImageData, 0)
+		}
+		resp.ImageGenerationResponse = imageResp
+		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.ImageGenerationRequest,
+			Provider:       p.Provider,
+			ModelRequested: p.Model,
+			Latency:        p.Data.Latency,
+		}
+		if p.RawRequest != nil {
+			resp.ImageGenerationResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 		if p.Data.RawResponse != nil {
-			resp.TranscriptionResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+			resp.ImageGenerationResponse.ExtraFields.RawResponse = *p.Data.RawResponse
 		}
 		if p.Data.CacheDebug != nil {
-			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+			resp.ImageGenerationResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+
 	}
 	return resp
 }

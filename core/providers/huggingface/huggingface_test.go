@@ -31,7 +31,8 @@ func TestHuggingface(t *testing.T) {
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.HuggingFace, Model: "fal-ai/ResembleAI/chatterbox"},
 		},
-		ReasoningModel: "groq/openai/gpt-oss-120b",
+		ReasoningModel:       "groq/openai/gpt-oss-120b",
+		ImageGenerationModel: "fal-ai/fal-ai/flux/dev",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -65,6 +66,8 @@ func TestHuggingface(t *testing.T) {
 			FileDelete:            false,
 			FileContent:           false,
 			FileBatchInput:        false,
+			ImageGeneration:       true,
+			ImageGenerationStream: true,
 		},
 	}
 

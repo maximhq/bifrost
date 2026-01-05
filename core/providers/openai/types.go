@@ -646,3 +646,41 @@ type OpenAIListModelsResponse struct {
 	Object string        `json:"object"`
 	Data   []OpenAIModel `json:"data"`
 }
+
+// OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
+type OpenAIImageGenerationRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+
+	schemas.ImageGenerationParameters
+
+	Stream    *bool    `json:"stream,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
+// OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
+type OpenAIImageStreamResponse struct {
+	Type              schemas.ImageGenerationEventType `json:"type,omitempty"`
+	SequenceNumber    *int                             `json:"sequence_number,omitempty"`
+	B64JSON           *string                          `json:"b64_json,omitempty"`
+	PartialImageIndex *int                             `json:"partial_image_index,omitempty"`
+	CreatedAt         int64                            `json:"created_at,omitempty"`
+	Size              string                           `json:"size,omitempty"`
+	Quality           string                           `json:"quality,omitempty"`
+	Background        string                           `json:"background,omitempty"`
+	OutputFormat      string                           `json:"output_format,omitempty"`
+	RawSSE            string                           `json:"-"` // For internal use
+	Usage             *schemas.ImageUsage              `json:"usage,omitempty"`
+	// Error fields for error events
+	Error *struct {
+		Code    *string `json:"code,omitempty"`
+		Message string  `json:"message,omitempty"`
+		Param   *string `json:"param,omitempty"`
+		Type    *string `json:"type,omitempty"`
+	} `json:"error,omitempty"`
+}

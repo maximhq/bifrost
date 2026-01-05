@@ -1653,7 +1653,7 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 	// Handle images
 	if isImageMimeType(mimeType) {
 		// Convert to base64 data URL
-		imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(blob.Data))
+		imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, blob.Data)
 		return &schemas.ResponsesMessageContentBlock{
 			Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 			ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
@@ -1664,7 +1664,7 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 
 	// Handle audio
 	if strings.HasPrefix(mimeType, "audio/") {
-		encodedData := base64.StdEncoding.EncodeToString(blob.Data)
+		encodedData := blob.Data
 		format := mimeType
 		if strings.HasPrefix(mimeType, "audio/") {
 			format = mimeType[6:] // Remove "audio/" prefix
@@ -1690,7 +1690,7 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 		filename = "unnamed_file"
 	}
 
-	fileDataURL := base64.StdEncoding.EncodeToString(blob.Data)
+	fileDataURL := blob.Data
 	if !strings.HasPrefix(fileDataURL, "data:") {
 		fileDataURL = fmt.Sprintf("data:%s;base64,%s", mimeTypeForFile, fileDataURL)
 	}
@@ -1930,7 +1930,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 						ResponsesInputMessageContentBlockImage: func() *schemas.ResponsesInputMessageContentBlockImage {
 							if strings.HasPrefix(part.InlineData.MIMEType, "image/") {
 								return &schemas.ResponsesInputMessageContentBlockImage{
-									ImageURL: schemas.Ptr("data:" + part.InlineData.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(part.InlineData.Data)),
+									ImageURL: schemas.Ptr("data:" + part.InlineData.MIMEType + ";base64," + part.InlineData.Data),
 								}
 							}
 							return nil
@@ -1941,7 +1941,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 								format := strings.TrimPrefix(part.InlineData.MIMEType, "audio/")
 								return &schemas.ResponsesInputMessageContentBlockAudio{
 									Format: format,
-									Data:   base64.StdEncoding.EncodeToString(part.InlineData.Data),
+									Data:   part.InlineData.Data,
 								}
 							}
 							return nil
@@ -2532,7 +2532,7 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 				return &Part{
 					InlineData: &Blob{
 						MIMEType: mimeType,
-						Data:     decodedData,
+						Data:     encodeBytesToBase64String(decodedData),
 					},
 				}, nil
 			} else {
@@ -2565,7 +2565,7 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 						}
 						return "audio/" + f
 					}(),
-					Data: decodedData,
+					Data: encodeBytesToBase64String(decodedData),
 				},
 			}, nil
 		}
@@ -2608,7 +2608,7 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 					part := &Part{
 						InlineData: &Blob{
 							MIMEType: mimeType,
-							Data:     dataBytes,
+							Data:     encodeBytesToBase64String(dataBytes),
 						},
 					}
 

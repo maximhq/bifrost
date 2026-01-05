@@ -261,6 +261,10 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 		if bifrostReq.TranscriptionRequest != nil {
 			bifrostReq.TranscriptionRequest.Fallbacks = parsedFallbacks
 		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if bifrostReq.ImageGenerationRequest != nil {
+			bifrostReq.ImageGenerationRequest.Fallbacks = parsedFallbacks
+		}
 	}
 
 	return nil

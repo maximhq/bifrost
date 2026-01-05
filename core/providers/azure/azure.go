@@ -1118,7 +1118,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 						response.ExtraFields.RawResponse = audioData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				}
 			}
 
@@ -1154,7 +1154,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			}
 
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil, nil), responseChan)
 		}
 
 		// Note: We don't call ReleaseStreamingResponse here because the scanner has already
@@ -1208,6 +1208,108 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 // TranscriptionStream is not supported by the Azure provider.
 func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+}
+
+// ImageGeneration performs an Image Generation request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
+func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
+	}
+
+	response, err := openai.HandleOpenAIImageGenerationRequest(
+		ctx,
+		provider.client,
+		fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
+
+	return response, err
+}
+
+// ImageGenerationStream performs a streaming image generation request to Azure's API.
+// It formats the request, sends it to Azure, and processes the response.
+// Returns a channel of BifrostStream objects or an error if the request fails.
+func (provider *AzureProvider) ImageGenerationStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	//
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
+	}
+
+	postResponseConverter := func(resp *schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse {
+		if resp != nil {
+			resp.ExtraFields.ModelDeployment = deployment
+		}
+		return resp
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
+
+	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Azure is OpenAI-compatible
+	return openai.HandleOpenAIImageGenerationStreaming(
+		ctx,
+		provider.client,
+		url,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		postResponseConverter,
+		provider.logger,
+	)
+
 }
 
 // validateKeyConfig validates the key configuration.

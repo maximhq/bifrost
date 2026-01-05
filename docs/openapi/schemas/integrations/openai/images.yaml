@@ -1,0 +1,133 @@
+# OpenAI Integration - Image Generation Schemas
+
+OpenAIImageGenerationRequest:
+  type: object
+  required:
+    - model
+    - prompt
+  properties:
+    model:
+      type: string
+      description: Model identifier
+    prompt:
+      type: string
+      description: Text prompt to generate image
+    n:
+      type: integer
+      minimum: 1
+      maximum: 10
+      default: 1
+      description: Number of images to generate
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1792x1024"
+        - "1024x1792"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the generated image
+    quality:
+      type: string
+      enum:
+        - "standard"
+        - "hd"
+      description: Quality of the generated image
+    style:
+      type: string
+      enum:
+        - "natural"
+        - "vivid"
+      description: Style of the generated image
+    response_format:
+      type: string
+      enum:
+        - "url"
+        - "b64_json"
+      default: "url"
+      description: Format of the response. This parameter is not supported for streaming requests.
+    user:
+      type: string
+      description: User identifier for tracking
+    stream:
+      type: boolean
+      default: false
+      description: |
+        Whether to stream the response. When true, images are sent as base64 chunks via SSE.
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models to try if primary model fails
+
+OpenAIImageGenerationResponse:
+  type: object
+  properties:
+    created:
+      type: integer
+      format: int64
+      description: Unix timestamp when the image was created
+    data:
+      type: array
+      items:
+        $ref: '../../../schemas/inference/images.yaml#/ImageData'
+      description: Array of generated images
+    background:
+      type: string
+      description: Background type used
+    output_format:
+      type: string
+      description: Output format used
+    quality:
+      type: string
+      description: Quality setting used
+    size:
+      type: string
+      description: Size setting used
+    usage:
+      $ref: '../../../schemas/inference/images.yaml#/ImageUsage'
+
+OpenAIImageStreamResponse:
+  type: object
+  description: |
+    Streaming response chunk for image generation (OpenAI format).
+    Sent via Server-Sent Events (SSE) when stream=true.
+  properties:
+    type:
+      type: string
+      enum:
+        - "image_generation.partial_image"
+        - "image_generation.completed"
+        - "error"
+      description: Type of stream event
+    b64_json:
+      type: string
+      description: Base64-encoded chunk of image data
+    partial_image_index:
+      type: integer
+      description: Index of the partial image chunk
+    sequence_number:
+      type: integer
+      description: Ordering index for stream chunks
+    created_at:
+      type: integer
+      format: int64
+      description: Timestamp when chunk was created
+    size:
+      type: string
+      description: Size of the generated image
+    quality:
+      type: string
+      description: Quality setting used
+    background:
+      type: string
+      description: Background type used
+    output_format:
+      type: string
+      description: Output format used
+    usage:
+      $ref: '../../../schemas/inference/images.yaml#/ImageUsage'
+      description: Token usage (usually in final chunk)

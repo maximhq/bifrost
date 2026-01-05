@@ -139,6 +139,38 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface BifrostImageGenerationData {
+	url?: string;
+	b64_json?: string;
+	revised_prompt?: string;
+	index?: number;
+}
+
+export interface ImageMessageData {
+	url?: string;
+	b64_json?: string;
+	prompt?: string;
+	revised_prompt?: string;
+	index?: number;
+	output_format?: string; 
+}
+
+export interface BifrostImageGenerationOutput {
+	id?: string;
+	created?: number;
+	model?: string;
+	data: BifrostImageGenerationData[];
+	background?: string;
+	output_format?: string;
+	quality?: string;
+	size?: string;
+	usage?: {
+		input_tokens?: number;
+		total_tokens?: number;
+		output_tokens?: number;
+	};
+}
+
 // Tool related types
 export interface FunctionParameters {
 	type: string;
@@ -272,9 +304,11 @@ export interface LogEntry {
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
+	image_generation_output?: BifrostImageGenerationOutput;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
+	image_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
 	tools?: Tool[];

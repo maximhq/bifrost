@@ -1,13 +1,17 @@
 package gemini
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher
@@ -847,7 +851,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 								parts = append(parts, &Part{
 									InlineData: &Blob{
 										MIMEType: mimeType,
-										Data:     dataBytes,
+										Data:     encodeBytesToBase64String(dataBytes),
 									},
 								})
 							}
@@ -879,7 +883,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 									parts = append(parts, &Part{
 										InlineData: &Blob{
 											MIMEType: mimeType,
-											Data:     decodedData,
+											Data:     encodeBytesToBase64String(decodedData),
 										},
 									})
 								}
@@ -916,7 +920,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						parts = append(parts, &Part{
 							InlineData: &Blob{
 								MIMEType: mimeType,
-								Data:     decodedData,
+								Data:     encodeBytesToBase64String(decodedData),
 							},
 						})
 					}
@@ -1429,4 +1433,82 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	}
 
 	return ""
+}
+
+// decodeBase64StringToBytes decodes a base64-encoded string into raw bytes.
+//
+// It accepts both standard base64 and URL-safe base64 encodings.
+// URL-safe characters ('_' and '-') are converted back to their
+// standard equivalents ('/' and '+') before decoding.
+//
+// If the input is missing padding, decodeBase64StringToBytes appends the required
+// '=' characters so that the length becomes a multiple of 4.
+// Returns an error if the base64 input is invalid.
+func decodeBase64StringToBytes(b64 string) ([]byte, error) {
+	// Convert URL-safe base64 to standard base64
+	standardBase64 := strings.ReplaceAll(strings.ReplaceAll(b64, "_", "/"), "-", "+")
+
+	// Add padding if necessary to make length a multiple of 4
+	switch len(standardBase64) % 4 {
+	case 2:
+		standardBase64 += "=="
+	case 3:
+		standardBase64 += "="
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// encodeBytesToBase64String encodes raw bytes into a standard base64 string.
+//
+// It uses standard base64 encoding (not URL-safe) to ensure compatibility
+// with APIs and SDKs that expect RFC 4648 base64 format.
+//
+// If the input byte slice is empty or nil, an empty string is returned.
+func encodeBytesToBase64String(bytes []byte) string {
+	var base64str string
+
+	if len(bytes) > 0 {
+		// Use standard base64 encoding to match external SDK expectations
+		base64str = base64.StdEncoding.EncodeToString(bytes)
+	}
+
+	return base64str
+}
+
+// downloadImageFromURL downloads an image from a URL and returns the base64-encoded string
+func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) {
+	client := fasthttp.Client{
+		ReadTimeout: time.Second * 30,
+	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(imageURL)
+	req.Header.SetMethod(http.MethodGet)
+
+	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, &client, req, resp)
+	if bifrostErr != nil {
+		return "", fmt.Errorf("failed to download image: %v", bifrostErr)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return "", fmt.Errorf("failed to download image: status=%d", resp.StatusCode())
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return "", fmt.Errorf("failed to read image data: %w", err)
+	}
+
+	// Copy the body to avoid use-after-free
+	imageCopy := append([]byte(nil), body...)
+
+	return encodeBytesToBase64String(imageCopy), nil
 }

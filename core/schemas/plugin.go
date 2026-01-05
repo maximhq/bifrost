@@ -52,7 +52,7 @@ func (req *HTTPRequest) CaseInsensitivePathParamLookup(key string) string {
 	return caseInsensitiveLookup(req.PathParams, key)
 }
 
-// caseInsensitiveLookup looks up a key in a case-insensitive manner for a map of strings
+// CaseInsensitiveLookup looks up a key in a case-insensitive manner for a map of strings
 // Returns the value if found, otherwise an empty string
 func caseInsensitiveLookup(data map[string]string, key string) string {
 	if data == nil || key == "" {

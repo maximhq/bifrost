@@ -23,12 +23,13 @@ Anthropic has significant structural differences from OpenAI's format. Bifrost p
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/messages/batches` |
 | List Models | ✅ | - | `/v1/models` |
 
 <Note>
-**Unsupported Operations** (❌): Embeddings, Speech, and Transcriptions are not supported by the upstream Anthropic API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Embeddings, Speech, Transcriptions, and Image Generation are not supported by the upstream Anthropic API. These return `UnsupportedOperationError`.
 </Note>
 
 ---

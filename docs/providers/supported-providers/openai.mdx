@@ -18,6 +18,7 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
+| Image Generation | ✅ | ✅ | `/v1/images/generations` |
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 | List Models | ✅ | - | `/v1/models` |
@@ -214,7 +215,64 @@ Requests use **multipart/form-data**, not JSON.
 
 ---
 
-# 7. Files API
+# 7. Image Generation
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (e.g., `dall-e-3`) |
+| `prompt` | string | ✅ | Text description of the image to generate |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `size` | string | ❌ | Image size: `"256x256"`, `"512x512"`, `"1024x1024"`, `"1792x1024"`, `"1024x1792"`, `"1536x1024"`, `"1024x1536"`, `"auto"` |
+| `quality` | string | ❌ | Image quality: `"auto"`, `"high"`, `"medium"`, `"low"`, `"hd"`, `"standard"` |
+| `style` | string | ❌ | Image style: `"natural"`, `"vivid"` |
+| `response_format` | string | ❌ | Response format: `"url"` or `"b64_json"` |
+| `background` | string | ❌ | Background: `"transparent"`, `"opaque"`, `"auto"` |
+| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` |
+| `output_compression` | int | ❌ | Compression level (0-100%) |
+| `partial_images` | int | ❌ | Number of partial images (0-3) |
+| `moderation` | string | ❌ | Moderation level: `"low"`, `"auto"` |
+| `user` | string | ❌ | User identifier |
+
+---
+
+**Request Conversion**
+
+OpenAI is the baseline schema for image generation. Parameters are passed through with minimal conversion:
+
+- **Model & Prompt**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Prompt` → `req.Prompt`
+- **Parameters**: All fields from `bifrostReq` (`ImageGenerationParameters`) are embedded directly into the OpenAI request struct via struct embedding. No field mapping or transformation is performed.
+- **Streaming**: When streaming is requested, `stream: true` is set in the request body.
+
+**Response Conversion**
+
+- **Non-streaming**: OpenAI responses are unmarshaled directly into `BifrostImageGenerationResponse` since Bifrost's response schema is a superset of OpenAI's format. All fields are passed through as-is.
+- **Streaming**: OpenAI streaming responses use Server-Sent Events (SSE) format with event types:
+  - `image_generation.partial_image`: Intermediate image chunks with `b64_json` data
+  - `image_generation.completed`: Final chunk for each image with usage information
+  - `error`: Error events
+  
+  Each chunk includes:
+  - `type`: Event type
+  - `sequence_number`: Sequence number of the chunk
+  - `partial_image_index`: Image index (0-N) for partial images
+  - `b64_json`: Base64-encoded image data (pointer, may be nil)
+  - `usage`: Token usage (only in completed events)
+  - `created_at`, `size`, `quality`, `background`, `output_format`: Additional metadata
+  
+  Bifrost converts these to `BifrostImageGenerationStreamResponse` chunks with:
+  - Per-image `chunkIndex` tracking for proper ordering within each image
+  - `Index` field indicating which image (0-N) the chunk belongs to
+  - `PartialImageIndex` set only for partial images (not completed events)
+  - Usage information attached to completed chunks
+  - Latency tracking per chunk
+
+**Endpoint**: `/v1/images/generations`
+
+---
+
+# 8. Files API
 
 ## Upload
 
@@ -250,7 +308,7 @@ Operations:
 
 ---
 
-# 8. Batch API
+# 9. Batch API
 
 ## Create Batch
 
@@ -289,7 +347,7 @@ Operations:
 
 ---
 
-# 9. List Models
+# 10. List Models
 
 GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost responses are prefixed with `openai/` (e.g., `openai/gpt-4o`). Results are aggregated from all configured API keys. No request body or parameters required.
 

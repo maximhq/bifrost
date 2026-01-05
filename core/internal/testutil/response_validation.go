@@ -234,6 +234,44 @@ func ValidateSpeechResponse(t *testing.T, response *schemas.BifrostSpeechRespons
 	logValidationResults(t, result, scenarioName)
 
 	return result
+
+}
+
+// ValidateImageGenerationResponse performs comprehensive validation for image generation responses
+func ValidateImageGenerationResponse(t *testing.T, response *schemas.BifrostImageGenerationResponse, err *schemas.BifrostError, expectations ResponseExpectations, scenarioName string) ValidationResult {
+	result := ValidationResult{
+		Passed:           true,
+		Errors:           make([]string, 0),
+		Warnings:         make([]string, 0),
+		MetricsCollected: make(map[string]interface{}),
+	}
+
+	// If there's an error when we expected success, that's a failure
+	if err != nil {
+		result.Passed = false
+		parsed := ParseBifrostError(err)
+		result.Errors = append(result.Errors, fmt.Sprintf("Got error when expecting success: %s", FormatErrorConcise(parsed)))
+		LogError(t, err, scenarioName)
+		return result
+	}
+
+	// If response is nil when we expected success, that's a failure
+	if response == nil {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Response is nil")
+		return result
+	}
+
+	// Validate image generation specific fields
+	validateImageGenerationFields(t, response, expectations, &result)
+
+	// Collect metrics
+	collectImageGenerationResponseMetrics(response, &result)
+
+	// Log results
+	logValidationResults(t, result, scenarioName)
+
+	return result
 }
 
 // ValidateTranscriptionResponse performs comprehensive validation for transcription responses
@@ -1049,6 +1087,110 @@ func collectTranscriptionResponseMetrics(response *schemas.BifrostTranscriptionR
 	result.MetricsCollected["text_length"] = len(response.Text)
 	result.MetricsCollected["has_language"] = response.Language != nil
 	result.MetricsCollected["has_duration"] = response.Duration != nil
+}
+
+// =============================================================================
+// VALIDATION HELPER FUNCTIONS - IMAGE GENERATION RESPONSE
+// =============================================================================
+
+func validateImageGenerationFields(t *testing.T, response *schemas.BifrostImageGenerationResponse, expectations ResponseExpectations, result *ValidationResult) {
+	// Check if response has image data
+	if len(response.Data) == 0 {
+		result.Passed = false
+		result.Errors = append(result.Errors, "Image generation response missing image data")
+		return
+	}
+
+	// Check each image has either B64JSON or URL
+	for i, img := range response.Data {
+		if img.B64JSON == "" && img.URL == "" {
+			result.Passed = false
+			result.Errors = append(result.Errors, fmt.Sprintf("Image %d has no B64JSON or URL", i))
+		}
+	}
+
+	// Check minimum number of images if specified
+	if expectations.ProviderSpecific != nil {
+		if minImagesVal, ok := expectations.ProviderSpecific["min_images"]; ok {
+			var minImages int
+			var parseErr error
+
+			// Use type switch to handle various numeric types
+			switch v := minImagesVal.(type) {
+			case int:
+				minImages = v
+			case int64:
+				minImages = int(v)
+			case float64:
+				minImages = int(v)
+			case json.Number:
+				var parsed int64
+				parsed, parseErr = v.Int64()
+				if parseErr == nil {
+					minImages = int(parsed)
+				}
+			default:
+				parseErr = fmt.Errorf("unsupported type for min_images: %T", v)
+			}
+
+			if parseErr != nil {
+				// Skip the min_images check if conversion fails, but record a warning
+				result.Errors = append(result.Errors,
+					fmt.Sprintf("Failed to parse min_images: %v (skipping check)", parseErr))
+			} else {
+				actualCount := len(response.Data)
+				result.MetricsCollected["image_count"] = actualCount
+				if actualCount < minImages {
+					result.Passed = false
+					result.Errors = append(result.Errors,
+						fmt.Sprintf("Too few images: got %d, expected at least %d", actualCount, minImages))
+				}
+			}
+		}
+	}
+
+	// Validate image size if specified
+	if expectedSize, ok := expectations.ProviderSpecific["expected_size"].(string); ok {
+		result.MetricsCollected["expected_size"] = expectedSize
+		// Note: Actual size validation would require downloading/decoding images
+	}
+
+	// Check latency field
+	if expectations.ShouldHaveLatency {
+		if response.ExtraFields.Latency <= 0 {
+			result.Passed = false
+			result.Errors = append(result.Errors, "Expected latency information but not present or invalid")
+		} else {
+			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
+		}
+	}
+
+	result.MetricsCollected["image_generation_validation"] = "completed"
+}
+
+func collectImageGenerationResponseMetrics(response *schemas.BifrostImageGenerationResponse, result *ValidationResult) {
+	result.MetricsCollected["image_count"] = len(response.Data)
+	result.MetricsCollected["has_images"] = len(response.Data) > 0
+
+	// Count images with URLs vs B64JSON
+	urlCount := 0
+	b64Count := 0
+	for _, img := range response.Data {
+		if img.URL != "" {
+			urlCount++
+		}
+		if img.B64JSON != "" {
+			b64Count++
+		}
+	}
+	result.MetricsCollected["images_with_url"] = urlCount
+	result.MetricsCollected["images_with_b64"] = b64Count
+
+	if response.Usage != nil {
+		result.MetricsCollected["input_tokens"] = response.Usage.InputTokens
+		result.MetricsCollected["output_tokens"] = response.Usage.OutputTokens
+		result.MetricsCollected["total_tokens"] = response.Usage.TotalTokens
+	}
 }
 
 // =============================================================================

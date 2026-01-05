@@ -219,6 +219,22 @@ func TranscriptionExpectations(minTextLength int) ResponseExpectations {
 	}
 }
 
+func ImageGenerationExpectations(minImages int, expectedSize string) ResponseExpectations {
+	return ResponseExpectations{
+		ShouldHaveContent:    false, // Image responses don't have text content
+		ExpectedChoiceCount:  0,     // Image responses don't have choices
+		ShouldHaveUsageStats: true,
+		ShouldHaveTimestamps: true,
+		ShouldHaveModel:      true,
+		ShouldHaveLatency:    true, // Global expectation: latency should always be present
+		ProviderSpecific: map[string]interface{}{
+			"min_images":    minImages,
+			"expected_size": expectedSize,
+			"response_type": "image_generation",
+		},
+	}
+}
+
 // ReasoningExpectations returns validation expectations for reasoning scenarios
 func ReasoningExpectations() ResponseExpectations {
 	return ResponseExpectations{
@@ -342,6 +358,14 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 		expectations := BasicChatExpectations()
 		expectations.ShouldContainKeywords = []string{"unique", "specific", "capability"}
 		return expectations
+
+	case "ImageGeneration":
+		if minImages, ok := customParams["min_images"].(int); ok {
+			if expectedSize, ok := customParams["expected_size"].(string); ok {
+				return ImageGenerationExpectations(minImages, expectedSize)
+			}
+		}
+		return ImageGenerationExpectations(1, "1024x1024")
 
 	default:
 		// Default to basic chat expectations

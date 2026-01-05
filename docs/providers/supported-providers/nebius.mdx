@@ -21,6 +21,7 @@ Nebius is an **OpenAI-compatible provider** offering comprehensive API support. 
 | Responses API | ✅ | ✅ | `/v1/chat/completions` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
+| Image Generation | ✅ | - | `/v1/images/generations` |
 | List Models | ✅ | - | `/v1/models` |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
@@ -131,7 +132,64 @@ Response returns embedding vectors with usage information.
 
 ---
 
-# 5. List Models
+# 5. Image Generation
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `prompt` | string | ✅ | Text description of the image to generate |
+| `size` | string | ❌ | Image size in WxH format (e.g., `"1024x1024"`). Converted to separate `width` and `height` integers |
+| `output_format` | string | ❌ | Output format: `"png"`, `"jpeg"`, `"webp"`. Note: `"jpeg"` is converted to `"jpg"` |
+| `response_format` | string | ❌ | Response format: `"url"` or `"b64_json"` |
+| `seed` | int | ❌ | Seed for reproducible generation  |
+| `negative_prompt` | string | ❌ | Negative prompt |
+| `num_inference_steps` | int | ❌ | Number of inference steps |
+| `extra_params` | object | ❌ | Nebius-specific parameters (see below) |
+
+**Extra Parameters (via `extra_params`)**
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `guidance_scale` | int | Guidance scale (0-100) |
+| `ai_project_id` | string | Nebius project ID (added as query parameter) |
+
+---
+
+**Request Conversion**
+
+- **Model & Prompt**: `bifrostReq.Model` → `req.Model` (pointer), `bifrostReq.Input.Prompt` → `req.Prompt` (pointer)
+- **Size Conversion**: `params.size` (WxH format like `"1024x1024"`) is split into:
+  - `width`: Integer extracted from first part (e.g., `1024`)
+  - `height`: Integer extracted from second part (e.g., `1024`)
+- **Output Format**: 
+  - `params.output_format` → `req.ResponseExtension`
+  - Special conversion: `"jpeg"` → `"jpg"` (Nebius uses `"jpg"` not `"jpeg"`)
+- **Response Format**: `params.response_format` → `req.ResponseFormat` (passed directly: `"url"` or `"b64_json"`)
+- **Seed & Negative Prompt**: `params.seed` → `req.Seed`, `params.negative_prompt` → `req.NegativePrompt` (passed directly)
+- **Num Inference Steps**: `params.num_inference_steps` → `req.NumInferenceSteps` (passed directly)
+- **Extra Parameters**:
+  - `guidance_scale` → `req.GuidanceScale` (int pointer)
+  - `ai_project_id` → Added as query parameter `?ai_project_id={value}` to the request URL
+
+**Response Conversion**
+
+- **Image Data**: Each item in `response.data[]` → `ImageData` with:
+  - `url`: From `data[].url`
+  - `b64_json`: From `data[].b64_json`
+  - `revised_prompt`: From `data[].revised_prompt`
+  - `index`: Sequential index (0, 1, 2, ...)
+- **ID**: `response.id` → `response.ID`
+- **Provider**: Set to `nebius` in `ExtraFields`
+
+**Endpoint**: `/v1/images/generations`
+
+**Streaming**: Image generation streaming is not supported by Nebius.
+
+---
+
+# 6. List Models
 
 Lists available Nebius models with capabilities and context lengths.
 

@@ -33,17 +33,18 @@ const (
 
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
-	Status              string
-	TokenUsage          *schemas.BifrostLLMUsage
-	Cost                *float64 // Cost in dollars from pricing plugin
-	ChatOutput          *schemas.ChatMessage
-	ResponsesOutput     []schemas.ResponsesMessage
-	EmbeddingOutput     []schemas.EmbeddingData
-	ErrorDetails        *schemas.BifrostError
-	SpeechOutput        *schemas.BifrostSpeechResponse        // For non-streaming speech responses
-	TranscriptionOutput *schemas.BifrostTranscriptionResponse // For non-streaming transcription responses
-	RawRequest          interface{}
-	RawResponse         interface{}
+	Status                string
+	TokenUsage            *schemas.BifrostLLMUsage
+	Cost                  *float64 // Cost in dollars from pricing plugin
+	ChatOutput            *schemas.ChatMessage
+	ResponsesOutput       []schemas.ResponsesMessage
+	EmbeddingOutput       []schemas.EmbeddingData
+	ErrorDetails          *schemas.BifrostError
+	SpeechOutput          *schemas.BifrostSpeechResponse          // For non-streaming speech responses
+	TranscriptionOutput   *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
+	ImageGenerationOutput *schemas.BifrostImageGenerationResponse // For non-streaming image generation responses
+	RawRequest            interface{}
+	RawResponse           interface{}
 }
 
 // RecalculateCostResult represents summary stats from a cost backfill operation
@@ -83,6 +84,7 @@ type InitialLogData struct {
 	Params                interface{}
 	SpeechInput           *schemas.SpeechInput
 	TranscriptionInput    *schemas.TranscriptionInput
+	ImageGenerationInput  *schemas.ImageGenerationInput
 	Tools                 []schemas.ChatTool
 }
 
@@ -265,6 +267,9 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
 			initialData.TranscriptionInput = req.TranscriptionRequest.Input
+		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+			initialData.Params = req.ImageGenerationRequest.Params
+			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
 		}
 	}
 
@@ -528,6 +533,15 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					} else {
 						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 					}
+				case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+					usage = &schemas.BifrostLLMUsage{}
+					usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
+					usage.CompletionTokens = result.ImageGenerationResponse.Usage.OutputTokens
+					if result.ImageGenerationResponse.Usage.TotalTokens > 0 {
+						usage.TotalTokens = result.ImageGenerationResponse.Usage.TotalTokens
+					} else {
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					}
 				}
 				updateData.TokenUsage = usage
 				// Extract raw response
@@ -574,6 +588,9 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					}
 					if result.TranscriptionResponse != nil {
 						updateData.TranscriptionOutput = result.TranscriptionResponse
+					}
+					if result.ImageGenerationResponse != nil {
+						updateData.ImageGenerationOutput = result.ImageGenerationResponse
 					}
 				}
 			}

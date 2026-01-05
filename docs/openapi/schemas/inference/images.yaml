@@ -1,0 +1,288 @@
+# Image Generation Schemas
+
+ImageGenerationRequest:
+  allOf:
+    - type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+          description: Model identifier in format `provider/model`
+        prompt:
+          type: string
+          description: Text prompt to generate image
+        n:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Number of images to generate
+        size:
+          type: string
+          enum:
+            - "256x256"
+            - "512x512"
+            - "1024x1024"
+            - "1792x1024"
+            - "1024x1792"
+            - "1536x1024"
+            - "1024x1536"
+            - "auto"
+          description: Size of the generated image
+        quality:
+          type: string
+          enum:
+            - "auto"
+            - "high"
+            - "medium"
+            - "low"
+            - "hd"
+            - "standard"
+          description: Quality of the generated image
+        style:
+          type: string
+          enum:
+            - "natural"
+            - "vivid"
+          description: Style of the generated image
+        response_format:
+          type: string
+          enum:
+            - "url"
+            - "b64_json"
+          default: "url"
+          description: |
+            Format of the response.
+        background:
+          type: string
+          enum:
+            - "transparent"
+            - "opaque"
+            - "auto"
+          description: Background type for the image
+        moderation:
+          type: string
+          enum:
+            - "low"
+            - "auto"
+          description: Content moderation level
+        partial_images:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Number of partial images to generate
+        output_compression:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Compression level (0-100%)
+        output_format:
+          type: string
+          enum:
+            - "png"
+            - "webp"
+            - "jpeg"
+          description: Output image format
+        user:
+          type: string
+          description: User identifier for tracking
+        seed:
+          type: integer
+          description: Seed for reproducible image generation
+        negative_prompt:
+          type: string
+          description: Negative prompt to guide what to avoid in generation
+        num_inference_steps:
+          type: integer
+          description: Number of inference steps for generation
+        stream:
+          type: boolean
+          default: false
+          description: |
+            Whether to stream the response. When true, images are sent as SSE.
+            When streaming, providers may return base64 chunks (`b64_json`) and/or URLs (`url`) depending on provider and configuration.
+        fallbacks:
+          type: array
+          items:
+            $ref: './common.yaml#/Fallback'
+          description: Fallback models to try if primary model fails
+
+ImageGenerationResponse:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the generation request
+    created:
+      type: integer
+      format: int64
+      description: Unix timestamp when the image was created
+    model:
+      type: string
+      description: Model used for generation
+    data:
+      type: array
+      items:
+        $ref: '#/ImageData'
+      description: Array of generated images
+    background:
+      type: string
+      description: Background type for the image
+    output_format:
+      type: string
+      enum:
+        - "png"
+        - "webp"
+        - "jpeg"
+      description: Output image format
+    quality:
+      type: string
+      description: Quality of the generated image
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1792x1024"
+        - "1024x1792"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the generated image
+    usage:
+      $ref: '#/ImageUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+ImageData:
+  type: object
+  properties:
+    url:
+      type: string
+      format: uri
+      description: URL of the generated image
+    b64_json:
+      type: string
+      description: Base64-encoded image data
+    revised_prompt:
+      type: string
+      description: Revised prompt used for generation
+    index:
+      type: integer
+      description: Index of this image
+
+ImageGenerationResponseParameters:
+  type: object
+  properties:
+    background:
+      type: string
+    output_format:
+      type: string
+    quality:
+      type: string
+    size:
+      type: string
+
+ImageUsage:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+      description: Number of input tokens
+    input_tokens_details:
+      $ref: '#/ImageTokenDetails'
+    total_tokens:
+      type: integer
+      description: Total tokens used
+    output_tokens:
+      type: integer
+      description: Number of output tokens
+    output_tokens_details:
+      $ref: '#/ImageTokenDetails'
+
+ImageTokenDetails:
+  type: object
+  properties:
+    image_tokens:
+      type: integer
+      description: Tokens used for images
+    text_tokens:
+      type: integer
+      description: Tokens used for text
+
+ImageGenerationStreamResponse:
+  type: object
+  description: |
+    Streaming response chunk for image generation.
+    Sent via Server-Sent Events (SSE).
+    Providers may return either b64_json (base64-encoded image data) or url (public URL to the image).
+  properties:
+    id:
+      type: string
+      description: Request identifier
+    type:
+      type: string
+      enum:
+        - "image_generation.partial_image"
+        - "image_generation.completed"
+        - "error"
+      description: Type of stream event
+    partial_image_index:
+      type: integer
+      description: Index of the partial image chunk
+    sequence_number:
+      type: integer
+      description: Sequence number for event ordering within the stream
+    b64_json:
+      type: string
+      description: |
+        Base64-encoded chunk of image data.
+        Optional; either b64_json or url may be present.
+    url:
+      type: string
+      format: uri
+      description: |
+        Optional public URL to the generated image chunk.
+        Used by HuggingFace and other providers that return image URLs instead of base64 data.
+    created_at:
+      type: integer
+      format: int64
+      description: Timestamp when chunk was created
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1792x1024"
+        - "1024x1792"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the generated image
+    quality:
+      type: string
+      description: Quality setting used
+    background:
+      type: string
+      description: Background type used
+    output_format:
+      type: string
+      enum:
+        - "png"
+        - "webp"
+        - "jpeg"
+      description: Output format used
+    revised_prompt:
+      type: string
+      description: Revised prompt
+    usage:
+      $ref: '#/ImageUsage'
+      description: Token usage
+    error:
+      $ref: './common.yaml#/BifrostError'
+      description: Error information if generation failed
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

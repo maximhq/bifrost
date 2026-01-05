@@ -593,7 +593,7 @@ func HandleOpenAITextCompletionStreaming(
 					response.ExtraFields.RawResponse = jsonData
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&response, nil, nil, nil, nil, nil), responseChan)
 			}
 
 			// For providers that don't send [DONE] marker break on finish_reason
@@ -628,7 +628,7 @@ func HandleOpenAITextCompletionStreaming(
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -1031,14 +1031,14 @@ func HandleOpenAIChatCompletionStreaming(
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 						return
 					}
 
 					response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
 					lastChunkTime = time.Now()
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 				}
 			} else {
 				if postResponseConverter != nil {
@@ -1115,7 +1115,7 @@ func HandleOpenAIChatCompletionStreaming(
 						response.ExtraFields.RawResponse = jsonData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan)
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
@@ -1148,7 +1148,7 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 		}
 	}()
 
@@ -1510,14 +1510,14 @@ func HandleOpenAIResponsesStreaming(
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan)
 				return
 			}
 
 			response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
 			lastChunkTime = time.Now()
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan)
 		}
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
@@ -1982,11 +1982,11 @@ func HandleOpenAISpeechStreamRequest(
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				return
 			}
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 		}
 
 		// Handle scanner errors
@@ -2359,11 +2359,11 @@ func HandleOpenAITranscriptionStreamRequest(
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
 				return
 			}
 
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response), responseChan)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
 		}
 
 		// Handle scanner errors
@@ -2375,6 +2375,523 @@ func HandleOpenAITranscriptionStreamRequest(
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
+		}
+	}()
+
+	return responseChan, nil
+}
+
+// ImageGeneration performs an Image Generation request to OpenAI's API.
+// It formats the request, sends it to OpenAI, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
+func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIImageGenerationRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
+		req,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+}
+
+// HandleOpenAIImageGenerationRequest handles image generation requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same image generation request format.
+func HandleOpenAIImageGenerationRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostImageGenerationRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	// Use centralized converter
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToOpenAIImageGenerationRequest(request), nil },
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageGenerationRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	response := &schemas.BifrostImageGenerationResponse{}
+
+	// Use enhanced response handler with pre-allocated response
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+// ImageGenerationStream handles streaming for image generation.
+// It formats the request body, creates HTTP request, and uses shared streaming logic.
+// Returns a channel for streaming responses and any error that occurred.
+func (provider *OpenAIProvider) ImageGenerationStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	request *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil, provider.GetProviderKey())
+	}
+
+	// Check if image generation stream is allowed for this provider
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
+		return nil, err
+	}
+
+	var authHeader map[string]string
+	if key.Value != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	}
+	// Use shared streaming logic
+	return HandleOpenAIImageGenerationStreaming(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationStreamRequest),
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
+}
+func HandleOpenAIImageGenerationStreaming(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostImageGenerationRequest,
+	authHeader map[string]string,
+	extraHeaders map[string]string,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	providerName schemas.ModelProvider,
+	postHookRunner schemas.PostHookRunner,
+	customRequestConverter func(*schemas.BifrostImageGenerationRequest) (any, error),
+	postRequestConverter func(*OpenAIImageGenerationRequest) *OpenAIImageGenerationRequest,
+	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
+	logger schemas.Logger,
+) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+
+	// Set headers
+	headers := map[string]string{
+		"Content-Type":  "application/json",
+		"Accept":        "text/event-stream",
+		"Cache-Control": "no-cache",
+	}
+
+	if authHeader != nil {
+		// Copy auth header to headers
+		maps.Copy(headers, authHeader)
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			if customRequestConverter != nil {
+				return customRequestConverter(request)
+			}
+			reqBody := ToOpenAIImageGenerationRequest(request)
+			if reqBody != nil {
+				reqBody.Stream = schemas.Ptr(true)
+				if postRequestConverter != nil {
+					reqBody = postRequestConverter(reqBody)
+				}
+			}
+			return reqBody, nil
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	// Updating request
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(url)
+	req.Header.SetContentType("application/json")
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	// Set headers
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	req.SetBody(jsonBody)
+
+	// Capture start time before making the HTTP request for latency calculation
+	startTime := time.Now()
+
+	// Make the request
+	err := client.Do(req, resp)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+	}
+
+	// Check for HTTP errors
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageGenerationStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
+
+		scanner := bufio.NewScanner(resp.BodyStream())
+		buf := make([]byte, 0, 1024*1024)
+		scanner.Buffer(buf, 10*1024*1024)
+
+		lastChunkTime := startTime
+		var collectedUsage *schemas.ImageUsage
+		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
+		imageChunkIndices := make(map[int]int) // image index -> chunk index
+		// Track images that have started (via partial chunks) but not yet completed
+		// This allows us to correctly match completed events to images even if chunks are interleaved
+		incompleteImages := make(map[int]bool)
+		maxImageIndex := -1 // Track maximum image index for NImages calculation
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			line := scanner.Text()
+
+			// Skip empty lines
+			if line == "" {
+				continue
+			}
+
+			// Skip event type lines (event type is in the data payload)
+			if strings.HasPrefix(line, "event:") {
+				continue
+			}
+
+			// Parse data line
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+
+			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if jsonData == "" {
+				continue
+			}
+
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+					return
+				}
+			}
+
+			// Parse minimally to extract usage and check for errors
+			var response OpenAIImageStreamResponse
+			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				continue
+			}
+
+			// Check if response type indicates an error
+			if response.Type == "error" {
+				bifrostErr := &schemas.BifrostError{
+					IsBifrostError: false,
+					Error:          &schemas.ErrorField{},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					},
+				}
+				// Guard access to response.Error fields
+				if response.Error != nil {
+					bifrostErr.Error.Message = response.Error.Message
+					if response.Error.Code != nil {
+						bifrostErr.Error.Code = response.Error.Code
+					}
+					if response.Error.Param != nil {
+						bifrostErr.Error.Param = response.Error.Param
+					}
+					if response.Error.Type != nil {
+						bifrostErr.Error.Type = response.Error.Type
+					}
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				return
+			}
+
+			// Collect usage from completed event
+			if response.Usage != nil {
+				collectedUsage = &schemas.ImageUsage{
+					InputTokens:  response.Usage.InputTokens,
+					OutputTokens: response.Usage.OutputTokens,
+					TotalTokens:  response.Usage.TotalTokens,
+				}
+			}
+
+			// Determine if this is the final chunk
+			isCompleted := response.Type == schemas.ImageGenerationEventTypeCompleted
+
+			// Determine image index with robust tracking for interleaved chunks
+			// Both partial and completed chunks should use PartialImageIndex when available
+			var imageIndex int
+			if response.PartialImageIndex != nil {
+				// Use explicit index from response
+				imageIndex = *response.PartialImageIndex
+				if isCompleted {
+					// Mark this image as completed
+					delete(incompleteImages, imageIndex)
+				} else {
+					// Mark this image as started (incomplete)
+					incompleteImages[imageIndex] = true
+				}
+			} else {
+				// Fallback: PartialImageIndex is nil, use tracked state
+				if isCompleted {
+					// For completed chunks, match to the oldest incomplete image
+					// This handles interleaved chunks correctly
+					if len(incompleteImages) == 0 {
+						// Fallback: if no incomplete images tracked, this shouldn't happen in normal flow
+						// but we'll default to 0 to prevent panics
+						imageIndex = 0
+						logger.Warn("Received completed event but no incomplete images tracked, defaulting to index 0")
+					} else {
+						// Find the minimum (oldest) incomplete image index
+						// Completed events should match the oldest image that was started
+						minIndex := -1
+						for idx := range incompleteImages {
+							if minIndex == -1 || idx < minIndex {
+								minIndex = idx
+							}
+						}
+						imageIndex = minIndex
+						// Mark this image as completed
+						delete(incompleteImages, imageIndex)
+						logger.Warn(fmt.Sprintf("Completed event missing PartialImageIndex, using oldest incomplete image index %d", imageIndex))
+					}
+				} else {
+					// For partial chunks without PartialImageIndex, allocate a new unique index
+					// Use maxImageIndex + 1 to ensure uniqueness
+					imageIndex = maxImageIndex + 1
+					// Mark this image as started (incomplete)
+					incompleteImages[imageIndex] = true
+				}
+			}
+
+			// Update maximum image index for NImages calculation
+			if imageIndex > maxImageIndex {
+				maxImageIndex = imageIndex
+			}
+
+			// Increment chunk index for this image
+			if _, exists := imageChunkIndices[imageIndex]; !exists {
+				imageChunkIndices[imageIndex] = 0
+			} else {
+				imageChunkIndices[imageIndex]++
+			}
+			chunkIndex := imageChunkIndices[imageIndex]
+			// Build chunk with all OpenAI fields
+			chunk := &schemas.BifrostImageGenerationStreamResponse{
+				Type:         response.Type,
+				Index:        imageIndex, // Which image (0-N)
+				ChunkIndex:   chunkIndex, // Chunk order within this image (top-level)
+				CreatedAt:    response.CreatedAt,
+				Size:         response.Size,
+				Quality:      response.Quality,
+				Background:   response.Background,
+				OutputFormat: response.OutputFormat,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ImageGenerationStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex, // Chunk order within this image
+					Latency:        time.Since(lastChunkTime).Milliseconds(),
+				},
+			}
+
+			if postResponseConverter != nil {
+				if converted := postResponseConverter(chunk); converted != nil {
+					chunk = converted
+				} else {
+					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				}
+			}
+
+			// Only set PartialImageIndex for partial images, not for completed events
+			if !isCompleted {
+				chunk.PartialImageIndex = response.PartialImageIndex
+			}
+			// Set SequenceNumber if present
+			if response.SequenceNumber != nil {
+				chunk.SequenceNumber = *response.SequenceNumber
+			}
+			lastChunkTime = time.Now()
+
+			// Copy b64_json if present
+			if response.B64JSON != nil {
+				chunk.B64JSON = *response.B64JSON
+			}
+
+			// Set raw response on every chunk if enabled
+			if sendBackRawResponse {
+				chunk.ExtraFields.RawResponse = jsonData
+			}
+
+			if isCompleted {
+				if collectedUsage != nil {
+					// Set NImages based on maximum image index seen (maxImageIndex + 1 since indices are 0-based)
+					if maxImageIndex >= 0 {
+						nImages := maxImageIndex + 1
+						collectedUsage.OutputTokensDetails = &schemas.ImageTokenDetails{
+							NImages: nImages,
+						}
+					}
+					chunk.Usage = collectedUsage
+				}
+				// For completed chunk, use total latency from start
+				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				// Set raw request only on final chunk if enabled
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+				providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+				responseChan)
+
+			if isCompleted {
+				return
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, logger)
 		}
 	}()
 

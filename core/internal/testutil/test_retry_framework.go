@@ -158,6 +158,12 @@ type EmbeddingRetryCondition interface {
 	GetConditionName() string
 }
 
+// ImageGenerationRetryCondition defines an interface for checking if an image generation test operation should be retried
+type ImageGenerationRetryCondition interface {
+	ShouldRetry(response *schemas.BifrostImageGenerationResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
+	GetConditionName() string
+}
+
 // CountTokensRetryCondition defines an interface for checking if a count tokens test operation should be retried
 type CountTokensRetryCondition interface {
 	ShouldRetry(response *schemas.BifrostCountTokensResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
@@ -234,6 +240,16 @@ type TranscriptionRetryConfig struct {
 	BaseDelay   time.Duration                                    // Base delay between retries
 	MaxDelay    time.Duration                                    // Maximum delay between retries
 	Conditions  []TranscriptionRetryCondition                    // Conditions that trigger retries
+	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
+	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
+}
+
+// ImageGenerationRetryConfig configures retry behavior for image generation test scenarios
+type ImageGenerationRetryConfig struct {
+	MaxAttempts int                                              // Maximum retry attempts (including initial attempt)
+	BaseDelay   time.Duration                                    // Base delay between retries
+	MaxDelay    time.Duration                                    // Maximum delay between retries
+	Conditions  []ImageGenerationRetryCondition                  // Conditions that trigger retries
 	OnRetry     func(attempt int, reason string, t *testing.T)   // Called before each retry
 	OnFinalFail func(attempts int, finalErr error, t *testing.T) // Called on final failure
 }
@@ -961,6 +977,22 @@ func DefaultTranscriptionRetryConfig() TestRetryConfig {
 	}
 }
 
+// DefaultImageGenerationRetryConfig creates a retry config for image tests
+func DefaultImageGenerationRetryConfig() TestRetryConfig {
+	return TestRetryConfig{
+		MaxAttempts: 10,
+		BaseDelay:   2000 * time.Millisecond,
+		MaxDelay:    10 * time.Second,
+		Conditions: []TestRetryCondition{
+			&EmptyImageGenerationCondition{}, // Check for missing image generation data
+			&GenericResponseCondition{},      // Catch generic error responses
+		},
+		OnRetry: func(attempt int, reason string, t *testing.T) {
+			t.Logf("🔄 Retrying image generation test (attempt %d): %s", attempt, reason)
+		},
+	}
+}
+
 // ReasoningRetryConfig creates a retry config for reasoning tests
 func ReasoningRetryConfig() TestRetryConfig {
 	return TestRetryConfig{
@@ -1215,6 +1247,8 @@ func GetTestRetryConfigForScenario(scenarioName string, testConfig Comprehensive
 		return ReasoningRetryConfig()
 	case "ListModels", "ListModelsPagination":
 		return DefaultListModelsRetryConfig()
+	case "ImageGeneration", "ImageGenerationStream":
+		return DefaultImageGenerationRetryConfig()
 	default:
 		// For basic scenarios like SimpleChat, TextCompletion
 		return DefaultTestRetryConfig()
@@ -2060,6 +2094,182 @@ func checkTranscriptionRetryConditions(response *schemas.BifrostTranscriptionRes
 	return false, ""
 }
 
+func WithImageGenerationRetry(
+	t *testing.T,
+	config ImageGenerationRetryConfig,
+	context TestRetryContext,
+	expectations ResponseExpectations,
+	scenarioName string,
+	operation func() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError),
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+
+	var lastResponse *schemas.BifrostImageGenerationResponse
+	var lastError *schemas.BifrostError
+
+	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
+		context.AttemptNumber = attempt
+
+		// Execute the operation
+		response, err := operation()
+		lastResponse = response
+		lastError = err
+
+		// If we have a response, validate it FIRST
+		if response != nil {
+			validationResult := ValidateImageGenerationResponse(t, response, err, expectations, scenarioName)
+
+			// If validation passes, we're done!
+			if validationResult.Passed {
+				return response, err
+			}
+
+			// Validation failed - ALWAYS retry validation failures for functionality checks
+			// Network errors are handled by bifrost core, so these are content/functionality validation errors
+			if attempt < config.MaxAttempts {
+				// ALWAYS retry on timeout errors - this takes precedence over all other conditions
+				if err != nil && isTimeoutError(err) {
+					retryReason := fmt.Sprintf("❌ timeout error detected: %s", GetErrorMessage(err))
+					if config.OnRetry != nil {
+						config.OnRetry(attempt, retryReason, t)
+					}
+
+					// Calculate delay with exponential backoff
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+
+				// Check other retry conditions first (for logging/debugging)
+				shouldRetryFromConditions, conditionReason := checkImageGenerationRetryConditions(response, err, context, config.Conditions)
+
+				// ALWAYS retry on validation failures - this is the primary purpose of these tests
+				// Content validation errors indicate functionality issues that should be retried
+				shouldRetry := len(validationResult.Errors) > 0
+				var retryReason string
+
+				if shouldRetry {
+					// Validation failures are the primary retry reason - ALWAYS prefix with ❌
+					retryReason = fmt.Sprintf("❌ validation failure (content/functionality check): %s", strings.Join(validationResult.Errors, "; "))
+					// Append condition-based reason if present for additional context
+					if shouldRetryFromConditions && conditionReason != "" {
+						retryReason += fmt.Sprintf(" | also: %s", conditionReason)
+					}
+				} else if shouldRetryFromConditions {
+					// Fallback to condition-based retry if no validation errors (edge case)
+					// Ensure ❌ prefix for consistency with error logging
+					shouldRetry = true
+					if !strings.Contains(conditionReason, "❌") {
+						retryReason = fmt.Sprintf("❌ %s", conditionReason)
+					} else {
+						retryReason = conditionReason
+					}
+				}
+
+				if shouldRetry {
+					if config.OnRetry != nil {
+						config.OnRetry(attempt, retryReason, t)
+					}
+
+					// Calculate delay with exponential backoff
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// All retries failed validation - create a BifrostError to force test failure
+			validationErrors := strings.Join(validationResult.Errors, "; ")
+
+			if config.OnFinalFail != nil {
+				finalErr := fmt.Errorf("❌ validation failed after %d attempts: %s", attempt, validationErrors)
+				config.OnFinalFail(attempt, finalErr, t)
+			}
+
+			// Return nil response + BifrostError so calling test fails
+			statusCode := 400
+			testFailureError := &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &statusCode,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("❌ Validation failed after %d attempts: %s", attempt, validationErrors),
+				},
+			}
+			return nil, testFailureError
+		}
+
+		// If we have an error without a response, check if we should retry
+		if err != nil && attempt < config.MaxAttempts {
+			// ALWAYS retry on timeout errors - this takes precedence over other conditions
+			if isTimeoutError(err) {
+				retryReason := fmt.Sprintf("❌ timeout error detected: %s", GetErrorMessage(err))
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				// Calculate delay with exponential backoff
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+
+			shouldRetry, retryReason := checkImageGenerationRetryConditions(response, err, context, config.Conditions)
+
+			// ALWAYS retry on non-structural errors (network errors are handled by bifrost core)
+			// If no condition matches, still retry on any error as it's likely transient
+			if !shouldRetry {
+				shouldRetry = true
+				errorMsg := GetErrorMessage(err)
+				if !strings.Contains(errorMsg, "❌") {
+					errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+				}
+				retryReason = fmt.Sprintf("❌ non-structural error (will retry): %s", errorMsg)
+			} else if !strings.Contains(retryReason, "❌") {
+				retryReason = fmt.Sprintf("❌ %s", retryReason)
+			}
+
+			if shouldRetry {
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+
+				// Calculate delay with exponential backoff
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+		}
+
+		// If we get here, either we got a final error or no more retries
+		break
+	}
+
+	// Final failure callback
+	if config.OnFinalFail != nil && lastError != nil {
+		errorMsg := "unknown error"
+		if lastError.Error != nil {
+			errorMsg = lastError.Error.Message
+		}
+		// Ensure error message has ❌ prefix if not already present
+		if !strings.Contains(errorMsg, "❌") {
+			errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+		}
+		config.OnFinalFail(config.MaxAttempts, fmt.Errorf("❌ final error: %s", errorMsg), t)
+	}
+
+	return lastResponse, lastError
+}
+
+// checkImageGenerationRetryConditions checks if any image generation retry conditions are met
+func checkImageGenerationRetryConditions(response *schemas.BifrostImageGenerationResponse, err *schemas.BifrostError, context TestRetryContext, conditions []ImageGenerationRetryCondition) (bool, string) {
+	for _, condition := range conditions {
+		if shouldRetry, reason := condition.ShouldRetry(response, err, context); shouldRetry {
+			return true, fmt.Sprintf("%s: %s", condition.GetConditionName(), reason)
+		}
+	}
+
+	return false, ""
+}
+
 // WithListModelsTestRetry wraps a list models test operation with retry logic
 // IMPORTANT: ALWAYS retries on ANY failure condition (errors, nil response, empty data, validation failures)
 // This ensures maximum resilience for list models tests
@@ -2721,6 +2931,164 @@ func WithChatStreamValidationRetry(
 			errorMsg = fmt.Sprintf("❌ %s", errorMsg)
 		}
 		t.Logf("❌ Chat stream validation failed after %d attempts for %s: %s", config.MaxAttempts, context.ScenarioName, errorMsg)
+	}
+
+	return lastResult
+}
+
+type ImageGenerationStreamValidationResult struct {
+	Passed       bool
+	Errors       []string
+	ReceivedData bool
+	StreamErrors []string
+	LastLatency  int64
+}
+
+// WithImageGenerationStreamRetry wraps an image generation streaming operation with retry logic that includes stream content validation
+// This function wraps the entire operation (request + stream reading + validation) and retries on validation failures
+func WithImageGenerationStreamRetry(
+	t *testing.T,
+	config TestRetryConfig,
+	context TestRetryContext,
+	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
+	validateStream func(chan *schemas.BifrostStream) ImageGenerationStreamValidationResult) ImageGenerationStreamValidationResult {
+
+	var lastResult ImageGenerationStreamValidationResult
+
+	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
+		context.AttemptNumber = attempt
+
+		// Execute the operation to get the stream
+		responseChannel, err := operation()
+
+		// If we have an error getting the stream, check if we should retry
+		if err != nil {
+			// Log error with ❌ prefix for first attempt
+			if attempt == 1 {
+				errorMsg := GetErrorMessage(err)
+				if !strings.Contains(errorMsg, "❌") {
+					errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+				}
+				t.Logf("❌ Image generation stream request failed (attempt %d/%d) for %s: %s", attempt, config.MaxAttempts, context.ScenarioName, errorMsg)
+			}
+
+			// Check if we should retry
+			if attempt < config.MaxAttempts {
+				var shouldRetry bool
+				var retryReason string
+
+				// ALWAYS retry on timeout errors
+				if isTimeoutError(err) {
+					shouldRetry = true
+					retryReason = fmt.Sprintf("❌ timeout error detected: %s", GetErrorMessage(err))
+				} else {
+					// Check retry conditions
+					shouldRetryFromConditions, conditionReason := checkStreamRetryConditions(err, context, config.Conditions)
+					if shouldRetryFromConditions {
+						shouldRetry = true
+						if !strings.Contains(conditionReason, "❌") {
+							retryReason = fmt.Sprintf("❌ %s", conditionReason)
+						} else {
+							retryReason = conditionReason
+						}
+					} else {
+						// Retry on any error for streaming
+						shouldRetry = true
+						errorMsg := GetErrorMessage(err)
+						if !strings.Contains(errorMsg, "❌") {
+							errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+						}
+						retryReason = fmt.Sprintf("❌ streaming error (will retry): %s", errorMsg)
+					}
+				}
+
+				if shouldRetry {
+					if config.OnRetry != nil {
+						config.OnRetry(attempt, retryReason, t)
+					} else {
+						t.Logf("🔄 Retrying image generation stream request (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
+					}
+
+					delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+					time.Sleep(delay)
+					continue
+				}
+			}
+
+			// All retries exhausted
+			if config.OnFinalFail != nil {
+				errorMsg := GetErrorMessage(err)
+				if !strings.Contains(errorMsg, "❌") {
+					errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+				}
+				config.OnFinalFail(attempt, fmt.Errorf("❌ image generation stream request failed after %d attempts: %s", attempt, errorMsg), t)
+			}
+			return ImageGenerationStreamValidationResult{
+				Passed: false,
+				Errors: []string{fmt.Sprintf("❌ stream request failed: %s", GetErrorMessage(err))},
+			}
+		}
+
+		if responseChannel == nil {
+			if attempt < config.MaxAttempts {
+				retryReason := "❌ response channel is nil"
+				if config.OnRetry != nil {
+					config.OnRetry(attempt, retryReason, t)
+				}
+				delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+				time.Sleep(delay)
+				continue
+			}
+			return ImageGenerationStreamValidationResult{
+				Passed: false,
+				Errors: []string{"❌ response channel is nil"},
+			}
+		}
+
+		// Validate the stream content
+		validationResult := validateStream(responseChannel)
+		lastResult = validationResult
+
+		// If validation passes, we're done!
+		if validationResult.Passed {
+			return validationResult
+		}
+
+		// Validation failed - ALWAYS retry validation failures
+		if attempt < config.MaxAttempts {
+			retryReason := fmt.Sprintf("❌ validation failure (content/functionality check): %s", strings.Join(validationResult.Errors, "; "))
+			if len(validationResult.StreamErrors) > 0 {
+				retryReason += fmt.Sprintf(" | stream errors: %s", strings.Join(validationResult.StreamErrors, "; "))
+			}
+
+			if config.OnRetry != nil {
+				config.OnRetry(attempt, retryReason, t)
+			} else {
+				t.Logf("🔄 Retrying image generation stream validation (attempt %d/%d) for %s: %s", attempt+1, config.MaxAttempts, context.ScenarioName, retryReason)
+			}
+
+			delay := calculateRetryDelay(attempt-1, config.BaseDelay, config.MaxDelay)
+			time.Sleep(delay)
+			continue
+		}
+	}
+
+	// All retries exhausted - log final failure
+	if config.OnFinalFail != nil {
+		allErrors := append(lastResult.Errors, lastResult.StreamErrors...)
+		errorMsg := strings.Join(allErrors, "; ")
+		if !strings.Contains(errorMsg, "❌") {
+			errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+		}
+		config.OnFinalFail(config.MaxAttempts, fmt.Errorf("❌ image generation stream validation failed after %d attempts: %s", config.MaxAttempts, errorMsg), t)
+	} else {
+		// Fallback logging if OnFinalFail is not set
+		allErrors := append(lastResult.Errors, lastResult.StreamErrors...)
+		errorMsg := strings.Join(allErrors, "; ")
+		if !strings.Contains(errorMsg, "❌") {
+			errorMsg = fmt.Sprintf("❌ %s", errorMsg)
+		}
+		t.Logf("❌ Image generation stream validation failed after %d attempts for %s: %s", config.MaxAttempts, context.ScenarioName, errorMsg)
 	}
 
 	return lastResult
