@@ -45,6 +45,14 @@ spec:
             - name: http
               containerPort: {{ .Values.bifrost.port }}
               protocol: TCP
+            {{- if .Values.bifrost.cluster.enabled }}
+            - name: gossip
+              containerPort: {{ .Values.bifrost.cluster.gossip.port }}
+              protocol: TCP
+            - name: gossip-udp
+              containerPort: {{ .Values.bifrost.cluster.gossip.port }}
+              protocol: UDP
+            {{- end }}
           env:
             - name: APP_DIR
               value: {{ .Values.bifrost.appDir | quote }}

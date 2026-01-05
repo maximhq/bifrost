@@ -16,5 +16,15 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    {{- if .Values.bifrost.cluster.enabled }}
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip
+      protocol: TCP
+      name: gossip
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip-udp
+      protocol: UDP
+      name: gossip-udp
+    {{- end }}
   selector:
     {{- include "bifrost.selectorLabels" . | nindent 4 }}
