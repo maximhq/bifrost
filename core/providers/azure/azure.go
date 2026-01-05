@@ -1122,65 +1122,54 @@ func (provider *AzureProvider) TranscriptionStream(ctx context.Context, postHook
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Validate api key configs
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
 
-	// Convert bifrost request to Azure format.
-	azureRequest := ToAzureImageRequest(request)
-	if azureRequest == nil {
-		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, provider.GetProviderKey())
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
 	}
 
-	// Make request
-	providerName := provider.GetProviderKey()
-
-	jsonData, err := sonic.Marshal(azureRequest)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("could not serialize azure image generation request", err, providerName)
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
 	}
 
-	deployment, bifrostErr := provider.getModelDeployment(key, azureRequest.Model)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
+
+	// Prepare Azure-specific headers
+	authHeader := make(map[string]string)
+
+	// Set Azure authentication - either Bearer token or api-key
+	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
+	} else {
+		authHeader["api-key"] = key.Value
 	}
 
-	response, _, latency, bifrostErr := provider.completeRequest(
+	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
-		jsonData,
-		fmt.Sprintf("openai/deployments/%s/images/generations", deployment),
+		provider.client,
+		url,
+		request,
 		key,
-		deployment,
-		request.Model,
-		schemas.ImageGenerationRequest,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
 	)
-	// Handle error response
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	azureResponse := &AzureImageResponse{}
-	if err := sonic.Unmarshal(response, azureResponse); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to unmarshal Azure image response", err, schemas.Azure)
+
+	if err != nil {
+		return nil, err
 	}
 
-	// Convert Azure response to Bifrost format.
-	bifrostResp := ToBifrostImageResponse(azureResponse, request.Model, latency)
-	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
-	bifrostResp.ExtraFields.ModelRequested = request.Model
-	bifrostResp.ExtraFields.ModelDeployment = deployment
-	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
 
-	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResp.ExtraFields, jsonData)
-	}
-
-	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResp.ExtraFields.RawResponse = string(response)
-	}
-
-	return bifrostResp, nil
+	return response, err
 }
 
 // ImageGenerationStream performs a streaming image generation request to Azure's API.
@@ -1219,13 +1208,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
 	} else {
 		authHeader["api-key"] = key.Value
-	}
-
-	if !openai.StreamingEnabledImageModels[request.Model] {
-		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("%s is not supported for streaming image generation", request.Model),
-			nil,
-			provider.GetProviderKey())
 	}
 
 	// Azure is OpenAI-compatible
