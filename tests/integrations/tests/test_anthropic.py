@@ -1769,6 +1769,245 @@ This document is used to verify that the AI can read and understand text documen
         assert any(word in content for word in document_keywords), \
             f"Response should reference document features. Got: {content}"
 
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_33_citations_pdf(self, anthropic_client, test_config, provider, model):
+        """Test Case 33: PDF document citations"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What does this PDF document say? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Test PDF Document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": FILE_DATA_BASE64
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        # Validate basic response
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        
+        # Check for citations
+        has_citations = False
+        for block in response.content:
+            if hasattr(block, "citations") and block.citations:
+                has_citations = True
+                # Validate PDF citation structure
+                for citation in block.citations:
+                    assert hasattr(citation, "type"), "Citation should have type"
+                    assert citation.type == "page_location", \
+                        f"PDF citation should be page_location, got {citation.type}"
+                    assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+                    assert hasattr(citation, "document_index"), "Citation should have document_index"
+                    assert citation.document_index == 0, "First document should be index 0"
+                    assert hasattr(citation, "start_page_number"), \
+                        "PDF citation should have start_page_number"
+                    assert hasattr(citation, "end_page_number"), \
+                        "PDF citation should have end_page_number"
+                    # Page numbers are 1-indexed
+                    assert citation.start_page_number >= 1, \
+                        "Page numbers should be 1-indexed"
+                    
+                    print(f"✓ Found PDF citation: pages {citation.start_page_number}-{citation.end_page_number}, "
+                          f"text: '{citation.cited_text[:50]}...'")
+        
+        assert has_citations, "Response should contain citations for PDF document"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_34_citations_text(self, anthropic_client, test_config, provider, model):
+        """Test Case 34: Plain text document citations"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        text_content = """The Theory of Relativity was developed by Albert Einstein in the early 20th century.
+It consists of two parts: Special Relativity published in 1905, and General Relativity published in 1915.
+
+Special Relativity deals with objects moving at constant velocities and introduced the famous equation E=mc².
+General Relativity extends this to accelerating objects and provides a new understanding of gravity.
+
+Einstein's work revolutionized our understanding of space, time, and gravity, and its predictions have been
+confirmed by numerous experiments and observations over the past century."""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "When was General Relativity published and what does it deal with? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Theory of Relativity Overview",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": text_content
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        response = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500
+        )
+        
+        # Validate basic response
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        
+        # Check for citations
+        has_citations = False
+        for block in response.content:
+            if hasattr(block, "citations") and block.citations:
+                has_citations = True
+                # Validate text citation structure
+                for citation in block.citations:
+                    assert hasattr(citation, "type"), "Citation should have type"
+                    assert citation.type == "char_location", \
+                        f"Text citation should be char_location, got {citation.type}"
+                    assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+                    assert hasattr(citation, "document_index"), "Citation should have document_index"
+                    assert citation.document_index == 0, "First document should be index 0"
+                    assert hasattr(citation, "start_char_index"), \
+                        "Text citation should have start_char_index"
+                    assert hasattr(citation, "end_char_index"), \
+                        "Text citation should have end_char_index"
+                    # Character indices are 0-indexed
+                    assert citation.start_char_index >= 0, \
+                        "Character indices should be 0-indexed"
+                    assert citation.end_char_index > citation.start_char_index, \
+                        "End index should be greater than start index"
+                    
+                    print(f"✓ Found text citation: chars {citation.start_char_index}-{citation.end_char_index}, "
+                          f"text: '{citation.cited_text[:50]}...'")
+        
+        assert has_citations, "Response should contain citations for text document"
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("citations"))
+    def test_35_citations_streaming(self, anthropic_client, test_config, provider, model):
+        """Test Case 35: Citations with streaming"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for citations scenario")
+        
+        # Use a text document for streaming test
+        text_content = """Machine learning is a subset of artificial intelligence that enables systems to learn from data.
+Deep learning is a specialized form of machine learning that uses neural networks with multiple layers.
+
+Neural networks are inspired by the human brain and consist of interconnected nodes called neurons.
+These networks can identify patterns in data and make predictions or classifications based on those patterns.
+
+Modern deep learning has achieved remarkable success in areas such as image recognition, natural language
+processing, and game playing."""
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What is deep learning and how does it relate to neural networks? Please cite your sources."
+                    },
+                    {
+                        "type": "document",
+                        "title": "Machine Learning Introduction",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": text_content
+                        },
+                        "citations": {"enabled": True}
+                    }
+                ]
+            }
+        ]
+        
+        stream = anthropic_client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=500,
+            stream=True
+        )
+        
+        # Collect streaming content and citations
+        text_parts = []
+        citations = []
+        chunk_count = 0
+        has_citation_delta = False
+        
+        for event in stream:
+            chunk_count += 1
+            
+            if hasattr(event, "type"):
+                event_type = event.type
+                
+                # Handle content_block_delta events
+                if event_type == "content_block_delta":
+                    if hasattr(event, "delta") and event.delta:
+                        # Check for text delta
+                        if hasattr(event.delta, "type"):
+                            if event.delta.type == "text_delta":
+                                if hasattr(event.delta, "text"):
+                                    text_parts.append(str(event.delta.text))
+                            # Check for citations delta
+                            elif event.delta.type == "citations_delta":
+                                has_citation_delta = True
+                                if hasattr(event.delta, "citation"):
+                                    citation = event.delta.citation
+                                    citations.append(citation)
+                                    print(f"✓ Received citation delta: {citation.type if hasattr(citation, 'type') else 'unknown type'}")
+            
+            # Safety check
+            if chunk_count > 2000:
+                break
+        
+        # Validate results
+        complete_text = "".join(text_parts)
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(complete_text) > 0, "Should receive text content"
+        
+        # Check for citations
+        assert has_citation_delta, "Should receive citations_delta events in streaming"
+        assert len(citations) > 0, "Should collect at least one citation from stream"
+        
+        # Validate citation structure
+        for citation in citations:
+            assert hasattr(citation, "type"), "Citation should have type"
+            assert citation.type == "char_location", \
+                f"Text citation should be char_location, got {citation.type if hasattr(citation, 'type') else 'no type'}"
+            assert hasattr(citation, "cited_text"), "Citation should have cited_text"
+            assert hasattr(citation, "document_index"), "Citation should have document_index"
+            
+            if hasattr(citation, "start_char_index") and hasattr(citation, "end_char_index"):
+                print(f"  Citation: chars {citation.start_char_index}-{citation.end_char_index}, "
+                      f"text: '{citation.cited_text[:50] if len(citation.cited_text) > 50 else citation.cited_text}...'")
+        
+        print(f"✓ Streaming with citations validated - Received {len(citations)} citations in {chunk_count} chunks")
+
 
 # Additional helper functions specific to Anthropic
 def serialize_anthropic_content(content_blocks: List[Any]) -> List[Dict[str, Any]]:

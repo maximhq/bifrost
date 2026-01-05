@@ -550,6 +550,27 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 				}
 				return nil, nil, false
+
+			case AnthropicStreamDeltaTypeCitations:
+				// Handle citations delta - convert Anthropic citation to OpenAI annotation
+				if chunk.Delta.Citation != nil {
+					annotation := convertAnthropicCitationToAnnotation(*chunk.Delta.Citation)
+
+					// Emit output_text.annotation.added event
+					itemID := state.ItemIDs[outputIndex]
+					response := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+						SequenceNumber: sequenceNumber,
+						OutputIndex:    schemas.Ptr(outputIndex),
+						ContentIndex:   chunk.Index,
+						Annotation:     &annotation,
+					}
+					if itemID != "" {
+						response.ItemID = &itemID
+					}
+					return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
+				}
+				return nil, nil, false
 			}
 		}
 
@@ -1098,6 +1119,22 @@ func ToAnthropicResponsesStreamResponse(ctx context.Context, bifrostResp *schema
 			}
 		}
 
+	case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+		// Convert OpenAI annotation to Anthropic citation
+		if bifrostResp.Annotation != nil {
+			streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+			if bifrostResp.ContentIndex != nil {
+				streamResp.Index = bifrostResp.ContentIndex
+			}
+
+			citation := convertAnnotationToAnthropicCitation(*bifrostResp.Annotation)
+
+			streamResp.Delta = &AnthropicStreamDelta{
+				Type:     AnthropicStreamDeltaTypeCitations,
+				Citation: &citation,
+			}
+		}
+
 	case schemas.ResponsesStreamResponseTypeContentPartDone:
 		return nil
 
@@ -1415,7 +1452,31 @@ func ToAnthropicResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			anthropicReq.OutputFormat = convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+			// Citations cannot be used together with Structured Outputs in anthropic.
+			hasCitationsEnabled := false
+			// loop over input messages and check if any message has citations enabled
+			for _, message := range bifrostReq.Input {
+				if message.Content == nil || message.Content.ContentBlocks == nil {
+					continue
+				}
+				if message.Content.ContentBlocks != nil {
+					for _, block := range message.Content.ContentBlocks {
+						if block.Type == schemas.ResponsesInputMessageContentBlockTypeFile &&
+							block.Citations != nil &&
+							block.Citations.Enabled != nil &&
+							*block.Citations.Enabled {
+							hasCitationsEnabled = true
+							break
+						}
+					}
+				}
+				if hasCitationsEnabled {
+					break
+				}
+			}
+			if hasCitationsEnabled {
+				anthropicReq.OutputFormat = convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+			}
 		}
 		if bifrostReq.Params.Reasoning != nil {
 			if bifrostReq.Params.Reasoning.MaxTokens != nil {
@@ -2383,18 +2444,30 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 				var bifrostMsg schemas.ResponsesMessage
 				if isOutputMessage {
 					// For output messages, use ContentBlocks with ResponsesOutputMessageContentTypeText
+					contentBlock := schemas.ResponsesMessageContentBlock{
+						Type:         schemas.ResponsesOutputMessageContentTypeText,
+						Text:         block.Text,
+						CacheControl: block.CacheControl,
+					}
+
+					// Convert Anthropic citations to OpenAI annotations
+					if block.Citations != nil && block.Citations.TextCitations != nil && len(block.Citations.TextCitations) > 0 {
+						annotations := make([]schemas.ResponsesOutputMessageContentTextAnnotation, len(block.Citations.TextCitations))
+						for i, citation := range block.Citations.TextCitations {
+							annotations[i] = convertAnthropicCitationToAnnotation(citation)
+						}
+
+						contentBlock.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{
+							Annotations: annotations,
+						}
+					}
+
 					bifrostMsg = schemas.ResponsesMessage{
 						ID:   schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
 						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 						Role: role,
 						Content: &schemas.ResponsesMessageContent{
-							ContentBlocks: []schemas.ResponsesMessageContentBlock{
-								{
-									Type:         schemas.ResponsesOutputMessageContentTypeText,
-									Text:         block.Text,
-									CacheControl: block.CacheControl,
-								},
-							},
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{contentBlock},
 						},
 					}
 				} else {
@@ -3363,12 +3436,22 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
+		anthropicBlock := AnthropicContentBlock{}
 		if block.Text != nil {
-			return &AnthropicContentBlock{
+			anthropicBlock = AnthropicContentBlock{
 				Type:         AnthropicContentBlockTypeText,
 				Text:         block.Text,
 				CacheControl: block.CacheControl,
 			}
+			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
+				anthropicBlock.Citations = &AnthropicCitations{
+					TextCitations: make([]AnthropicTextCitation, len(block.ResponsesOutputMessageContentText.Annotations)),
+				}
+				for i, annotation := range block.ResponsesOutputMessageContentText.Annotations {
+					anthropicBlock.Citations.TextCitations[i] = convertAnnotationToAnthropicCitation(annotation)
+				}
+			}
+			return &anthropicBlock
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeImage:
 		if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
@@ -3389,6 +3472,7 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			anthropicBlock := ConvertResponsesFileBlockToAnthropic(
 				block.ResponsesInputMessageContentBlockFile,
 				block.CacheControl,
+				block.Citations,
 			)
 			return &anthropicBlock
 		}
@@ -3436,6 +3520,10 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 		Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
 		CacheControl:                          block.CacheControl,
 		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+	}
+
+	if block.Citations != nil && block.Citations.Config != nil {
+		resultBlock.Citations = block.Citations.Config
 	}
 
 	// Set filename from title if available
@@ -3540,6 +3628,107 @@ func convertBifrostMCPToolToAnthropicServer(tool *schemas.ResponsesTool) *Anthro
 	}
 
 	return mcpServer
+}
+
+// convertAnthropicCitationToAnnotation converts an Anthropic citation to an OpenAI annotation
+func convertAnthropicCitationToAnnotation(citation AnthropicTextCitation) schemas.ResponsesOutputMessageContentTextAnnotation {
+	annotation := schemas.ResponsesOutputMessageContentTextAnnotation{
+		Type:  string(citation.Type),
+		Index: citation.DocumentIndex,
+		Text:  schemas.Ptr(citation.CitedText),
+	}
+
+	// Map type-specific fields based on citation type
+	switch citation.Type {
+	case AnthropicCitationTypeCharLocation:
+		// Character location fields
+		annotation.StartCharIndex = citation.StartCharIndex
+		annotation.EndCharIndex = citation.EndCharIndex
+		annotation.Filename = citation.DocumentTitle
+
+	case AnthropicCitationTypePageLocation:
+		// Page location fields
+		annotation.StartCharIndex = citation.StartCharIndex
+		annotation.EndCharIndex = citation.EndCharIndex
+		annotation.Filename = citation.DocumentTitle
+
+	case AnthropicCitationTypeContentBlockLocation:
+		// Content block location fields
+		annotation.StartCharIndex = citation.StartCharIndex
+		annotation.EndCharIndex = citation.EndCharIndex
+		annotation.Filename = citation.DocumentTitle
+
+	case AnthropicCitationTypeWebSearchResultLocation:
+		// Web search result fields
+		annotation.Title = citation.Title
+		annotation.URL = citation.URL
+
+	case AnthropicCitationTypeSearchResultLocation:
+		// Search result location fields
+		annotation.StartBlockIndex = citation.StartBlockIndex
+		annotation.EndBlockIndex = citation.EndBlockIndex
+		annotation.Title = citation.Title
+		annotation.Source = citation.Source
+	}
+
+	return annotation
+}
+
+// convertAnnotationToAnthropicCitation converts an OpenAI annotation to an Anthropic citation
+func convertAnnotationToAnthropicCitation(annotation schemas.ResponsesOutputMessageContentTextAnnotation) AnthropicTextCitation {
+	citation := AnthropicTextCitation{
+		Type:          AnthropicCitationType(annotation.Type),
+		CitedText:     "",
+		DocumentIndex: annotation.Index,
+	}
+
+	// Map common fields
+	if annotation.Text != nil {
+		citation.CitedText = *annotation.Text
+	}
+
+	// Map type-specific fields based on annotation type
+	switch annotation.Type {
+	case string(AnthropicCitationTypeCharLocation):
+		// Character location
+		citation.StartCharIndex = annotation.StartCharIndex
+		citation.EndCharIndex = annotation.EndCharIndex
+		citation.DocumentTitle = annotation.Filename
+
+	case string(AnthropicCitationTypePageLocation):
+		// Page location
+		citation.StartPageNumber = annotation.StartPageNumber
+		citation.EndPageNumber = annotation.EndPageNumber
+		citation.DocumentTitle = annotation.Filename
+
+	case string(AnthropicCitationTypeContentBlockLocation):
+		// Content block location
+		citation.StartBlockIndex = annotation.StartBlockIndex
+		citation.EndBlockIndex = annotation.EndBlockIndex
+		citation.DocumentTitle = annotation.Filename
+
+	case string(AnthropicCitationTypeWebSearchResultLocation):
+		// Web search result
+		citation.Title = annotation.Title
+		citation.URL = annotation.URL
+
+	case string(AnthropicCitationTypeSearchResultLocation):
+		// Search result location
+		citation.StartBlockIndex = annotation.StartBlockIndex
+		citation.EndBlockIndex = annotation.EndBlockIndex
+		citation.Title = annotation.Title
+		citation.Source = annotation.Source
+
+	case "file_citation", "url_citation", "container_file_citation", "file_path":
+		// OpenAI native types - map to char_location
+		citation.Type = "char_location"
+		citation.StartCharIndex = annotation.StartIndex
+		citation.EndCharIndex = annotation.EndIndex
+		citation.DocumentTitle = annotation.Filename
+		citation.Title = annotation.Title
+	}
+
+	return citation
 }
 
 // convertResponsesToAnthropicComputerAction converts ResponsesComputerToolCallAction to Anthropic input map

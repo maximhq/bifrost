@@ -157,6 +157,10 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 		Source:       &AnthropicSource{},
 	}
 
+	if block.Citations != nil {
+		documentBlock.Citations = &AnthropicCitations{Config: block.Citations}
+	}
+
 	if block.File == nil {
 		return documentBlock
 	}
@@ -223,11 +227,15 @@ func ConvertToAnthropicDocumentBlock(block schemas.ChatContentBlock) AnthropicCo
 }
 
 // ConvertResponsesFileBlockToAnthropic converts a Responses file block directly to Anthropic document format
-func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, cacheControl *schemas.CacheControl) AnthropicContentBlock {
+func ConvertResponsesFileBlockToAnthropic(fileBlock *schemas.ResponsesInputMessageContentBlockFile, cacheControl *schemas.CacheControl, citations *schemas.Citations) AnthropicContentBlock {
 	documentBlock := AnthropicContentBlock{
 		Type:         AnthropicContentBlockTypeDocument,
 		CacheControl: cacheControl,
 		Source:       &AnthropicSource{},
+	}
+
+	if citations != nil {
+		documentBlock.Citations = &AnthropicCitations{Config: citations}
 	}
 
 	if fileBlock == nil {

@@ -641,6 +641,7 @@ type ChatContentBlock struct {
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Citations    *Citations    `json:"citations,omitempty"`
 }
 
 type CacheControlType string

@@ -418,8 +418,12 @@ type ResponsesMessageContentBlock struct {
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Citations    *Citations    `json:"citations,omitempty"`
 }
 
+type Citations struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
 type ResponsesInputMessageContentBlockImage struct {
 	ImageURL *string `json:"image_url,omitempty"`
 	Detail   *string `json:"detail,omitempty"` // "low" | "high" | "auto"
@@ -457,6 +461,15 @@ type ResponsesOutputMessageContentTextAnnotation struct {
 	Title       *string `json:"title,omitempty"`
 	URL         *string `json:"url,omitempty"`
 	ContainerID *string `json:"container_id,omitempty"`
+
+	// Anthropic specific fields
+	StartCharIndex  *int    `json:"start_char_index,omitempty"`
+	EndCharIndex    *int    `json:"end_char_index,omitempty"`
+	StartPageNumber *int    `json:"start_page_number,omitempty"`
+	EndPageNumber   *int    `json:"end_page_number,omitempty"`
+	StartBlockIndex *int    `json:"start_block_index,omitempty"`
+	EndBlockIndex   *int    `json:"end_block_index,omitempty"`
+	Source          *string `json:"source,omitempty"`
 }
 
 // ResponsesOutputMessageContentTextLogProb represents log probability information for content.
