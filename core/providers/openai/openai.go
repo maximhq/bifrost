@@ -3347,74 +3347,108 @@ func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas
 	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
-		return nil, err // Handle error
+		return nil, err
 	}
-	providerKey := provider.GetProviderKey()
-	openaiRequest := ToOpenAIImageGenerationRequest(req)
-	if openaiRequest == nil {
-		return nil, providerUtils.NewBifrostOperationError("invalid request: input is required", nil, providerKey)
-	}
-	providerName := provider.GetProviderKey()
+
+	return HandleOpenAIImageGenerationRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest),
+		req,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		schemas.OpenAI,
+		provider.sendBackRawRequest,
+		provider.sendBackRawResponse,
+		provider.logger,
+	)
+}
+
+// HandleOpenAIImageGenerationRequest handles image generation requests for OpenAI-compatible APIs.
+// This shared function reduces code duplication between providers that use the same image generation request format.
+func HandleOpenAIImageGenerationRequest(
+	ctx context.Context,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostImageGenerationRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 
 	// Create request
-	httpReq := fasthttp.AcquireRequest()
-	httpResp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(httpReq)
-	defer fasthttp.ReleaseResponse(httpResp)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
 
 	// Set any extra headers from network config
-	providerUtils.SetExtraHeaders(ctx, httpReq, provider.networkConfig.ExtraHeaders, nil)
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
-	httpReq.SetRequestURI(provider.buildRequestURL(ctx, "/v1/images/generations", schemas.ImageGenerationRequest))
-	httpReq.Header.SetMethod(http.MethodPost)
-	httpReq.Header.SetContentType("application/json")
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
 	if key.Value != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+key.Value)
+		req.Header.Set("Authorization", "Bearer "+key.Value)
 	}
 
-	// Serialize the request payload
-	jsonData, err := sonic.Marshal(openaiRequest)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("Error marshalling json for openai image generation", err, schemas.OpenAI)
+	// Use centralized converter
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToOpenAIImageGenerationRequest(request), nil },
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
-	httpReq.SetBody(jsonData)
+	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, httpReq, httpResp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
-	if httpResp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(httpResp.Body())))
-		return nil, ParseOpenAIError(httpResp, schemas.ImageGenerationRequest, providerName, openaiRequest.Model)
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		return nil, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
 	}
 
-	// Create final response with the image data
-	openaiResponse := &OpenAIImageGenerationResponse{}
-	if bifrostErr := sonic.Unmarshal(httpResp.Body(), openaiResponse); bifrostErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, bifrostErr, providerName)
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	bifrostResp := ToBifrostImageResponse(openaiResponse, openaiRequest.Model, latency)
+	response := &schemas.BifrostImageGenerationResponse{}
 
-	bifrostResp.ExtraFields.Provider = provider.GetProviderKey()
-	bifrostResp.ExtraFields.ModelRequested = openaiRequest.Model
-	bifrostResp.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	// Use enhanced response handler with pre-allocated response
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResp.ExtraFields, jsonData)
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
 	}
 
 	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		bifrostResp.ExtraFields.RawResponse = string(httpResp.Body())
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
 	}
 
-	return bifrostResp, nil
+	return response, nil
 }
 
 // ImageGenerationStream handles streaming for image generation.
@@ -3440,13 +3474,6 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	if key.Value != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
 	}
-	if !StreamingEnabledImageModels[request.Model] {
-		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("%s is not supported for streaming image generation", request.Model),
-			nil,
-			provider.GetProviderKey())
-	}
-
 	// Use shared streaming logic
 	return HandleOpenAIImageGenerationStreaming(
 		ctx,
@@ -3703,8 +3730,8 @@ func HandleOpenAIImageGenerationStreaming(
 				}
 				if response.Usage != nil {
 					completionChunk.Usage = &schemas.ImageUsage{
-						PromptTokens: response.Usage.InputTokens,
-						TotalTokens:  response.Usage.TotalTokens,
+						InputTokens: response.Usage.InputTokens,
+						TotalTokens: response.Usage.TotalTokens,
 					}
 				}
 

@@ -157,15 +157,11 @@ func TestToBifrostImageResponse(t *testing.T) {
 			name: "full response converts correctly",
 			openai: &openai.OpenAIImageGenerationResponse{
 				Created: 1699999999,
-				Data: []struct {
-					URL           string `json:"url,omitempty"`
-					B64JSON       string `json:"b64_json,omitempty"`
-					RevisedPrompt string `json:"revised_prompt,omitempty"`
-				}{
+				Data: []schemas.ImageData{
 					{URL: "https://example.com/1.png", RevisedPrompt: "revised prompt 1"},
 					{B64JSON: "base64data", RevisedPrompt: "revised prompt 2"},
 				},
-				Usage: &openai.OpenAIImageGenerationUsage{
+				Usage: &schemas.ImageUsage{
 					InputTokens: 10,
 					TotalTokens: 50,
 				},
@@ -191,7 +187,7 @@ func TestToBifrostImageResponse(t *testing.T) {
 				if resp.Data[1].Index != 1 {
 					t.Errorf("Second image index should be 1")
 				}
-				if resp.Usage.PromptTokens != 10 {
+				if resp.Usage.InputTokens != 10 {
 					t.Errorf("PromptTokens should be mapped from InputTokens")
 				}
 			},
@@ -209,11 +205,10 @@ func TestToBifrostImageResponse(t *testing.T) {
 			name: "nil usage is preserved",
 			openai: &openai.OpenAIImageGenerationResponse{
 				Created: 123,
-				Data: []struct {
-					URL           string `json:"url,omitempty"`
-					B64JSON       string `json:"b64_json,omitempty"`
-					RevisedPrompt string `json:"revised_prompt,omitempty"`
-				}{},
+				Data: []schemas.ImageData{
+					{URL: "https://example.com/1.png", RevisedPrompt: "revised prompt 1"},
+					{B64JSON: "base64data", RevisedPrompt: "revised prompt 2"},
+				},
 				Usage: nil,
 			},
 			validate: func(t *testing.T, resp *schemas.BifrostImageGenerationResponse) {

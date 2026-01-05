@@ -1159,7 +1159,8 @@ func collectImageGenerationResponseMetrics(response *schemas.BifrostImageGenerat
 	result.MetricsCollected["images_with_b64"] = b64Count
 
 	if response.Usage != nil {
-		result.MetricsCollected["prompt_tokens"] = response.Usage.PromptTokens
+		result.MetricsCollected["input_tokens"] = response.Usage.InputTokens
+		result.MetricsCollected["output_tokens"] = response.Usage.OutputTokens
 		result.MetricsCollected["total_tokens"] = response.Usage.TotalTokens
 	}
 }

@@ -178,7 +178,7 @@ func TestImageGenerationResponseSerialization(t *testing.T) {
 			{URL: "https://example.com/image.png", Index: 0, RevisedPrompt: "a cat revised"},
 			{B64JSON: "iVBORw0KGgo=", Index: 1},
 		},
-		Usage: &schemas.ImageUsage{PromptTokens: 10, TotalTokens: 20},
+		Usage: &schemas.ImageUsage{InputTokens: 10, TotalTokens: 20},
 	}
 
 	jsonBytes, err := sonic.Marshal(resp)
@@ -242,7 +242,7 @@ func TestImageStreamResponseSerialization(t *testing.T) {
 				Type:       "image_generation.completed",
 				Index:      0,
 				ChunkIndex: 10,
-				Usage:      &schemas.ImageUsage{PromptTokens: 5, TotalTokens: 15},
+				Usage:      &schemas.ImageUsage{InputTokens: 5, TotalTokens: 15},
 			},
 			verify: func(t *testing.T, data map[string]interface{}) {
 				if data["type"] != "image_generation.completed" {
@@ -424,7 +424,7 @@ func TestStreamChunkUsageOnFinal(t *testing.T) {
 		{ChunkIndex: 0, Type: "image_generation.partial_image", Usage: nil},
 		{ChunkIndex: 1, Type: "image_generation.partial_image", Usage: nil},
 		{ChunkIndex: 2, Type: "image_generation.completed", Usage: &schemas.ImageUsage{
-			PromptTokens: 10, TotalTokens: 100,
+			InputTokens: 10, TotalTokens: 100,
 		}},
 	}
 

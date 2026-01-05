@@ -524,6 +524,10 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
+func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
 // MODEL TYPES
 type OpenAIModel struct {
 	ID      string `json:"id"`
@@ -556,34 +560,18 @@ type OpenAIImageGenerationRequest struct {
 
 // OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.
 type OpenAIImageGenerationResponse struct {
-	Created int64 `json:"created"`
-	Data    []struct {
-		URL           string `json:"url,omitempty"`
-		B64JSON       string `json:"b64_json,omitempty"`
-		RevisedPrompt string `json:"revised_prompt,omitempty"`
-	} `json:"data"`
-	Background   *string                     `json:"background,omitempty"`
-	OutputFormat *string                     `json:"output_format,omitempty"`
-	Size         *string                     `json:"size,omitempty"`
-	Quality      *string                     `json:"quality,omitempty"`
-	Usage        *OpenAIImageGenerationUsage `json:"usage"`
-}
+	Created int64               `json:"created"`
+	Data    []schemas.ImageData `json:"data"`
 
-type OpenAIImageGenerationUsage struct {
-	TotalTokens  int `json:"total_tokens,omitempty"`
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
+	schemas.ImageGenerationResponseParameters
 
-	InputTokensDetails *struct {
-		TextTokens  int `json:"text_tokens,omitempty"`
-		ImageTokens int `json:"image_tokens,omitempty"`
-	} `json:"input_tokens_details,omitempty"`
+	Usage *schemas.ImageUsage `json:"usage"`
 }
 
 // OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
 type OpenAIImageStreamResponse struct {
-	Type              ImageGenerationEventType    `json:"type,omitempty"`
-	B64JSON           *string                     `json:"b64_json,omitempty"`
-	PartialImageIndex int                         `json:"partial_image_index,omitempty"`
-	Usage             *OpenAIImageGenerationUsage `json:"usage,omitempty"`
+	Type              ImageGenerationEventType `json:"type,omitempty"`
+	B64JSON           *string                  `json:"b64_json,omitempty"`
+	PartialImageIndex int                      `json:"partial_image_index,omitempty"`
+	Usage             *schemas.ImageUsage      `json:"usage,omitempty"`
 }

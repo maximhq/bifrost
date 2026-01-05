@@ -4,9 +4,11 @@ package nebius
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/bytedance/gopkg/util/logger"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -235,9 +237,145 @@ func (provider *NebiusProvider) TranscriptionStream(ctx context.Context, postHoo
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by Nebius provider.
+// ImageGeneration performs an Image Generation request to Nebius's API.
+// It formats the request, sends it to Nebius Token Factory, and processes the response.
+// Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	path := providerUtils.GetPathFromContext(ctx, "/v1/images/generations")
+	providerName := schemas.Nebius
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Append query parameter if present
+	if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
+		if strings.Contains(path, "?") {
+			path = path + "&ai_project_id=" + fmt.Sprint(rawID)
+		} else {
+			path = path + "?ai_project_id=" + fmt.Sprint(rawID)
+		}
+	}
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + path)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value)
+	}
+
+	// Use centralized converter
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return provider.ToNebiusImageGenerationRequest(request) },
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+
+		var nebiusErr NebiusError
+		bifrostErr := providerUtils.HandleProviderAPIError(resp, &nebiusErr)
+
+		// Extract error message
+		var message string
+		if nebiusErr.Detail != nil {
+			if nebiusErr.Detail.Message != nil {
+				message = *nebiusErr.Detail.Message
+			}
+
+			if len(nebiusErr.Detail.ValidationErrors) > 0 {
+				var messages []string
+				var locations []string
+
+				for _, detail := range nebiusErr.Detail.ValidationErrors {
+					if detail.Msg != "" {
+						messages = append(messages, detail.Msg)
+					}
+					if len(detail.Loc) > 0 {
+						locations = append(locations, strings.Join(detail.Loc, "."))
+					}
+				}
+
+				if len(messages) > 0 {
+					message = strings.Join(messages, "; ")
+				}
+				if len(locations) > 0 {
+					locationStr := strings.Join(locations, ", ")
+					message = message + " [" + locationStr + "]"
+				}
+			}
+		}
+
+		// Use the extracted message if available
+		if message != "" {
+			if bifrostErr.Error == nil {
+				bifrostErr.Error = &schemas.ErrorField{}
+			}
+			bifrostErr.Error.Message = message
+		}
+
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       providerName,
+			ModelRequested: request.Model,
+			RequestType:    schemas.ImageGenerationRequest,
+		}
+		return nil, bifrostErr
+	}
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	response := &schemas.BifrostImageGenerationResponse{}
+
+	sendBackRawRequest, sendBackRawResponse := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	// Use enhanced response handler with pre-allocated response
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
+		body,
+		response,
+		jsonData,
+		sendBackRawRequest,
+		sendBackRawResponse,
+	)
+
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // ImageGenerationStream is not supported by Nebius provider.

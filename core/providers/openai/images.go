@@ -3,7 +3,6 @@ package openai
 import (
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -14,12 +13,6 @@ const (
 	// ImageGenerationChunkSize is the size of base64 chunks when splitting large image data
 	ImageGenerationChunkSize = 128 * 1024
 )
-
-var StreamingEnabledImageModels = map[string]bool{
-	"gpt-image-1": true,
-	"dall-e-2":    false,
-	"dall-e-3":    false,
-}
 
 // ToOpenAIImageGenerationRequest converts a Bifrost Image Request to OpenAI format
 func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *OpenAIImageGenerationRequest {
@@ -56,14 +49,10 @@ func ToBifrostImageResponse(openaiResponse *OpenAIImageGenerationResponse, reque
 
 	var usage *schemas.ImageUsage
 	if openaiResponse.Usage != nil {
-		usage = &schemas.ImageUsage{
-			PromptTokens: openaiResponse.Usage.InputTokens,
-			TotalTokens:  openaiResponse.Usage.TotalTokens,
-		}
+		usage = openaiResponse.Usage
 	}
 
 	return &schemas.BifrostImageGenerationResponse{
-		ID:      uuid.NewString(),
 		Created: openaiResponse.Created,
 		Model:   requestModel,
 		Data:    data,
