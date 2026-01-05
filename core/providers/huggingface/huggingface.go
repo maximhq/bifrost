@@ -859,6 +859,16 @@ func (provider *HuggingFaceProvider) TranscriptionStream(ctx *schemas.BifrostCon
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+// ImageGeneration is not supported by Hugging Face provider.
+func (provider *HuggingFaceProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by Hugging Face provider.
+func (provider *HuggingFaceProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by the Hugging Face provider.
 func (provider *HuggingFaceProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())

@@ -1005,6 +1005,73 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// ImageGenerationRequest sends a image generation request to the specified provider.
+func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation request is nil",
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || response.ImageGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+		}
+	}
+
+	return response.ImageGenerationResponse, nil
+}
+
+// ImageGenerationStreamRequest sends a image generation stream request to the specified provider.
+func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
+	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image generation stream request is nil",
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Prompt == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image generation stream request",
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageGenerationStreamRequest
+	bifrostReq.ImageGenerationRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
 // BatchCreateRequest creates a new batch job for asynchronous processing.
 func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -2320,6 +2387,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.TranscriptionRequest = &tmp
 	}
+	if req.ImageGenerationRequest != nil {
+		tmp := *req.ImageGenerationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.ImageGenerationRequest = &tmp
+	}
 
 	return &fallbackReq
 }
@@ -3246,6 +3319,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.TranscriptionResponse = transcriptionResponse
+	case schemas.ImageGenerationRequest:
+		imageResponse, bifrostError := provider.ImageGeneration(req.Context, key, req.BifrostRequest.ImageGenerationRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageGenerationResponse = imageResponse
 	case schemas.FileUploadRequest:
 		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
 		if bifrostError != nil {
@@ -3336,6 +3415,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.SpeechStream(req.Context, postHookRunner, key, req.BifrostRequest.SpeechRequest)
 	case schemas.TranscriptionStreamRequest:
 		return provider.TranscriptionStream(req.Context, postHookRunner, key, req.BifrostRequest.TranscriptionRequest)
+	case schemas.ImageGenerationStreamRequest:
+		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -3651,6 +3732,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.EmbeddingRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
+	req.ImageGenerationRequest = nil
 	req.FileUploadRequest = nil
 	req.FileListRequest = nil
 	req.FileRetrieveRequest = nil

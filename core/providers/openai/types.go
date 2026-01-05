@@ -525,6 +525,10 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
+func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
 // MODEL TYPES
 type OpenAIModel struct {
 	ID      string `json:"id"`
@@ -540,4 +544,35 @@ type OpenAIModel struct {
 type OpenAIListModelsResponse struct {
 	Object string        `json:"object"`
 	Data   []OpenAIModel `json:"data"`
+}
+
+type ImageGenerationEventType string
+
+// OpenAIImageGenerationRequest is the struct for Image Generation requests by OpenAI.
+type OpenAIImageGenerationRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+
+	schemas.ImageGenerationParameters
+
+	Stream    *bool    `json:"stream,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.
+type OpenAIImageGenerationResponse struct {
+	Created int64               `json:"created"`
+	Data    []schemas.ImageData `json:"data"`
+
+	schemas.ImageGenerationResponseParameters
+
+	Usage *schemas.ImageUsage `json:"usage"`
+}
+
+// OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
+type OpenAIImageStreamResponse struct {
+	Type              ImageGenerationEventType `json:"type,omitempty"`
+	B64JSON           *string                  `json:"b64_json,omitempty"`
+	PartialImageIndex int                      `json:"partial_image_index,omitempty"`
+	Usage             *schemas.ImageUsage      `json:"usage,omitempty"`
 }

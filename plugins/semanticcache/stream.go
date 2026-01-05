@@ -116,6 +116,13 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 		if accumulator.Chunks[i].Response.TranscriptionStreamResponse != nil {
 			return accumulator.Chunks[i].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex
 		}
+		if accumulator.Chunks[i].Response.ImageGenerationStreamResponse != nil {
+			// For image generation, sort by Index first, then ChunkIndex
+			if accumulator.Chunks[i].Response.ImageGenerationStreamResponse.Index != accumulator.Chunks[j].Response.ImageGenerationStreamResponse.Index {
+				return accumulator.Chunks[i].Response.ImageGenerationStreamResponse.Index < accumulator.Chunks[j].Response.ImageGenerationStreamResponse.Index
+			}
+			return accumulator.Chunks[i].Response.ImageGenerationStreamResponse.ChunkIndex < accumulator.Chunks[j].Response.ImageGenerationStreamResponse.ChunkIndex
+		}
 		return false
 	})
 

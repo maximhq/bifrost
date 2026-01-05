@@ -1416,6 +1416,16 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+// ImageGeneration is not supported by the Vertex provider.
+func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Vertex provider.
+func (provider *VertexProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
@@ -1425,7 +1435,6 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 			if part.FunctionCall != nil {
 				part.FunctionCall.ID = ""
 			}
-
 			// Remove id from function_response
 			if part.FunctionResponse != nil {
 				part.FunctionResponse.ID = ""

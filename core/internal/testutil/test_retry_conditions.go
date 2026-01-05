@@ -905,6 +905,43 @@ func (c *InvalidEmbeddingDimensionCondition) GetConditionName() string {
 }
 
 // =============================================================================
+// IMAGE CONDITIONS
+// =============================================================================
+
+// EmptyImageGenerationCondition checks for missing or invalid image image
+type EmptyImageGenerationCondition struct{}
+
+func (c *EmptyImageGenerationCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {
+	// If there's an error, let other conditions handle it
+	if err != nil {
+		return false, ""
+	}
+
+	// No response at all
+	if response == nil {
+		return true, "response is nil"
+	}
+
+	// Check if image response exists and is not empty
+	if response.ImageGenerationResponse == nil || len(response.ImageGenerationResponse.Data) == 0 {
+		return true, "response has no image data"
+	}
+
+	// Check each image has either B64JSON or URL
+	for i, img := range response.ImageGenerationResponse.Data {
+		if img.B64JSON == "" && img.URL == "" {
+			return true, fmt.Sprintf("image %d has no B64JSON or URL", i)
+		}
+	}
+
+	return false, ""
+}
+
+func (c *EmptyImageGenerationCondition) GetConditionName() string {
+	return "EmptyImage"
+}
+
+// =============================================================================
 // COUNT TOKENS CONDITIONS
 // =============================================================================
 

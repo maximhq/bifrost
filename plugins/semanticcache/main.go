@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -194,6 +195,19 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	"from_bifrost_semantic_cache_plugin": {
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
+	},
+	// image specific fields
+	"image_urls": {
+		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
+		Description: "Cached image URLs from image generation responses",
+	},
+	"image_b64": {
+		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
+		Description: "Cached base64 image data from image generation responses",
+	},
+	"revised_prompts": {
+		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
+		Description: "Revised prompts from image generation responses",
 	},
 }
 
@@ -728,4 +742,39 @@ func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 	plugin.logger.Debug(fmt.Sprintf("%s Deleted cache entry for key %s", PluginLoggerPrefix, requestID))
 
 	return nil
+}
+
+// getImageCacheKey generates an image-specific cache key using xxhash.
+// Hash components: prompt + size + quality + style + n
+// Returns a prefixed hash string in format "img_<hash>"
+func (plugin *Plugin) getImageCacheKey(req *schemas.BifrostImageGenerationRequest) string {
+	if req == nil || req.Input == nil {
+		return ""
+	}
+
+	h := xxhash.New()
+	h.WriteString(req.Input.Prompt)
+
+	if req.Params != nil {
+		if req.Params.Size != nil {
+			h.WriteString(*req.Params.Size)
+		}
+		if req.Params.Quality != nil {
+			h.WriteString(*req.Params.Quality)
+		}
+		if req.Params.Style != nil {
+			h.WriteString(*req.Params.Style)
+		}
+		if req.Params.N != nil {
+			h.WriteString(fmt.Sprintf("%d", *req.Params.N))
+		}
+		if req.Params.ResponseFormat != nil {
+			h.WriteString(*req.Params.ResponseFormat)
+		}
+		if req.Params.User != nil {
+			h.WriteString(*req.Params.User)
+		}
+	}
+
+	return fmt.Sprintf("img_%x", h.Sum64())
 }

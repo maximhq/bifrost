@@ -541,9 +541,17 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
+	ResponsesImageGenerationCallOutput    *ResponsesImageGenerationCallOutput
+}
+
+type ResponsesImageGenerationCallOutput struct {
+	Result string `json:"result"` // JSON string with image data
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
+	if output.ResponsesImageGenerationCallOutput != nil {
+		return sonic.Marshal(output.ResponsesImageGenerationCallOutput)
+	}
 	if output.ResponsesToolCallOutputStr != nil {
 		return Marshal(*output.ResponsesToolCallOutputStr)
 	}
@@ -553,7 +561,7 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesComputerToolCallOutput != nil {
 		return Marshal(output.ResponsesComputerToolCallOutput)
 	}
-	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data")
+	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {
 	var str string
@@ -566,12 +574,25 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
+
+	// Peek at the object to distinguish image-generation vs computer tool outputs.
+	var raw map[string]interface{}
+	if err := sonic.Unmarshal(data, &raw); err == nil {
+		if _, hasResult := raw["result"]; hasResult {
+			var imageGenerationCallOutput ResponsesImageGenerationCallOutput
+			if err := sonic.Unmarshal(data, &imageGenerationCallOutput); err == nil {
+				output.ResponsesImageGenerationCallOutput = &imageGenerationCallOutput
+				return nil
+			}
+		}
+	}
+
 	var computerToolCallOutput ResponsesComputerToolCallOutputData
 	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
 		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
 		return nil
 	}
-	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data")
+	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
 
 // =============================================================================
