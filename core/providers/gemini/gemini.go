@@ -1522,9 +1522,51 @@ func (provider *GeminiProvider) TranscriptionStream(ctx context.Context, postHoo
 	return responseChan, nil
 }
 
-// ImageGeneration is not supported by the Gemini provider.
+// ImageGeneration performs an image generation request to the Gemini API.
 func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	// Check if image gen is allowed for this provider
+	// if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+	// 	return nil, err
+	// }
+
+	// Prepare body
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToGeminiImageGenerationRequest(request), nil },
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		provider.logger.Warn(string(jsonData))
+		return nil, bifrostErr
+	}
+
+	// Use common request function
+	geminiResponse, rawResponse, latency, bifrostErr := provider.completeRequest(ctx, request.Model, key, jsonData, ":generateContent", &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.ImageGenerationRequest,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response := geminiResponse.ToBifrostImageGenerationResponse()
+
+	// Set ExtraFields
+	response.ExtraFields.Provider = provider.GetProviderKey()
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
 }
 
 // ImageGenerationStream is not supported by the Gemini provider.

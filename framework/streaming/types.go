@@ -27,25 +27,25 @@ const (
 
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
-	RequestID           string
-	Model               string
-	Status              string
-	Stream              bool
-	Latency             int64 // in milliseconds
-	StartTimestamp      time.Time
-	EndTimestamp        time.Time
-	OutputMessage       *schemas.ChatMessage
-	OutputMessages      []schemas.ResponsesMessage // For responses API
-	ToolCalls           []schemas.ChatAssistantMessageToolCall
-	ErrorDetails        *schemas.BifrostError
-	TokenUsage          *schemas.BifrostLLMUsage
-	CacheDebug          *schemas.BifrostCacheDebug
-	Cost                *float64
-	AudioOutput         *schemas.BifrostSpeechResponse
-	TranscriptionOutput *schemas.BifrostTranscriptionResponse
-  ImageGenerationOutput *schemas.BifrostImageGenerationResponse
-	FinishReason        *string
-	RawResponse         *string
+	RequestID             string
+	Model                 string
+	Status                string
+	Stream                bool
+	Latency               int64 // in milliseconds
+	StartTimestamp        time.Time
+	EndTimestamp          time.Time
+	OutputMessage         *schemas.ChatMessage
+	OutputMessages        []schemas.ResponsesMessage // For responses API
+	ToolCalls             []schemas.ChatAssistantMessageToolCall
+	ErrorDetails          *schemas.BifrostError
+	TokenUsage            *schemas.BifrostLLMUsage
+	CacheDebug            *schemas.BifrostCacheDebug
+	Cost                  *float64
+	AudioOutput           *schemas.BifrostSpeechResponse
+	TranscriptionOutput   *schemas.BifrostTranscriptionResponse
+	ImageGenerationOutput *schemas.BifrostImageGenerationResponse
+	FinishReason          *string
+	RawResponse           *string
 }
 
 // AudioStreamChunk represents a single streaming chunk
@@ -273,9 +273,9 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
-    if p.RawRequest != nil {
+		if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
-    }
+		}
 	case StreamTypeImage:
 		imageResp := p.Data.ImageGenerationOutput
 		if imageResp == nil {
@@ -288,6 +288,6 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
-	
+	}
 	return resp
 }
