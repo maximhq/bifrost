@@ -41,94 +41,11 @@ func NewMCPHandler(mcpManager MCPManager, client *bifrost.Bifrost, store *lib.Co
 
 // RegisterRoutes registers all MCP-related routes
 func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// MCP tool execution endpoint
-	r.POST("/v1/mcp/tool/execute", lib.ChainMiddlewares(h.executeTool, middlewares...))
 	r.GET("/api/mcp/clients", lib.ChainMiddlewares(h.getMCPClients, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
 	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.editMCPClient, middlewares...))
 	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.removeMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
-}
-
-// executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool
-func (h *MCPHandler) executeTool(ctx *fasthttp.RequestCtx) {
-	// Check format query parameter
-	format := strings.ToLower(string(ctx.QueryArgs().Peek("format")))
-	switch format {
-	case "chat", "":
-		h.executeChatMCPTool(ctx)
-	case "responses":
-		h.executeResponsesMCPTool(ctx)
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid format value, must be 'chat' or 'responses'")
-		return
-	}
-}
-
-// executeChatMCPTool handles POST /v1/mcp/tool/execute?format=chat - Execute MCP tool
-func (h *MCPHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ChatAssistantMessageToolCall
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
-	}
-
-	// Validate required fields
-	if req.Function.Name == nil || *req.Function.Name == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Tool function name is required")
-		return
-	}
-
-	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
-	defer cancel() // Ensure cleanup on function exit
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
-		return
-	}
-
-	// Execute MCP tool
-	toolMessage, bifrostErr := h.client.ExecuteChatMCPTool(*bifrostCtx, req)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	// Send successful response
-	SendJSON(ctx, toolMessage)
-}
-
-// executeResponsesMCPTool handles POST /v1/mcp/tool/execute?format=responses - Execute MCP tool
-func (h *MCPHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ResponsesToolMessage
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
-	}
-
-	// Validate required fields
-	if req.Name == nil || *req.Name == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Tool function name is required")
-		return
-	}
-
-	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
-	defer cancel() // Ensure cleanup on function exit
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
-		return
-	}
-
-	// Execute MCP tool
-	toolMessage, bifrostErr := h.client.ExecuteResponsesMCPTool(*bifrostCtx, &req)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	// Send successful response
-	SendJSON(ctx, toolMessage)
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients

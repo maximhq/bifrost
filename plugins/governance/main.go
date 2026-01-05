@@ -230,36 +230,6 @@ func (p *GovernancePlugin) GetName() string {
 	return PluginName
 }
 
-func parseVirtualKey(ctx *fasthttp.RequestCtx) *string {
-	var virtualKeyValue string
-	vkHeader := ctx.Request.Header.Peek("x-bf-vk")
-	if string(vkHeader) != "" {
-		return bifrost.Ptr(string(vkHeader))
-	}
-	authHeader := string(ctx.Request.Header.Peek("Authorization"))
-	if authHeader != "" {
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
-			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
-				virtualKeyValue = authHeaderValue
-			}
-		}
-	}
-	if virtualKeyValue != "" {
-		return bifrost.Ptr(virtualKeyValue)
-	}
-	xAPIKey := string(ctx.Request.Header.Peek("x-api-key"))
-	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
-		return bifrost.Ptr(xAPIKey)
-	}
-	// Checking x-goog-api-key header
-	xGoogleAPIKey := string(ctx.Request.Header.Peek("x-goog-api-key"))
-	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
-		return bifrost.Ptr(xGoogleAPIKey)
-	}
-	return nil
-}
-
 // HTTPTransportMiddleware intercepts requests before they are processed (governance decision point)
 func (p *GovernancePlugin) HTTPTransportMiddleware() schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -477,8 +447,8 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
-	virtualKeyValue := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	if virtualKeyValue == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
 			return req, &schemas.PluginShortCircuit{
@@ -583,8 +553,8 @@ func (p *GovernancePlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	}
 
 	// Extract governance information
-	virtualKey := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
-	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 
 	// Skip if no virtual key
 	if virtualKey == "" {

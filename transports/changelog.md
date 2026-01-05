@@ -1,0 +1,1 @@
+- fix: separate mcp inference handler from mcp handler for consistency in auth middlewares
