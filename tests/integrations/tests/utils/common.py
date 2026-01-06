@@ -1811,6 +1811,8 @@ def get_api_key(integration: str) -> str:
         "gemini": "GEMINI_API_KEY",
         "litellm": "LITELLM_API_KEY",
         "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
+        "cohere": "COHERE_API_KEY",
+        "vertex": "VERTEX_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())
@@ -1965,6 +1967,10 @@ def collect_responses_streaming_content(
 
             # Collect text deltas
             if event_type == "response.output_text.delta" and hasattr(chunk, "delta"):
+                content_parts.append(chunk.delta)
+
+            # collect summary text deltas
+            if event_type == "response.summary_text.delta" and hasattr(chunk, "delta"):
                 content_parts.append(chunk.delta)
 
             # Check for function calls
@@ -2494,8 +2500,14 @@ def get_content_string_with_summary(response: Any) -> tuple[str, bool]:
         elif isinstance(response.content, list):
             for item in response.content:
                 if isinstance(item, dict):
+                    # Check for thinking block (Anthropic format)
+                    if item.get('type') == 'thinking' and 'thinking' in item:
+                        has_reasoning_content = True
+                        thinking_text = item.get('thinking')
+                        if isinstance(thinking_text, str):
+                            content += thinking_text + " "
                     # Check for reasoning block with summary
-                    if item.get('type') == 'reasoning' and 'summary' in item:
+                    elif item.get('type') == 'reasoning' and 'summary' in item:
                         has_reasoning_content = True
                         summary = item.get('summary')
                         if isinstance(summary, list):
@@ -2513,6 +2525,9 @@ def get_content_string_with_summary(response: Any) -> tuple[str, bool]:
                     # Check for text block
                     elif item.get('type') == 'text' and 'text' in item:
                         content += item['text'] + " "
+                elif isinstance(item, str):
+                    # Handle plain string items in the content list
+                    content += item + " "
         return content.strip(), has_reasoning_content
     
     # OpenAI API response - check output messages

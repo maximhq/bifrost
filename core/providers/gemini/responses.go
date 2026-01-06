@@ -1457,11 +1457,6 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					},
 				}
 
-				// Also set the tool name if present (Gemini associates on name)
-				if name := strings.TrimSpace(part.FunctionResponse.Name); name != "" {
-					msg.ResponsesToolMessage.Name = schemas.Ptr(name)
-				}
-
 				messages = append(messages, msg)
 
 			case part.Thought && part.Text != "":

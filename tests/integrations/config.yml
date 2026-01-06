@@ -10,6 +10,7 @@ bifrost:
   endpoints:
     openai: "openai"
     anthropic: "anthropic"
+    cohere: "cohere"
     google: "genai"
     litellm: "litellm"
     langchain: "langchain"
@@ -36,7 +37,7 @@ providers:
   openai:
     chat: "gpt-4o"
     vision: "gpt-4o"
-    file: "gpt-5"
+    file: "gpt-4o"
     tools: "gpt-4o-mini"
     speech: "tts-1"
     transcription: "whisper-1"
@@ -111,7 +112,17 @@ providers:
       - "gemini-1.5-flash"
       - "gemini-1.0-pro"
       - "gemini-2.0-flash-001"
-    
+  
+  vertex:
+    chat: "gemini-2.5-flash"
+    vision: "claude-sonnet-4-5"
+    tools: "gemini-2.5-flash"
+    file: "claude-sonnet-4-5"
+    thinking: "gemini-3-pro-preview"
+    embeddings: "gemini-embedding-001"
+    streaming: "gemini-2.5-flash"
+    count_tokens: "claude-sonnet-4-5"
+
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -120,7 +131,7 @@ providers:
     streaming: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
     text_completion: "mistral.mistral-7b-instruct-v0:2"
-    embeddings: "cohere.embed-v4:0"
+    embeddings: "global.cohere.embed-v4:0"
     batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_retrieve: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -150,6 +161,7 @@ provider_api_keys:
   openai: "OPENAI_API_KEY"
   anthropic: "ANTHROPIC_API_KEY"
   gemini: "GEMINI_API_KEY"
+  vertex: "VERTEX_API_KEY"
   bedrock: "AWS_ACCESS_KEY_ID"
   cohere: "COHERE_API_KEY"
 
@@ -276,6 +288,46 @@ provider_scenarios:
     file_content: false  # Gemini doesn't support direct file download
     count_tokens: true
     
+  vertex:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # Gemini requires base64 or file upload
+    image_base64: true
+    file_input: true
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: true
+    prompt_caching: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
+    pydanticai_streaming: false  # PydanticAI GoogleModel streaming has asyncio issues
+    batch_file_upload: false  # Gemini supports file upload via Files API
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # Gemini uses inline requests for batch (synchronous)
+    batch_s3: false  # Gemini does not use S3 for batch
+    file_upload: false
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false  # Gemini doesn't support direct file download
+    count_tokens: false
+
   bedrock:
     simple_chat: true
     multi_turn_conversation: true

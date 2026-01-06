@@ -162,7 +162,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	if config.ResponseMIMEType != "" {
 		switch config.ResponseMIMEType {
 		case "application/json":
-			params.Text = buildOpenAIResponseFormat(config.ResponseJSONSchema)
+			params.Text = buildOpenAIResponseFormat(config.ResponseJSONSchema, config.ResponseSchema)
 		case "text/plain":
 			params.Text = &schemas.ResponsesTextConfig{
 				Format: &schemas.ResponsesTextConfigFormat{
@@ -1065,22 +1065,60 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
-func buildOpenAIResponseFormat(responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
+func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *Schema) *schemas.ResponsesTextConfig {
 	name := "json_response"
 
-	// No schema provided - use json_object mode
-	if responseJsonSchema == nil {
-		return &schemas.ResponsesTextConfig{
-			Format: &schemas.ResponsesTextConfigFormat{
-				Type: "json_object",
-			},
-		}
-	}
+	var schemaMap map[string]interface{}
 
-	// Use responseJsonSchema directly if it's a map
-	schemaMap, ok := responseJsonSchema.(map[string]interface{})
-	if !ok {
-		// If not a map, fall back to json_object mode
+	// Try to use responseJsonSchema first
+	if responseJsonSchema != nil {
+		// Use responseJsonSchema directly if it's a map
+		var ok bool
+		schemaMap, ok = responseJsonSchema.(map[string]interface{})
+		if !ok {
+			// If not a map, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+	} else if responseSchema != nil {
+		// Convert responseSchema to map using JSON marshaling and type normalization
+		data, err := sonic.Marshal(responseSchema)
+		if err != nil {
+			// If marshaling fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+
+		var rawMap map[string]interface{}
+		if err := sonic.Unmarshal(data, &rawMap); err != nil {
+			// If unmarshaling fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+
+		// Apply type normalization (convert types to lowercase)
+		normalized := convertTypeToLowerCase(rawMap)
+		var ok bool
+		schemaMap, ok = normalized.(map[string]interface{})
+		if !ok {
+			// If type assertion fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+	} else {
+		// No schema provided - use json_object mode
 		return &schemas.ResponsesTextConfig{
 			Format: &schemas.ResponsesTextConfigFormat{
 				Type: "json_object",

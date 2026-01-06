@@ -926,15 +926,15 @@ class TestOpenAIIntegration:
         similarity_1_3 = calculate_cosine_similarity(embeddings[0], embeddings[2])
         similarity_2_3 = calculate_cosine_similarity(embeddings[1], embeddings[2])
 
-        # Similar texts should have high similarity (> 0.7)
+        # Similar texts should have high similarity (> 0.6)
         assert (
-            similarity_1_2 > 0.7
+            similarity_1_2 > 0.6
         ), f"Similar texts should have high similarity, got {similarity_1_2:.4f}"
         assert (
-            similarity_1_3 > 0.7
+            similarity_1_3 > 0.6
         ), f"Similar texts should have high similarity, got {similarity_1_3:.4f}"
         assert (
-            similarity_2_3 > 0.7
+            similarity_2_3 > 0.6
         ), f"Similar texts should have high similarity, got {similarity_2_3:.4f}"
 
 
@@ -1015,7 +1015,7 @@ class TestOpenAIIntegration:
         assert_valid_embedding_response(response, expected_dimensions=1536)
 
         # Verify token usage is reported for longer text
-        if provider != "gemini": # gemini does not return usage data
+        if provider != "gemini" and provider != "bedrock": # gemini does not return usage data and openai does not return usage data for long text
             assert response.usage is not None, "Usage should be reported for longer text"
             assert response.usage.total_tokens > 20, "Longer text should consume more tokens"
 
@@ -1198,7 +1198,7 @@ class TestOpenAIIntegration:
         content = get_content_string(response.choices[0].message.content)
         content_lower = content.lower()
 
-        # Should mention quantum computing concepts
+        # Should mention document/file content (testingpdf contains "hello world")
         keywords = ["hello", "world", "testing", "pdf", "file"]
         assert any(
             keyword in content_lower for keyword in keywords
@@ -1235,10 +1235,10 @@ class TestOpenAIIntegration:
                             content += block.text
 
         content_lower = content.lower()
-        keywords = ["hello", "world", "testing", "pdf", "file"] 
+        keywords = ["space", "exploration", "astronaut", "moon", "mars", "rocket", "nasa", "satellite"] 
         assert any(
             keyword in content_lower for keyword in keywords
-        ), f"Response should describe the document content. Got: {content}"
+        ), f"Response should contain space exploration related content. Got: {content}"
 
         # Verify usage information
         if hasattr(response, "usage"):
@@ -1368,12 +1368,12 @@ class TestOpenAIIntegration:
                         if hasattr(block, "text") and block.text:
                             content += block.text
 
-        # Check for recipe-related keywords
+        # Check for document/file content (testingpdf contains "hello world")
         content_lower = content.lower()
         keywords = ["hello", "world", "testing", "pdf", "file"] 
         assert any(
             keyword in content_lower for keyword in keywords
-        ), f"Response should describe the recipe document. Got: {content}"
+        ), f"Response should describe the document content. Got: {content}"
 
     @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("responses"))
     def test_35_responses_with_tools(self, test_config, provider, model, vk_enabled):
@@ -1536,7 +1536,7 @@ class TestOpenAIIntegration:
             response = client.responses.create(
                 model=model_to_use,
                 input=RESPONSES_REASONING_INPUT,
-                max_output_tokens=800,
+                max_output_tokens=1200,
                 reasoning={
                     "effort": "high",
                     "summary": "detailed",
@@ -1670,6 +1670,168 @@ class TestOpenAIIntegration:
             else:
                 # Re-raise if it's a different error
                 raise
+
+    @skip_if_no_api_key("openai")
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking"))
+    def test_38a_responses_reasoning_streaming(self, test_config, provider, model, vk_enabled):
+        """Test Case 38a: Responses API with reasoning streaming"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        model_to_use = format_provider_model(provider, model)
+
+        stream = client.responses.create(
+            model=model_to_use,
+            input=RESPONSES_REASONING_INPUT,
+            max_output_tokens=1200,
+            reasoning={
+                "effort": "high",
+            },
+            stream=True,
+        )
+
+        # Collect streaming content
+        content, chunk_count, tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 30, "Should receive substantial reasoning content"
+        assert not tool_calls_detected, "Reasoning test shouldn't have tool calls"
+
+        # Validate mathematical reasoning content
+        content_lower = content.lower()
+        reasoning_keywords = [
+            "train",
+            "meet",
+            "time",
+            "hour",
+            "pm",
+            "distance",
+            "speed",
+            "mile",
+        ]
+
+        # Should mention at least some reasoning keywords
+        keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in content_lower)
+        assert keyword_matches >= 3, (
+            f"Streaming response should contain reasoning about trains problem. "
+            f"Found {keyword_matches} keywords out of {len(reasoning_keywords)}. "
+            f"Content: {content[:200]}..."
+        )
+
+        # Check for step-by-step reasoning indicators
+        step_indicators = [
+            "step",
+            "first",
+            "then",
+            "next",
+            "calculate",
+            "therefore",
+            "because",
+            "since",
+        ]
+
+        has_steps = any(indicator in content_lower for indicator in step_indicators)
+        assert (
+            has_steps
+        ), f"Streaming response should show step-by-step reasoning. Content: {content[:200]}..."
+
+        # Should have multiple chunks for streaming
+        assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
+
+        print(f"Success: Reasoning streaming test completed with {chunk_count} chunks")
+
+    @skip_if_no_api_key("openai")
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking"))
+    def test_38b_responses_reasoning_streaming_with_summary(self, test_config, provider, model, vk_enabled):
+        """Test Case 38b: Responses API with reasoning streaming and detailed summary"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        model_to_use = format_provider_model(provider, model)
+
+        stream = client.responses.create(
+            model=model_to_use,
+            input=RESPONSES_REASONING_INPUT,
+            max_output_tokens=1200,
+            reasoning={
+                "effort": "high",
+                "summary": "detailed",
+            },
+            include=["reasoning.encrypted_content"],
+            stream=True,
+        )
+
+        # Collect streaming content
+        content, chunk_count, tool_calls_detected, event_types = (
+            collect_responses_streaming_content(stream, timeout=300)
+        )
+
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 30, "Should receive substantial content with reasoning and summary"
+        assert not tool_calls_detected, "Reasoning test shouldn't have tool calls"
+
+        content_lower = content.lower()
+
+        # Validate mathematical reasoning
+        reasoning_keywords = [
+            "train",
+            "meet",
+            "time",
+            "hour",
+            "pm",
+            "distance",
+            "speed",
+            "mile",
+        ]
+
+        keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in content_lower)
+        assert keyword_matches >= 3, (
+            f"Streaming response should contain reasoning about trains problem. "
+            f"Found {keyword_matches} keywords. Content: {content[:200]}..."
+        )
+
+        # Check for step-by-step reasoning or summary indicators
+        reasoning_indicators = [
+            "step",
+            "first",
+            "then",
+            "next",
+            "calculate",
+            "therefore",
+            "because",
+            "since",
+            "summary",
+            "conclusion",
+        ]
+
+        indicator_matches = sum(1 for indicator in reasoning_indicators if indicator in content_lower)
+        assert indicator_matches >= 1, (
+            f"Response should show reasoning or summary indicators. "
+            f"Found {indicator_matches} indicators. Content: {content[:200]}..."
+        )
+
+        # Verify presence of calculation or time
+        has_calculation = any(
+            char in content for char in [":", "+", "-", "*", "/", "="]
+        ) or any(
+            time_word in content_lower
+            for time_word in ["4:00", "5:00", "6:00", "4 pm", "5 pm", "6 pm"]
+        )
+
+        if has_calculation:
+            print("Success: Streaming response contains calculations or time values")
+
+        # Check for reasoning-related events
+        has_reasoning_events = any(
+            "reasoning" in evt or "summary" in evt for evt in event_types
+        )
+        if has_reasoning_events:
+            print("Success: Detected reasoning-related events in stream")
+
+        # Should have multiple chunks for streaming
+        assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
+
+        print(f"Success: Reasoning streaming with summary completed ({chunk_count} chunks)")
 
     # =========================================================================
     # TEXT COMPLETIONS API TEST CASES

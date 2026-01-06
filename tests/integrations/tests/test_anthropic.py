@@ -796,6 +796,9 @@ class TestAnthropicIntegration:
             },
             messages=messages,
             stream=True,
+            extra_body={
+                "reasoning_summary": "detailed"
+            },
         )
 
         # Collect streaming content
