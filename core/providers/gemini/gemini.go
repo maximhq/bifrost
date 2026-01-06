@@ -1163,7 +1163,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 					var buf []byte
 					for _, part := range candidate.Content.Parts {
-						if part.InlineData != nil && part.InlineData.Data != nil {
+						if part.InlineData != nil && part.InlineData.Data != "" {
 							buf = append(buf, part.InlineData.Data...)
 						}
 					}

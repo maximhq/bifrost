@@ -1073,68 +1073,9 @@ type Blob struct {
 	// blobs. This field is not currently used in the Gemini GenerateContent calls.
 	DisplayName string `json:"displayName,omitempty"`
 	// Required. Raw bytes.
-	Data []byte `json:"data,omitempty"`
+	Data string `json:"data,omitempty"`
 	// Required. The IANA standard MIME type of the source data.
 	MIMEType string `json:"mimeType,omitempty"`
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling for Blob.
-// This handles the data field which can be sent as a base64-encoded string from the Google GenAI SDK.
-func (b *Blob) UnmarshalJSON(data []byte) error {
-	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
-	}
-
-	var aux BlobAlias
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	b.DisplayName = aux.DisplayName
-	b.MIMEType = aux.MIMEType
-
-	if aux.Data != "" {
-		// Convert URL-safe base64 to standard base64
-		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.Data, "_", "/"), "-", "+")
-		// Add padding if necessary
-		switch len(standardBase64) % 4 {
-		case 2:
-			standardBase64 += "=="
-		case 3:
-			standardBase64 += "="
-		}
-		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
-		if err != nil {
-			return fmt.Errorf("failed to decode base64 data: %v", err)
-		}
-		b.Data = decoded
-	}
-
-	return nil
-}
-
-// MarshalJSON implements custom JSON marshaling for Blob.
-// This ensures the data field is properly base64-encoded when sending to the Gemini API.
-func (b Blob) MarshalJSON() ([]byte, error) {
-	type BlobAlias struct {
-		DisplayName string `json:"displayName,omitempty"`
-		Data        string `json:"data,omitempty"`
-		MIMEType    string `json:"mimeType,omitempty"`
-	}
-
-	aux := BlobAlias{
-		DisplayName: b.DisplayName,
-		MIMEType:    b.MIMEType,
-	}
-
-	if len(b.Data) > 0 {
-		// Use standard base64 encoding to match Google GenAI SDK
-		aux.Data = base64.StdEncoding.EncodeToString(b.Data)
-	}
-
-	return json.Marshal(aux)
 }
 
 // VideoMetadata describes how the video in the Part should be used by the model.
