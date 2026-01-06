@@ -60,11 +60,11 @@ type ImageData struct {
 }
 
 type ImageUsage struct {
-	InputTokens        int                `json:"input_tokens,omitempty"`
-	InputTokenDetails  *ImageTokenDetails `json:"input_tokens_details,omitempty"`
-	TotalTokens        int                `json:"total_tokens,omitempty"`
-	OutputTokens       int                `json:"output_tokens,omitempty"`
-	OutputTokenDetails *ImageTokenDetails `json:"output_token_details,omitempty"`
+	InputTokens         int                `json:"input_tokens,omitempty"`
+	InputTokensDetails  *ImageTokenDetails `json:"input_tokens_details,omitempty"`
+	TotalTokens         int                `json:"total_tokens,omitempty"`
+	OutputTokens        int                `json:"output_tokens,omitempty"`
+	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
 }
 
 type ImageTokenDetails struct {

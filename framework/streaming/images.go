@@ -146,7 +146,7 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
 		if lastChunk.Delta != nil && lastChunk.Delta.Usage != nil {
 			data.TokenUsage = &schemas.BifrostLLMUsage{
-				PromptTokens:     lastChunk.Delta.Usage.InputTokenDetails.TextTokens,
+				PromptTokens:     lastChunk.Delta.Usage.InputTokensDetails.TextTokens,
 				CompletionTokens: 0, // Image generation doesn't have completion tokens
 				TotalTokens:      lastChunk.Delta.Usage.TotalTokens,
 			}

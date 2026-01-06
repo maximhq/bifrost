@@ -56,6 +56,7 @@ func ToBifrostImageResponse(openaiResponse *OpenAIImageGenerationResponse, reque
 		Created: openaiResponse.Created,
 		Model:   requestModel,
 		Data:    data,
+		Params:  &openaiResponse.ImageGenerationResponseParameters,
 		Usage:   usage,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: schemas.OpenAI,

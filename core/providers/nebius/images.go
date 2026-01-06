@@ -15,39 +15,44 @@ func (provider *NebiusProvider) ToNebiusImageGenerationRequest(bifrostReq *schem
 	}
 
 	req := &NebiusImageGenerationRequest{
-		Model:          &bifrostReq.Model,
-		Prompt:         &bifrostReq.Input.Prompt,
-		ResponseFormat: bifrostReq.Params.ResponseFormat,
+		Model:  &bifrostReq.Model,
+		Prompt: &bifrostReq.Input.Prompt,
 	}
 
-	if bifrostReq.Params != nil && bifrostReq.Params.Size != nil {
-		size := strings.Split(*bifrostReq.Params.Size, "x")
-		if len(size) != 2 {
-			return nil, fmt.Errorf("invalid size format: expected 'WIDTHxHEIGHT', got %q", *bifrostReq.Params.Size)
+	if bifrostReq.Params != nil {
+
+		if bifrostReq.Params.ResponseFormat != nil {
+			req.ResponseFormat = bifrostReq.Params.ResponseFormat
 		}
 
-		width, err := strconv.Atoi(size[0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid width in size %q: %w", *bifrostReq.Params.Size, err)
+		if bifrostReq.Params.Size != nil {
+			size := strings.Split(*bifrostReq.Params.Size, "x")
+			if len(size) != 2 {
+				return nil, fmt.Errorf("invalid size format: expected 'WIDTHxHEIGHT', got %q", *bifrostReq.Params.Size)
+			}
+
+			width, err := strconv.Atoi(size[0])
+			if err != nil {
+				return nil, fmt.Errorf("invalid width in size %q: %w", *bifrostReq.Params.Size, err)
+			}
+
+			height, err := strconv.Atoi(size[1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid height in size %q: %w", *bifrostReq.Params.Size, err)
+			}
+
+			req.Width = &width
+			req.Height = &height
+		}
+		if bifrostReq.Params.OutputFormat != nil {
+			req.ResponseExtension = bifrostReq.Params.OutputFormat
 		}
 
-		height, err := strconv.Atoi(size[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid height in size %q: %w", *bifrostReq.Params.Size, err)
+		// Handle nebius inconsistency
+		if req.ResponseExtension != nil && *req.ResponseExtension == "jpeg" {
+			*req.ResponseExtension = "jpg"
 		}
-
-		req.Width = &width
-		req.Height = &height
 	}
-	if bifrostReq.Params.OutputFormat != nil {
-		req.ResponseExtension = bifrostReq.Params.OutputFormat
-	}
-
-	// Handle nebius inconsistency
-	if *req.ResponseExtension == "jpeg" {
-		*req.ResponseExtension = "jpg"
-	}
-
 	return req, nil
 }
 
