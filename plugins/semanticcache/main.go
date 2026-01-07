@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -745,7 +746,7 @@ func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 }
 
 // getImageCacheKey generates an image-specific cache key using xxhash.
-// Hash components: prompt + size + quality + style + n
+// Hash components: prompt + all image-affecting parameters (size, quality, style, n, background, moderation, output_format, output_compression, response_format, and ExtraParams)
 // Returns a prefixed hash string in format "img_<hash>"
 func (plugin *Plugin) getImageCacheKey(req *schemas.BifrostImageGenerationRequest) string {
 	if req == nil || req.Input == nil {
@@ -756,23 +757,48 @@ func (plugin *Plugin) getImageCacheKey(req *schemas.BifrostImageGenerationReques
 	h.WriteString(req.Input.Prompt)
 
 	if req.Params != nil {
+		// Include all typed fields that affect image generation
 		if req.Params.Size != nil {
-			h.WriteString(*req.Params.Size)
+			h.WriteString("size:" + *req.Params.Size)
 		}
 		if req.Params.Quality != nil {
-			h.WriteString(*req.Params.Quality)
+			h.WriteString("quality:" + *req.Params.Quality)
 		}
 		if req.Params.Style != nil {
-			h.WriteString(*req.Params.Style)
+			h.WriteString("style:" + *req.Params.Style)
 		}
 		if req.Params.N != nil {
-			h.WriteString(fmt.Sprintf("%d", *req.Params.N))
+			h.WriteString(fmt.Sprintf("n:%d", *req.Params.N))
+		}
+		if req.Params.Background != nil {
+			h.WriteString("background:" + *req.Params.Background)
+		}
+		if req.Params.Moderation != nil {
+			h.WriteString("moderation:" + *req.Params.Moderation)
+		}
+		if req.Params.OutputFormat != nil {
+			h.WriteString("output_format:" + *req.Params.OutputFormat)
+		}
+		if req.Params.OutputCompression != nil {
+			h.WriteString(fmt.Sprintf("output_compression:%d", *req.Params.OutputCompression))
 		}
 		if req.Params.ResponseFormat != nil {
-			h.WriteString(*req.Params.ResponseFormat)
+			h.WriteString("response_format:" + *req.Params.ResponseFormat)
 		}
 		if req.Params.User != nil {
-			h.WriteString(*req.Params.User)
+			h.WriteString("user:" + *req.Params.User)
+		}
+
+		// Include ExtraParams in sorted order for deterministic hashing
+		if len(req.Params.ExtraParams) > 0 {
+			keys := make([]string, 0, len(req.Params.ExtraParams))
+			for k := range req.Params.ExtraParams {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys) // Sort keys for stable ordering
+			for _, k := range keys {
+				h.WriteString(fmt.Sprintf("extra:%s:%v", k, req.Params.ExtraParams[k]))
+			}
 		}
 	}
 

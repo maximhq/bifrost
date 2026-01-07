@@ -64,6 +64,8 @@ func deriveSupportedMethods(pipeline string, tags []string) []string {
 		addMethods(schemas.SpeechRequest)
 	case "automatic-speech-recognition":
 		addMethods(schemas.TranscriptionRequest)
+	case "text-to-image":
+		addMethods(schemas.ImageGenerationRequest)
 	}
 
 	for _, tag := range tags {

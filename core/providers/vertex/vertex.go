@@ -1416,7 +1416,7 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if key.VertexKeyConfig == nil {
@@ -1587,7 +1587,11 @@ func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas
 			return nil, bifrostErr
 		}
 
-		response := geminiResponse.ToBifrostImageGenerationResponse()
+		response, err := geminiResponse.ToBifrostImageGenerationResponse()
+		if err != nil {
+			return nil, err
+		}
+
 		response.ExtraFields.RequestType = schemas.ImageGenerationRequest
 		response.ExtraFields.Provider = providerName
 		response.ExtraFields.ModelRequested = request.Model
@@ -1666,7 +1670,7 @@ func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas
 }
 
 // ImageGenerationStream is not supported by the Vertex provider.
-func (provider *VertexProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

@@ -202,11 +202,11 @@ type TranscriptionStreamResponseConverter func(ctx *schemas.BifrostContext, resp
 
 // ImageGenerationResponseConverter is a function that converts BifrostImageGenerationResponse to integration-specific format.
 // It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
-type ImageGenerationResponseConverter func(ctx *context.Context, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
+type ImageGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
 
 // ImageGenerationStreamResponseConverter is a function that converts BifrostImageGenerationStreamResponse to integration-specific streaming format.
 // It takes a BifrostImageGenerationStreamResponse and returns the event type and the streaming format expected by the specific integration.
-type ImageGenerationStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
+type ImageGenerationStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
 
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
@@ -694,7 +694,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
 	case bifrostReq.ImageGenerationRequest != nil:
-		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(requestCtx, bifrostReq.ImageGenerationRequest)
+		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return

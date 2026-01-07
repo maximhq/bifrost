@@ -908,7 +908,7 @@ func (c *InvalidEmbeddingDimensionCondition) GetConditionName() string {
 // IMAGE CONDITIONS
 // =============================================================================
 
-// EmptyImageGenerationCondition checks for missing or invalid image image
+// EmptyImageGenerationCondition checks for missing or invalid image data
 type EmptyImageGenerationCondition struct{}
 
 func (c *EmptyImageGenerationCondition) ShouldRetry(response *schemas.BifrostResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string) {

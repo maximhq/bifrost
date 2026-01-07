@@ -12,6 +12,24 @@ import (
 
 // buildCompleteImageFromImageStreamChunks builds a complete image generation response from accumulated chunks
 func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStreamChunk) *schemas.BifrostImageGenerationResponse {
+
+	// Soecial case for single final chunk, return the complete image response
+	if len(chunks) == 1 && chunks[0].Delta.Type == "image_generation.completed" {
+		finalResponse := &schemas.BifrostImageGenerationResponse{
+			ID:      chunks[0].Delta.ID,
+			Created: chunks[0].Delta.CreatedAt,
+			Model:   chunks[0].Delta.ExtraFields.ModelRequested,
+			Data: []schemas.ImageData{
+				{
+					B64JSON:       chunks[0].Delta.B64JSON,
+					URL:           chunks[0].Delta.URL,
+					Index:         chunks[0].ImageIndex,
+					RevisedPrompt: chunks[0].Delta.RevisedPrompt,
+				},
+			},
+		}
+		return finalResponse
+	}
 	// Sort chunks by ImageIndex, then ChunkIndex
 	sort.Slice(chunks, func(i, j int) bool {
 		if chunks[i].ImageIndex != chunks[j].ImageIndex {
@@ -132,7 +150,13 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 	if bifrostErr != nil {
 		data.Status = "error"
 	}
-	if acc.StartTimestamp.IsZero() || acc.FinalTimestamp.IsZero() {
+	if len(acc.ImageStreamChunks) > 0 {
+		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
+		if lastChunk.Delta != nil && lastChunk.Delta.ExtraFields.Latency > 0 {
+			// Use latency from provider
+			data.Latency = lastChunk.Delta.ExtraFields.Latency
+		}
+	} else if acc.StartTimestamp.IsZero() || acc.FinalTimestamp.IsZero() {
 		data.Latency = 0
 	} else {
 		data.Latency = acc.FinalTimestamp.Sub(acc.StartTimestamp).Nanoseconds() / 1e6
@@ -165,11 +189,14 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 		}
 	}
 
-	// Update semantic cache debug from final chunk if available
+	// Update semantic cache debug and raw response from final chunk if available
 	if len(acc.ImageStreamChunks) > 0 {
 		lastChunk := acc.ImageStreamChunks[len(acc.ImageStreamChunks)-1]
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
+		}
+		if lastChunk.RawResponse != nil {
+			data.RawResponse = lastChunk.RawResponse
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
@@ -179,7 +206,6 @@ func (a *Accumulator) processAccumulatedImageStreamingChunks(requestID string, b
 
 // processImageStreamingResponse processes an image streaming response
 func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
-	a.logger.Debug("[streaming] processing image streaming response")
 	// Extract request ID from context
 	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
@@ -196,13 +222,18 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil && result.ImageGenerationStreamResponse != nil {
 		// Create a deep copy of the delta to avoid pointing to stack memory
+		var partialImageIndex *int
+		if result.ImageGenerationStreamResponse.PartialImageIndex != nil {
+			idx := *result.ImageGenerationStreamResponse.PartialImageIndex
+			partialImageIndex = &idx
+		}
 		newDelta := &schemas.BifrostImageGenerationStreamResponse{
 			ID:                result.ImageGenerationStreamResponse.ID,
 			Type:              result.ImageGenerationStreamResponse.Type,
-			Index:             result.ImageGenerationStreamResponse.Index,
-			ChunkIndex:        result.ImageGenerationStreamResponse.ChunkIndex,
-			PartialImageIndex: result.ImageGenerationStreamResponse.PartialImageIndex,
+			SequenceNumber:    result.ImageGenerationStreamResponse.SequenceNumber,
+			PartialImageIndex: partialImageIndex,
 			B64JSON:           result.ImageGenerationStreamResponse.B64JSON,
+			URL:               result.ImageGenerationStreamResponse.URL,
 			CreatedAt:         result.ImageGenerationStreamResponse.CreatedAt,
 			Size:              result.ImageGenerationStreamResponse.Size,
 			Quality:           result.ImageGenerationStreamResponse.Quality,
@@ -214,8 +245,23 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 			ExtraFields:       result.ImageGenerationStreamResponse.ExtraFields,
 		}
 		chunk.Delta = newDelta
-		chunk.ChunkIndex = result.ImageGenerationStreamResponse.ChunkIndex
-		chunk.ImageIndex = result.ImageGenerationStreamResponse.Index
+		// Prioritize ExtraFields.ChunkIndex over PartialImageIndex (HuggingFace uses ExtraFields.ChunkIndex)
+		if result.ImageGenerationStreamResponse.ExtraFields.ChunkIndex > 0 {
+			chunk.ChunkIndex = result.ImageGenerationStreamResponse.ExtraFields.ChunkIndex
+		} else if result.ImageGenerationStreamResponse.PartialImageIndex != nil {
+			chunk.ChunkIndex = *result.ImageGenerationStreamResponse.PartialImageIndex
+		}
+		// Prioritize Index over SequenceNumber
+		if result.ImageGenerationStreamResponse.Index >= 0 {
+			chunk.ImageIndex = result.ImageGenerationStreamResponse.Index
+		} else {
+			chunk.ImageIndex = result.ImageGenerationStreamResponse.SequenceNumber
+		}
+
+		// Extract raw response if available
+		if result.ImageGenerationStreamResponse.ExtraFields.RawResponse != nil {
+			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ImageGenerationStreamResponse.ExtraFields.RawResponse))
+		}
 
 		// Extract usage if available
 		if result.ImageGenerationStreamResponse.Usage != nil {
@@ -256,13 +302,17 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 				a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
 				return nil, processErr
 			}
+			var rawRequest interface{}
+			if result != nil && result.ImageGenerationStreamResponse != nil && result.ImageGenerationStreamResponse.ExtraFields.RawRequest != nil {
+				rawRequest = result.ImageGenerationStreamResponse.ExtraFields.RawRequest
+			}
 			return &ProcessedStreamResponse{
-				Type:       StreamResponseTypeFinal,
 				RequestID:  requestID,
 				StreamType: StreamTypeImage,
 				Provider:   provider,
 				Model:      model,
 				Data:       data,
+				RawRequest: &rawRequest,
 			}, nil
 		}
 
@@ -278,7 +328,6 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 
 	// This is not the final chunk, so we will send back the delta
 	return &ProcessedStreamResponse{
-		Type:       StreamResponseTypeDelta,
 		RequestID:  requestID,
 		StreamType: StreamTypeImage,
 		Provider:   provider,

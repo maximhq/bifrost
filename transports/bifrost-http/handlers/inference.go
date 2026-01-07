@@ -1162,7 +1162,7 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 func (h *CompletionHandler) handleStreamingTextCompletion(ctx *fasthttp.RequestCtx, req *schemas.BifrostTextCompletionRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
 	// Use the cancellable context from ConvertToBifrostContext
 	// See router.go for detailed explanation of why we need a cancellable context
-	
+
 	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
 		return h.client.TextCompletionStreamRequest(bifrostCtx, req)
 	}
@@ -1471,18 +1471,13 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 
 	// Handle streaming image generation
 	if req.BifrostParams.Stream != nil && *req.BifrostParams.Stream {
-		if req.ResponseFormat != nil && *req.ResponseFormat == "url" {
-			cancel()
-			SendError(ctx, fasthttp.StatusBadRequest, "streaming images must be requested in base64")
-			return
-		}
 		h.handleStreamingImageGeneration(ctx, bifrostReq, bifrostCtx, cancel)
 		return
 	}
 	defer cancel()
 
 	// Execute request
-	resp, bifrostErr := h.client.ImageGenerationRequest(*bifrostCtx, bifrostReq)
+	resp, bifrostErr := h.client.ImageGenerationRequest(bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -1492,13 +1487,13 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 }
 
 // handleStreamingImageGeneration handles streaming image generation requests using Server-Sent Events (SSE)
-func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageGenerationRequest, bifrostCtx *context.Context, cancel context.CancelFunc) {
+func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageGenerationRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
 	// Use the cancellable context from ConvertToBifrostContext
 	// See router.go for detailed explanation of why we need a cancellable context
-	streamCtx := *bifrostCtx
+	// Pass the context directly instead of copying to avoid copying lock values
 
 	getStream := func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-		return h.client.ImageGenerationStreamRequest(streamCtx, req)
+		return h.client.ImageGenerationStreamRequest(bifrostCtx, req)
 	}
 
 	h.handleStreamingResponse(ctx, getStream, cancel)

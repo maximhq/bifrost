@@ -2276,7 +2276,7 @@ func HandleOpenAITranscriptionStreamRequest(
 // ImageGeneration performs an Image Generation request to OpenAI's API.
 // It formats the request, sends it to OpenAI, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
-func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas.Key,
+func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
 	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
@@ -2291,8 +2291,8 @@ func (provider *OpenAIProvider) ImageGeneration(ctx context.Context, key schemas
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
-		provider.sendBackRawRequest,
-		provider.sendBackRawResponse,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
 }
@@ -2388,7 +2388,7 @@ func HandleOpenAIImageGenerationRequest(
 // It formats the request body, creates HTTP request, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
 func (provider *OpenAIProvider) ImageGenerationStream(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
@@ -2426,7 +2426,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	)
 }
 func HandleOpenAIImageGenerationStreaming(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
 	url string,
 	request *schemas.BifrostImageGenerationRequest,
@@ -2496,6 +2496,9 @@ func HandleOpenAIImageGenerationStreaming(
 
 	req.SetBody(jsonBody)
 
+	// Capture start time before making the HTTP request for latency calculation
+	startTime := time.Now()
+
 	// Make the request
 	err := client.Do(req, resp)
 	if err != nil {
@@ -2534,9 +2537,11 @@ func HandleOpenAIImageGenerationStreaming(
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
-		startTime := time.Now()
 		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
+		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
+		imageChunkIndices := make(map[int]int) // image index -> chunk index
+		lastSeenImageIndex := 0                // Track the last seen image index from partial chunks
 
 		for scanner.Scan() {
 			select {
@@ -2563,8 +2568,22 @@ func HandleOpenAIImageGenerationStreaming(
 			}
 
 			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if jsonData == "" || jsonData == "[DONE]" {
+			if jsonData == "" {
 				continue
+			}
+
+			var bifrostErr schemas.BifrostError
+			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+					return
+				}
 			}
 
 			// Parse minimally to extract usage and check for errors
@@ -2572,6 +2591,24 @@ func HandleOpenAIImageGenerationStreaming(
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
+			}
+
+			// Check if response type indicates an error
+			if response.Type == "error" {
+				bifrostErr := &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: "Image generation error received in stream",
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					},
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+				return
 			}
 
 			// Collect usage from completed event
@@ -2586,21 +2623,47 @@ func HandleOpenAIImageGenerationStreaming(
 			// Determine if this is the final chunk
 			isCompleted := response.Type == ImageGenerationCompleted
 
+			// Determine image index
+			// For partial chunks, use PartialImageIndex from response and track it
+			// For completed chunks, use the last seen image index (since completed chunks don't have PartialImageIndex)
+			var imageIndex int
+			if isCompleted {
+				// For completed chunks, use the last seen image index from partial chunks
+				imageIndex = lastSeenImageIndex
+			} else {
+				// For partial chunks, use PartialImageIndex from response and update lastSeenImageIndex
+				imageIndex = response.PartialImageIndex
+				lastSeenImageIndex = imageIndex
+			}
+
+			// Increment chunk index for this image
+			if _, exists := imageChunkIndices[imageIndex]; !exists {
+				imageChunkIndices[imageIndex] = 0
+			} else {
+				imageChunkIndices[imageIndex]++
+			}
+			chunkIndex := imageChunkIndices[imageIndex]
 			// Build chunk with all OpenAI fields
 			chunk := &schemas.BifrostImageGenerationStreamResponse{
-				Type:              string(response.Type),
-				PartialImageIndex: response.PartialImageIndex,
-				CreatedAt:         response.CreatedAt,
-				Size:              response.Size,
-				Quality:           response.Quality,
-				Background:        response.Background,
-				OutputFormat:      response.OutputFormat,
+				Type:           string(response.Type),
+				Index:          imageIndex, // Which image (0-N)
+				SequenceNumber: response.SequenceNumber,
+				CreatedAt:      response.CreatedAt,
+				Size:           response.Size,
+				Quality:        response.Quality,
+				Background:     response.Background,
+				OutputFormat:   response.OutputFormat,
 				ExtraFields: schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.ImageGenerationStreamRequest,
 					Provider:       providerName,
 					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex, // Chunk order within this image
 					Latency:        time.Since(lastChunkTime).Milliseconds(),
 				},
+			}
+			// Only set PartialImageIndex for partial images, not for completed events
+			if !isCompleted {
+				chunk.PartialImageIndex = &response.PartialImageIndex
 			}
 			lastChunkTime = time.Now()
 
@@ -2622,7 +2685,7 @@ func HandleOpenAIImageGenerationStreaming(
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
 				}
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			}
 
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,

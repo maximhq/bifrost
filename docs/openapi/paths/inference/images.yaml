@@ -1,0 +1,57 @@
+# Image Generation Endpoints
+
+image-generation:
+  post:
+    operationId: imageGeneration
+    summary: Generate image
+    description: |
+      Generates images from text prompts using the specified model.
+      
+      Supports streaming via Server-Sent Events (SSE) when `stream=true`.
+      When streaming, images are sent as base64-encoded chunks.
+      
+      **Supported Providers:**
+      - **OpenAI**: `openai/dall-e-2`, `openai/dall-e-3`, `openai/gpt-image-1`
+      - **Gemini**: `gemini/gemini-2.5-flash-image`, `gemini/gemini-2.0-flash-exp`
+      - **Vertex AI** (Imagen): `vertex/imagen-4.0-generate-001` or `gemini/imagen-4.0-generate-001`
+      - **Azure OpenAI**: `azure/{deployment-name}` (DALL-E models via Azure deployments)
+      - **Nebius**: `nebius/{image-generation-model}` (e.g., `nebius/flux-schnell`)
+      - **xAI**: `xai/{image-generation-model}`
+      
+      **Example:**
+      ```json
+      {
+        "model": "openai/dall-e-3",
+        "prompt": "A beautiful sunset over mountains",
+        "n": 1,
+        "size": "1024x1024",
+        "quality": "standard",
+        "response_format": "url"
+      }
+      ```
+    tags:
+      - Image
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageGenerationResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageGenerationStreamResponse'
+            description: |
+              Server-Sent Events stream when `stream=true`.
+              Each event contains a chunk of the image as base64 data.
+              Final event has type `image_generation.completed`.
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

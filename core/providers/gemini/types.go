@@ -80,7 +80,7 @@ type GeminiGenerationRequest struct {
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Imagen-specific fields for :predict endpoint
-	Instances  []ImagenInstance       `json:"instances,omitempty"`
+	Instances  []ImagenInstance        `json:"instances,omitempty"`
 	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
@@ -1673,11 +1673,22 @@ type GeminiImagenRequest struct {
 }
 
 type GeminiImagenParameters struct {
-	NumberOfImages   *int    `json:"numberOfImages,omitempty"`   // 1 - 4 (Imagen 3)
-	SampleCount      *int    `json:"sampleCount,omitempty"`      // 1 - 4 (Vertex AI alias)
-	ImageSize        *string `json:"imageSize,omitempty"`        // "1k", "2k"
-	AspectRatio      *string `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
-	PersonGeneration *string `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+	NumberOfImages   *int                 `json:"numberOfImages,omitempty"`   // 1 - 4
+	SampleCount      *int                 `json:"sampleCount,omitempty"`      // 1 - 4
+	ImageSize        *string              `json:"imageSize,omitempty"`        // "1k", "2k"
+	AspectRatio      *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
+	PersonGeneration *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+	Seed             *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
+	NegativePrompt   *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
+	Language         *string              `json:"language,omitempty"`         // Language code for the prompt
+	EnhancePrompt    *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
+	SafetySettings   *string              `json:"safetySettings,omitempty"`   // Safety settings for content filtering
+	OutputOptions    *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+}
+
+type ImagenOutputOptions struct {
+	MimeType           *string `json:"mimeType,omitempty"`           // Output format for the image generation
+	CompressionQuality *string `json:"compressionQuality,omitempty"` // 0 - 100
 }
 
 // GeminiImagenPrediction represents a image object from imagen

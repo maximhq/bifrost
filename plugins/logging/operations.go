@@ -38,6 +38,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ToolsParsed:                 data.Tools,
 		SpeechInputParsed:           data.SpeechInput,
 		TranscriptionInputParsed:    data.TranscriptionInput,
+		ImageGenerationInputParsed:  data.ImageGenerationInput,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
@@ -120,6 +121,15 @@ func (p *LoggerPlugin) updateLogEntry(
 				p.logger.Error("failed to serialize transcription output: %v", err)
 			} else {
 				updates["transcription_output"] = tempEntry.TranscriptionOutput
+			}
+		}
+
+		if data.ImageGenerationOutput != nil {
+			tempEntry.ImageGenerationOutputParsed = data.ImageGenerationOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize image generation output: %v", err)
+			} else {
+				updates["image_generation_output"] = tempEntry.ImageGenerationOutput
 			}
 		}
 
@@ -272,6 +282,15 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 				p.logger.Error("failed to serialize speech output: %v", err)
 			} else {
 				updates["speech_output"] = tempEntry.SpeechOutput
+			}
+		}
+		// Handle image generation output from stream updates
+		if streamResponse.Data.ImageGenerationOutput != nil {
+			tempEntry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize image generation output: %v", err)
+			} else {
+				updates["image_generation_output"] = tempEntry.ImageGenerationOutput
 			}
 		}
 		// Handle cache debug

@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -48,6 +49,30 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schem
 				if size != "" {
 					bifrostReq.Params.Size = &size
 				}
+			}
+
+			// Map additional parameters to ExtraParams if not in Bifrost schema
+			if bifrostReq.Params.ExtraParams == nil {
+				bifrostReq.Params.ExtraParams = make(map[string]interface{})
+			}
+
+			if request.Parameters.PersonGeneration != nil {
+				bifrostReq.Params.ExtraParams["personGeneration"] = *request.Parameters.PersonGeneration
+			}
+			if request.Parameters.Seed != nil {
+				bifrostReq.Params.ExtraParams["seed"] = *request.Parameters.Seed
+			}
+			if request.Parameters.NegativePrompt != nil {
+				bifrostReq.Params.ExtraParams["negativePrompt"] = *request.Parameters.NegativePrompt
+			}
+			if request.Parameters.Language != nil {
+				bifrostReq.Params.ExtraParams["language"] = *request.Parameters.Language
+			}
+			if request.Parameters.EnhancePrompt != nil {
+				bifrostReq.Params.ExtraParams["enhancePrompt"] = *request.Parameters.EnhancePrompt
+			}
+			if request.Parameters.SafetySettings != nil {
+				bifrostReq.Params.ExtraParams["safetySetting"] = *request.Parameters.SafetySettings
 			}
 		}
 		return bifrostReq
@@ -104,7 +129,7 @@ func convertImagenFormatToSize(imageSize *string, aspectRatio *string) string {
 	return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize)
 }
 
-func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
+func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	bifrostResp := &schemas.BifrostImageGenerationResponse{
 		ID:    response.ResponseID,
 		Model: response.ModelVersion,
@@ -149,11 +174,41 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() *sch
 				if len(imageMetadata) > 0 {
 					bifrostResp.Params = &imageMetadata[0]
 				}
+			} else if textContent != "" {
+				var errorCode *string
+				var errorMessage string
+
+				// Even if finishReason is STOP, if there's no image and there's text, it's a refusal
+				code := "image_generation_refused"
+				errorCode = &code
+				errorMessage = fmt.Sprintf("Image generation was refused: %s", textContent)
+
+				return nil, &schemas.BifrostError{
+					Type:           schemas.Ptr("gemini_image_generation_error"),
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: errorMessage,
+						Code:    errorCode,
+					},
+				}
 			}
 		}
 	}
 
-	return bifrostResp
+	// Check if we have no data at all
+	if len(bifrostResp.Data) == 0 {
+		code := "no_image_data"
+		return nil, &schemas.BifrostError{
+			Type:           schemas.Ptr("gemini_image_generation_error"),
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "No image data was returned from Gemini",
+				Code:    &code,
+			},
+		}
+	}
+
+	return bifrostResp, nil
 }
 
 func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *GeminiGenerationRequest {
@@ -210,6 +265,10 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		},
 	}
 
+	if bifrostReq.Params.N != nil {
+		geminiReq.GenerationConfig.CandidateCount = int32(*bifrostReq.Params.N)
+	}
+
 	return geminiReq
 }
 
@@ -236,7 +295,7 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 	if bifrostReq.Params != nil {
 		if bifrostReq.Params.N != nil {
-			req.Parameters.NumberOfImages = bifrostReq.Params.N
+			req.Parameters.SampleCount = bifrostReq.Params.N
 		}
 
 		// Handle size conversion
@@ -247,6 +306,22 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 			}
 			if aspectRatio != "" {
 				req.Parameters.AspectRatio = &aspectRatio
+			}
+		}
+
+		// Handle output format conversion to mimeType
+		outputFormat := ""
+		if bifrostReq.Params.OutputFormat != nil {
+			outputFormat = *bifrostReq.Params.OutputFormat
+		}
+
+		if outputFormat != "" {
+			mimeType := convertOutputFormatToMimeType(outputFormat)
+			if mimeType != "" {
+				if req.Parameters.OutputOptions == nil {
+					req.Parameters.OutputOptions = &ImagenOutputOptions{}
+				}
+				req.Parameters.OutputOptions.MimeType = &mimeType
 			}
 		}
 
@@ -263,10 +338,50 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 			if personGeneration, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["personGeneration"]); ok {
 				req.Parameters.PersonGeneration = &personGeneration
 			}
+
+			// Map seed from ExtraParams
+			if seed, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
+				req.Parameters.Seed = seed
+			}
+
+			// Map negativePrompt from ExtraParams
+			if negativePrompt, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["negativePrompt"]); ok {
+				req.Parameters.NegativePrompt = &negativePrompt
+			}
+
+			// Map language from ExtraParams
+			if language, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["language"]); ok {
+				req.Parameters.Language = &language
+			}
+
+			// Map enhancePrompt from ExtraParams
+			if enhancePrompt, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["enhancePrompt"]); ok {
+				req.Parameters.EnhancePrompt = enhancePrompt
+			}
+
+			// Map safetySettings from ExtraParams
+			if safetySettings, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["safetySetting"]); ok {
+				req.Parameters.SafetySettings = &safetySettings
+			}
 		}
 	}
 
 	return req
+}
+
+// convertOutputFormatToMimeType converts Bifrost output_format to Imagen mimeType
+// Maps "png" -> "image/png", "jpg"/"jpeg" -> "image/jpeg"
+// Returns empty string for unsupported formats
+func convertOutputFormatToMimeType(outputFormat string) string {
+	format := strings.ToLower(strings.TrimSpace(outputFormat))
+	switch format {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	default:
+		return ""
+	}
 }
 
 // convertSizeToImagenFormat converts standard size format (e.g., "1024x1024") to Imagen format
@@ -281,6 +396,11 @@ func convertSizeToImagenFormat(size string) (string, string) {
 	width, err1 := strconv.Atoi(parts[0])
 	height, err2 := strconv.Atoi(parts[1])
 	if err1 != nil || err2 != nil {
+		return "", ""
+	}
+
+	// Validate width and height are positive integers
+	if width <= 0 || height <= 0 {
 		return "", ""
 	}
 

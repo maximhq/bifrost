@@ -105,7 +105,8 @@ type ImageStreamChunk struct {
 	ErrorDetails       *schemas.BifrostError                         // Error if any
 	Cost               *float64                                      // Cost in dollars from pricing plugin
 	SemanticCacheDebug *schemas.BifrostCacheDebug                    // Semantic cache debug if available
-	TokenUsage         *schemas.BifrostLLMUsage                      // Token usage if available
+	TokenUsage         *schemas.ImageUsage                           // Token usage if available
+	RawResponse        *string                                       // Raw response if available
 }
 
 // StreamAccumulator manages accumulation of streaming chunks
@@ -124,6 +125,7 @@ type StreamAccumulator struct {
 	ResponsesChunksSeen     map[int]struct{}
 	TranscriptionChunksSeen map[int]struct{}
 	AudioChunksSeen         map[int]struct{}
+	ImageChunksSeen         map[int]struct{}
 
 	// Track highest ChunkIndex for metadata extraction (TokenUsage, Cost, FinishReason)
 	MaxChatChunkIndex          int
@@ -354,17 +356,21 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		resp.ImageGenerationResponse = imageResp
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.ImageGenerationStreamRequest,
+			RequestType:    schemas.ImageGenerationRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
 			Latency:        p.Data.Latency,
 		}
+		if p.RawRequest != nil {
+			resp.ImageGenerationResponse.ExtraFields.RawRequest = p.RawRequest
+		}
 		if p.Data.RawResponse != nil {
-			resp.TranscriptionResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+			resp.ImageGenerationResponse.ExtraFields.RawResponse = *p.Data.RawResponse
 		}
 		if p.Data.CacheDebug != nil {
-			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+			resp.ImageGenerationResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
+
 	}
 	return resp
 }

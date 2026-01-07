@@ -879,7 +879,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 									parts = append(parts, &Part{
 										InlineData: &Blob{
 											MIMEType: mimeType,
-											Data:     decodedData,
+											Data:     encodeBytesToBase64String(decodedData),
 										},
 									})
 								}
@@ -916,7 +916,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						parts = append(parts, &Part{
 							InlineData: &Blob{
 								MIMEType: mimeType,
-								Data:     decodedData,
+								Data:     encodeBytesToBase64String(decodedData),
 							},
 						})
 					}
@@ -1431,8 +1431,8 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 //
 // If the input is missing padding, decodeBase64StringToBytes appends the required
 // '=' characters so that the length becomes a multiple of 4.
-// Invalid base64 input will result in a nil slice being returned.
-func decodeBase64StringToBytes(b64 string) []byte {
+// Returns an error if the base64 input is invalid.
+func decodeBase64StringToBytes(b64 string) ([]byte, error) {
 	// Convert URL-safe base64 to standard base64
 	standardBase64 := strings.ReplaceAll(strings.ReplaceAll(b64, "_", "/"), "-", "+")
 
@@ -1444,8 +1444,11 @@ func decodeBase64StringToBytes(b64 string) []byte {
 		standardBase64 += "="
 	}
 
-	decoded, _ := base64.StdEncoding.DecodeString(standardBase64)
-	return decoded
+	decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+	if err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 // encodeBytesToBase64String encodes raw bytes into a standard base64 string.

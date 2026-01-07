@@ -33,7 +33,12 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() *schemas
 
 			// Extract audio data from inline data
 			if part.InlineData != nil && strings.HasPrefix(strings.ToLower(part.InlineData.MIMEType), "audio/") {
-				audioData = append(audioData, part.InlineData.Data...)
+				decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
+				if err != nil {
+					// Skip this part if decoding fails
+					continue
+				}
+				audioData = append(audioData, decodedData...)
 				if audioMimeType == "" {
 					audioMimeType = part.InlineData.MIMEType
 				}

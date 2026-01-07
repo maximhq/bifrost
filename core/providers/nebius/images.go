@@ -52,6 +52,27 @@ func (provider *NebiusProvider) ToNebiusImageGenerationRequest(bifrostReq *schem
 		if req.ResponseExtension != nil && *req.ResponseExtension == "jpeg" {
 			*req.ResponseExtension = "jpg"
 		}
+		if bifrostReq.Params.ExtraParams != nil {
+			// Map num_inference_steps
+			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_inference_steps"]); ok {
+				req.NumInferenceSteps = v
+			}
+
+			// Map seed
+			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
+				req.Seed = v
+			}
+
+			// Map guidance_scale
+			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
+				req.GuidanceScale = v
+			}
+
+			// Map negative_prompt
+			if v, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["negative_prompt"]); ok {
+				req.NegativePrompt = &v
+			}
+		}
 	}
 	return req, nil
 }

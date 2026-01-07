@@ -1163,8 +1163,14 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 					var buf []byte
 					for _, part := range candidate.Content.Parts {
-						if part.InlineData != nil && part.InlineData.Data != "" {
-							buf = append(buf, part.InlineData.Data...)
+						if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+							// Decode base64-encoded audio data
+							decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
+							if err != nil {
+								provider.logger.Warn(fmt.Sprintf("Failed to decode base64 audio data: %v", err))
+								continue
+							}
+							buf = append(buf, decodedData...)
 						}
 					}
 					if len(buf) > 0 {
@@ -1523,7 +1529,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 }
 
 // ImageGeneration performs an image generation request to the Gemini API.
-func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Check if image gen is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
 		return nil, err
@@ -1540,7 +1546,6 @@ func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas
 		func() (any, error) { return ToGeminiImageGenerationRequest(request), nil },
 		provider.GetProviderKey())
 	if bifrostErr != nil {
-		provider.logger.Warn(string(jsonData))
 		return nil, bifrostErr
 	}
 
@@ -1554,7 +1559,16 @@ func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas
 		return nil, bifrostErr
 	}
 
-	response := geminiResponse.ToBifrostImageGenerationResponse()
+	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
+	if bifrostErr != nil {
+		// Add extra fields to error
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       provider.GetProviderKey(),
+			ModelRequested: request.Model,
+			RequestType:    schemas.ImageGenerationRequest,
+		}
+		return nil, bifrostErr
+	}
 
 	// Set ExtraFields
 	response.ExtraFields.Provider = provider.GetProviderKey()
@@ -1574,7 +1588,7 @@ func (provider *GeminiProvider) ImageGeneration(ctx context.Context, key schemas
 }
 
 // handleImagenImageGeneration handles Imagen model requests using Vertex AI endpoint with API key auth
-func (provider *GeminiProvider) handleImagenImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	// Prepare Imagen request body
@@ -1584,14 +1598,10 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx context.Context,
 		func() (any, error) { return ToImagenImageGenerationRequest(request), nil },
 		providerName)
 	if bifrostErr != nil {
-		provider.logger.Warn(string(jsonData))
 		return nil, bifrostErr
 	}
 
 	baseURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:predict", request.Model)
-	if key.Value != "" {
-		baseURL = fmt.Sprintf("%s?key=%s", baseURL, url.QueryEscape(key.Value))
-	}
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -1605,6 +1615,10 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx context.Context,
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	req.SetBody(jsonData)
+
+	if key.Value != "" {
+		req.Header.Set("x-goog-api-key", key.Value)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1652,7 +1666,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx context.Context,
 }
 
 // ImageGenerationStream is not supported by the Gemini provider.
-func (provider *GeminiProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

@@ -1,8 +1,13 @@
 package testutil
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"strings"
 	"testing"
@@ -64,7 +69,7 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				Fallbacks: testConfig.ImageGenerationFallbacks,
 			}
 
-			response, err := client.ImageGenerationRequest(ctx, request)
+			response, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 			if err != nil {
 				return nil, err
 			}
@@ -102,8 +107,26 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Validate base64 if present
 		if imageData.B64JSON != "" {
-			if len(imageData.B64JSON) < 50*1000 {
-				t.Errorf("❌ Base64 image data too short: %d bytes (expected minimum: 50 KB for 1024x1024 image)", len(imageData.B64JSON))
+			// Decode base64 image data
+			decoded, err := base64.StdEncoding.DecodeString(imageData.B64JSON)
+			if err != nil {
+				t.Fatalf("❌ Failed to decode base64 image data: %v", err)
+			}
+			if len(decoded) == 0 {
+				t.Fatalf("❌ Decoded image data is empty")
+			}
+
+			// Decode image config to validate dimensions
+			reader := bytes.NewReader(decoded)
+			config, format, err := image.DecodeConfig(reader)
+			if err != nil {
+				t.Fatalf("❌ Failed to decode image config: %v (format: %s)", err, format)
+			}
+
+			// Validate dimensions are 1024x1024 as requested
+			expectedWidth, expectedHeight := 1024, 1024
+			if config.Width != expectedWidth || config.Height != expectedHeight {
+				t.Errorf("❌ Image dimensions mismatch: got %dx%d, expected %dx%d", config.Width, config.Height, expectedWidth, expectedHeight)
 			}
 		}
 
@@ -175,7 +198,7 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			retryConfig,
 			retryContext,
 			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ImageGenerationStreamRequest(ctx, request)
+				return client.ImageGenerationStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 			},
 			func(responseChannel chan *schemas.BifrostStream) ImageGenerationStreamValidationResult {
 				// Validate stream content

@@ -962,6 +962,15 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if params == nil {
 		return
 	}
+
+	// Merge ExtraParams
+	if len(params.ExtraParams) > 0 {
+		for k, v := range params.ExtraParams {
+			metadata[k] = v
+		}
+	}
+
+	// Set typed fields
 	if params.N != nil {
 		metadata["n"] = *params.N
 	}
@@ -994,9 +1003,6 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	}
 	if params.User != nil {
 		metadata["user"] = *params.User
-	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
 	}
 }
 

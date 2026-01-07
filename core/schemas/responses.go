@@ -550,7 +550,7 @@ type ResponsesImageGenerationCallOutput struct {
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesImageGenerationCallOutput != nil {
-		return sonic.Marshal(output.ResponsesImageGenerationCallOutput)
+		return Marshal(output.ResponsesImageGenerationCallOutput)
 	}
 	if output.ResponsesToolCallOutputStr != nil {
 		return Marshal(*output.ResponsesToolCallOutputStr)
@@ -577,10 +577,10 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 
 	// Peek at the object to distinguish image-generation vs computer tool outputs.
 	var raw map[string]interface{}
-	if err := sonic.Unmarshal(data, &raw); err == nil {
+	if err := Unmarshal(data, &raw); err == nil {
 		if _, hasResult := raw["result"]; hasResult {
 			var imageGenerationCallOutput ResponsesImageGenerationCallOutput
-			if err := sonic.Unmarshal(data, &imageGenerationCallOutput); err == nil {
+			if err := Unmarshal(data, &imageGenerationCallOutput); err == nil {
 				output.ResponsesImageGenerationCallOutput = &imageGenerationCallOutput
 				return nil
 			}

@@ -160,7 +160,7 @@ export const RequestTypeColors = {
 	transcription: "bg-orange-100 text-orange-800",
 	transcription_stream: "bg-lime-100 text-lime-800",
 	image_generation: "bg-indigo-100 text-indigo-800",
-	image_generation_stream: "bg-purple-100 text-purple-800",
+	image_generation_stream: "bg-sky-100 text-sky-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
 
 	batch_create: "bg-green-100 text-green-800",

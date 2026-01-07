@@ -1006,13 +1006,16 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 }
 
 // ImageGenerationRequest sends a image generation request to the specified provider.
-func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
+func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "image generation request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ImageGenerationRequest,
 			},
 		}
 	}
@@ -1021,6 +1024,11 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image generation request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageGenerationRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
 			},
 		}
 	}
@@ -1039,6 +1047,11 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
 			Error: &schemas.ErrorField{
 				Message: "received nil response from provider",
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageGenerationRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
 		}
 	}
 
@@ -1046,13 +1059,16 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx context.Context,
 }
 
 // ImageGenerationStreamRequest sends a image generation stream request to the specified provider.
-func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
+func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext,
 	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "image generation stream request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ImageGenerationStreamRequest,
 			},
 		}
 	}
@@ -1061,6 +1077,11 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx context.Context,
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "prompt not provided for image generation stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageGenerationStreamRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
 			},
 		}
 	}

@@ -66,6 +66,8 @@ tags:
     description: OpenAI Responses API compatible endpoints
   - name: Embeddings
     description: Text embedding generation
+  - name: Image Generations
+    description: Image generation from text prompts
   - name: Audio
     description: Speech synthesis and transcription
   - name: Count Tokens
@@ -129,6 +131,8 @@ paths:
     $ref: './paths/inference/audio.yaml#/speech'
   /v1/audio/transcriptions:
     $ref: './paths/inference/audio.yaml#/transcriptions'
+  /v1/images/generations:
+    $ref: './paths/inference/images.yaml#/image-generation'
   /v1/count_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
   /v1/batches:
@@ -196,6 +200,14 @@ paths:
     $ref: './paths/integrations/openai/batch.yaml#/batches-by-id'
   /openai/v1/batches/{batch_id}/cancel:
     $ref: './paths/integrations/openai/batch.yaml#/batches-cancel'
+
+  # Image Generation
+  /openai/v1/images/generations:
+    $ref: './paths/integrations/openai/images.yaml#/image-generation'
+  /openai/images/generations:
+    $ref: './paths/integrations/openai/images.yaml#/image-generation'
+  /openai/openai/deployments/{deployment-id}/images/generations:
+    $ref: './paths/integrations/openai/images.yaml#/azure-image-generation'
 
   # Files API
   /openai/v1/files:

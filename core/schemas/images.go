@@ -56,7 +56,7 @@ type ImageData struct {
 	URL           string `json:"url,omitempty"`
 	B64JSON       string `json:"b64_json,omitempty"`
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
-	Index         int    `json:"index,omitempty"`
+	Index         int    `json:"index"`
 }
 
 type ImageUsage struct {
@@ -78,9 +78,11 @@ type BifrostImageGenerationStreamResponse struct {
 	Type              string                     `json:"type,omitempty"`
 	Index             int                        `json:"-"` // Which image (0-N)
 	ChunkIndex        int                        `json:"-"` // Chunk order within image
-	PartialImageIndex int                        `json:"partial_image_index"`
-	B64JSON           string                     `json:"b64_json"`
-	CreatedAt         int64                      `json:"created_at"`
+	PartialImageIndex *int                       `json:"partial_image_index,omitempty"`
+	SequenceNumber    int                        `json:"sequence_number,omitempty"`
+	B64JSON           string                     `json:"b64_json,omitempty"`
+	URL               string                     `json:"url,omitempty"`
+	CreatedAt         int64                      `json:"created_at,omitempty"`
 	Size              string                     `json:"size,omitempty"`
 	Quality           string                     `json:"quality,omitempty"`
 	Background        string                     `json:"background,omitempty"`

@@ -4,6 +4,7 @@ package nebius
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -239,7 +240,7 @@ func (provider *NebiusProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 // ImageGeneration performs an Image Generation request to Nebius's API.
 // It formats the request, sends it to Nebius Token Factory, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
-func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	path := providerUtils.GetPathFromContext(ctx, "/v1/images/generations")
 	providerName := schemas.Nebius
 	// Create request
@@ -251,10 +252,11 @@ func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas
 	// Append query parameter if present
 	if request.Params != nil {
 		if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
+			escapedID := url.QueryEscape(fmt.Sprint(rawID))
 			if strings.Contains(path, "?") {
-				path = path + "&ai_project_id=" + fmt.Sprint(rawID)
+				path = path + "&ai_project_id=" + escapedID
 			} else {
-				path = path + "?ai_project_id=" + fmt.Sprint(rawID)
+				path = path + "?ai_project_id=" + escapedID
 			}
 		}
 	}
@@ -378,7 +380,7 @@ func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas
 }
 
 // ImageGenerationStream is not supported by Nebius provider.
-func (provider *NebiusProvider) ImageGenerationStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *NebiusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

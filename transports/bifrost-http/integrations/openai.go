@@ -426,7 +426,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIImageGenerationRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if imageGenReq, ok := req.(*openai.OpenAIImageGenerationRequest); ok {
 					return &schemas.BifrostRequest{
 						ImageGenerationRequest: imageGenReq.ToBifrostImageGenerationRequest(),
@@ -434,7 +434,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid image generation request type")
 			},
-			ImageGenerationResponseConverter: func(ctx *context.Context, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+			ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -442,11 +442,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ImageGenerationStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error) {
+				ImageGenerationStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return resp.Type, resp.ExtraFields.RawResponse, nil
@@ -454,7 +454,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return resp.Type, resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},

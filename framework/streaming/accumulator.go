@@ -127,6 +127,7 @@ func (a *Accumulator) putImageStreamChunk(chunk *ImageStreamChunk) {
 	chunk.Cost = nil
 	chunk.SemanticCacheDebug = nil
 	chunk.TokenUsage = nil
+	chunk.RawResponse = nil
 	a.imageStreamChunkPool.Put(chunk)
 }
 
@@ -296,10 +297,10 @@ func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamCh
 	if acc.StartTimestamp.IsZero() {
 		acc.StartTimestamp = chunk.Timestamp
 	}
-	// Add chunk to the list (chunks arrive in order)
-	acc.ImageStreamChunks = append(acc.ImageStreamChunks, chunk)
 
+	// Only put final chunk into the accumulator, final chunk will always have full image data (no need to accumulate and create a complete image)
 	if isFinalChunk {
+		acc.ImageStreamChunks = append(acc.ImageStreamChunks, chunk)
 		acc.FinalTimestamp = chunk.Timestamp
 	}
 	return nil
