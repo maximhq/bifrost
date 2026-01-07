@@ -132,7 +132,7 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 			var audioData []byte
 			// Extract audio data from all parts
 			for _, part := range candidate.Content.Parts {
-				if part.InlineData != nil && part.InlineData.Data != nil {
+				if part.InlineData != nil && part.InlineData.Data != "" {
 					// Check if this is audio data
 					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
 						audioData = append(audioData, part.InlineData.Data...)
@@ -171,7 +171,7 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 			Parts: []*Part{
 				{
 					InlineData: &Blob{
-						Data:     bifrostResp.Audio,
+						Data:     encodeBytesToBase64String(bifrostResp.Audio),
 						MIMEType: utils.DetectAudioMimeType(bifrostResp.Audio),
 					},
 				},

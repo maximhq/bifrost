@@ -3,7 +3,6 @@ package testutil
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -28,8 +27,6 @@ func RunImageGenerationFallbackTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		}
 
 		// Create request with primary provider that should fail, triggering fallback
-		// Note: This test assumes the primary provider will fail (e.g., invalid key)
-		// In practice, you might need to configure a failing provider for this test
 		request := &schemas.BifrostImageGenerationRequest{
 			Provider: testConfig.Provider,
 			Model:    testConfig.ImageGenerationModel,
@@ -45,36 +42,52 @@ func RunImageGenerationFallbackTest(t *testing.T, client *bifrost.Bifrost, ctx c
 
 		response, bifrostErr := client.ImageGenerationRequest(ctx, request)
 
-		// If primary provider fails, fallback should be used
-		// This test validates that fallback mechanism works
-		if bifrostErr != nil {
-			// Check if error indicates fallback was attempted
-			errorMsg := GetErrorMessage(bifrostErr)
-			if strings.Contains(strings.ToLower(errorMsg), "fallback") {
-				t.Logf("✅ Fallback mechanism triggered (expected behavior)")
+		// If request succeeded, check if fallback was used
+		if bifrostErr == nil {
+			if response == nil {
+				t.Fatalf("❌ Image generation returned nil response")
+			}
+
+			// Check if response came from fallback provider
+			usedFallback := false
+			for _, fallback := range testConfig.ImageGenerationFallbacks {
+				if response.ExtraFields.Provider == fallback.Provider {
+					usedFallback = true
+					break
+				}
+			}
+
+			if !usedFallback && response.ExtraFields.Provider == testConfig.Provider {
+				t.Logf("✅ Image generation succeeded via primary provider: %s", response.ExtraFields.Provider)
+			} else if usedFallback {
+				t.Logf("✅ Fallback mechanism worked - response from fallback provider: %s", response.ExtraFields.Provider)
 			} else {
-				// If we have fallbacks configured, the request should succeed via fallback
-				// If it still fails, log it but don't fail the test (provider-specific)
-				t.Logf("⚠️  Request failed even with fallbacks: %v", errorMsg)
+				t.Errorf("❌ Response provider %s doesn't match primary %s or any fallback providers", response.ExtraFields.Provider, testConfig.Provider)
+			}
+
+			if len(response.Data) > 0 {
+				t.Logf("✅ Received %d image(s) from provider %s", len(response.Data), response.ExtraFields.Provider)
 			}
 			return
 		}
 
-		// If we get here, request succeeded (either primary or fallback)
-		if response == nil {
-			t.Fatal("❌ Image generation returned nil response")
-		}
-
-		// Validate that we got a response from either primary or fallback provider
-		if response.ExtraFields.Provider == "" {
-			t.Error("❌ Response missing provider information")
-		}
-
-		// Log which provider was used
-		t.Logf("✅ Image generation succeeded via provider: %s (may be fallback)", response.ExtraFields.Provider)
-
-		if len(response.Data) > 0 {
-			t.Logf("✅ Received %d image(s) from provider %s", len(response.Data), response.ExtraFields.Provider)
+		// Request failed - check if fallback was attempted
+		if bifrostErr.ExtraFields.Provider != "" {
+			// Check if error came from fallback attempt
+			for _, fallback := range testConfig.ImageGenerationFallbacks {
+				if bifrostErr.ExtraFields.Provider == fallback.Provider {
+					t.Logf("✅ Fallback mechanism attempted - error from fallback provider: %s", bifrostErr.ExtraFields.Provider)
+					return
+				}
+			}
+			// Error from primary provider - fallback should have been attempted if primary truly failed
+			if bifrostErr.ExtraFields.Provider == testConfig.Provider {
+				t.Fatalf("❌ Primary provider failed but no fallback attempt detected. Error: %v", bifrostErr)
+			}
+		} else {
+			if bifrostErr.Error != nil {
+				t.Logf("⚠️  Request failed: %s (fallback detection inconclusive)", bifrostErr.Error.Message)
+			}
 		}
 	})
 }

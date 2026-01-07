@@ -965,11 +965,26 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if params.N != nil {
 		metadata["n"] = *params.N
 	}
+	if params.Background != nil {
+		metadata["background"] = *params.Background
+	}
+	if params.Moderation != nil {
+		metadata["moderation"] = *params.Moderation
+	}
+	if params.PartialImages != nil {
+		metadata["partial_images"] = *params.PartialImages
+	}
 	if params.Size != nil {
 		metadata["size"] = *params.Size
 	}
 	if params.Quality != nil {
 		metadata["quality"] = *params.Quality
+	}
+	if params.OutputCompression != nil {
+		metadata["output_compression"] = *params.OutputCompression
+	}
+	if params.OutputFormat != nil {
+		metadata["output_format"] = *params.OutputFormat
 	}
 	if params.Style != nil {
 		metadata["style"] = *params.Style

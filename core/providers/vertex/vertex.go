@@ -1416,9 +1416,253 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by the Vertex provider.
 func (provider *VertexProvider) ImageGeneration(ctx context.Context, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	if key.VertexKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
+	}
+
+	deployment := provider.getModelDeployment(key, request.Model)
+	// strip google/ prefix if present
+	if after, ok := strings.CutPrefix(deployment, "google/"); ok {
+		deployment = after
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) {
+			// Format messages for Vertex API
+			var requestBody map[string]interface{}
+
+			if schemas.IsGeminiModel(deployment) {
+				reqBody := gemini.ToGeminiImageGenerationRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("image generation input is not provided")
+				}
+				reqBody.Model = deployment
+				// Strip unsupported fields for Vertex Gemini
+				stripVertexGeminiUnsupportedFields(reqBody)
+				// Convert struct to map for Vertex API
+				reqBytes, err := sonic.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				}
+				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				}
+			} else if schemas.IsImagenModel(deployment) {
+				reqBody := gemini.ToImagenImageGenerationRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("image generation input is not provided")
+				}
+				// Convert struct to map for Vertex API
+				reqBytes, err := sonic.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				}
+				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				}
+			} else {
+				reqBody := openai.ToOpenAIImageGenerationRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("image generation input is not provided")
+				}
+				reqBody.Model = deployment
+				// Convert struct to map for Vertex API
+				reqBytes, err := sonic.Marshal(reqBody)
+				if err != nil {
+					return nil, fmt.Errorf("failed to marshal request body: %w", err)
+				}
+				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				}
+			}
+
+			delete(requestBody, "region")
+			return requestBody, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	projectID := key.VertexKeyConfig.ProjectID
+	if projectID == "" {
+		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
+	}
+
+	region := key.VertexKeyConfig.Region
+	if region == "" {
+		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
+	}
+
+	// Auth query is used for fine-tuned models to pass the API key in the query string
+	authQuery := ""
+	// Determine the URL based on model type
+	var completeURL string
+	if schemas.IsImagenModel(deployment) {
+		// Imagen models are published models, use publishers/google/models path
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:predict", projectID, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:predict", region, projectID, region, deployment)
+		}
+	} else if schemas.IsGeminiModel(deployment) {
+		// Gemini models support api key
+		if key.Value != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		}
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:generateContent", region, projectID, region, deployment)
+		}
+	} else {
+		if region == "global" {
+			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/images/generations", projectID)
+		} else {
+			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/images/generations", region, projectID, region)
+		}
+	}
+
+	// Create HTTP request for streaming
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// If auth query is set, add it to the URL
+	// Otherwise, get the oauth2 token and set the Authorization header
+	if authQuery != "" {
+		completeURL = fmt.Sprintf("%s?%s", completeURL, authQuery)
+	} else {
+		// Getting oauth2 token
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	req.SetRequestURI(completeURL)
+	req.SetBody(jsonBody)
+
+	// Make the request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		// Remove client from pool for authentication/authorization errors
+		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+		}
+		return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ImageGenerationRequest,
+		})
+	}
+
+	if schemas.IsGeminiModel(deployment) {
+		geminiResponse := gemini.GenerateContentResponse{}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := geminiResponse.ToBifrostImageGenerationResponse()
+		response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
+		}
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+	} else if schemas.IsImagenModel(deployment) {
+		// Handle Imagen responses
+		imagenResponse := gemini.GeminiImagenResponse{}
+
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &imagenResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := imagenResponse.ToBifrostImageGenerationResponse()
+		response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		if request.Model != deployment {
+			response.ExtraFields.ModelDeployment = deployment
+		}
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+
+	}
+
+	response := &schemas.BifrostImageGenerationResponse{}
+
+	// Use enhanced response handler with pre-allocated response
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	if request.Model != deployment {
+		response.ExtraFields.ModelDeployment = deployment
+	}
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+
 }
 
 // ImageGenerationStream is not supported by the Vertex provider.

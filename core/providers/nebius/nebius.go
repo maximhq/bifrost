@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/gopkg/util/logger"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -250,11 +249,13 @@ func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Append query parameter if present
-	if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
-		if strings.Contains(path, "?") {
-			path = path + "&ai_project_id=" + fmt.Sprint(rawID)
-		} else {
-			path = path + "?ai_project_id=" + fmt.Sprint(rawID)
+	if request.Params != nil {
+		if rawID, ok := request.Params.ExtraParams["ai_project_id"]; ok && rawID != nil {
+			if strings.Contains(path, "?") {
+				path = path + "&ai_project_id=" + fmt.Sprint(rawID)
+			} else {
+				path = path + "?ai_project_id=" + fmt.Sprint(rawID)
+			}
 		}
 	}
 	// Set any extra headers from network config
@@ -288,8 +289,6 @@ func (provider *NebiusProvider) ImageGeneration(ctx context.Context, key schemas
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-
 		var nebiusErr NebiusError
 		bifrostErr := providerUtils.HandleProviderAPIError(resp, &nebiusErr)
 

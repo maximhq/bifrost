@@ -1216,16 +1216,6 @@ func (provider *AzureProvider) ImageGeneration(ctx context.Context, key schemas.
 
 	url := fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion)
 
-	// Prepare Azure-specific headers
-	authHeader := make(map[string]string)
-
-	// Set Azure authentication - either Bearer token or api-key
-	if authToken, ok := ctx.Value(AzureAuthorizationTokenKey).(string); ok {
-		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", authToken)
-	} else {
-		authHeader["api-key"] = key.Value
-	}
-
 	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
 		provider.client,

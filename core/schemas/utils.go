@@ -1156,6 +1156,10 @@ func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }
 
+func IsImagenModel(model string) bool {
+	return strings.Contains(model, "imagen")
+}
+
 // Precompiled regexes for different kinds of version suffixes.
 var (
 	// Anthropic-style date: 20250514

@@ -122,6 +122,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ResponsesReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ListModels", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
+		{"ImageGeneration", testConfig.Scenarios.ImageGeneration && testConfig.ImageGenerationModel != ""},
+		{"ImageGenerationStream", testConfig.Scenarios.ImageGenerationStream && testConfig.ImageGenerationModel != ""},
 		{"BatchCreate", testConfig.Scenarios.BatchCreate},
 		{"BatchList", testConfig.Scenarios.BatchList},
 		{"BatchRetrieve", testConfig.Scenarios.BatchRetrieve},

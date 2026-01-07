@@ -76,6 +76,7 @@ type GeminiGenerationRequest struct {
 	IsEmbedding       bool                     `json:"-"` // Internal field to track if this is an embedding request
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
+	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is a image generation request
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
@@ -1653,4 +1654,30 @@ type GeminiCountTokensResponse struct {
 	PromptTokensDetails []*ModalityTokenCount `json:"promptTokensDetails,omitempty"`
 	// Output only. List of modalities that were processed in the cached content.
 	CacheTokensDetails []*ModalityTokenCount `json:"cacheTokensDetails,omitempty"`
+}
+
+type GeminiImagenRequest struct {
+	Instances *[]struct {
+		Prompt *string `json:"prompt"`
+	} `json:"instances"`
+	Parameters GeminiImagenParameters `json:"parameters"`
+}
+
+type GeminiImagenParameters struct {
+	NumberOfImages   *int    `json:"numberOfImages,omitempty"`   // 1 - 4
+	ImageSize        *string `json:"imageSize,omitempty"`        // "1k", "2k"
+	AspectRatio      *string `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
+	PersonGeneration *string `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+}
+
+// GeminiImagenPrediction represents a image object from imagen
+type GeminiImagenPrediction struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
+	MimeType           string `json:"mimeType,omitempty"`
+	RaiFilteredReason  string `json:"raiFilteredReason,omitempty"`
+}
+
+// GeminiImagenResponse represents the complete response from imagen
+type GeminiImagenResponse struct {
+	Predictions []GeminiImagenPrediction `json:"predictions"` // List of Imagen predictions
 }

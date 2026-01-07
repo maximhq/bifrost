@@ -139,16 +139,21 @@ var speechParamsKnownFields = map[string]bool{
 }
 
 var imageParamsKnownFields = map[string]bool{
-	"model":           true,
-	"prompt":          true,
-	"fallbacks":       true,
-	"stream":          true,
-	"n":               true,
-	"size":            true,
-	"quality":         true,
-	"style":           true,
-	"response_format": true,
-	"user":            true,
+	"model":              true,
+	"prompt":             true,
+	"fallbacks":          true,
+	"stream":             true,
+	"n":                  true,
+	"background":         true,
+	"moderation":         true,
+	"partial_images":     true,
+	"size":               true,
+	"quality":            true,
+	"output_compression": true,
+	"output_format":      true,
+	"style":              true,
+	"response_format":    true,
+	"user":               true,
 }
 
 var transcriptionParamsKnownFields = map[string]bool{

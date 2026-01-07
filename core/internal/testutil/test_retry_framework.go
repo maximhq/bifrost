@@ -158,7 +158,7 @@ type EmbeddingRetryCondition interface {
 	GetConditionName() string
 }
 
-// ImageGenerationRetryCondition defines an interface for checking if a image generation test operation should be retried
+// ImageGenerationRetryCondition defines an interface for checking if an image generation test operation should be retried
 type ImageGenerationRetryCondition interface {
 	ShouldRetry(response *schemas.BifrostImageGenerationResponse, err *schemas.BifrostError, context TestRetryContext) (bool, string)
 	GetConditionName() string

@@ -17,6 +17,10 @@ func RunImageGenerationCacheTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		return
 	}
 
+	if !testConfig.Scenarios.ImageGeneration {
+		return
+	}
+
 	t.Run("ImageGenerationCache", func(t *testing.T) {
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()

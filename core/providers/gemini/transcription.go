@@ -154,7 +154,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		parts = append(parts, &Part{
 			InlineData: &Blob{
 				MIMEType: utils.DetectAudioMimeType(bifrostReq.Input.File),
-				Data:     bifrostReq.Input.File,
+				Data:     encodeBytesToBase64String(bifrostReq.Input.File),
 			},
 		})
 	}
