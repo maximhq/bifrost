@@ -57,7 +57,11 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 	}
 
 	// Convert chat completion messages to Gemini format
-	geminiReq.Contents = convertBifrostMessagesToGemini(bifrostReq.Input)
+	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
+	if systemInstruction != nil {
+		geminiReq.SystemInstruction = systemInstruction
+	}
+	geminiReq.Contents = contents
 
 	return geminiReq
 }

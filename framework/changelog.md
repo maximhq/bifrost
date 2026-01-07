@@ -1,0 +1,1 @@
+- chore: upgrades core to v1.2.48

@@ -250,11 +250,22 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context
 		return []schemas.Key{
 			{
 				Value:  os.Getenv("VERTEX_API_KEY"),
-				Models: []string{},
+				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
 					Region:          getEnvWithDefault("VERTEX_REGION", "us-central1"),
+					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Value:  os.Getenv("VERTEX_API_KEY"),
+				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
+					Region:          getEnvWithDefault("VERTEX_REGION_ANTHROPIC", "us-east5"),
 					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),

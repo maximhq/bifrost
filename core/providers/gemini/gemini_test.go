@@ -31,7 +31,7 @@ func TestGemini(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
 		},
-		VisionModel:          "gemini-2.0-flash",
+		VisionModel:          "gemini-2.5-flash",
 		EmbeddingModel:       "text-embedding-004",
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",

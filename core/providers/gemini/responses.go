@@ -726,7 +726,7 @@ func (response *GenerateContentResponse) ToBifrostResponsesStream(sequenceNumber
 		// Check for finish reason (indicates end of generation)
 		// Only close if we've actually started emitting content (text, tool calls, etc.)
 		// This prevents emitting response.completed for empty chunks with just finishReason
-		if candidate.FinishReason != "" && (state.HasStartedText || state.HasStartedToolCall) {
+		if candidate.FinishReason != "" && len(state.ItemIDs) > 0 {
 			// Close any open items
 			closeResponses := closeGeminiOpenItems(state, response.UsageMetadata, sequenceNumber+len(responses))
 			responses = append(responses, closeResponses...)
@@ -1578,18 +1578,27 @@ func convertGeminiInlineDataToContentBlock(blob *Blob) *schemas.ResponsesMessage
 		}
 	}
 
-	// Handle other files
-	encodedData := base64.StdEncoding.EncodeToString(blob.Data)
+	// Handle other files - format as data URL
+	mimeTypeForFile := mimeType
+	if mimeTypeForFile == "" {
+		mimeTypeForFile = "application/pdf"
+	}
+
+	filename := blob.DisplayName
+	if filename == "" {
+		filename = "unnamed_file"
+	}
+
+	fileDataURL := base64.StdEncoding.EncodeToString(blob.Data)
+	if !strings.HasPrefix(fileDataURL, "data:") {
+		fileDataURL = fmt.Sprintf("data:%s;base64,%s", mimeTypeForFile, fileDataURL)
+	}
 	return &schemas.ResponsesMessageContentBlock{
 		Type: schemas.ResponsesInputMessageContentBlockTypeFile,
 		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
-			FileData: &encodedData,
-			FileType: func() *string {
-				if blob.MIMEType != "" {
-					return &blob.MIMEType
-				}
-				return nil
-			}(),
+			FileData: &fileDataURL,
+			FileType: &mimeTypeForFile,
+			Filename: &filename,
 		},
 	}
 }

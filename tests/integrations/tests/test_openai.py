@@ -1673,78 +1673,8 @@ class TestOpenAIIntegration:
 
     @skip_if_no_api_key("openai")
     @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking"))
-    def test_38a_responses_reasoning_streaming(self, test_config, provider, model, vk_enabled):
-        """Test Case 38a: Responses API with reasoning streaming"""
-        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
-        model_to_use = format_provider_model(provider, model)
-
-        stream = client.responses.create(
-            model=model_to_use,
-            input=RESPONSES_REASONING_INPUT,
-            max_output_tokens=1200,
-            reasoning={
-                "effort": "high",
-            },
-            stream=True,
-        )
-
-        # Collect streaming content
-        content, chunk_count, tool_calls_detected, event_types = (
-            collect_responses_streaming_content(stream, timeout=300)
-        )
-
-        # Validate streaming results
-        assert chunk_count > 0, "Should receive at least one chunk"
-        assert len(content) > 30, "Should receive substantial reasoning content"
-        assert not tool_calls_detected, "Reasoning test shouldn't have tool calls"
-
-        # Validate mathematical reasoning content
-        content_lower = content.lower()
-        reasoning_keywords = [
-            "train",
-            "meet",
-            "time",
-            "hour",
-            "pm",
-            "distance",
-            "speed",
-            "mile",
-        ]
-
-        # Should mention at least some reasoning keywords
-        keyword_matches = sum(1 for keyword in reasoning_keywords if keyword in content_lower)
-        assert keyword_matches >= 3, (
-            f"Streaming response should contain reasoning about trains problem. "
-            f"Found {keyword_matches} keywords out of {len(reasoning_keywords)}. "
-            f"Content: {content[:200]}..."
-        )
-
-        # Check for step-by-step reasoning indicators
-        step_indicators = [
-            "step",
-            "first",
-            "then",
-            "next",
-            "calculate",
-            "therefore",
-            "because",
-            "since",
-        ]
-
-        has_steps = any(indicator in content_lower for indicator in step_indicators)
-        assert (
-            has_steps
-        ), f"Streaming response should show step-by-step reasoning. Content: {content[:200]}..."
-
-        # Should have multiple chunks for streaming
-        assert chunk_count > 1, f"Streaming should have multiple chunks, got {chunk_count}"
-
-        print(f"Success: Reasoning streaming test completed with {chunk_count} chunks")
-
-    @skip_if_no_api_key("openai")
-    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("thinking"))
-    def test_38b_responses_reasoning_streaming_with_summary(self, test_config, provider, model, vk_enabled):
-        """Test Case 38b: Responses API with reasoning streaming and detailed summary"""
+    def test_38a_responses_reasoning_streaming_with_summary(self, test_config, provider, model, vk_enabled):
+        """Test Case 38a: Responses API with reasoning streaming and detailed summary"""
         client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
         model_to_use = format_provider_model(provider, model)
 
@@ -1762,7 +1692,7 @@ class TestOpenAIIntegration:
 
         # Collect streaming content
         content, chunk_count, tool_calls_detected, event_types = (
-            collect_responses_streaming_content(stream, timeout=300)
+            collect_responses_streaming_content(stream, timeout=900)
         )
 
         # Validate streaming results

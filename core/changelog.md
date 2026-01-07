@@ -1,0 +1,2 @@
+- fix: image url and input audio handling in gemini chat converters
+- fix: support both responseJsonSchema and responseSchema for JSON response formatting in gemini

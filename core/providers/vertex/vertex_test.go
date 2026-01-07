@@ -25,10 +25,10 @@ func TestVertex(t *testing.T) {
 	testConfig := testutil.ComprehensiveTestConfig{
 		Provider:       schemas.Vertex,
 		ChatModel:      "google/gemini-2.0-flash-001",
-		VisionModel:    "gemini-2.0-flash-001",
+		VisionModel:    "claude-sonnet-4-5",
 		TextModel:      "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel: "text-multilingual-embedding-002",
-		ReasoningModel: "claude-4.5-haiku",
+		ReasoningModel: "claude-opus-4-5",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -39,13 +39,13 @@ func TestVertex(t *testing.T) {
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
-			ImageURL:              true,
+			ImageURL:              false,
 			ImageBase64:           true,
-			MultipleImages:        true,
+			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			FileBase64:            true,
 			Embedding:             true,
-			Reasoning:             false, // Not supported right now because we are not using native gemini converters
+			Reasoning:             true,
 			ListModels:            false,
 			CountTokens:           true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support

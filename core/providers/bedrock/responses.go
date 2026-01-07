@@ -2728,9 +2728,9 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *Bed
 				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
 			}
 
+			fileType := "application/pdf"
 			// Set file type based on format
 			if block.Document.Format != "" {
-				var fileType string
 				switch block.Document.Format {
 				case "pdf":
 					fileType = "application/pdf"
@@ -2749,7 +2749,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *Bed
 					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
 				} else if block.Document.Source.Bytes != nil {
 					// Base64 encoded bytes (PDF)
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Bytes
+					fileDataURL := *block.Document.Source.Bytes
+					if !strings.HasPrefix(fileDataURL, "data:") {
+						fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
+					}
+					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
 				}
 			}
 

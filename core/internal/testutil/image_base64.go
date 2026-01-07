@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -72,7 +71,7 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 				Model:    testConfig.VisionModel,
 				Input:    chatMessages,
 				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(200),
+					MaxCompletionTokens: bifrost.Ptr(500),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -85,7 +84,7 @@ func RunImageBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 				Model:    testConfig.VisionModel,
 				Input:    responsesMessages,
 				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(200),
+					MaxOutputTokens: bifrost.Ptr(500),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -146,12 +145,13 @@ func validateBase64ImageContent(t *testing.T, content string, apiName string) {
 		strings.Contains(lowerContent, "cat") || strings.Contains(lowerContent, "feline")
 
 	if len(content) < 10 {
-		t.Logf("⚠️ %s response seems quite short for image description: %s", apiName, content)
-	} else if foundAnimal {
-		t.Logf("✅ %s vision model successfully identified animal in base64 image", apiName)
-	} else {
-		t.Logf("✅ %s vision model processed base64 image but may not have clearly identified the animal", apiName)
+		t.Fatalf("❌ %s response too short for image description: %s", apiName, content)
 	}
 
+	if !foundAnimal {
+		t.Fatalf("❌ %s vision model failed to identify any animal in base64 image: %s", apiName, content)
+	}
+
+	t.Logf("✅ %s vision model successfully identified animal in base64 image", apiName)
 	t.Logf("✅ %s lion base64 image processing completed: %s", apiName, content)
 }

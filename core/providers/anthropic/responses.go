@@ -3462,7 +3462,10 @@ func (block AnthropicContentBlock) toBifrostResponsesDocumentBlock() schemas.Res
 			if block.Source.MediaType != nil {
 				mediaType = *block.Source.MediaType
 			}
-			dataURL := "data:" + mediaType + ";base64," + *block.Source.Data
+			dataURL := *block.Source.Data
+			if !strings.HasPrefix(dataURL, "data:") {
+				dataURL = "data:" + mediaType + ";base64," + *block.Source.Data
+			}
 			resultBlock.ResponsesInputMessageContentBlockFile.FileData = &dataURL
 		}
 	case "text":

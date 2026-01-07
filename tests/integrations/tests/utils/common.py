@@ -1970,7 +1970,7 @@ def collect_responses_streaming_content(
                 content_parts.append(chunk.delta)
 
             # collect summary text deltas
-            if event_type == "response.summary_text.delta" and hasattr(chunk, "delta"):
+            if event_type == "response.reasoning_summary_text.delta" and hasattr(chunk, "delta") and chunk.delta:
                 content_parts.append(chunk.delta)
 
             # Check for function calls

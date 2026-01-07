@@ -772,10 +772,36 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
 	var contents []Content
+	var systemInstruction *Content
 
 	for _, message := range messages {
+		// Handle system messages separately - Gemini requires them in SystemInstruction field
+		if message.Role == schemas.ChatMessageRoleSystem {
+			if systemInstruction == nil {
+				systemInstruction = &Content{}
+			}
+
+			// Extract system message content
+			if message.Content != nil {
+				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+					systemInstruction.Parts = append(systemInstruction.Parts, &Part{
+						Text: *message.Content.ContentStr,
+					})
+				} else if message.Content.ContentBlocks != nil {
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							systemInstruction.Parts = append(systemInstruction.Parts, &Part{
+								Text: *block.Text,
+							})
+						}
+					}
+				}
+			}
+			continue
+		}
+
 		var parts []*Part
 
 		// Handle content
@@ -826,8 +852,74 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 								})
 							}
 						}
+					} else if block.ImageURLStruct != nil {
+						// Handle image blocks
+						imageURL := block.ImageURLStruct.URL
+
+						// Sanitize and parse the image URL
+						sanitizedURL, err := schemas.SanitizeImageURL(imageURL)
+						if err != nil {
+							// Skip this block if URL is invalid
+							continue
+						}
+
+						urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
+
+						// Determine MIME type
+						mimeType := "image/jpeg" // default
+						if urlInfo.MediaType != nil {
+							mimeType = *urlInfo.MediaType
+						}
+
+						if urlInfo.Type == schemas.ImageContentTypeBase64 {
+							// Data URL - convert to InlineData (Blob)
+							if urlInfo.DataURLWithoutPrefix != nil {
+								decodedData, err := base64.StdEncoding.DecodeString(*urlInfo.DataURLWithoutPrefix)
+								if err == nil && len(decodedData) > 0 {
+									parts = append(parts, &Part{
+										InlineData: &Blob{
+											MIMEType: mimeType,
+											Data:     decodedData,
+										},
+									})
+								}
+							}
+						} else {
+							// Regular URL - use FileData
+							parts = append(parts, &Part{
+								FileData: &FileData{
+									MIMEType: mimeType,
+									FileURI:  sanitizedURL,
+								},
+							})
+						}
+					} else if block.InputAudio != nil {
+						// Decode the audio data (already base64 encoded in the schema)
+						decodedData, err := base64.StdEncoding.DecodeString(block.InputAudio.Data)
+						if err != nil || len(decodedData) == 0 {
+							continue
+						}
+
+						// Determine MIME type
+						mimeType := "audio/mpeg" // default
+						if block.InputAudio.Format != nil {
+							format := strings.ToLower(strings.TrimSpace(*block.InputAudio.Format))
+							if format != "" {
+								if strings.HasPrefix(format, "audio/") {
+									mimeType = format
+								} else {
+									mimeType = "audio/" + format
+								}
+							}
+						}
+
+						parts = append(parts, &Part{
+							InlineData: &Blob{
+								MIMEType: mimeType,
+								Data:     decodedData,
+							},
+						})
 					}
-					// Handle other content block types as needed
 				}
 			}
 		}
@@ -945,7 +1037,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 		}
 	}
 
-	return contents
+	return contents, systemInstruction
 }
 
 // normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
