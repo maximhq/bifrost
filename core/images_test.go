@@ -220,7 +220,7 @@ func TestImageStreamResponseSerialization(t *testing.T) {
 				Type:       "image_generation.partial_image",
 				Index:      0,
 				ChunkIndex: 3,
-				PartialB64: "dGVzdGRhdGE=",
+				B64JSON:    "dGVzdGRhdGE=",
 			},
 			verify: func(t *testing.T, data map[string]interface{}) {
 				if data["type"] != "image_generation.partial_image" {
@@ -309,7 +309,7 @@ func TestStreamChunkAccumulation(t *testing.T) {
 				Type:       chunkType,
 				Index:      0,
 				ChunkIndex: chunkIdx,
-				PartialB64: originalB64[offset:end],
+				B64JSON:    originalB64[offset:end],
 			})
 			chunkIdx++
 		}
@@ -317,7 +317,7 @@ func TestStreamChunkAccumulation(t *testing.T) {
 		// Reconstruct from chunks
 		var accumulated strings.Builder
 		for _, chunk := range chunks {
-			accumulated.WriteString(chunk.PartialB64)
+			accumulated.WriteString(chunk.B64JSON)
 		}
 
 		if accumulated.String() != originalB64 {
@@ -345,7 +345,7 @@ func TestStreamChunkAccumulation(t *testing.T) {
 			allChunks = append(allChunks, &schemas.BifrostImageGenerationStreamResponse{
 				Index:      0,
 				ChunkIndex: i,
-				PartialB64: image0Data[offset:end],
+				B64JSON:    image0Data[offset:end],
 			})
 		}
 
@@ -358,7 +358,7 @@ func TestStreamChunkAccumulation(t *testing.T) {
 			allChunks = append(allChunks, &schemas.BifrostImageGenerationStreamResponse{
 				Index:      1,
 				ChunkIndex: i,
-				PartialB64: image1Data[offset:end],
+				B64JSON:    image1Data[offset:end],
 			})
 		}
 
@@ -377,10 +377,10 @@ func TestStreamChunkAccumulation(t *testing.T) {
 		// Reconstruct each image
 		var image0Reconstructed, image1Reconstructed strings.Builder
 		for _, chunk := range imageChunks[0] {
-			image0Reconstructed.WriteString(chunk.PartialB64)
+			image0Reconstructed.WriteString(chunk.B64JSON)
 		}
 		for _, chunk := range imageChunks[1] {
-			image1Reconstructed.WriteString(chunk.PartialB64)
+			image1Reconstructed.WriteString(chunk.B64JSON)
 		}
 
 		if image0Reconstructed.String() != image0Data {
@@ -395,10 +395,10 @@ func TestStreamChunkAccumulation(t *testing.T) {
 		t.Parallel()
 
 		chunks := []*schemas.BifrostImageGenerationStreamResponse{
-			{ChunkIndex: 3, PartialB64: "D"},
-			{ChunkIndex: 0, PartialB64: "A"},
-			{ChunkIndex: 2, PartialB64: "C"},
-			{ChunkIndex: 1, PartialB64: "B"},
+			{ChunkIndex: 3, B64JSON: "D"},
+			{ChunkIndex: 0, B64JSON: "A"},
+			{ChunkIndex: 2, B64JSON: "C"},
+			{ChunkIndex: 1, B64JSON: "B"},
 		}
 
 		sort.Slice(chunks, func(i, j int) bool {
@@ -407,7 +407,7 @@ func TestStreamChunkAccumulation(t *testing.T) {
 
 		var result strings.Builder
 		for _, c := range chunks {
-			result.WriteString(c.PartialB64)
+			result.WriteString(c.B64JSON)
 		}
 
 		if result.String() != "ABCD" {
