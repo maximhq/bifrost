@@ -74,13 +74,21 @@ type ImageTokenDetails struct {
 
 // Streaming Response
 type BifrostImageGenerationStreamResponse struct {
-	ID            string                     `json:"id"`
-	Type          string                     `json:"type"`                     // "image_generation.partial_image", "image_generation.completed", "error"
-	Index         int                        `json:"index"`                    // Which image (0-N)
-	ChunkIndex    int                        `json:"chunk_index"`              // Chunk order within image
-	PartialB64    string                     `json:"partial_b64,omitempty"`    // Base64 chunk
-	RevisedPrompt string                     `json:"revised_prompt,omitempty"` // On first chunk
-	Usage         *ImageUsage                `json:"usage,omitempty"`          // On final chunk
-	Error         *BifrostError              `json:"error,omitempty"`
-	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
+	ID                string                     `json:"id,omitempty"`
+	Type              string                     `json:"type,omitempty"`
+	Index             int                        `json:"-"` // Which image (0-N)
+	ChunkIndex        int                        `json:"-"` // Chunk order within image
+	PartialImageIndex int                        `json:"partial_image_index"`
+	B64JSON           string                     `json:"b64_json"`
+	CreatedAt         int64                      `json:"created_at"`
+	Size              string                     `json:"size,omitempty"`
+	Quality           string                     `json:"quality,omitempty"`
+	Background        string                     `json:"background,omitempty"`
+	OutputFormat      string                     `json:"output_format,omitempty"`
+	RevisedPrompt     string                     `json:"revised_prompt,omitempty"`
+	Usage             *ImageUsage                `json:"usage,omitempty"`
+	Error             *BifrostError              `json:"error,omitempty"`
+	RawRequest        string                     `json:"-"`
+	RawResponse       string                     `json:"-"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }

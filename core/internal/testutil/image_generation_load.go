@@ -15,6 +15,11 @@ import (
 
 // RunImageGenerationLoadTest tests concurrent image generation requests
 func RunImageGenerationLoadTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ImageGenerationStream {
+		t.Logf("Image generation stream load test skipped: not supported for provider %s", testConfig.Provider)
+		return
+	}
+
 	if testConfig.ImageGenerationModel == "" {
 		t.Logf("Image generation load test skipped: not configured for provider %s", testConfig.Provider)
 		return

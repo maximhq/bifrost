@@ -574,5 +574,11 @@ type OpenAIImageStreamResponse struct {
 	Type              ImageGenerationEventType `json:"type,omitempty"`
 	B64JSON           *string                  `json:"b64_json,omitempty"`
 	PartialImageIndex int                      `json:"partial_image_index,omitempty"`
+	CreatedAt         int64                    `json:"created_at,omitempty"`
+	Size              string                   `json:"size,omitempty"`
+	Quality           string                   `json:"quality,omitempty"`
+	Background        string                   `json:"background,omitempty"`
+	OutputFormat      string                   `json:"output_format,omitempty"`
+	RawSSE            string                   `json:"-"` // For internal use
 	Usage             *schemas.ImageUsage      `json:"usage,omitempty"`
 }

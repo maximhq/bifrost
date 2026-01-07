@@ -41,11 +41,11 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 		}
 
 		// Reconstruct base64 for each image
-		if chunk.Delta.PartialB64 != "" {
+		if chunk.Delta.B64JSON != "" {
 			if _, ok := images[chunk.ImageIndex]; !ok {
 				images[chunk.ImageIndex] = &strings.Builder{}
 			}
-			images[chunk.ImageIndex].WriteString(chunk.Delta.PartialB64)
+			images[chunk.ImageIndex].WriteString(chunk.Delta.B64JSON)
 		}
 	}
 
@@ -197,15 +197,21 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 	} else if result != nil && result.ImageGenerationStreamResponse != nil {
 		// Create a deep copy of the delta to avoid pointing to stack memory
 		newDelta := &schemas.BifrostImageGenerationStreamResponse{
-			ID:            result.ImageGenerationStreamResponse.ID,
-			Type:          result.ImageGenerationStreamResponse.Type,
-			Index:         result.ImageGenerationStreamResponse.Index,
-			ChunkIndex:    result.ImageGenerationStreamResponse.ChunkIndex,
-			PartialB64:    result.ImageGenerationStreamResponse.PartialB64,
-			RevisedPrompt: result.ImageGenerationStreamResponse.RevisedPrompt,
-			Usage:         result.ImageGenerationStreamResponse.Usage,
-			Error:         result.ImageGenerationStreamResponse.Error,
-			ExtraFields:   result.ImageGenerationStreamResponse.ExtraFields,
+			ID:                result.ImageGenerationStreamResponse.ID,
+			Type:              result.ImageGenerationStreamResponse.Type,
+			Index:             result.ImageGenerationStreamResponse.Index,
+			ChunkIndex:        result.ImageGenerationStreamResponse.ChunkIndex,
+			PartialImageIndex: result.ImageGenerationStreamResponse.PartialImageIndex,
+			B64JSON:           result.ImageGenerationStreamResponse.B64JSON,
+			CreatedAt:         result.ImageGenerationStreamResponse.CreatedAt,
+			Size:              result.ImageGenerationStreamResponse.Size,
+			Quality:           result.ImageGenerationStreamResponse.Quality,
+			Background:        result.ImageGenerationStreamResponse.Background,
+			OutputFormat:      result.ImageGenerationStreamResponse.OutputFormat,
+			RevisedPrompt:     result.ImageGenerationStreamResponse.RevisedPrompt,
+			Usage:             result.ImageGenerationStreamResponse.Usage,
+			Error:             result.ImageGenerationStreamResponse.Error,
+			ExtraFields:       result.ImageGenerationStreamResponse.ExtraFields,
 		}
 		chunk.Delta = newDelta
 		chunk.ChunkIndex = result.ImageGenerationStreamResponse.ChunkIndex

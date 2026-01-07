@@ -1257,6 +1257,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}()
 
+		var skipDoneMarker bool
+
 		// Process streaming responses
 		for chunk := range stream {
 			if chunk == nil {
@@ -1265,8 +1267,14 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
-				(chunk.BifrostError != nil && chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest) {
+				chunk.BifrostImageGenerationStreamResponse != nil ||
+				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest)) {
 				includeEventType = true
+			}
+
+			// Image generation streams don't use [DONE] marker
+			if chunk.BifrostImageGenerationStreamResponse != nil {
+				skipDoneMarker = true
 			}
 
 			// Convert response to JSON
@@ -1278,10 +1286,12 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 
 			// Send as SSE data
 			if includeEventType {
-				// For responses API, use OpenAI-compatible format with event line
+				// For responses and image gen API, use OpenAI-compatible format with event line
 				eventType := ""
 				if chunk.BifrostResponsesStreamResponse != nil {
 					eventType = string(chunk.BifrostResponsesStreamResponse.Type)
+				} else if chunk.BifrostImageGenerationStreamResponse != nil {
+					eventType = chunk.BifrostImageGenerationStreamResponse.Type
 				} else if chunk.BifrostError != nil {
 					eventType = string(schemas.ResponsesStreamResponseTypeError)
 				}
@@ -1312,8 +1322,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 			}
 		}
 
-		if !includeEventType {
-			// Send the [DONE] marker to indicate the end of the stream (only for non-responses APIs)
+		if !includeEventType && !skipDoneMarker {
+			// Send the [DONE] marker to indicate the end of the stream (only for non-responses/image-gen APIs)
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to write SSE [DONE] marker: %v", err))
 				cancel() // Client disconnected (write error), cancel upstream stream

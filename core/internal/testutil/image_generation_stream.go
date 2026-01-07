@@ -15,6 +15,11 @@ import (
 
 // RunImageGenerationStreamTest executes the end-to-end streaming image generation test
 func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ImageGenerationStream {
+		t.Logf("Image generation streaming not supported for provider %s", testConfig.Provider)
+		return
+	}
+
 	if testConfig.ImageGenerationModel == "" {
 		t.Logf("Image generation streaming not configured for provider %s", testConfig.Provider)
 		return
@@ -44,10 +49,8 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				Prompt: "A futuristic cityscape at sunset with flying cars",
 			},
 			Params: &schemas.ImageGenerationParameters{
-				Size:           bifrost.Ptr("1024x1024"),
-				Quality:        bifrost.Ptr("hd"),
-				ResponseFormat: bifrost.Ptr("b64_json"),
-				N:              bifrost.Ptr(1),
+				Size:    bifrost.Ptr("1024x1024"),
+				Quality: bifrost.Ptr("low"),
 			},
 			Fallbacks: testConfig.ImageGenerationFallbacks,
 		}

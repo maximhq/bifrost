@@ -38,7 +38,7 @@ func TestOpenAI(t *testing.T) {
 		},
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ReasoningModel:       "o1",
-		ImageGenerationModel: "dall-e-3",
+		ImageGenerationModel: "gpt-image-1",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,

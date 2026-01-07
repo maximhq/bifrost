@@ -53,10 +53,9 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					Prompt: "A serene Japanese garden with cherry blossoms in spring",
 				},
 				Params: &schemas.ImageGenerationParameters{
-					Size:           bifrost.Ptr("1024x1024"),
-					Quality:        bifrost.Ptr("standard"),
-					ResponseFormat: bifrost.Ptr("b64_json"),
-					N:              bifrost.Ptr(1),
+					Size:    bifrost.Ptr("1024x1024"),
+					Quality: bifrost.Ptr("low"),
+					N:       bifrost.Ptr(1),
 				},
 				Fallbacks: testConfig.ImageGenerationFallbacks,
 			}

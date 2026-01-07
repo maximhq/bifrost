@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/google/uuid"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -2535,13 +2534,11 @@ func HandleOpenAIImageGenerationStreaming(
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
-		chunkIndex := -1
-
 		startTime := time.Now()
 		lastChunkTime := startTime
+		var collectedUsage *schemas.ImageUsage
 
 		for scanner.Scan() {
-			// Check if context is done before processing
 			select {
 			case <-ctx.Done():
 				return
@@ -2550,144 +2547,87 @@ func HandleOpenAIImageGenerationStreaming(
 
 			line := scanner.Text()
 
-			// Check for end of stream
+			// Skip empty lines
 			if line == "" {
 				continue
 			}
 
-			var jsonData string
-
-			// Parse SSE data
-			if after, ok := strings.CutPrefix(line, "data: "); ok {
-				jsonData = after
-			} else {
-				// Handle raw JSON errors (without "data: " prefix)
-				jsonData = line
-			}
-
-			// Skip empty data
-			if strings.TrimSpace(jsonData) == "" {
+			// Skip event type lines (event type is in the data payload)
+			if strings.HasPrefix(line, "event:") {
 				continue
 			}
 
-			// First, check if this is an error response
-			var bifrostErr schemas.BifrostError
-			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
-				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						RequestType:    schemas.ImageGenerationStreamRequest,
-					}
-					ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
-					return
-				}
+			// Parse data line
+			if !strings.HasPrefix(line, "data:") {
+				continue
 			}
 
-			// Parse into bifrost response
-			var response *OpenAIImageStreamResponse
+			jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if jsonData == "" || jsonData == "[DONE]" {
+				continue
+			}
+
+			// Parse minimally to extract usage and check for errors
+			var response OpenAIImageStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
 			}
 
-			// TODO: Track Usage Correctly
-			// Handle final chunks (when stream_options include_usage is true)
-			if response.Type == ImageGenerationCompleted && response.Usage != nil {
-				// Collect usage information and send at the end of the stream
-				// Usage is contained within the completion message
+			// Collect usage from completed event
+			if response.Usage != nil {
+				collectedUsage = &schemas.ImageUsage{
+					InputTokens:  response.Usage.InputTokens,
+					OutputTokens: response.Usage.OutputTokens,
+					TotalTokens:  response.Usage.TotalTokens,
+				}
 			}
 
-			var chunkType string
-			switch response.Type {
-			case ImageGenerationCompleted:
-				chunkType = string(ImageGenerationCompleted)
-			case ImageGenerationPartial:
-				chunkType = string(ImageGenerationPartial)
-			}
+			// Determine if this is the final chunk
+			isCompleted := response.Type == ImageGenerationCompleted
 
-			// Handle image data chunks
+			// Build chunk with all OpenAI fields
+			chunk := &schemas.BifrostImageGenerationStreamResponse{
+				Type:              string(response.Type),
+				PartialImageIndex: response.PartialImageIndex,
+				CreatedAt:         response.CreatedAt,
+				Size:              response.Size,
+				Quality:           response.Quality,
+				Background:        response.Background,
+				OutputFormat:      response.OutputFormat,
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.ImageGenerationStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					Latency:        time.Since(lastChunkTime).Milliseconds(),
+				},
+			}
+			lastChunkTime = time.Now()
+
+			// Copy b64_json if present
 			if response.B64JSON != nil {
-				b64Data := *response.B64JSON
-				chunkSize := ImageGenerationChunkSize
-				for offset := 0; offset < len(b64Data); offset += chunkSize {
-					end := offset + chunkSize
-					if end > len(b64Data) {
-						end = len(b64Data)
-					}
-
-					chunkIndex++
-					chunk := b64Data[offset:end]
-
-					bifrostChunk := &schemas.BifrostImageGenerationStreamResponse{
-						ID:         uuid.NewString(),
-						Index:      response.PartialImageIndex,
-						ChunkIndex: chunkIndex,
-						PartialB64: chunk,
-						Type:       chunkType,
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:    schemas.ImageGenerationStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(lastChunkTime).Milliseconds(),
-						},
-					}
-
-					// Set raw response if enabled
-					if sendBackRawResponse {
-						bifrostChunk.ExtraFields.RawResponse = jsonData
-					}
-
-					lastChunkTime = time.Now()
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, bifrostChunk), responseChan)
-				}
+				chunk.B64JSON = *response.B64JSON
 			}
 
-			// Handle completion chunk
-			if response.Type == ImageGenerationCompleted {
-				// Ensure completion chunk has a strictly increasing index.
-				chunkIndex++
-				completionChunk := &schemas.BifrostImageGenerationStreamResponse{
-					ID:         uuid.NewString(),
-					Index:      response.PartialImageIndex,
-					ChunkIndex: chunkIndex,
-					Type:       string(ImageGenerationCompleted),
-					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ImageGenerationStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(startTime).Milliseconds(),
-					},
-				}
-				if response.Usage != nil {
-					completionChunk.Usage = &schemas.ImageUsage{
-						InputTokens: response.Usage.InputTokens,
-						TotalTokens: response.Usage.TotalTokens,
-					}
-				}
-
-				// Set raw request if enabled (only on last chunk)
+			if isCompleted {
+				chunk.Usage = collectedUsage
+				// For completed chunk, use total latency from start
+				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				if sendBackRawRequest {
-					providerUtils.ParseAndSetRawRequest(&completionChunk.ExtraFields, jsonBody)
+					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
 				}
-
-				// Set raw response if enabled
-				if sendBackRawResponse {
-					completionChunk.ExtraFields.RawResponse = jsonData
-				}
-
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, completionChunk),
-					responseChan)
-				return // Stop processing after completion
+			}
+
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+				providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+				responseChan)
+
+			if isCompleted {
+				return
 			}
 		}
 
-		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, logger)
