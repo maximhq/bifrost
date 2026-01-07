@@ -846,12 +846,18 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx context.Context, postH
 						usage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
-					if streamEvent.Usage.CacheReadInputTokens > 0 {
+					if streamEvent.Usage.CacheReadInputTokens > 0 || streamEvent.Usage.CacheWriteInputTokens > 0 {
 						if usage.PromptTokensDetails == nil {
 							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 						}
 						if streamEvent.Usage.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
 							usage.PromptTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
+						}
+						if streamEvent.Usage.CacheReadInputTokens > usage.PromptTokensDetails.CacheReadTokens {
+							usage.PromptTokensDetails.CacheReadTokens = streamEvent.Usage.CacheReadInputTokens
+						}
+						if streamEvent.Usage.CacheWriteInputTokens > usage.PromptTokensDetails.CacheCreationTokens {
+							usage.PromptTokensDetails.CacheCreationTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
@@ -1117,12 +1123,18 @@ func (provider *BedrockProvider) ResponsesStream(ctx context.Context, postHookRu
 						usage.TotalTokens = streamEvent.Usage.TotalTokens
 					}
 					// Handle cached tokens if present
-					if streamEvent.Usage.CacheReadInputTokens > 0 {
+					if streamEvent.Usage.CacheReadInputTokens > 0 || streamEvent.Usage.CacheWriteInputTokens > 0 {
 						if usage.InputTokensDetails == nil {
 							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 						}
 						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
 							usage.InputTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
+						}
+						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CacheReadTokens {
+							usage.InputTokensDetails.CacheReadTokens = streamEvent.Usage.CacheReadInputTokens
+						}
+						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CacheCreationTokens {
+							usage.InputTokensDetails.CacheCreationTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {

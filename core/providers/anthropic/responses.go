@@ -743,9 +743,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 					TotalTokens:  chunk.Usage.InputTokens + chunk.Usage.OutputTokens,
 				}
 				// Handle cached tokens if present
-				if chunk.Usage.CacheReadInputTokens > 0 {
+				if chunk.Usage.CacheReadInputTokens > 0 || chunk.Usage.CacheCreationInputTokens > 0 {
 					bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedTokens: chunk.Usage.CacheReadInputTokens,
+						CachedTokens:        chunk.Usage.CacheReadInputTokens,
+						CacheReadTokens:     chunk.Usage.CacheReadInputTokens,
+						CacheCreationTokens: chunk.Usage.CacheCreationInputTokens,
+					}
+					// Map ephemeral TTL tokens
+					if chunk.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || chunk.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+						bifrostUsage.InputTokensDetails.CacheCreation = &schemas.CacheCreationTokens{
+							Ephemeral5mInputTokens: chunk.Usage.CacheCreation.Ephemeral5mInputTokens,
+							Ephemeral1hInputTokens: chunk.Usage.CacheCreation.Ephemeral1hInputTokens,
+						}
 					}
 				}
 				if chunk.Usage.CacheCreationInputTokens > 0 {
@@ -1156,8 +1165,23 @@ func ToAnthropicResponsesStreamResponse(ctx context.Context, bifrostResp *schema
 				InputTokens:  bifrostResp.Response.Usage.InputTokens,
 				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
 			}
-			if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-				anthropicContentDeltaEvent.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+			if bifrostResp.Response.Usage.InputTokensDetails != nil {
+				// Prefer new granular fields, fall back to CachedTokens
+				if bifrostResp.Response.Usage.InputTokensDetails.CacheReadTokens > 0 {
+					anthropicContentDeltaEvent.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CacheReadTokens
+				} else if bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+					anthropicContentDeltaEvent.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+				}
+				if bifrostResp.Response.Usage.InputTokensDetails.CacheCreationTokens > 0 {
+					anthropicContentDeltaEvent.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CacheCreationTokens
+				}
+				// Map ephemeral TTL tokens
+				if bifrostResp.Response.Usage.InputTokensDetails.CacheCreation != nil {
+					anthropicContentDeltaEvent.Usage.CacheCreation = AnthropicUsageCacheCreation{
+						Ephemeral5mInputTokens: bifrostResp.Response.Usage.InputTokensDetails.CacheCreation.Ephemeral5mInputTokens,
+						Ephemeral1hInputTokens: bifrostResp.Response.Usage.InputTokensDetails.CacheCreation.Ephemeral1hInputTokens,
+					}
+				}
 			}
 			if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
 				anthropicContentDeltaEvent.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
@@ -1223,8 +1247,23 @@ func ToAnthropicResponsesStreamResponse(ctx context.Context, bifrostResp *schema
 					InputTokens:  bifrostResp.Response.Usage.InputTokens,
 					OutputTokens: bifrostResp.Response.Usage.OutputTokens,
 				}
-				if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-					streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+				if bifrostResp.Response.Usage.InputTokensDetails != nil {
+					// Prefer new granular fields, fall back to CachedTokens
+					if bifrostResp.Response.Usage.InputTokensDetails.CacheReadTokens > 0 {
+						streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CacheReadTokens
+					} else if bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
+						streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
+					}
+					if bifrostResp.Response.Usage.InputTokensDetails.CacheCreationTokens > 0 {
+						streamResp.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CacheCreationTokens
+					}
+					// Map ephemeral TTL tokens
+					if bifrostResp.Response.Usage.InputTokensDetails.CacheCreation != nil {
+						streamResp.Usage.CacheCreation = AnthropicUsageCacheCreation{
+							Ephemeral5mInputTokens: bifrostResp.Response.Usage.InputTokensDetails.CacheCreation.Ephemeral5mInputTokens,
+							Ephemeral1hInputTokens: bifrostResp.Response.Usage.InputTokensDetails.CacheCreation.Ephemeral1hInputTokens,
+						}
+					}
 				}
 				if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
 					streamResp.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
@@ -1532,11 +1571,21 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.
 		}
 
 		// Handle cached tokens if present
-		if response.Usage.CacheReadInputTokens > 0 {
+		if response.Usage.CacheReadInputTokens > 0 || response.Usage.CacheCreationInputTokens > 0 {
 			if bifrostResp.Usage.InputTokensDetails == nil {
 				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
 			bifrostResp.Usage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
+			bifrostResp.Usage.InputTokensDetails.CacheReadTokens = response.Usage.CacheReadInputTokens
+			bifrostResp.Usage.InputTokensDetails.CacheCreationTokens = response.Usage.CacheCreationInputTokens
+
+			// Map ephemeral TTL-specific cache creation tokens
+			if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+				bifrostResp.Usage.InputTokensDetails.CacheCreation = &schemas.CacheCreationTokens{
+					Ephemeral5mInputTokens: response.Usage.CacheCreation.Ephemeral5mInputTokens,
+					Ephemeral1hInputTokens: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+				}
+			}
 		}
 		if response.Usage.CacheCreationInputTokens > 0 {
 			if bifrostResp.Usage.OutputTokensDetails == nil {
@@ -1583,8 +1632,25 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 			OutputTokens: bifrostResp.Usage.OutputTokens,
 		}
 
-		if bifrostResp.Usage.InputTokensDetails != nil && bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
-			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
+		if bifrostResp.Usage.InputTokensDetails != nil {
+			// Prefer new granular fields, fall back to CachedTokens for backward compat
+			if bifrostResp.Usage.InputTokensDetails.CacheReadTokens > 0 {
+				anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CacheReadTokens
+			} else if bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
+				anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
+			}
+
+			if bifrostResp.Usage.InputTokensDetails.CacheCreationTokens > 0 {
+				anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.InputTokensDetails.CacheCreationTokens
+			}
+
+			// Map ephemeral TTL tokens
+			if bifrostResp.Usage.InputTokensDetails.CacheCreation != nil {
+				anthropicResp.Usage.CacheCreation = AnthropicUsageCacheCreation{
+					Ephemeral5mInputTokens: bifrostResp.Usage.InputTokensDetails.CacheCreation.Ephemeral5mInputTokens,
+					Ephemeral1hInputTokens: bifrostResp.Usage.InputTokensDetails.CacheCreation.Ephemeral1hInputTokens,
+				}
+			}
 		}
 		if bifrostResp.Usage.OutputTokensDetails != nil && bifrostResp.Usage.OutputTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens

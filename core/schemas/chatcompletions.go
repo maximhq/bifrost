@@ -918,6 +918,18 @@ type ChatPromptTokensDetails struct {
 	// For Providers which follow OpenAI's spec, CachedTokens means the number of input tokens read from the cache+input tokens used to create the cache entry. (because they do not differentiate between cache creation and cache read tokens)
 	// For Providers which do not follow OpenAI's spec, CachedTokens means only the number of input tokens read from the cache.
 	CachedTokens int `json:"cached_tokens,omitempty"`
+
+	// CacheReadTokens is the number of input tokens read from an existing cache entry.
+	// Only populated by providers that differentiate cache read vs creation (Anthropic, Bedrock).
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+
+	// CacheCreationTokens is the number of input tokens used to create a new cache entry.
+	// Only populated by providers that differentiate cache read vs creation (Anthropic, Bedrock).
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+
+	// CacheCreation provides TTL-specific breakdown of cache creation tokens.
+	// Only populated by providers that support multiple cache TTLs (Anthropic).
+	CacheCreation *CacheCreationTokens `json:"cache_creation,omitempty"`
 }
 
 type ChatCompletionTokensDetails struct {

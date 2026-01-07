@@ -432,16 +432,39 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 
 	// Convert usage information
 	if response.Usage != nil {
+		completionTokensDetails := &schemas.ChatCompletionTokensDetails{
+			CachedTokens: response.Usage.CacheCreationInputTokens,
+		}
+		// Map ServerToolUse.WebSearchRequests to NumSearchQueries
+		if response.Usage.ServerToolUse != nil {
+			completionTokensDetails.NumSearchQueries = &response.Usage.ServerToolUse.WebSearchRequests
+		}
+
+		promptTokensDetails := &schemas.ChatPromptTokensDetails{
+			CachedTokens:        response.Usage.CacheReadInputTokens,
+			CacheReadTokens:     response.Usage.CacheReadInputTokens,
+			CacheCreationTokens: response.Usage.CacheCreationInputTokens,
+		}
+
+		// Map ephemeral TTL-specific cache creation tokens
+		if response.Usage.CacheCreation.Ephemeral5mInputTokens > 0 || response.Usage.CacheCreation.Ephemeral1hInputTokens > 0 {
+			promptTokensDetails.CacheCreation = &schemas.CacheCreationTokens{
+				Ephemeral5mInputTokens: response.Usage.CacheCreation.Ephemeral5mInputTokens,
+				Ephemeral1hInputTokens: response.Usage.CacheCreation.Ephemeral1hInputTokens,
+			}
+		}
+
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens: response.Usage.InputTokens,
-			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-				CachedTokens: response.Usage.CacheReadInputTokens,
-			},
-			CompletionTokens: response.Usage.OutputTokens,
-			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-				CachedTokens: response.Usage.CacheCreationInputTokens,
-			},
-			TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens,
+			PromptTokens:            response.Usage.InputTokens,
+			PromptTokensDetails:     promptTokensDetails,
+			CompletionTokens:        response.Usage.OutputTokens,
+			CompletionTokensDetails: completionTokensDetails,
+			TotalTokens:             response.Usage.InputTokens + response.Usage.OutputTokens,
+		}
+
+		// Map ServiceTier to bifrost response
+		if response.Usage.ServiceTier != "" {
+			bifrostResponse.ServiceTier = &response.Usage.ServiceTier
 		}
 	}
 

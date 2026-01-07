@@ -1721,9 +1721,11 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *context
 			TotalTokens:  response.Usage.TotalTokens,
 		}
 		// Handle cached tokens if present
-		if response.Usage.CacheReadInputTokens > 0 {
+		if response.Usage.CacheReadInputTokens > 0 || response.Usage.CacheWriteInputTokens > 0 {
 			bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+				CachedTokens:        response.Usage.CacheReadInputTokens,
+				CacheReadTokens:     response.Usage.CacheReadInputTokens,
+				CacheCreationTokens: response.Usage.CacheWriteInputTokens,
 			}
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {
