@@ -21,9 +21,9 @@ import (
 //   - MAXIM_LOG_REPO_ID: ID for the Maxim logger instance
 //
 // Returns:
-//   - schemas.Plugin: A configured plugin instance for request/response tracing
+//   - schemas.LLMPlugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func getPlugin() (schemas.Plugin, error) {
+func getPlugin() (schemas.LLMPlugin, error) {
 	// check if Maxim Logger variables are set
 	if os.Getenv("MAXIM_API_KEY") == "" {
 		return nil, fmt.Errorf("MAXIM_API_KEY is not set, please set it in your environment variables")
@@ -95,9 +95,9 @@ func TestMaximLoggerPlugin(t *testing.T) {
 
 	// Initialize Bifrost with the plugin
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)

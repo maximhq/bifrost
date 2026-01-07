@@ -196,15 +196,15 @@ func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 	return &otelConfig, nil
 }
 
-// PreHook is a no-op - tracing is handled via the Inject method.
+// PreLLMHook is a no-op - tracing is handled via the Inject method.
 // The OTEL plugin receives completed traces from TracingMiddleware.
-func (p *OtelPlugin) PreHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *OtelPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
 
-// PostHook is a no-op - tracing is handled via the Inject method.
+// PostLLMHook is a no-op - tracing is handled via the Inject method.
 // The OTEL plugin receives completed traces from TracingMiddleware.
-func (p *OtelPlugin) PostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *OtelPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
 }
 

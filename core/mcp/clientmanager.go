@@ -189,8 +189,7 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
-	// Check if is_ping_available changed
-	isPingAvailableChanged := client.ExecutionConfig.IsPingAvailable != updatedConfig.IsPingAvailable
+	oldName := client.ExecutionConfig.Name
 
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
@@ -199,17 +198,42 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	config.Headers = updatedConfig.Headers
 	config.ToolsToExecute = updatedConfig.ToolsToExecute
 	config.ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
-	config.IsPingAvailable = updatedConfig.IsPingAvailable
+	config.IsCodeModeClient = updatedConfig.IsCodeModeClient
 
 	// Store the updated config
 	client.ExecutionConfig = config
 
-	// If is_ping_available changed, update the health monitor
-	if isPingAvailableChanged {
-		// Stop and restart the health monitor with the new is_ping_available setting
-		m.healthMonitorManager.StopMonitoring(id)
-		monitor := NewClientHealthMonitor(m, id, DefaultHealthCheckInterval, config.IsPingAvailable)
-		m.healthMonitorManager.StartMonitoring(monitor)
+	// If the client name has changed, update all tool name prefixes in the ToolMap
+	if oldName != updatedConfig.Name {
+		oldPrefix := oldName + "-"
+		newPrefix := updatedConfig.Name + "-"
+
+		// Create a new ToolMap with updated tool names
+		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
+		for oldToolName, tool := range client.ToolMap {
+			var newToolName string
+			if strings.HasPrefix(oldToolName, oldPrefix) {
+				// Update the tool name by replacing the old prefix with the new prefix
+				newToolName = newPrefix + strings.TrimPrefix(oldToolName, oldPrefix)
+			} else {
+				newToolName = oldToolName
+			}
+
+			// Update the tool's function name if it's a function tool
+			if tool.Function != nil {
+				updatedTool := tool
+				updatedTool.Function.Name = newToolName
+				newToolMap[newToolName] = updatedTool
+			} else {
+				newToolMap[newToolName] = tool
+			}
+		}
+
+		// Replace the old ToolMap with the new one
+		client.ToolMap = newToolMap
+
+		// Also update the client Name field
+		client.Name = updatedConfig.Name
 	}
 
 	return nil
@@ -339,6 +363,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	var err error
 
 	// Create appropriate transport based on connection type
+	logger.Debug(fmt.Sprintf("%s [%s] Creating %s connection...", MCPLogPrefix, config.Name, config.ConnectionType))
 	switch config.ConnectionType {
 	case schemas.MCPConnectionTypeHTTP:
 		externalClient, connectionInfo, err = m.createHTTPConnection(config)
@@ -355,16 +380,24 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to create connection: %w", err)
 	}
+	logger.Debug(fmt.Sprintf("%s [%s] Connection created successfully", MCPLogPrefix, config.Name))
 
 	// Initialize the external client with timeout
-	// For SSE connections, we need a long-lived context, for others we can use timeout
+	// For SSE and STDIO connections, we need a long-lived context for the connection
+	// but use a timeout context for the initialization phase to prevent indefinite hangs
 	var ctx context.Context
 	var cancel context.CancelFunc
+	var longLivedCtx context.Context
+	var longLivedCancel context.CancelFunc
 
-	if config.ConnectionType == schemas.MCPConnectionTypeSSE {
-		// SSE connections need a long-lived context for the persistent stream
-		ctx, cancel = context.WithCancel(m.ctx)
-		// Don't defer cancel here - SSE needs the context to remain active
+	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+		// Create long-lived context for the connection (subprocess lifetime)
+		longLivedCtx, longLivedCancel = context.WithCancel(m.ctx)
+
+		// Use long-lived context for starting the transport (spawns subprocess)
+		// but create a timeout context for initialization to prevent hangs
+		ctx = longLivedCtx
+		cancel = longLivedCancel
 	} else {
 		// Other connection types can use timeout context
 		ctx, cancel = context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
@@ -372,12 +405,14 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 
 	// Start the transport first (required for STDIO and SSE clients)
+	logger.Debug(fmt.Sprintf("%s [%s] Starting transport...", MCPLogPrefix, config.Name))
 	if err := externalClient.Start(ctx); err != nil {
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE {
 			cancel() // Cancel SSE context only on error
 		}
 		return fmt.Errorf("failed to start MCP client transport %s: %v", config.Name, err)
 	}
+	logger.Debug(fmt.Sprintf("%s [%s] Transport started successfully", MCPLogPrefix, config.Name))
 
 	// Create proper initialize request for external client
 	extInitRequest := mcp.InitializeRequest{
@@ -391,21 +426,39 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		},
 	}
 
-	_, err = externalClient.Initialize(ctx, extInitRequest)
+	// For STDIO/SSE: Use a timeout context for initialization to prevent indefinite hangs
+	// The subprocess will continue running with the long-lived context
+	var initCtx context.Context
+	var initCancel context.CancelFunc
+
+	if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+		// Create timeout context for initialization phase only
+		initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
+		defer initCancel()
+		logger.Debug(fmt.Sprintf("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout))
+	} else {
+		// HTTP already has timeout
+		initCtx = ctx
+	}
+
+	_, err = externalClient.Initialize(initCtx, extInitRequest)
 	if err != nil {
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE {
 			cancel() // Cancel SSE context only on error
 		}
 		return fmt.Errorf("failed to initialize MCP client %s: %v", config.Name, err)
 	}
+	logger.Debug(fmt.Sprintf("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name))
 
 	// Retrieve tools from the external server (this also requires network I/O)
+	logger.Debug(fmt.Sprintf("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name))
 	tools, err := retrieveExternalTools(ctx, externalClient, config.Name)
 	if err != nil {
 		logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 		// Continue with connection even if tool retrieval fails
 		tools = make(map[string]schemas.ChatTool)
 	}
+	logger.Debug(fmt.Sprintf("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools)))
 
 	// Second lock: Update client with final connection details and tools
 	m.mu.Lock()

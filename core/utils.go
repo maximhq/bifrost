@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -442,4 +443,9 @@ func isPrivateIP(ip net.IP) bool {
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
 func sanitizeSpanName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}
+
+// IsCodemodeTool returns true if the given tool name is a codemode tool.
+func IsCodemodeTool(toolName string) bool {
+	return toolName == mcp.ToolTypeListToolFiles || toolName == mcp.ToolTypeReadToolFile || toolName == mcp.ToolTypeExecuteToolCode
 }

@@ -125,22 +125,22 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		// Connection type specific validation
 		...(form.connection_type === "http" || form.connection_type === "sse"
 			? [
-					Validator.required(connectionStringValue?.trim(), "Connection URL is required"),
-					Validator.pattern(
-						connectionStringValue,
-						/^((https?:\/\/.+)|(env\.[A-Z_]+))$/,
-						"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
-					),
-					...(headersValidationError ? [Validator.custom(false, headersValidationError)] : []),
-				]
+				Validator.required(connectionStringValue?.trim(), "Connection URL is required"),
+				Validator.pattern(
+					connectionStringValue,
+					/^((https?:\/\/.+)|(env\.[A-Z_]+))$/,
+					"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
+				),
+				...(headersValidationError ? [Validator.custom(false, headersValidationError)] : []),
+			]
 			: []),
 
 		// STDIO validation
 		...(form.connection_type === "stdio"
 			? [
-					Validator.required(form.stdio_config?.command?.trim(), "Command is required for STDIO connections"),
-					Validator.pattern(form.stdio_config?.command || "", /^[^<>|&;]+$/, "Command cannot contain special shell characters"),
-				]
+				Validator.required(form.stdio_config?.command?.trim(), "Command is required for STDIO connections"),
+				Validator.pattern(form.stdio_config?.command || "", /^[^<>|&;]+$/, "Command cannot contain special shell characters"),
+			]
 			: []),
 	]);
 
@@ -163,10 +163,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			stdio_config:
 				form.connection_type === "stdio"
 					? {
-							command: form.stdio_config?.command || "",
-							args: parseArrayFromText(argsText),
-							envs: parseArrayFromText(envsText),
-						}
+						command: form.stdio_config?.command || "",
+						args: parseArrayFromText(argsText),
+						envs: parseArrayFromText(envsText),
+					}
 					: undefined,
 			headers: form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
 			tools_to_execute: ["*"],

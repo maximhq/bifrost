@@ -558,6 +558,14 @@ paths:
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
+  # MCP Logs
+  /api/mcp-logs:
+    $ref: './paths/management/logging.yaml#/mcp-logs'
+  /api/mcp-logs/stats:
+    $ref: './paths/management/logging.yaml#/mcp-logs-stats'
+  /api/mcp-logs/filterdata:
+    $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+
   # Cache
   /api/cache/clear/{requestId}:
     $ref: './paths/management/cache.yaml#/clear-by-request-id'
@@ -828,6 +836,10 @@ components:
       $ref: './schemas/management/mcp.yaml#/MCPClient'
     MCPClientConfig:
       $ref: './schemas/management/mcp.yaml#/MCPClientConfig'
+    MCPClientCreateRequest:
+      $ref: './schemas/management/mcp.yaml#/MCPClientCreateRequest'
+    MCPClientUpdateRequest:
+      $ref: './schemas/management/mcp.yaml#/MCPClientUpdateRequest'
     ExecuteToolRequest:
       $ref: './schemas/management/mcp.yaml#/ExecuteToolRequest'
 
@@ -862,6 +874,20 @@ components:
       $ref: './schemas/management/logging.yaml#/RecalculateCostRequest'
     RecalculateCostResponse:
       $ref: './schemas/management/logging.yaml#/RecalculateCostResponse'
+
+    # MCP Logs
+    MCPToolLogEntry:
+      $ref: './schemas/management/logging.yaml#/MCPToolLogEntry'
+    MCPToolLogSearchFilters:
+      $ref: './schemas/management/logging.yaml#/MCPToolLogSearchFilters'
+    MCPToolLogStats:
+      $ref: './schemas/management/logging.yaml#/MCPToolLogStats'
+    SearchMCPLogsResponse:
+      $ref: './schemas/management/logging.yaml#/SearchMCPLogsResponse'
+    MCPLogsFilterDataResponse:
+      $ref: './schemas/management/logging.yaml#/MCPLogsFilterDataResponse'
+    DeleteMCPLogsRequest:
+      $ref: './schemas/management/logging.yaml#/DeleteMCPLogsRequest'
 
     # Cache
     ClearCacheResponse:

@@ -2,11 +2,14 @@
 
 import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import ConfirmDeletePluginDialog from "@/app/workspace/plugins/dialogs/confirmDeletePluginDialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { setPluginFormDirtyState, useAppDispatch, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
+import { PluginType } from "@/lib/types/plugins";
+import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { PlusIcon, SaveIcon, Trash2Icon } from "lucide-react";
@@ -29,6 +32,19 @@ const pluginFormSchema = z.object({
 });
 
 type PluginFormValues = z.infer<typeof pluginFormSchema>;
+
+const getPluginTypeColor = (type: PluginType) => {
+	switch (type) {
+		case "llm":
+			return "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300";
+		case "mcp":
+			return "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300";
+		case "http":
+			return "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300";
+		default:
+			return "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-300";
+	}
+};
 
 export default function PluginsView(props: Props) {
 	const dispatch = useAppDispatch();
@@ -96,7 +112,7 @@ export default function PluginsView(props: Props) {
 			toast.success("Plugin updated successfully");
 			form.reset(values);
 		} catch (error) {
-			toast.error("Failed to update plugin");			
+			toast.error("Failed to update plugin");
 		}
 	};
 
@@ -149,10 +165,9 @@ export default function PluginsView(props: Props) {
 		<div className="ml-4 w-full">
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit, onError)} className="space-y-6">
-					{/* Editable Fields */}
 					<div className="">
 						<h3 className="mb-4 text-lg font-semibold">Plugin Configuration</h3>
-						<div className="space-y-4">
+						<div className="space-y-6">
 							<FormField
 								control={form.control}
 								name="name"
@@ -168,13 +183,26 @@ export default function PluginsView(props: Props) {
 								)}
 							/>
 
+							{selectedPlugin.status?.types && selectedPlugin.status.types.length > 0 && (
+								<FormItem>
+									<FormLabel>Types</FormLabel>
+									<FormControl>
+										<div className="flex flex-wrap gap-1">
+											{selectedPlugin.status.types.map((type) => (
+												<Badge key={type} variant="outline" className={cn("h-5 px-2 text-xs font-medium uppercase", getPluginTypeColor(type))}>{type}</Badge>
+											))}
+										</div>
+									</FormControl>
+								</FormItem>
+							)}
+
 							<FormField
 								control={form.control}
 								name="enabled"
 								render={({ field }) => (
 									<FormItem className="flex flex-row items-center justify-between">
 										<div className="space-y-0.5">
-											<FormLabel className="text-base">Enabled</FormLabel>
+											<FormLabel	>Enabled</FormLabel>
 											<FormDescription>Enable or disable this plugin</FormDescription>
 										</div>
 										<FormControl>

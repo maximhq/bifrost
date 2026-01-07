@@ -90,7 +90,9 @@ client:
   post:
     operationId: addMCPClient
     summary: Add MCP client
-    description: Adds a new MCP client with the specified configuration.
+    description: |
+      Adds a new MCP client with the specified configuration.
+      Note: tool_pricing is not available when creating a new client as tools are fetched after client creation.
     tags:
       - MCP
     requestBody:
@@ -98,7 +100,7 @@ client:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
     responses:
       '200':
         description: MCP client added successfully
@@ -115,7 +117,9 @@ client-by-id:
   put:
     operationId: editMCPClient
     summary: Edit MCP client
-    description: Updates an existing MCP client's configuration.
+    description: |
+      Updates an existing MCP client's configuration.
+      Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
     tags:
       - MCP
     parameters:
@@ -130,7 +134,7 @@ client-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
     responses:
       '200':
         description: MCP client updated successfully

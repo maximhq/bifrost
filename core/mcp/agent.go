@@ -20,7 +20,7 @@ import (
 //   - initialResponse: The initial chat response containing tool calls
 //   - makeReq: Function to make subsequent chat requests during agent execution
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
@@ -33,7 +33,7 @@ func ExecuteAgentForChatRequest(
 	initialResponse *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
@@ -73,7 +73,7 @@ func ExecuteAgentForChatRequest(
 //   - initialResponse: The initial responses response containing tool calls
 //   - makeReq: Function to make subsequent responses requests during agent execution
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
@@ -86,7 +86,7 @@ func ExecuteAgentForResponsesRequest(
 	initialResponse *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	clientManager ClientManager,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create adapter for Responses API
@@ -125,7 +125,7 @@ func ExecuteAgentForResponsesRequest(
 //   - maxAgentDepth: Maximum number of agent iterations allowed
 //   - adapter: API adapter that abstracts differences between Chat and Responses APIs
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
@@ -136,7 +136,7 @@ func executeAgent(
 	maxAgentDepth int,
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
 	logger.Debug("Entering agent mode - detected tool calls in response")
@@ -292,12 +292,24 @@ func executeAgent(
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
-					toolResult, toolErr := executeToolFunc(ctx, toolCall)
+					// Create MCP request for this tool call
+					mcpRequest := &schemas.BifrostMCPRequest{
+						RequestType:                  schemas.MCPRequestTypeChatToolCall,
+						ChatAssistantMessageToolCall: &toolCall,
+					}
+
+					mcpResponse, toolErr := executeToolFunc(ctx, mcpRequest)
 					if toolErr != nil {
-						logger.Warn("Tool execution failed: %v", toolErr)
+						logger.Warn(fmt.Sprintf("Tool execution failed: %v", toolErr))
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
+						channelToolResults <- mcpResponse.ChatMessage
+					} else if mcpResponse != nil && mcpResponse.ChatMessage == nil {
+						// Send empty result when mcpResponse is non-nil but ChatMessage is nil
+						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					} else {
-						channelToolResults <- toolResult
+						// Fallback: send empty result when both mcpResponse and toolErr are nil
+						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					}
 				}(toolCall)
 			}
@@ -457,8 +469,9 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 				autoExecutableTools = append(autoExecutableTools, "*")
 				continue
 			}
-			// Use parsed tool name (as it appears in code)
-			parsedToolName := parseToolName(originalToolName)
+			// Replace - with _ for code mode compatibility, then parse for JS compatibility
+			toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
+			parsedToolName := parseToolName(toolNameForCode)
 			autoExecutableTools = append(autoExecutableTools, parsedToolName)
 		}
 

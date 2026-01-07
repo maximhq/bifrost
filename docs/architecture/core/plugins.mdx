@@ -148,15 +148,15 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Request
-    Bifrost->>Plugin1: PreHook(request)
+    Bifrost->>Plugin1: PreLLMHook(request)
     Plugin1-->>Bifrost: modified request
-    Bifrost->>Plugin2: PreHook(request)
+    Bifrost->>Plugin2: PreLLMHook(request)
     Plugin2-->>Bifrost: modified request
     Bifrost->>Provider: API Call
     Provider-->>Bifrost: response
-    Bifrost->>Plugin2: PostHook(response)
+    Bifrost->>Plugin2: PostLLMHook(response)
     Plugin2-->>Bifrost: modified response
-    Bifrost->>Plugin1: PostHook(response)
+    Bifrost->>Plugin1: PostLLMHook(response)
     Plugin1-->>Bifrost: modified response
     Bifrost-->>Client: Final Response
 ```
@@ -178,14 +178,14 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Request
-    Bifrost->>Auth: PreHook(request)
+    Bifrost->>Auth: PreLLMHook(request)
     Auth-->>Bifrost: modified request
-    Bifrost->>Cache: PreHook(request)
-    Cache-->>Bifrost: PluginShortCircuit{Response}
+    Bifrost->>Cache: PreLLMHook(request)
+    Cache-->>Bifrost: LLMPluginShortCircuit{Response}
     Note over Provider: Provider call skipped
-    Bifrost->>Cache: PostHook(response)
+    Bifrost->>Cache: PostLLMHook(response)
     Cache-->>Bifrost: modified response
-    Bifrost->>Auth: PostHook(response)
+    Bifrost->>Auth: PostLLMHook(response)
     Auth-->>Bifrost: modified response
     Bifrost-->>Client: Cached Response
 ```
@@ -203,25 +203,25 @@ sequenceDiagram
     participant Provider
 
     Client->>Bifrost: Stream Request
-    Bifrost->>Plugin1: PreHook(request)
+    Bifrost->>Plugin1: PreLLMHook(request)
     Plugin1-->>Bifrost: modified request
-    Bifrost->>Plugin2: PreHook(request)
+    Bifrost->>Plugin2: PreLLMHook(request)
     Plugin2-->>Bifrost: modified request
     Bifrost->>Provider: Stream API Call
 
     loop For Each Delta
         Provider-->>Bifrost: stream delta
-        Bifrost->>Plugin2: PostHook(delta)
+        Bifrost->>Plugin2: PostLLMHook(delta)
         Plugin2-->>Bifrost: modified delta
-        Bifrost->>Plugin1: PostHook(delta)
+        Bifrost->>Plugin1: PostLLMHook(delta)
         Plugin1-->>Bifrost: modified delta
         Bifrost-->>Client: Send Delta
     end
 
     Provider-->>Bifrost: final chunk (finish reason)
-    Bifrost->>Plugin2: PostHook(final)
+    Bifrost->>Plugin2: PostLLMHook(final)
     Plugin2-->>Bifrost: modified final
-    Bifrost->>Plugin1: PostHook(final)
+    Bifrost->>Plugin1: PostLLMHook(final)
     Plugin1-->>Bifrost: modified final
     Bifrost-->>Client: Final Chunk
 ```
@@ -261,7 +261,7 @@ sequenceDiagram
 **Short-Circuit Rules:**
 
 - **Provider Skipped:** When plugin returns short-circuit response/error
-- **PostHook Guarantee:** All executed PreHooks get corresponding PostHook calls
+- **PostLLMHook Guarantee:** All executed PreHooks get corresponding PostLLMHook calls
 - **Reverse Order:** PostHooks execute in reverse order of PreHooks
 
 #### **Short-Circuit Error Flow (Allow Fallbacks)**
@@ -275,18 +275,18 @@ sequenceDiagram
     participant Provider2
 
     Client->>Bifrost: Request (Provider1 + Fallback Provider2)
-    Bifrost->>Plugin1: PreHook(request)
-    Plugin1-->>Bifrost: PluginShortCircuit{Error, AllowFallbacks=true}
+    Bifrost->>Plugin1: PreLLMHook(request)
+    Plugin1-->>Bifrost: LLMPluginShortCircuit{Error, AllowFallbacks=true}
     Note over Provider1: Provider1 call skipped
-    Bifrost->>Plugin1: PostHook(error)
+    Bifrost->>Plugin1: PostLLMHook(error)
     Plugin1-->>Bifrost: error unchanged
 
     Note over Bifrost: Try fallback provider
-    Bifrost->>Plugin1: PreHook(request for Provider2)
+    Bifrost->>Plugin1: PreLLMHook(request for Provider2)
     Plugin1-->>Bifrost: modified request
     Bifrost->>Provider2: API Call
     Provider2-->>Bifrost: response
-    Bifrost->>Plugin1: PostHook(response)
+    Bifrost->>Plugin1: PostLLMHook(response)
     Plugin1-->>Bifrost: modified response
     Bifrost-->>Client: Final Response
 ```
@@ -303,19 +303,19 @@ sequenceDiagram
     participant RecoveryPlugin
 
     Client->>Bifrost: Request
-    Bifrost->>Plugin1: PreHook(request)
+    Bifrost->>Plugin1: PreLLMHook(request)
     Plugin1-->>Bifrost: modified request
-    Bifrost->>Plugin2: PreHook(request)
+    Bifrost->>Plugin2: PreLLMHook(request)
     Plugin2-->>Bifrost: modified request
-    Bifrost->>RecoveryPlugin: PreHook(request)
+    Bifrost->>RecoveryPlugin: PreLLMHook(request)
     RecoveryPlugin-->>Bifrost: modified request
     Bifrost->>Provider: API Call
     Provider-->>Bifrost: error
-    Bifrost->>RecoveryPlugin: PostHook(error)
+    Bifrost->>RecoveryPlugin: PostLLMHook(error)
     RecoveryPlugin-->>Bifrost: recovered response
-    Bifrost->>Plugin2: PostHook(response)
+    Bifrost->>Plugin2: PostLLMHook(response)
     Plugin2-->>Bifrost: modified response
-    Bifrost->>Plugin1: PostHook(response)
+    Bifrost->>Plugin1: PostLLMHook(response)
     Plugin1-->>Bifrost: modified response
     Bifrost-->>Client: Recovered Response
 ```
@@ -333,20 +333,20 @@ Real-world plugin interactions involving authentication, rate limiting, and cach
 ```mermaid
 graph TD
     A["Client Request"] --> B["Bifrost"]
-    B --> C["Auth Plugin PreHook"]
+    B --> C["Auth Plugin PreLLMHook"]
     C --> D{"Authenticated?"}
     D -->|No| E["Return Auth Error<br/>AllowFallbacks=false"]
-    D -->|Yes| F["RateLimit Plugin PreHook"]
+    D -->|Yes| F["RateLimit Plugin PreLLMHook"]
     F --> G{"Rate Limited?"}
     G -->|Yes| H["Return Rate Error<br/>AllowFallbacks=nil"]
-    G -->|No| I["Cache Plugin PreHook"]
+    G -->|No| I["Cache Plugin PreLLMHook"]
     I --> J{"Cache Hit?"}
     J -->|Yes| K["Return Cached Response"]
     J -->|No| L["Provider API Call"]
-    L --> M["Cache Plugin PostHook"]
+    L --> M["Cache Plugin PostLLMHook"]
     M --> N["Store in Cache"]
-    N --> O["RateLimit Plugin PostHook"]
-    O --> P["Auth Plugin PostHook"]
+    N --> O["RateLimit Plugin PostLLMHook"]
+    O --> P["Auth Plugin PostLLMHook"]
     P --> Q["Final Response"]
 
     E --> R["Skip Fallbacks"]

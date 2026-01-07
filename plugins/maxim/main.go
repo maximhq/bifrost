@@ -32,7 +32,7 @@ type Config struct {
 	APIKey    string `json:"api_key"`
 }
 
-// Plugin implements the schemas.Plugin interface for Maxim's logger.
+// Plugin implements the schemas.LLMPlugin interface for Maxim's logger.
 // It provides request and response tracing functionality using Maxim logger,
 // allowing detailed tracking of requests and responses across different log repositories.
 //
@@ -55,9 +55,9 @@ type Plugin struct {
 //   - config: Configuration for the maxim plugin
 //
 // Returns:
-//   - schemas.Plugin: A configured plugin instance for request/response tracing
+//   - schemas.LLMPlugin: A configured plugin instance for request/response tracing
 //   - error: Any error that occurred during plugin initialization
-func Init(config *Config, logger schemas.Logger) (schemas.Plugin, error) {
+func Init(config *Config, logger schemas.Logger) (schemas.LLMPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -221,7 +221,7 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 	return logger, nil
 }
 
-// PreHook is called before a request is processed by Bifrost.
+// PreLLMHook is called before a request is processed by Bifrost.
 // It manages trace and generation tracking for incoming requests by either:
 // - Creating a new trace if none exists
 // - Reusing an existing trace ID from the context
@@ -242,7 +242,7 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 // Returns:
 //   - *schemas.BifrostRequest: The original request, unmodified
 //   - error: Any error that occurred during trace/generation creation
-func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	var traceID string
 	var traceName string
 	var sessionID string
@@ -446,7 +446,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 		if !ok || requestID == "" {
 			// This should never happen since core/bifrost.go guarantees it's set before PreHooks
 			requestID = uuid.New().String()
-			plugin.logger.Warn("%s request ID missing in PreHook, using fallback: %s", PluginLoggerPrefix, requestID)
+			plugin.logger.Warn("%s request ID missing in PreLLMHook, using fallback: %s", PluginLoggerPrefix, requestID)
 		}
 
 		// If streaming, create accumulator via central tracer using traceID
@@ -461,7 +461,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	return req, nil, nil
 }
 
-// PostHook is called after a request has been processed by Bifrost.
+// PostLLMHook is called after a request has been processed by Bifrost.
 // It completes the request trace by:
 // - Adding response data to the generation if a generation ID exists
 // - Logging error details if bifrostErr is provided
@@ -481,7 +481,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 //   - *schemas.BifrostResponse: The original response, unmodified
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
-func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Get effective log repo ID for this request
 	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
 	if effectiveLogRepoID == "" {

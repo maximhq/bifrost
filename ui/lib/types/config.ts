@@ -173,6 +173,7 @@ export type RequestType =
 	| "file_retrieve"
 	| "file_delete"
 	| "file_content"
+	| "mcp_tool_execution"
 	| "container_create"
 	| "container_list"
 	| "container_retrieve"

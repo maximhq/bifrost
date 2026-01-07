@@ -122,7 +122,7 @@ Filter tools dynamically on a per-request basis using headers (Gateway) or conte
 | Filter | Purpose |
 |--------|---------|
 | `mcp-include-clients` | Only include tools from specified clients |
-| `mcp-include-tools` | Only include specified tools (format: `clientName/toolName`) |
+| `mcp-include-tools` | Only include specified tools (format: `clientName-toolName`) |
 
 ### Gateway Headers
 
@@ -134,12 +134,12 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 # Include only specific tools
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/read_file,web_search/search" \
+  -H "x-bf-mcp-include-tools: filesystem-read_file,web_search-search" \
   -d '...'
 
 # Include all tools from one client, specific tools from another
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/*,web_search/search" \
+  -H "x-bf-mcp-include-tools: filesystem-*,web_search-search" \
   -d '...'
 ```
 
@@ -154,12 +154,12 @@ ctx := context.WithValue(context.Background(),
 // Include only specific tools
 ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/read_file", "web_search/search"})
+    []string{"filesystem-read_file", "web_search-search"})
 
 // Wildcard for all tools from a client
 ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/*", "web_search/search"})
+    []string{"filesystem-*", "web_search-search"})
 
 response, err := client.ChatCompletionRequest(ctx, request)
 ```
@@ -169,8 +169,8 @@ response, err := client.ChatCompletionRequest(ctx, request)
 | Pattern | Meaning |
 |---------|---------|
 | `*` (in include-clients) | Include all clients |
-| `clientName/*` (in include-tools) | Include all tools from that client |
-| `clientName/toolName` | Include specific tool |
+| `clientName-*` (in include-tools) | Include all tools from that client |
+| `clientName-toolName` | Include specific tool |
 
 ---
 
@@ -275,7 +275,7 @@ Learn more in [MCP Tool Filtering for Virtual Keys](../features/governance/mcp-t
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer vk_prod_key" \
-  -H "x-bf-mcp-include-tools: filesystem/write_file" \  # This is IGNORED
+  -H "x-bf-mcp-include-tools: filesystem-write_file" \  # This is IGNORED
   -d '...'
 ```
 
@@ -284,7 +284,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 **Request without VK (if allowed):**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/write_file" \
+  -H "x-bf-mcp-include-tools: filesystem-write_file" \
   -d '...'
 ```
 
@@ -383,7 +383,7 @@ ctx := context.WithValue(
 ctx = context.WithValue(
     ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/read_file", "web_search/search"},
+    []string{"filesystem-read_file", "web_search-search"},
 )
 
 // Request will only see filtered tools

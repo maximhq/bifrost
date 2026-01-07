@@ -51,22 +51,22 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 
 	const handleReconnect = async (client: MCPClient) => {
 		try {
-			setReconnectingClients((prev) => [...prev, client.config.id]);
-			await reconnectMCPClient(client.config.id).unwrap();
-			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.id));
+			setReconnectingClients((prev) => [...prev, client.config.client_id]);
+			await reconnectMCPClient(client.config.client_id).unwrap();
+			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Reconnected", description: `Client ${client.config.name} reconnected successfully.` });
 			if (refetch) {
 				await refetch();
 			}
 		} catch (error) {
-			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.id));
+			setReconnectingClients((prev) => prev.filter((id) => id !== client.config.client_id));
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
 		}
 	};
 
 	const handleDelete = async (client: MCPClient) => {
 		try {
-			await deleteMCPClient(client.config.id).unwrap();
+			await deleteMCPClient(client.config.client_id).unwrap();
 			toast({ title: "Deleted", description: `Client ${client.config.name} removed successfully.` });
 			if (refetch) {
 				await refetch();
@@ -178,7 +178,7 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 									: 0;
 							return (
 								<TableRow
-									key={c.config.id}
+									key={c.config.client_id}
 									className="hover:bg-muted/50 cursor-pointer transition-colors"
 									onClick={() => handleRowClick(c)}
 								>
@@ -220,9 +220,9 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 											variant="ghost"
 											size="icon"
 											onClick={() => handleReconnect(c)}
-											disabled={reconnectingClients.includes(c.config.id) || !hasUpdateMCPClientAccess}
+											disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
 										>
-											{reconnectingClients.includes(c.config.id) ? (
+											{reconnectingClients.includes(c.config.client_id) ? (
 												<Loader2 className="h-4 w-4 animate-spin" />
 											) : (
 												<RefreshCcw className="h-4 w-4" />

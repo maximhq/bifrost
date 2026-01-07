@@ -142,9 +142,14 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 				var foundTool *schemas.ChatTool
 				toolNameLower := strings.ToLower(toolName)
 				for i, tool := range tools {
-					if tool.Function != nil && strings.ToLower(tool.Function.Name) == toolNameLower {
-						foundTool = &tools[i]
-						break
+					if tool.Function != nil {
+						// Strip client prefix and replace - with _ for comparison
+						unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
+						unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
+						if strings.ToLower(unprefixedToolName) == toolNameLower {
+							foundTool = &tools[i]
+							break
+						}
 					}
 				}
 
@@ -152,7 +157,10 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 					availableTools := make([]string, 0)
 					for _, tool := range tools {
 						if tool.Function != nil {
-							availableTools = append(availableTools, tool.Function.Name)
+							// Strip client prefix and replace - with _ for display
+							unprefixedToolName := stripClientPrefix(tool.Function.Name, clientName)
+							unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
+							availableTools = append(availableTools, unprefixedToolName)
 						}
 					}
 					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
@@ -184,7 +192,10 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 					if tools, ok := availableToolsPerClient[name]; ok {
 						for _, tool := range tools {
 							if tool.Function != nil {
-								availableFiles = append(availableFiles, fmt.Sprintf("%s/%s.d.ts", name, tool.Function.Name))
+								// Strip client prefix and replace - with _ for display
+								unprefixedToolName := stripClientPrefix(tool.Function.Name, name)
+								unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
+								availableFiles = append(availableFiles, fmt.Sprintf("%s/%s.d.ts", name, unprefixedToolName))
 							}
 						}
 					}
@@ -270,13 +281,29 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 	// Remove "servers/" prefix if present
 	basePath = strings.TrimPrefix(basePath, "servers/")
 
+	// Defensive validation: reject paths with path traversal attempts
+	if strings.Contains(basePath, "..") {
+		// Return empty to indicate invalid path
+		return "", "", false
+	}
+
 	// Check for path separator
 	parts := strings.Split(basePath, "/")
 	if len(parts) == 2 {
 		// Tool-level: "serverName/toolName"
+		// Validate that tool name doesn't contain additional path separators or traversal
+		if parts[1] == "" || strings.Contains(parts[1], "/") || strings.Contains(parts[1], "..") {
+			// Invalid tool name, treat as server-level
+			return parts[0], "", false
+		}
 		return parts[0], parts[1], true
 	}
 	// Server-level: "serverName"
+	// Validate server name doesn't contain path separators or traversal
+	if strings.Contains(basePath, "/") || strings.Contains(basePath, "..") {
+		// Invalid path
+		return "", "", false
+	}
 	return basePath, "", false
 }
 
@@ -319,6 +346,15 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString("//    const result = await <serverName>.<toolName>({ ...args });\n")
 	sb.WriteString("//\n")
 	sb.WriteString("// NOTE: The server name used in executeToolCode is the same as the display name shown here.\n")
+	sb.WriteString("//\n")
+	sb.WriteString("// ⚠️  CRITICAL - HANDLING RESPONSES:\n")
+	sb.WriteString("// Tool responses have dynamic structures that vary by tool. To avoid runtime errors:\n")
+	sb.WriteString("// 1. ALWAYS use console.log() to inspect the response structure before accessing properties\n")
+	sb.WriteString("// 2. NEVER assume a property exists - use optional chaining (result?.property) or explicit checks\n")
+	sb.WriteString("// 3. Provide fallback values for arrays/objects (result?.items || [])\n")
+	sb.WriteString("//\n")
+	sb.WriteString("// Common error: \"Cannot read property 'map' of undefined or null\"\n")
+	sb.WriteString("// Fix: Add console.log() to see actual structure, then use safe access patterns\n")
 	sb.WriteString("// ============================================================================\n\n")
 
 	// Generate interfaces and function declarations for each tool
@@ -328,8 +364,11 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		}
 
 		originalToolName := tool.Function.Name
+		// Strip client prefix and replace - with _ for code mode compatibility
+		unprefixedToolName := stripClientPrefix(originalToolName, clientName)
+		unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
 		// Parse tool name for property name compatibility (used in virtual TypeScript files)
-		toolName := parseToolName(originalToolName)
+		toolName := parseToolName(unprefixedToolName)
 		description := ""
 		if tool.Function.Description != nil {
 			description = *tool.Function.Description
@@ -408,9 +447,28 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString(fmt.Sprintf("// Response interface for %s\n", toolName))
 		sb.WriteString("// The actual response structure depends on the tool implementation.\n")
 		sb.WriteString("// This is a placeholder interface - the actual response may contain different fields.\n")
+		sb.WriteString("//\n")
+		sb.WriteString("// IMPORTANT - HANDLING TOOL RESPONSES:\n")
+		sb.WriteString("// 1. ALWAYS check if the response or its properties exist before accessing them\n")
+		sb.WriteString("// 2. ALWAYS use console.log() to inspect the actual response structure first\n")
+		sb.WriteString("// 3. NEVER assume a property exists - use optional chaining or explicit checks\n")
+		sb.WriteString("//\n")
+		sb.WriteString("// Common error: \"Cannot read property 'X' of undefined or null\"\n")
+		sb.WriteString("// This means you're trying to access a property that doesn't exist.\n")
+		sb.WriteString("//\n")
+		sb.WriteString("// BEST PRACTICES:\n")
+		sb.WriteString("// ❌ BAD:  const items = result.data.map(...)  // Fails if result.data is undefined\n")
+		sb.WriteString("// ✅ GOOD: console.log('result:', result);     // Inspect the structure first\n")
+		sb.WriteString("//          const items = result?.data?.map(...) || [];  // Safe access with fallback\n")
+		sb.WriteString("//\n")
+		sb.WriteString("// ❌ BAD:  return response.items.filter(...)  // Fails if response.items is undefined\n")
+		sb.WriteString("// ✅ GOOD: if (!response || !response.items) { return []; }\n")
+		sb.WriteString("//          return response.items.filter(...);  // Explicit check before use\n")
+		sb.WriteString("//\n")
 		sb.WriteString(fmt.Sprintf("interface %s {\n", responseInterfaceName))
 		sb.WriteString("  // Response structure depends on the tool implementation\n")
-		sb.WriteString("  // Common fields may include: result, error, data, etc.\n")
+		sb.WriteString("  // Common fields may include: result, error, data, items, etc.\n")
+		sb.WriteString("  // ALWAYS inspect the actual response with console.log() before accessing properties\n")
 		sb.WriteString("  [key: string]: any;\n")
 		sb.WriteString("}\n\n")
 
@@ -422,6 +480,8 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString("//\n")
 		sb.WriteString("// Usage example in executeToolCode:\n")
 		sb.WriteString(fmt.Sprintf("//   const result = await <serverName>.%s({ ... });\n", toolName))
+		sb.WriteString("//   console.log('result:', result);  // ALWAYS inspect the response first!\n")
+		sb.WriteString(fmt.Sprintf("//   const data = result?.someProperty || defaultValue;  // Safe access\n"))
 		sb.WriteString("//   // Replace <serverName> with the actual server name/ID\n")
 		sb.WriteString(fmt.Sprintf("//   // Replace { ... } with the appropriate %sInput object\n", inputInterfaceName))
 		sb.WriteString(fmt.Sprintf("export async function %s(input: %s): Promise<%s>;\n\n", toolName, inputInterfaceName, responseInterfaceName))

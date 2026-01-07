@@ -2,7 +2,11 @@ plugins:
   get:
     operationId: listPlugins
     summary: List all plugins
-    description: Returns a list of all plugins with their configurations and status.
+    description: |
+      Returns a list of all plugins with their configurations and status.
+      The `actualName` field contains the plugin name from `GetName()` (used as the map key),
+      while `name` contains the display name from the configuration.
+      The `types` array in the status shows which interfaces the plugin implements (llm, mcp, http).
     tags:
       - Plugins
     responses:
@@ -49,14 +53,18 @@ plugins:
   get:
     operationId: getPlugin
     summary: Get a specific plugin
-    description: Returns the configuration for a specific plugin.
+    description: |
+      Returns the configuration for a specific plugin.
+      The response includes the plugin status with types array showing which interfaces
+      the plugin implements (llm, mcp, http). The `actualName` field shows the plugin name
+      from GetName() (used as the map key), which may differ from the display name (`name`).
     tags:
       - Plugins
     parameters:
       - name: name
         in: path
         required: true
-        description: Plugin name
+        description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
     responses:
@@ -80,14 +88,17 @@ plugins:
   put:
     operationId: updatePlugin
     summary: Update a plugin
-    description: Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
+    description: |
+      Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
+      The response `actualName` field shows the plugin name from GetName() (used as the map key),
+      which may differ from the display name (`name`).
     tags:
       - Plugins
     parameters:
       - name: name
         in: path
         required: true
-        description: Plugin name
+        description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
     requestBody:
@@ -124,7 +135,7 @@ plugins:
       - name: name
         in: path
         required: true
-        description: Plugin name
+        description: Plugin display name (the config field `name`, not the internal `actualName` from GetName())
         schema:
           type: string
     responses:

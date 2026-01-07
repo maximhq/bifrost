@@ -168,7 +168,7 @@ isStreamEnd := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool)
 ```
 
 <Note>
-Plugin developers: When implementing custom streaming in PreHook or PostHook, make sure to mark `BifrostContextKeyStreamEndIndicator` as `true` at the end of the stream for proper cleanup.
+Plugin developers: When implementing custom streaming in PreLLMHook or PostLLMHook, make sure to mark `BifrostContextKeyStreamEndIndicator` as `true` at the end of the stream for proper cleanup.
 </Note>
 
 ### Integration Type

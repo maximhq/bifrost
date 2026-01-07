@@ -31,6 +31,20 @@ type ToolsManager struct {
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provided, same request ID is used for all tool call result messages without any overrides.
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
+
+	// Function to get a plugin pipeline from the pool for running MCP plugin hooks
+	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them
+	pluginPipelineProvider func() PluginPipeline
+
+	// Function to release a plugin pipeline back to the pool
+	releasePluginPipeline func(pipeline PluginPipeline)
+}
+
+// PluginPipeline represents the plugin execution pipeline interface
+// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost
+type PluginPipeline interface {
+	RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int)
+	RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
 }
 
 const (
@@ -47,10 +61,18 @@ const (
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
+//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
+//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //
 // Returns:
 //   - *ToolsManager: Initialized tools manager instance
-func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientManager, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string) *ToolsManager {
+func NewToolsManager(
+	config *schemas.MCPToolManagerConfig,
+	clientManager ClientManager,
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
+	pluginPipelineProvider func() PluginPipeline,
+	releasePluginPipeline func(pipeline PluginPipeline),
+) *ToolsManager {
 	if config == nil {
 		config = &schemas.MCPToolManagerConfig{
 			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
@@ -69,8 +91,10 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 		config.CodeModeBindingLevel = schemas.CodeModeBindingLevelServer
 	}
 	manager := &ToolsManager{
-		clientManager:         clientManager,
-		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
+		clientManager:          clientManager,
+		fetchNewRequestIDFunc:  fetchNewRequestIDFunc,
+		pluginPipelineProvider: pluginPipelineProvider,
+		releasePluginPipeline:  releasePluginPipeline,
 	}
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
@@ -305,34 +329,108 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 // TOOL REGISTRATION AND DISCOVERY
 // ============================================================================
 
-// ExecuteChatTool executes a tool call in Chat Completions API format and returns the result as a chat tool message.
+// ExecuteTool executes a tool call and returns the result.
 // This is the primary tool executor that works with both Chat Completions and Responses APIs.
-//
-// For Responses API users, use ExecuteResponsesTool() for a more type-safe interface.
-// However, internally this method is format-agnostic - it executes the tool and returns
-// a ChatMessage which can then be converted to ResponsesMessage via ToResponsesToolMessage().
 //
 // Parameters:
 //   - ctx: Execution context
-//   - toolCall: The tool call to execute (from assistant message)
+//   - request: The MCP request containing the tool call (Chat or Responses format)
 //
 // Returns:
-//   - *schemas.ChatMessage: Tool message with execution result
+//   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
 //   - error: Any execution error
-func (m *ToolsManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	// Validate request is not nil
+	if request == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	// Extract tool call based on request type
+	var toolCall *schemas.ChatAssistantMessageToolCall
+	switch request.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		toolCall = request.ChatAssistantMessageToolCall
+	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate ResponsesToolMessage is not nil before conversion
+		if request.ResponsesToolMessage == nil {
+			return nil, fmt.Errorf("ResponsesToolMessage cannot be nil for ResponsesToolCall request type")
+		}
+		// Convert Responses format to Chat format for internal execution
+		toolCall = request.ResponsesToolMessage.ToChatAssistantMessageToolCall()
+		if toolCall == nil {
+			return nil, fmt.Errorf("failed to convert Responses tool message to Chat format")
+		}
+	default:
+		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
+	}
+
+	// Validate toolCall and nested fields
+	if toolCall == nil {
+		return nil, fmt.Errorf("tool call cannot be nil")
+	}
+	// Function is a struct value (not a pointer), so it always exists, but Name can be nil
 	if toolCall.Function.Name == nil {
 		return nil, fmt.Errorf("tool call missing function name")
 	}
+
+	now := time.Now()
+
+	// Execute the tool in Chat format (internal execution format)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall)
+	if err != nil {
+		return nil, err
+	}
+
+	latency := time.Since(now).Milliseconds()
+
+	extraFields := schemas.BifrostMCPResponseExtraFields{
+		ClientName: clientName,
+		ToolName:   originalToolName,
+		Latency:    latency,
+	}
+
+	// Return result in the appropriate format
+	switch request.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: chatResult,
+			ExtraFields: extraFields,
+		}, nil
+	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate chatResult is not nil before conversion
+		if chatResult == nil {
+			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
+		}
+		responsesMessage := chatResult.ToResponsesToolMessage()
+		if responsesMessage == nil {
+			return nil, fmt.Errorf("failed to convert tool result to Responses format")
+		}
+		return &schemas.BifrostMCPResponse{
+			ResponsesMessage: responsesMessage,
+			ExtraFields:      extraFields,
+		}, nil
+	default:
+		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
+	}
+}
+
+// executeToolInternal is the internal tool executor that works with Chat format.
+// This is used internally by ExecuteTool after format conversion.
+// Returns: (message, clientName, originalToolName, error)
+func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
-	// Handle code mode tools
+	// Handle code mode tools (they don't have a client, and tool name is the full name)
 	switch toolName {
 	case ToolTypeListToolFiles:
-		return m.handleListToolFiles(ctx, toolCall)
+		msg, err := m.handleListToolFiles(ctx, *toolCall)
+		return msg, "", toolName, err
 	case ToolTypeReadToolFile:
-		return m.handleReadToolFile(ctx, toolCall)
+		msg, err := m.handleReadToolFile(ctx, *toolCall)
+		return msg, "", toolName, err
 	case ToolTypeExecuteToolCode:
-		return m.handleExecuteToolCode(ctx, toolCall)
+		msg, err := m.handleExecuteToolCode(ctx, *toolCall)
+		return msg, "", toolName, err
 	default:
 		// Check if the user has permission to execute the tool call
 		availableTools := m.clientManager.GetToolPerClient(ctx)
@@ -350,18 +448,22 @@ func (m *ToolsManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall sch
 		}
 
 		if !toolFound {
-			return nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+			return nil, "", "", fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 		}
 
 		client := m.clientManager.GetClientForTool(toolName)
 		if client == nil {
-			return nil, fmt.Errorf("client not found for tool %s", toolName)
+			return nil, "", "", fmt.Errorf("client not found for tool %s", toolName)
 		}
 
 		// Parse tool arguments
 		var arguments map[string]interface{}
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			return nil, fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+		if strings.TrimSpace(toolCall.Function.Arguments) == "" {
+			arguments = map[string]interface{}{}
+		} else {
+			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+				return nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+			}
 		}
 
 		// Strip the client name prefix from tool name before calling MCP server
@@ -390,10 +492,10 @@ func (m *ToolsManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall sch
 		if callErr != nil {
 			// Check if it was a timeout error
 			if toolCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+				return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
 			}
 			logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-			return nil, fmt.Errorf("MCP tool call failed: %v", callErr)
+			return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
 		}
 
 		logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
@@ -402,66 +504,8 @@ func (m *ToolsManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall sch
 		responseText := extractTextFromMCPResponse(toolResponse, toolName)
 
 		// Create tool response message
-		return createToolResponseMessage(toolCall, responseText), nil
+		return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, originalToolName, nil
 	}
-}
-
-// ExecuteToolForResponses executes a tool call from a Responses API tool message and returns
-// the result in Responses API format. This is a type-safe wrapper around ExecuteTool that
-// handles the conversion between Responses and Chat API formats.
-//
-// This method:
-// 1. Converts the Responses tool message to Chat API format
-// 2. Executes the tool using the standard tool executor
-// 3. Converts the result back to Responses API format
-//
-// Parameters:
-//   - ctx: Execution context
-//   - toolMessage: The Responses API tool message to execute
-//   - callID: The original call ID from the Responses API
-//
-// Returns:
-//   - *schemas.ResponsesMessage: Tool result message in Responses API format
-//   - error: Any execution error
-//
-// Example:
-//
-//	responsesToolMsg := &schemas.ResponsesToolMessage{
-//	    Name:      Ptr("calculate"),
-//	    Arguments: Ptr("{\"x\": 10, \"y\": 20}"),
-//	}
-//	resultMsg, err := toolsManager.ExecuteResponsesTool(ctx, responsesToolMsg, "call-123")
-//	// resultMsg is a ResponsesMessage with type=function_call_output
-func (m *ToolsManager) ExecuteResponsesTool(
-	ctx *schemas.BifrostContext,
-	toolMessage *schemas.ResponsesToolMessage,
-) (*schemas.ResponsesMessage, error) {
-	if toolMessage == nil {
-		return nil, fmt.Errorf("tool message is nil")
-	}
-	if toolMessage.Name == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
-
-	// Convert Responses format to Chat format for execution
-	chatToolCall := toolMessage.ToChatAssistantMessageToolCall()
-	if chatToolCall == nil {
-		return nil, fmt.Errorf("failed to convert Responses tool message to Chat format")
-	}
-
-	// Execute the tool using the standard executor
-	chatResult, err := m.ExecuteChatTool(ctx, *chatToolCall)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert the result back to Responses format
-	responsesMessage := chatResult.ToResponsesToolMessage()
-	if responsesMessage == nil {
-		return nil, fmt.Errorf("failed to convert tool result to Responses format")
-	}
-
-	return responsesMessage, nil
 }
 
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
@@ -482,7 +526,13 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	resp *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
 	return ExecuteAgentForChatRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
@@ -490,7 +540,7 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteChatTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }
@@ -513,7 +563,13 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	resp *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
 	return ExecuteAgentForResponsesRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
@@ -521,7 +577,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteChatTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }

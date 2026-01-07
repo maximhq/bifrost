@@ -38,10 +38,10 @@ type ConfigStore interface {
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 
 	// MCP config CRUD
-	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
+	GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error
-	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error
+	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// Vector store config CRUD

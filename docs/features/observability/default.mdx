@@ -43,9 +43,9 @@ Bifrost traces comprehensive information for every request, without any changes 
 
 The logging plugin intercepts all requests flowing through Bifrost using the plugin architecture, ensuring your LLM requests maintain optimal performance:
 
-1. **PreHook**: Captures request metadata (provider, model, input messages, parameters).
+1. **PreLLMHook**: Captures request metadata (provider, model, input messages, parameters).
 2. **Async Processing**: Logs are written in background goroutines with `sync.Pool` optimization.
-3. **PostHook**: Updates log entry with response data (output, tokens, cost, latency, errors).
+3. **PostLLMHook**: Updates log entry with response data (output, tokens, cost, latency, errors).
 4. **Real-time Updates**: WebSocket broadcasts keep the UI synchronized.
 
 All logging operations are non-blocking, ensuring your LLM requests maintain optimal performance.
@@ -183,7 +183,7 @@ func main() {
     // Initialize Bifrost with logging plugin
     client, err := bifrost.Init(ctx, schemas.BifrostConfig{
         Account: &yourAccount,
-        Plugins: []schemas.Plugin{loggingPlugin},
+        LLMPlugins: []schemas.LLMPlugin{loggingPlugin},
     })
     if err != nil {
         panic(err)

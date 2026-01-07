@@ -252,9 +252,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-mcp-include-clients: filesystem,websearch" \
   -d '{"model": "gpt-4o-mini", "messages": [...]}'
 
-# Include only specific tools 
+# Include only specific tools
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/read_file,websearch/search" \
+  -H "x-bf-mcp-include-tools: filesystem-read_file,websearch-search" \
   -d '{"model": "gpt-4o-mini", "messages": [...]}'
 ```
 

@@ -42,6 +42,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			tool_pricing: mcpClient.config.tool_pricing || {},
 		},
 	});
 
@@ -54,13 +55,14 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
+			tool_pricing: mcpClient.config.tool_pricing || {},
 		});
 	}, [form, mcpClient]);
 
 	const onSubmit = async (data: MCPClientUpdateSchema) => {
 		try {
 			await updateMCPClient({
-				id: mcpClient.config.id,
+				id: mcpClient.config.client_id,
 				data: {
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
@@ -68,6 +70,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					headers: data.headers,
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
+					tool_pricing: data.tool_pricing,
 				},
 			}).unwrap();
 
@@ -297,7 +300,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 										wrap={true}
 										code={JSON.stringify(
 											(() => {
-												const { id, name, tools_to_execute, headers, ...rest } = mcpClient.config;
+												const { client_id, name, tools_to_execute, headers, ...rest } = mcpClient.config;
 												return rest;
 											})(),
 											null,
@@ -409,25 +412,58 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													</div>
 
 													{isToolEnabled && (
-														<div className="flex items-center justify-between gap-2 border-b px-6 py-2">
-															<span className="text-muted-foreground text-xs font-medium">Automatically execute tool</span>
-															<FormField
-																control={form.control}
-																name="tools_to_auto_execute"
-																render={({ field }) => (
-																	<FormItem>
-																		<FormControl>
-																			<Switch
-																				size="md"
-																				checked={isAutoExecuteEnabled}
-																				disabled={isAutoExecuteDisabled}
-																				onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
-																			/>
-																		</FormControl>
-																	</FormItem>
-																)}
-															/>
-														</div>
+														<>
+															<div className="flex items-center justify-between gap-2 border-b px-6 py-2">
+																<span className="text-muted-foreground text-xs font-medium">Automatically execute tool</span>
+																<FormField
+																	control={form.control}
+																	name="tools_to_auto_execute"
+																	render={({ field }) => (
+																		<FormItem>
+																			<FormControl>
+																				<Switch
+																					size="md"
+																					checked={isAutoExecuteEnabled}
+																					disabled={isAutoExecuteDisabled}
+																					onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
+																				/>
+																			</FormControl>
+																		</FormItem>
+																	)}
+																/>
+															</div>
+															<div className="flex items-center justify-between gap-4 border-b px-6 py-2">
+																<span className="text-muted-foreground text-xs font-medium">Cost per execution (USD)</span>
+																<FormField
+																	control={form.control}
+																	name="tool_pricing"
+																	render={({ field }) => (
+																		<FormItem className="w-32">
+																			<FormControl>
+																				<Input
+																					type="number"
+																					step="0.000001"
+																					min="0"
+																					placeholder="0.00"
+																					className="h-8"
+																					value={field.value?.[tool.name] ?? ""}
+																					onChange={(e) => {
+																						const value = e.target.value === "" ? undefined : parseFloat(e.target.value);
+																						const newPricing = { ...field.value };
+																						if (value === undefined || isNaN(value)) {
+																							delete newPricing[tool.name];
+																						} else {
+																							newPricing[tool.name] = value;
+																						}
+																						field.onChange(newPricing);
+																					}}
+																				/>
+																			</FormControl>
+																		</FormItem>
+																	)}
+																/>
+															</div>
+														</>
 													)}
 
 													{/* Tool Parameters */}

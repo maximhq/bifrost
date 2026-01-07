@@ -350,19 +350,22 @@ import (
 type MockConfigStore struct {
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
-	mcpConfig        *schemas.MCPConfig
+	mcpConfig        *tables.MCPConfig
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
-	envKeys          map[string][]configstore.EnvKeyInfo
 	plugins          []*tables.TablePlugin
 
 	// Track update calls for verification
 	clientConfigUpdated    bool
 	providersConfigUpdated bool
 	mcpConfigsCreated      []schemas.MCPClientConfig
+	mcpClientConfigUpdates []struct {
+		ID     string
+		Config tables.TableMCPClient
+	}
 	governanceItemsCreated struct {
 		budgets     []tables.TableBudget
 		rateLimits  []tables.TableRateLimit
@@ -376,7 +379,6 @@ type MockConfigStore struct {
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
 		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		envKeys:   make(map[string][]configstore.EnvKeyInfo),
 	}
 }
 
@@ -436,7 +438,7 @@ func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.M
 }
 
 // MCP config
-func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
+func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error) {
 	return m.mcpConfig, nil
 }
 
@@ -446,16 +448,74 @@ func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (
 
 func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
 	if m.mcpConfig == nil {
-		m.mcpConfig = &schemas.MCPConfig{
-			ClientConfigs: []schemas.MCPClientConfig{},
+		m.mcpConfig = &tables.MCPConfig{
+			ClientConfigs: []tables.TableMCPClient{},
 		}
 	}
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
+	// Convert schemas.MCPClientConfig to tables.TableMCPClient
+	tableClient := tables.TableMCPClient{
+		ClientID:           clientConfig.ID,
+		Name:               clientConfig.Name,
+		IsCodeModeClient:   clientConfig.IsCodeModeClient,
+		ConnectionType:     string(clientConfig.ConnectionType),
+		ConnectionString:   clientConfig.ConnectionString,
+		StdioConfig:        clientConfig.StdioConfig,
+		ToolsToExecute:     clientConfig.ToolsToExecute,
+		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+		Headers:            clientConfig.Headers,
+	}
+	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, tableClient)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error {
+func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig tables.TableMCPClient) error {
+	m.mcpClientConfigUpdates = append(m.mcpClientConfigUpdates, struct {
+		ID     string
+		Config tables.TableMCPClient
+	}{
+		ID:     id,
+		Config: clientConfig,
+	})
+
+	// Initialize m.mcpConfig if nil (same pattern as CreateMCPClientConfig)
+	if m.mcpConfig == nil {
+		m.mcpConfig = &tables.MCPConfig{
+			ClientConfigs: []tables.TableMCPClient{},
+		}
+	}
+
+	// Update the in-memory state to ensure GetMCPConfig returns updated data
+	for i := range m.mcpConfig.ClientConfigs {
+		if m.mcpConfig.ClientConfigs[i].ClientID == id {
+			// Found the entry, update it with the new config
+			m.mcpConfig.ClientConfigs[i] = tables.TableMCPClient{
+				ClientID:           clientConfig.ClientID,
+				Name:               clientConfig.Name,
+				IsCodeModeClient:   clientConfig.IsCodeModeClient,
+				ConnectionType:     clientConfig.ConnectionType,
+				ConnectionString:   clientConfig.ConnectionString,
+				StdioConfig:        clientConfig.StdioConfig,
+				Headers:            clientConfig.Headers,
+				ToolsToExecute:     clientConfig.ToolsToExecute,
+				ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+			}
+			return nil
+		}
+	}
+	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
+	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, tables.TableMCPClient{
+		ClientID:           clientConfig.ClientID,
+		Name:               clientConfig.Name,
+		IsCodeModeClient:   clientConfig.IsCodeModeClient,
+		ConnectionType:     clientConfig.ConnectionType,
+		ConnectionString:   clientConfig.ConnectionString,
+		StdioConfig:        clientConfig.StdioConfig,
+		Headers:            clientConfig.Headers,
+		ToolsToExecute:     clientConfig.ToolsToExecute,
+		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+	})
+
 	return nil
 }
 
@@ -3313,9 +3373,9 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	sameKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-original-123"),                  // SAME
-		Models: []string{"gpt-4", "gpt-3.5-turbo"}, // SAME
-		Weight: 1.5,                                // SAME
+		Value:  *schemas.NewEnvVar("sk-original-123"), // SAME
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},    // SAME
+		Weight: 1.5,                                   // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -3412,7 +3472,7 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-456"),                             // CHANGED!
+		Value:  *schemas.NewEnvVar("sk-new-456"),         // CHANGED!
 		Models: []string{"gpt-4", "gpt-3.5-turbo", "o1"}, // CHANGED!
 		Weight: 2.0,                                      // CHANGED!
 	}
@@ -3512,9 +3572,9 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-456"),            // CHANGED
-		Models: []string{"gpt-4", "o1"}, // CHANGED
-		Weight: 2.0,                     // CHANGED
+		Value:  *schemas.NewEnvVar("sk-new-456"), // CHANGED
+		Models: []string{"gpt-4", "o1"},          // CHANGED
+		Weight: 2.0,                              // CHANGED
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
@@ -3595,8 +3655,8 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewEnvVar("sk-original-123"), // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Models: []string{"gpt-4"},                     // SAME
+		Weight: 1.0,                                   // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -3664,9 +3724,9 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	fileKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-value"),                   // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0,                              // CHANGED
+		Value:  *schemas.NewEnvVar("sk-new-value"), // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
+		Weight: 2.0,                                // CHANGED
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
@@ -3777,9 +3837,9 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  *schemas.NewEnvVar("sk-key-1"),        // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-key-1"), // SAME
+		Models: []string{"gpt-4"},              // SAME
+		Weight: 1.0,                            // SAME
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-2",
@@ -3906,9 +3966,9 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  *schemas.NewEnvVar("sk-key-1"),        // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-key-1"), // SAME
+		Models: []string{"gpt-4"},              // SAME
+		Weight: 1.0,                            // SAME
 	}
 
 	fileConfig := configstore.ProviderConfig{
@@ -4031,16 +4091,16 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	fileUnchangedKey := schemas.Key{
 		ID:     "key-unchanged",
 		Name:   "unchanged-key",
-		Value:  *schemas.NewEnvVar("sk-unchanged"),    // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-unchanged"), // SAME
+		Models: []string{"gpt-4"},                  // SAME
+		Weight: 1.0,                                // SAME
 	}
 	fileChangedKey := schemas.Key{
 		ID:     "key-changed",
 		Name:   "changed-key",
-		Value:  *schemas.NewEnvVar("sk-NEW-value"),                   // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0,                              // CHANGED
+		Value:  *schemas.NewEnvVar("sk-NEW-value"), // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
+		Weight: 2.0,                                // CHANGED
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-new",
@@ -4381,7 +4441,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 		dbKey := schemas.Key{
 			ID:     "key-1",
 			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123")	,
+			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
@@ -5172,7 +5232,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),              // Changed!
+					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
 					Deployments: map[string]string{
 						"gpt-4":  "gpt-4-deployment",
 						"gpt-4o": "gpt-4o-deployment", // Added!
@@ -5740,7 +5800,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
-					APIVersion: schemas.NewEnvVar("2024-02-01"),            // Same
+					APIVersion: schemas.NewEnvVar("2024-02-01"),                        // Same
 					Deployments: map[string]string{
 						"gpt-4": "gpt-4-deployment", // Same
 					},
@@ -5832,7 +5892,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
-					Region:    schemas.NewEnvVar("us-east-1"),                     // Same
+					Region:    schemas.NewEnvVar("us-east-1"),                                 // Same
 					Deployments: map[string]string{
 						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0", // Same
 					},
@@ -5922,7 +5982,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),              // Changed!
+					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
 					Deployments: map[string]string{
 						"gpt-4o": "gpt-4o-deployment", // Added!
 					},
@@ -12323,15 +12383,15 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("Models_GORMRoundTrip", func(t *testing.T) {
 		models := []string{"gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"}
 
-	keyToSave := tables.TableKey{
-		Name:       "test-key-models-" + uuid.New().String(),
-		KeyID:      uuid.New().String(),
-		ProviderID: provider.ID,
-		Provider:   "openai",
-		Value:      *schemas.NewEnvVar("sk-123"),
-		Models:     models,
-		Weight:     ptrFloat64(1.5),
-	}
+		keyToSave := tables.TableKey{
+			Name:       "test-key-models-" + uuid.New().String(),
+			KeyID:      uuid.New().String(),
+			ProviderID: provider.ID,
+			Provider:   "openai",
+			Value:      *schemas.NewEnvVar("sk-123"),
+			Models:     models,
+			Weight:     ptrFloat64(1.5),
+		}
 
 		// Generate hash using schemas.Key (what the hash function expects)
 		schemaKey := schemas.Key{
@@ -13655,7 +13715,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
 				Deployments: map[string]string{
-					"gemini-pro":    "gemini-pro-endpoint",
+					"gemini-pro":     "gemini-pro-endpoint",
 					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added!
 				},
 			},
@@ -14057,8 +14117,8 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				Deployments: map[string]string{
-					"gpt-4":   "gpt-4-deployment",
-					"gpt-4o":  "gpt-4o-deployment", // Added
+					"gpt-4":  "gpt-4-deployment",
+					"gpt-4o": "gpt-4o-deployment", // Added
 				},
 			},
 		}

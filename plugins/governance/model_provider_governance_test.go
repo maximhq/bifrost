@@ -447,7 +447,7 @@ func TestStore_UpdateProviderBudgetUsage_NoConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI,10.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
@@ -461,7 +461,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI,10.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
 	assert.NoError(t, err, "Should successfully update provider budget usage")
 
 	// Verify usage was updated
@@ -469,7 +469,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	assert.NoError(t, err, "Should still be within limit after first update")
 
 	// Update again to exceed
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI,95.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 95.0)
 	assert.NoError(t, err, "Should successfully update provider budget usage even when exceeding")
 
 	// Now should be exceeded
@@ -487,7 +487,7 @@ func TestStore_UpdateProviderRateLimitUsage_NoConfig(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI,1000, true, true)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 1000, true, true)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
@@ -501,7 +501,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI,5000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update provider token usage")
 
 	// Check that tokens were updated but requests were not
@@ -510,7 +510,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update tokens to exceed
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI,6000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update provider token usage even when exceeding")
 
 	// Now should be exceeded
@@ -532,7 +532,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 
 	// Update requests 500 times
 	for i := 0; i < 500; i++ {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 0, false, true)
 		assert.NoError(t, err, "Should successfully update provider request usage")
 	}
 
@@ -543,7 +543,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 
 	// Update 500 more times to exceed
 	for i := 0; i < 500; i++ {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 0, false, true)
 		assert.NoError(t, err, "Should successfully update provider request usage even when exceeding")
 	}
 
@@ -564,7 +564,7 @@ func TestStore_UpdateModelBudgetUsage_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider,10.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
@@ -579,7 +579,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider,10.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should successfully update model budget usage")
 
 	// Verify usage was updated
@@ -587,7 +587,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.NoError(t, err, "Should still be within limit after first update")
 
 	// Update again to exceed
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider,95.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 95.0)
 	assert.NoError(t, err, "Should successfully update model budget usage even when exceeding")
 
 	// Now should be exceeded
@@ -612,7 +612,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider,10.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 10.0)
 	assert.NoError(t, err, "Should successfully update both model-only and model+provider budget usage")
 
 	// Both budgets should be updated
@@ -621,7 +621,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	assert.NoError(t, err, "Should still be within limit")
 
 	// Update to exceed model-only budget
-	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider,95.0)
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "gpt-4", provider, 95.0)
 	assert.NoError(t, err, "Should successfully update model budget usage even when exceeding")
 
 	// Now model-only budget should be exceeded
@@ -640,7 +640,7 @@ func TestStore_UpdateModelRateLimitUsage_NoConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,1000, true, true)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 1000, true, true)
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
@@ -655,7 +655,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,5000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage")
 
 	// Should still be within limit
@@ -664,7 +664,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update to exceed
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,6000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage even when exceeding")
 
 	// Now should be exceeded
@@ -690,7 +690,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,5000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 5000, true, false)
 	assert.NoError(t, err, "Should successfully update both model-only and model+provider token usage")
 
 	// Should still be within limit
@@ -699,7 +699,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	assert.Equal(t, DecisionAllow, decision)
 
 	// Update to exceed model-only rate limit (should fail at model-only level)
-	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,6000, true, false)
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 6000, true, false)
 	assert.NoError(t, err, "Should successfully update model token usage even when exceeding")
 
 	// Now should be exceeded (model-only rate limit exceeded)
@@ -722,7 +722,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 	provider := schemas.OpenAI
 	// Update requests 500 times
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage")
 	}
 
@@ -733,7 +733,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 
 	// Update 500 more times to exceed
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage even when exceeding")
 	}
 
@@ -762,7 +762,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 	provider := schemas.OpenAI
 	// Update requests 500 times (should update both model-only and model+provider)
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update both model-only and model+provider request usage")
 	}
 
@@ -773,7 +773,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 
 	// Update 500 more times to exceed model-only rate limit
 	for range 500 {
-		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider,0, false, true)
+		err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "gpt-4", provider, 0, false, true)
 		assert.NoError(t, err, "Should successfully update model request usage even when exceeding")
 	}
 
@@ -796,7 +796,7 @@ func TestResolver_EvaluateModelAndProviderRequest_NoConfigs(t *testing.T) {
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -813,7 +813,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetExceeded(t *test
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "Provider-level budget exceeded")
 }
@@ -831,7 +831,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitExceeded(t *t
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionTokenLimited, result)
 	assert.Contains(t, result.Reason, "Provider-level rate limit check failed")
 }
@@ -849,7 +849,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelBudgetExceeded(t *testing
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "Model-level budget exceeded")
 }
@@ -867,7 +867,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded(t *test
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionTokenLimited, result)
 	assert.Contains(t, result.Reason, "Model-level rate limit check failed")
 }
@@ -885,7 +885,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded_Request
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionRequestLimited, result)
 	assert.Contains(t, result.Reason, "Model-level rate limit check failed")
 }
@@ -908,7 +908,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetThenModelBudget(
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	// Should fail at provider level (checked first)
 	assertDecision(t, DecisionBudgetExceeded, result)
 	assert.Contains(t, result.Reason, "Provider-level budget exceeded")
@@ -932,7 +932,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	// Should fail at provider level (checked first)
 	assertDecision(t, DecisionTokenLimited, result)
 	assert.Contains(t, result.Reason, "Provider-level rate limit check failed")
@@ -956,7 +956,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	// Should fail at provider level (checked first)
 	assertDecision(t, DecisionRequestLimited, result)
 	assert.Contains(t, result.Reason, "Provider-level rate limit check failed")
@@ -983,7 +983,7 @@ func TestResolver_EvaluateModelAndProviderRequest_AllChecksPass(t *testing.T) {
 	resolver := NewBudgetResolver(store, nil, logger)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionAllow, result)
 	assert.Contains(t, result.Reason, "provider-level and model-level checks passed")
 }
@@ -1002,7 +1002,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderOnly_NoModel(t *testin
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// No model provided
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.OpenAI, "")
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -1020,7 +1020,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelOnly_NoProvider(t *testin
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// No provider provided
-	result := resolver.EvaluateModelAndProviderRequest(ctx, "", "gpt-4", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, "", "gpt-4")
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -1040,7 +1040,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificBudget_Differe
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o")
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -1060,7 +1060,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o")
 	assertDecision(t, DecisionAllow, result)
 }
 
@@ -1080,15 +1080,15 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	// Request with Azure (different provider) for same model should pass
-	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o", "req-1")
+	result := resolver.EvaluateModelAndProviderRequest(ctx, schemas.Azure, "gpt-4o")
 	assertDecision(t, DecisionAllow, result)
 }
 
 // ============================================================================
-// End-to-End Tests - PreHook Integration
+// End-to-End Tests - PreLLMHook Integration
 // ============================================================================
 
-func TestPreHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	provider := buildProviderWithGovernance("openai", budget, nil)
@@ -1098,7 +1098,7 @@ func TestPreHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1110,12 +1110,12 @@ func TestPreHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
-func TestPreHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
@@ -1125,7 +1125,7 @@ func TestPreHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1137,12 +1137,12 @@ func TestPreHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when provider rate limit is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
-func TestPreHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
@@ -1152,7 +1152,7 @@ func TestPreHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1164,12 +1164,12 @@ func TestPreHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model budget is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
-func TestPreHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
@@ -1179,7 +1179,7 @@ func TestPreHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1191,12 +1191,12 @@ func TestPreHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
-func TestPreHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) {
+func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
@@ -1206,7 +1206,7 @@ func TestPreHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1218,12 +1218,12 @@ func TestPreHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) 
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit (request limit) is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
-func TestPreHook_AllChecksPass_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget and rate limit within limits
 	providerBudget := buildBudget("budget1", 100.0, "1h")
@@ -1241,7 +1241,7 @@ func TestPreHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1253,12 +1253,12 @@ func TestPreHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	result, shortCircuit, _ := plugin.PreHook(ctx, req)
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.Nil(t, shortCircuit, "Should not short circuit when all checks pass")
 	assert.NotNil(t, result)
 }
 
-func TestPreHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget exceeded
 	providerBudget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h")
@@ -1273,7 +1273,7 @@ func TestPreHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1285,13 +1285,13 @@ func TestPreHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	// Should fail at provider level (checked first)
 	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
-func TestPreHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has budget (exceeded)
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
@@ -1303,7 +1303,7 @@ func TestPreHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualK
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1315,12 +1315,12 @@ func TestPreHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualK
 		},
 	}
 
-	result, shortCircuit, _ := plugin.PreHook(ctx, req)
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
 	assert.NotNil(t, result)
 }
 
-func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
+func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
@@ -1332,7 +1332,7 @@ func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtu
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1344,12 +1344,12 @@ func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtu
 		},
 	}
 
-	result, shortCircuit, _ := plugin.PreHook(ctx, req)
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
 	assert.NotNil(t, result)
 }
 
-func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit(t *testing.T) {
+func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (request limit exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
@@ -1361,7 +1361,7 @@ func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtu
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1373,16 +1373,16 @@ func TestPreHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtu
 		},
 	}
 
-	result, shortCircuit, _ := plugin.PreHook(ctx, req)
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used (request limit)")
 	assert.NotNil(t, result)
 }
 
 // ============================================================================
-// End-to-End Tests - PreHook Integration with Virtual Key Fallback
+// End-to-End Tests - PreLLMHook Integration with Virtual Key Fallback
 // ============================================================================
 
-func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key budget exceeded
@@ -1394,7 +1394,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1408,12 +1408,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key rate limit exceeded (token)
@@ -1425,7 +1425,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1439,12 +1439,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK token rate limit is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key rate limit exceeded (request)
@@ -1456,7 +1456,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testin
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1470,12 +1470,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testin
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK request rate limit is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key checks also pass
@@ -1485,7 +1485,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1499,19 +1499,19 @@ func TestPreHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 		},
 	}
 
-	result, shortCircuit, _ := plugin.PreHook(ctx, req)
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.Nil(t, shortCircuit, "Should not short circuit when both model/provider and VK checks pass")
 	assert.NotNil(t, result)
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key not found
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-nonexistent")
@@ -1525,12 +1525,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is not found")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not found")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key is inactive
@@ -1540,7 +1540,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1554,12 +1554,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is inactive")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "inactive")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key blocks OpenAI provider
@@ -1572,7 +1572,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1586,12 +1586,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks provider")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key blocks specific model
@@ -1604,7 +1604,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1618,12 +1618,12 @@ func TestPreHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks model")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
-func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (within limits)
 	providerBudget := buildBudget("provider-budget1", 200.0, "1h")
@@ -1641,7 +1641,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLim
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1655,7 +1655,7 @@ func TestPreHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLim
 		},
 	}
 
-	_, shortCircuit, _ := plugin.PreHook(ctx, req)
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
@@ -1676,10 +1676,10 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	// First request: PreHook should pass, PostHook updates usage
+	// First request: PreLLMHook should pass, PostHook updates usage
 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
 	req1 := &schemas.BifrostRequest{
@@ -1690,8 +1690,8 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit1, _ := plugin.PreHook(ctx1, req1)
-	assert.Nil(t, shortCircuit1, "First request should pass PreHook")
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
 
 	result1 := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -1709,7 +1709,7 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, _, err = plugin.PostHook(ctx1, result1, nil)
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
 	assert.NoError(t, err, "Should successfully process PostHook for provider budget usage update")
 
 	// Wait for async processing to complete
@@ -1726,10 +1726,10 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit2, _ := plugin.PreHook(ctx2, req2)
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
 	// Without model catalog, cost is 0, so budget won't be exceeded
-	// This test verifies the PostHook -> PreHook flow works correctly
-	assert.Nil(t, shortCircuit2, "Second request should pass PreHook (cost is 0 without model catalog)")
+	// This test verifies the PostHook -> PreLLMHook flow works correctly
+	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
 }
 
 func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
@@ -1745,10 +1745,10 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	// First request: PreHook should pass, PostHook updates usage to 10000
+	// First request: PreLLMHook should pass, PostHook updates usage to 10000
 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
 	req1 := &schemas.BifrostRequest{
@@ -1759,8 +1759,8 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit1, _ := plugin.PreHook(ctx1, req1)
-	assert.Nil(t, shortCircuit1, "First request should pass PreHook")
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
 
 	result1 := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -1778,7 +1778,7 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, _, err = plugin.PostHook(ctx1, result1, nil)
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
 	assert.NoError(t, err, "Should successfully process PostHook for provider rate limit usage update")
 
 	// Wait for async processing to complete
@@ -1795,8 +1795,8 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit2, _ := plugin.PreHook(ctx2, req2)
-	assert.NotNil(t, shortCircuit2, "Second request should fail PreHook due to token limit exceeded")
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
 	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
 }
 
@@ -1812,10 +1812,10 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	// First request: PreHook should pass, PostHook updates usage
+	// First request: PreLLMHook should pass, PostHook updates usage
 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
 	req1 := &schemas.BifrostRequest{
@@ -1826,8 +1826,8 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit1, _ := plugin.PreHook(ctx1, req1)
-	assert.Nil(t, shortCircuit1, "First request should pass PreHook")
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
 
 	result1 := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -1845,7 +1845,7 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, _, err = plugin.PostHook(ctx1, result1, nil)
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
 	assert.NoError(t, err, "Should successfully process PostHook for model budget usage update")
 
 	// Wait for async processing to complete
@@ -1862,10 +1862,10 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit2, _ := plugin.PreHook(ctx2, req2)
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
 	// Without model catalog, cost is 0, so budget won't be exceeded
-	// This test verifies the PostHook -> PreHook flow works correctly
-	assert.Nil(t, shortCircuit2, "Second request should pass PreHook (cost is 0 without model catalog)")
+	// This test verifies the PostHook -> PreLLMHook flow works correctly
+	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
 }
 
 func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
@@ -1881,10 +1881,10 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
 	require.NoError(t, err)
 
-	// First request: PreHook should pass, PostHook updates usage to 10000
+	// First request: PreLLMHook should pass, PostHook updates usage to 10000
 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
 	req1 := &schemas.BifrostRequest{
@@ -1895,8 +1895,8 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit1, _ := plugin.PreHook(ctx1, req1)
-	assert.Nil(t, shortCircuit1, "First request should pass PreHook")
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
 
 	result1 := &schemas.BifrostResponse{
 		ChatResponse: &schemas.BifrostChatResponse{
@@ -1914,7 +1914,7 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, _, err = plugin.PostHook(ctx1, result1, nil)
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
 	assert.NoError(t, err, "Should successfully process PostHook for model rate limit usage update")
 
 	// Wait for async processing to complete
@@ -1931,7 +1931,7 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit2, _ := plugin.PreHook(ctx2, req2)
-	assert.NotNil(t, shortCircuit2, "Second request should fail PreHook due to token limit exceeded")
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
 	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
 }

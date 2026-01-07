@@ -63,7 +63,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) {}
+		} catch (ignored) { }
 	}
 
 	const copyRequestBody = async () => {
@@ -286,9 +286,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${
-											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-										} rounded-sm px-3 py-1`}
+										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+											} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -669,7 +668,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
 								<div className="w-full rounded-sm border">
 									<div className="border-b px-6 py-2 text-sm font-medium">Error</div>
-									<div className="px-6 py-2 font-mono text-xs">{log.error_details.error.message}</div>
+									<div className="px-6 py-2 font-mono text-xs break-words">{log.error_details.error.message}</div>
 								</div>
 							</>
 						)}

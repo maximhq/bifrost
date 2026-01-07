@@ -60,7 +60,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			plugins := config.GetLoadedPlugins()
+			plugins := config.GetLoadedHTTPTransportPlugins()
 			if len(plugins) == 0 {
 				next(ctx)
 				return
@@ -507,7 +507,7 @@ func (m *TracingMiddleware) GetTracer() *tracing.Tracer {
 
 // GetObservabilityPlugins filters and returns only observability plugins from a list of plugins.
 // Uses Go type assertion to identify plugins implementing the ObservabilityPlugin interface.
-func GetObservabilityPlugins(plugins []schemas.Plugin) []schemas.ObservabilityPlugin {
+func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.ObservabilityPlugin {
 	if len(plugins) == 0 {
 		return nil
 	}
