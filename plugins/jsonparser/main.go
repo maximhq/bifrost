@@ -95,9 +95,9 @@ func (p *JsonParserPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, r
 //
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
-//   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
+//   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *JsonParserPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return req, nil, nil
 }
 

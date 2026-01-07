@@ -25,7 +25,7 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 	return nil, nil
 }
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"))
 	fmt.Println("value1:", value1)
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-pre-hook"), "pre-hook-value")

@@ -18,7 +18,7 @@ type DynamicPlugin struct {
 
 	getName              func() string
 	httpTransportIntercept func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
-	preHook              func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	preHook              func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
 	postHook             func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 	cleanup              func() error
 }
@@ -37,7 +37,7 @@ func (dp *DynamicPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req
 }
 
 // PreHook is not used for dynamic plugins
-func (dp *DynamicPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (dp *DynamicPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	return dp.preHook(ctx, req)
 }
 

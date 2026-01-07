@@ -352,7 +352,7 @@ func (plugin *Plugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *s
 //   - *schemas.BifrostRequest: The original request
 //   - *schemas.BifrostResponse: Cached response if found, nil otherwise
 //   - error: Any error that occurred during cache lookup
-func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, model, _ := req.GetRequestFields()
 	// Get the cache key from the context
 	var cacheKey string
