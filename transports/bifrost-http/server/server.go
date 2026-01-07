@@ -1187,12 +1187,16 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	commonMiddlewares := s.PrepareCommonMiddlewares()
 	apiMiddlewares := commonMiddlewares
 	inferenceMiddlewares := commonMiddlewares
-	s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore)
-	if err != nil {
-		return fmt.Errorf("failed to initialize auth middleware: %v", err)
-	}
-	if ctx.Value("isEnterprise") == nil {
-		apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.Middleware())
+	if s.Config.ConfigStore == nil {
+		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
+	} else {
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore)
+		if err != nil {
+			return fmt.Errorf("failed to initialize auth middleware: %v", err)
+		}
+		if ctx.Value("isEnterprise") == nil {
+			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.Middleware())
+		}
 	}
 	// Register routes
 	err = s.RegisterAPIRoutes(s.ctx, s, apiMiddlewares...)
@@ -1200,7 +1204,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
-	if ctx.Value("isEnterprise") == nil {
+	if ctx.Value("isEnterprise") == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.Middleware())
 	}
 	// Registering inference middlewares

@@ -12,13 +12,11 @@ Configure multiple providers to seamlessly switch between them. This example sho
 
 <Tab title="Using Web UI">
 
-![Provider Configuration Interface](../../media/provider-configs.png)
+![Provider Configuration Interface](../../media/ui-provider-configs.png)
 
 1. Go to **http://localhost:8080**
-2. Navigate to **"Providers"** in the sidebar
-3. Click **"Add Provider"**
-4. Select provider and configure keys
-5. Save configuration
+2. Navigate to **"Model Providers"** in the sidebar
+3. Select provider and configure keys
 
 </Tab>
 
@@ -193,7 +191,7 @@ Distribute requests across multiple API keys or providers based on custom weight
 
 ![Weighted Load Balancing Interface](../../media/ui-multi-key-for-models.png)
 
-1. Navigate to **"Providers"** → **"OpenAI"**
+1. Navigate to **"Model Providers"** → **"OpenAI"**
 2. Click **"Add Key"** to add multiple keys
 3. Set weight values (0.7 and 0.3)
 4. Save configuration
@@ -265,7 +263,7 @@ Use different API keys for specific models, allowing you to manage access contro
 
 ![Model-Specific Keys Interface](../../media/ui-multi-key-for-models.png)
 
-1. Navigate to **"Providers"** → **"OpenAI"**
+1. Navigate to **"Model Providers"** → **"OpenAI"**
 2. Add first key with models: `["gpt-4o", "gpt-4o-mini"]`
 3. Add premium key with models: `["o1-preview", "o1-mini"]`
 4. Save configuration
@@ -327,20 +325,19 @@ curl --location 'http://localhost:8080/api/providers' \
 
 </Tabs>
 
-### Custom Network Settings
+### Custom Base URL
 
-Customize the network configuration for each provider, including custom base URLs, extra headers, and timeout settings. This example shows how to use a local OpenAI-compatible server with custom headers for user identification.
+Override the default API endpoint for a provider. This is useful for connecting to self-hosted models, local development servers, or OpenAI-compatible APIs like vLLM, Ollama, or LiteLLM.
 
-<Tabs group="network-config">
+<Tabs group="base-url-config">
 
 <Tab title="Using Web UI">
 
-![Network Configuration Interface](../../media/ui-concurrency-timeout.png)
+![Base URL Configuration Interface](../../media/ui-base-url.png)
 
-1. Navigate to **"Providers"** → **"OpenAI"** → **"Advanced"**
+1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Set **Base URL**: `http://localhost:8000/v1`
-3. Set **Timeout**: `30` seconds
-4. Save configuration
+3. Save configuration
 
 </Tab>
 
@@ -360,11 +357,7 @@ curl --location 'http://localhost:8080/api/providers' \
         }
     ],
     "network_config": {
-        "base_url": "http://localhost:8000",
-        "extra_headers": {
-            "x-user-id": "123"
-        },
-        "default_request_timeout_in_seconds": 30
+        "base_url": "http://localhost:8000/v1"
     }
 }'
 ```
@@ -386,11 +379,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 }
             ],
             "network_config": {
-                "base_url": "http://localhost:8000",
-                "extra_headers": {
-                    "x-user-id": "123"
-                },
-                "default_request_timeout_in_seconds": 30
+                "base_url": "http://localhost:8000/v1"
             }
         }
     }
@@ -400,6 +389,10 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tab>
 
 </Tabs>
+
+<Note>
+For self-hosted providers like Ollama and SGL, `base_url` is required. For standard providers, it's optional and overrides the default endpoint.
+</Note>
 
 ### Managing Retries
 
@@ -411,7 +404,7 @@ Configure retry behavior for handling temporary failures and rate limits. This e
 
 ![Retry Configuration Interface](../../media/ui-concurrency-timeout.png)
 
-1. Navigate to **"Providers"** → **"OpenAI"** → **"Advanced"**
+1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Set **Max Retries**: `5`
 3. Set **Initial Backoff**: `1` ms
 4. Set **Max Backoff**: `10000` ms
@@ -482,7 +475,7 @@ Fine-tune performance by adjusting worker concurrency and queue sizes per provid
 
 ![Concurrency Configuration Interface](../../media/ui-concurrency-buffer-size.png)
 
-1. Navigate to **"Providers"** → **Provider** → **"Performance"**
+1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
 2. Set **Concurrency**: Worker count (100 for OpenAI, 25 for Anthropic)
 3. Set **Buffer Size**: Queue size (500 for OpenAI, 100 for Anthropic)
 4. Save configuration
@@ -574,25 +567,109 @@ curl --location 'http://localhost:8080/api/providers' \
 
 </Tabs>
 
-### Custom Headers Per Request
+### Custom Headers
 
-Send custom headers with individual requests using the `x-bf-eh-*` prefix. Headers are automatically propagated to the provider and stored in the request context. This is useful for passing request-specific metadata, user identification, or custom tracking information.
+Bifrost supports two ways to add custom headers to provider requests: **static headers** configured at the provider level, and **dynamic headers** passed per-request.
+
+#### Static Headers (Provider Level)
+
+Configure headers that are automatically included in every request to a specific provider. This is useful for provider-specific requirements, API versioning, or organizational metadata.
+
+<Tabs group="static-headers">
+
+<Tab title="Using Web UI">
+
+![Extra Headers Configuration Interface](../../media/ui-extra-headers.png)
+
+1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
+2. Add headers in the **"Extra Headers"** section
+3. Save configuration
+
+</Tab>
+
+<Tab title="Using API">
 
 ```bash
- curl --location 'http://localhost:8080/v1/chat/completions' \
-    --header 'Content-Type: application/json' \
-    --header 'x-bf-eh-custom-data: example-value' \
-    --header 'x-bf-eh-tracking-id: trace-123' \
-    --data '{
-     "model": "openai/gpt-4o-mini",
-     "messages": [
-         {"role": "user", "content": "Hello!"}
-     ]
-    }'
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "openai",
+    "keys": [
+        {
+            "name": "openai-key-1",
+            "value": "env.OPENAI_API_KEY",
+            "models": [],
+            "weight": 1.0
+        }
+    ],
+    "network_config": {
+        "extra_headers": {
+            "x-custom-org": "my-organization",
+            "x-environment": "production"
+        }
+    }
+}'
 ```
 
+</Tab>
 
-Internally, Bifrost maintains a denylist of headers that are never forwarded to providers to prevent header-based overrides (authorization, host, content-length, etc.) and to block attempts to override API keys or virtual keys via `x-bf-eh-*` headers. For reference, the denylist looks like this:
+<Tab title="Using config.json">
+
+```json
+{
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "env.OPENAI_API_KEY",
+                    "models": [],
+                    "weight": 1.0
+                }
+            ],
+            "network_config": {
+                "extra_headers": {
+                    "x-custom-org": "my-organization",
+                    "x-environment": "production"
+                }
+            }
+        }
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+#### Dynamic Headers (Per Request)
+
+Send custom headers with individual requests using the `x-bf-eh-*` prefix. Headers are automatically propagated to the provider after stripping the prefix. This is useful for request-specific metadata, user identification, or custom tracking information.
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--header 'x-bf-eh-user-id: user-123' \
+--header 'x-bf-eh-tracking-id: trace-456' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "user", "content": "Hello!"}
+    ]
+}'
+```
+
+The `x-bf-eh-` prefix is stripped before forwarding, so `x-bf-eh-user-id` becomes `user-id` in the request to the provider.
+
+**Example use cases:**
+- User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
+- Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
+- Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
+- A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
+#### Security Denylist
+
+Bifrost maintains a security denylist of headers that are never forwarded to providers, regardless of configuration:
 
 ```go
 denylist := map[string]bool{
@@ -612,12 +689,7 @@ denylist := map[string]bool{
 }
 ```
 
-This denylist is applied before propagating `x-bf-eh-*` headers to upstream providers.
-**Example use cases:**
-- User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
-- Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
-- Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
-- A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+This denylist is applied to both static and dynamic headers to prevent security vulnerabilities.
 
 ### Setting Up a Proxy
 
@@ -629,7 +701,7 @@ Route requests through proxies for compliance, security, or geographic requireme
 
 ![Proxy Configuration Interface](../../media/ui-proxy-setup.png)
 
-1. Navigate to **"Providers"** → **Provider** → **"Proxy"**
+1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Proxy config"**
 2. Select **Proxy Type**: HTTP or SOCKS5
 3. Set **Proxy URL**: `http://localhost:8000`
 4. Add credentials if needed (username/password)
@@ -736,7 +808,7 @@ Include the original provider response alongside Bifrost's standardized response
 
 ![Raw Response Configuration Interface](../../media/ui-raw-response.png)
 
-1. Navigate to **"Providers"** → **Provider** → **"Advanced"**
+1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
 2. Toggle **"Include Raw Response"** to enabled
 3. Save configuration
 
@@ -802,6 +874,86 @@ When enabled, the raw provider response appears in `extra_fields.raw_response`:
 }
 ```
 
+### Send Back Raw Request
+
+Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
+
+<Tabs group="raw-request">
+
+<Tab title="Using Web UI">
+
+![Raw Request Configuration Interface](../../media/ui-raw-request.png)
+
+1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
+2. Toggle **"Include Raw Request"** to enabled
+3. Save configuration
+
+</Tab>
+
+<Tab title="Using API">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "openai",
+    "keys": [
+        {
+            "name": "openai-key-1",
+            "value": "env.OPENAI_API_KEY",
+            "models": [],
+            "weight": 1.0
+        }
+    ],
+    "send_back_raw_request": true
+}'
+```
+
+</Tab>
+
+<Tab title="Using config.json">
+
+```json
+{
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "env.OPENAI_API_KEY",
+                    "models": [],
+                    "weight": 1.0
+                }
+            ],
+            "send_back_raw_request": true
+        }
+    }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+When enabled, the raw provider request appears in `extra_fields.raw_request`:
+
+```json
+{
+    "choices": [...],
+    "usage": {...},
+    "extra_fields": {
+        "provider": "openai",
+        "raw_request": {
+            // Original request sent to OpenAI here
+        }
+    }
+}
+```
+
+<Tip>
+You can enable both `send_back_raw_request` and `send_back_raw_response` together to see the complete request-response cycle for debugging purposes.
+</Tip>
+
 ## Provider-Specific Authentication
 
 Enterprise cloud providers require additional configuration beyond API keys. Configure Azure, AWS Bedrock, and Google Vertex with platform-specific authentication details.
@@ -818,7 +970,7 @@ Azure supports two authentication methods:
 
 ![Azure Configuration Interface](../../media/ui-azure-config.png)
 
-1. Navigate to **"Providers"** → **"Azure"**
+1. Navigate to **"Model Providers"** → **"Azure"**
 2. Leave **API Key** empty for Service Principal auth
 3. Set **Client ID**: Your Azure Entra ID client ID
 4. Set **Client Secret**: Your Azure Entra ID client secret
@@ -905,7 +1057,7 @@ For simpler use cases, provide the authentication credential directly in the `va
 
 ![Azure Configuration Interface](../../media/ui-azure-config.png)
 
-1. Navigate to **"Providers"** → **"Azure"**
+1. Navigate to **"Model Providers"** → **"Azure"**
 2. Set **API Key**: Your Azure API key
 3. Set **Endpoint**: Your Azure endpoint URL
 4. Configure **Deployments**: Map model names to deployment names
@@ -987,7 +1139,7 @@ AWS Bedrock supports both explicit credentials and IAM role authentication:
 
 ![AWS Bedrock Configuration Interface](../../media/ui-bedrock-config.png)
 
-1. Navigate to **"Providers"** → **"AWS Bedrock"**
+1. Navigate to **"Model Providers"** → **"AWS Bedrock"**
 2. Set **API Key**: AWS API Key (or leave empty if using IAM role authentication)
 3. Set **Access Key**: AWS Access Key ID (or leave empty to use IAM in environment)
 4. Set **Secret Key**: AWS Secret Access Key (or leave empty to use IAM in environment)
@@ -1075,7 +1227,7 @@ Google Vertex requires project configuration and authentication credentials:
 
 ![Google Vertex Configuration Interface](../../media/ui-vertex-config.png)
 
-1. Navigate to **"Providers"** → **"Google Vertex"**
+1. Navigate to **"Model Providers"** → **"Google Vertex"**
 2. Set **API Key**: Your Vertex API key
 3. Set **Project ID**: Your Google Cloud project ID
 4. Set **Region**: e.g., `us-central1`

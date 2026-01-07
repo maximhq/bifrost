@@ -126,9 +126,9 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 }
 ```
 
-### Custom Network Settings
+### Custom Base URL
 
-Customize the network configuration for each provider, including custom base URLs, extra headers, and timeout settings. This example shows how to use a local OpenAI-compatible server with custom headers for user identification.
+Override the default API endpoint for a provider. This is useful for connecting to self-hosted models, local development servers, or OpenAI-compatible APIs like vLLM, Ollama, or LiteLLM.
 
 ```go
 func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
@@ -136,11 +136,7 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 	case schemas.OpenAI:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
-				BaseURL: "http://localhost:8000/v1", // Custom openai setup
-				ExtraHeaders: map[string]string{ // Will be included in the request headers
-					"x-user-id": "123",
-				},
-				DefaultRequestTimeoutInSeconds: 30,
+				BaseURL: "http://localhost:8000/v1", // Custom endpoint
 			},
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}, nil
@@ -148,6 +144,10 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 	return nil, fmt.Errorf("provider %s not supported", provider)
 }
 ```
+
+<Note>
+For self-hosted providers like Ollama and SGL, `BaseURL` is required. For standard providers, it's optional and overrides the default endpoint.
+</Note>
 ### Managing Retries
 
 Configure retry behavior for handling temporary failures and rate limits. This example sets up exponential backoff with up to 5 retries, starting with 1ms delay and capping at 10 seconds - ideal for handling transient network issues.
@@ -197,9 +197,35 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 }
 ```
 
-### Custom Headers Per Request
+### Custom Headers
 
-Send custom headers with individual requests by adding them to the request context. Headers are automatically propagated to the provider. This is useful for passing request-specific metadata, user identification, or custom tracking information.
+Bifrost supports two ways to add custom headers to provider requests: **static headers** configured at the provider level, and **dynamic headers** passed per-request via context.
+
+#### Static Headers (Provider Level)
+
+Configure headers that are automatically included in every request to a specific provider using `NetworkConfig.ExtraHeaders`:
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				ExtraHeaders: map[string]string{
+					"x-custom-org":   "my-organization",
+					"x-environment":  "production",
+				},
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+#### Dynamic Headers (Per Request)
+
+Send custom headers with individual requests by adding them to the request context. Headers are automatically propagated to the provider:
 
 ```go
 import (
@@ -210,15 +236,15 @@ import (
 func makeRequestWithCustomHeaders() {
     // Create base context
     ctx := context.Background()
-    
+
     // Add custom headers using BifrostContextKeyExtraHeaders
     extraHeaders := map[string][]string{
-        "user-id":       {"user-123"},
-        "session-id":    {"session-abc"},
+        "user-id":         {"user-123"},
+        "session-id":      {"session-abc"},
         "custom-metadata": {"value1", "value2"}, // Multiple values supported
     }
     ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
-    
+
     // Make request with custom headers
     response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
@@ -236,7 +262,6 @@ func makeRequestWithCustomHeaders() {
 - Multiple values per header name are supported
 - Header names are case-insensitive and normalized to lowercase
 - Headers are accessible throughout the request lifecycle
-- Sensitive headers (authorization, cookie, etc.) are blocked for security
 
 **Example use cases:**
 - User identification: `user-id`, `tenant-id`
@@ -244,7 +269,9 @@ func makeRequestWithCustomHeaders() {
 - Custom metadata: `department`, `cost-center`
 - A/B testing: `experiment-id`, `variant`
 
-Internally, Bifrost maintains a denylist of headers that are never forwarded to providers to prevent header-based overrides (authorization, host, content-length, etc.) and to block attempts to override API keys or virtual keys via `x-bf-eh-*` headers. For reference, the denylist looks like this:
+#### Security Denylist
+
+Bifrost maintains a security denylist of headers that are never forwarded to providers, regardless of configuration:
 
 ```go
 denylist := map[string]bool{
@@ -256,7 +283,7 @@ denylist := map[string]bool{
     "connection":          true,
     "transfer-encoding":   true,
 
-    // prevent auth/key overrides via x-bf-eh-*
+    // prevent auth/key overrides
     "x-api-key":      true,
     "x-goog-api-key": true,
     "x-bf-api-key":   true,
@@ -264,7 +291,7 @@ denylist := map[string]bool{
 }
 ```
 
-This denylist is applied before propagating `x-bf-eh-*` headers to upstream providers.
+This denylist is applied to both static and dynamic headers to prevent security vulnerabilities.
 
 ### Setting Up a Proxy
 
@@ -337,6 +364,34 @@ type BifrostResponseExtraFields struct {
 	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
 }
 ```
+
+### Send Back Raw Request
+
+Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
+
+```go
+func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        SendBackRawRequest: true, // Include raw provider request
+    }, nil
+}
+```
+
+When enabled, the raw provider request appears in `ExtraFields.RawRequest`:
+
+```go
+type BifrostResponseExtraFields struct {
+	// ... other fields
+	RawRequest     interface{}        `json:"raw_request,omitempty"`
+	RawResponse    interface{}        `json:"raw_response,omitempty"`
+}
+```
+
+<Tip>
+You can enable both `SendBackRawRequest` and `SendBackRawResponse` together to see the complete request-response cycle for debugging purposes.
+</Tip>
 
 ## Provider-Specific Authentication
 
