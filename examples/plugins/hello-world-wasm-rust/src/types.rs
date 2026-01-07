@@ -543,9 +543,9 @@ impl BifrostError {
 // Short Circuit Structure
 // =============================================================================
 
-/// PluginShortCircuit allows plugins to short-circuit the request flow.
+/// LLMPluginShortCircuit allows plugins to short-circuit the request flow.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PluginShortCircuit {
+pub struct LLMPluginShortCircuit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response: Option<BifrostResponse>,
 
@@ -600,7 +600,7 @@ pub struct PreHookOutput {
     pub request: Option<serde_json::Value>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub short_circuit: Option<PluginShortCircuit>,
+    pub short_circuit: Option<LLMPluginShortCircuit>,
 
     #[serde(default)]
     pub has_short_circuit: bool,

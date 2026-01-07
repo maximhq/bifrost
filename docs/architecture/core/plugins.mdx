@@ -181,7 +181,7 @@ sequenceDiagram
     Bifrost->>Auth: PreHook(request)
     Auth-->>Bifrost: modified request
     Bifrost->>Cache: PreHook(request)
-    Cache-->>Bifrost: PluginShortCircuit{Response}
+    Cache-->>Bifrost: LLMPluginShortCircuit{Response}
     Note over Provider: Provider call skipped
     Bifrost->>Cache: PostHook(response)
     Cache-->>Bifrost: modified response
@@ -276,7 +276,7 @@ sequenceDiagram
 
     Client->>Bifrost: Request (Provider1 + Fallback Provider2)
     Bifrost->>Plugin1: PreHook(request)
-    Plugin1-->>Bifrost: PluginShortCircuit{Error, AllowFallbacks=true}
+    Plugin1-->>Bifrost: LLMPluginShortCircuit{Error, AllowFallbacks=true}
     Note over Provider1: Provider1 call skipped
     Bifrost->>Plugin1: PostHook(error)
     Plugin1-->>Bifrost: error unchanged

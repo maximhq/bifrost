@@ -46,7 +46,7 @@ type BaseGovernancePlugin interface {
 	GetName() string
 	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
 	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
-	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)
 	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 	Cleanup() error
 	GetGovernanceStore() GovernanceStore
@@ -550,15 +550,15 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 //
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
-//   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
+//   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	if virtualKeyValue == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
-			return req, &schemas.PluginShortCircuit{
+			return req, &schemas.LLMPluginShortCircuit{
 				Error: &schemas.BifrostError{
 					Type:       bifrost.Ptr("virtual_key_required"),
 					StatusCode: bifrost.Ptr(401),
@@ -599,7 +599,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 		return req, nil, nil
 
 	case DecisionVirtualKeyNotFound, DecisionVirtualKeyBlocked, DecisionModelBlocked, DecisionProviderBlocked:
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(403),
@@ -610,7 +610,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 		}, nil
 
 	case DecisionRateLimited, DecisionTokenLimited, DecisionRequestLimited:
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(429),
@@ -621,7 +621,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 		}, nil
 
 	case DecisionBudgetExceeded:
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Type:       bifrost.Ptr(string(result.Decision)),
 				StatusCode: bifrost.Ptr(402),
@@ -633,7 +633,7 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 
 	default:
 		// Fallback to deny for unknown decisions
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Type: bifrost.Ptr(string(result.Decision)),
 				Error: &schemas.ErrorField{

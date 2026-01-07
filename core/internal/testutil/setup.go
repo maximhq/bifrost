@@ -37,7 +37,6 @@ func getBifrost(ctx context.Context) (*bifrost.Bifrost, error) {
 	// Initialize Bifrost
 	b, err := bifrost.Init(ctx, schemas.BifrostConfig{
 		Account: &account,
-		Plugins: nil,
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 	})
 	if err != nil {

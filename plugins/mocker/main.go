@@ -490,7 +490,7 @@ func (p *MockerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 
 // PreHook intercepts requests and applies mocking rules based on configuration
 // This is called before the actual provider request and can short-circuit the flow
-func (p *MockerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *MockerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Skip processing if plugin is disabled
 	if !p.config.Enabled {
 		return req, nil, nil
@@ -767,7 +767,7 @@ func (p *MockerPlugin) calculateRequestSizeFast(req *schemas.BifrostRequest) int
 }
 
 // generateSuccessShortCircuit creates a success response short-circuit with optimized allocations
-func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, response *Response, startTime time.Time) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, response *Response, startTime time.Time) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if response.Content == nil {
 		return req, nil, nil
 	}
@@ -886,13 +886,13 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	// Increment success response counter using atomic operation
 	atomic.AddInt64(&p.responsesGenerated, 1)
 
-	return req, &schemas.PluginShortCircuit{
+	return req, &schemas.LLMPluginShortCircuit{
 		Response: mockResponse,
 	}, nil
 }
 
 // generateErrorShortCircuit creates an error response short-circuit with optimized performance
-func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, response *Response) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, response *Response) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if response.Error == nil {
 		return req, nil, nil
 	}
@@ -933,7 +933,7 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 	// Increment error counter using atomic operation
 	atomic.AddInt64(&p.errorsGenerated, 1)
 
-	return req, &schemas.PluginShortCircuit{
+	return req, &schemas.LLMPluginShortCircuit{
 		Error: mockError,
 	}, nil
 }
@@ -995,12 +995,12 @@ func (p *MockerPlugin) calculateLatency(latency *Latency) time.Duration {
 }
 
 // handleDefaultBehavior handles requests when no rules match
-func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, model, _ := req.GetRequestFields()
 
 	switch p.config.DefaultBehavior {
 	case DefaultBehaviorError:
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Error: &schemas.BifrostError{
 				Error: &schemas.ErrorField{
 					Message: "Mock plugin default error",
@@ -1009,7 +1009,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 		}, nil
 	case DefaultBehaviorSuccess:
 		finishReason := "stop"
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Response: &schemas.BifrostResponse{
 				ChatResponse: &schemas.BifrostChatResponse{
 					Model: model,

@@ -233,7 +233,7 @@ impl BifrostError {
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PluginShortCircuit {
+pub struct LLMPluginShortCircuit {
     pub response: Option<BifrostResponse>,
     pub error: Option<BifrostError>,
 }
@@ -395,7 +395,7 @@ pub extern "C" fn pre_hook(input_ptr: u32, input_len: u32) -> u64 {
             ..Default::default()
         };
         
-        output.short_circuit = Some(PluginShortCircuit {
+        output.short_circuit = Some(LLMPluginShortCircuit {
             response: Some(mock_response),
             error: None,
         });
@@ -428,7 +428,7 @@ pub extern "C" fn pre_hook(input_ptr: u32, input_len: u32) -> u64 {
             ..Default::default()
         };
         
-        output.short_circuit = Some(PluginShortCircuit {
+        output.short_circuit = Some(LLMPluginShortCircuit {
             response: None,
             error: Some(
                 BifrostError::new("Rate limit exceeded")

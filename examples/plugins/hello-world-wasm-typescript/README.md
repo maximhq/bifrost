@@ -174,7 +174,7 @@ class BifrostError {
 
 ```typescript
 @json
-class PluginShortCircuit {
+class LLMPluginShortCircuit {
   response: BifrostResponse | null = null  // Success short-circuit
   error: BifrostError | null = null        // Error short-circuit
 }
@@ -304,7 +304,7 @@ export function pre_hook(inputPtr: u32, inputLen: u32): u64 {
     const output = new PreHookOutput()
     output.context = input.context
     output.has_short_circuit = true
-    output.short_circuit = new PluginShortCircuit()
+    output.short_circuit = new LLMPluginShortCircuit()
     
     // Build mock response
     const mockResponse = new BifrostResponse()
@@ -346,7 +346,7 @@ export function pre_hook(inputPtr: u32, inputLen: u32): u64 {
     const output = new PreHookOutput()
     output.context = input.context
     output.has_short_circuit = true
-    output.short_circuit = new PluginShortCircuit()
+    output.short_circuit = new LLMPluginShortCircuit()
     
     const error = new BifrostError()
     error.error.message = 'Rate limit exceeded'

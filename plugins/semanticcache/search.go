@@ -13,7 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
 	// Generate hash for the request
 	hash, err := plugin.generateRequestHash(req)
 	if err != nil {
@@ -83,7 +83,7 @@ func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *sche
 }
 
 // performSemanticSearch performs semantic similarity search and returns matching response if found.
-func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
 	// Extract text and metadata for embedding
 	text, paramsHash, err := plugin.extractTextForEmbedding(req)
 	if err != nil {
@@ -158,8 +158,8 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, req *sc
 	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeSemantic, cacheThreshold, inputTokens)
 }
 
-// buildResponseFromResult constructs a PluginShortCircuit response from a cached VectorEntry result
-func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, cacheType CacheType, threshold float64, inputTokens int) (*schemas.PluginShortCircuit, error) {
+// buildResponseFromResult constructs a LLMPluginShortCircuit response from a cached VectorEntry result
+func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, cacheType CacheType, threshold float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
 	// Extract response data from the result properties
 	properties := result.Properties
 	if properties == nil {
@@ -238,7 +238,7 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *
 }
 
 // buildSingleResponseFromResult constructs a single response from cached data
-func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, responseData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, responseData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
 	provider, _, _ := req.GetRequestFields()
 
 	responseStr, ok := responseData.(string)
@@ -279,13 +279,13 @@ func (plugin *Plugin) buildSingleResponseFromResult(ctx *schemas.BifrostContext,
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
 
-	return &schemas.PluginShortCircuit{
+	return &schemas.LLMPluginShortCircuit{
 		Response: &cachedResponse,
 	}, nil
 }
 
 // buildStreamingResponseFromResult constructs a streaming response from cached data
-func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result vectorstore.SearchResult, streamData interface{}, cacheType CacheType, threshold float64, similarity float64, inputTokens int) (*schemas.LLMPluginShortCircuit, error) {
 	provider, _, _ := req.GetRequestFields()
 
 	// Parse stream_chunks
@@ -364,7 +364,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 		}
 	}()
 
-	return &schemas.PluginShortCircuit{
+	return &schemas.LLMPluginShortCircuit{
 		Stream: streamChan,
 	}, nil
 }
