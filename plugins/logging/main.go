@@ -210,9 +210,9 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 //
 // Returns:
 //   - *schemas.BifrostRequest: The processed request
-//   - *schemas.PluginShortCircuit: The plugin short circuit if the request is not allowed
+//   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
-func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	if ctx == nil {
 		// Log error but don't fail the request
 		p.logger.Error("context is nil in PreHook")

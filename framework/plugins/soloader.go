@@ -78,8 +78,8 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 	if err != nil {
 		return nil, err
 	}
-	if dp.preHook, ok = preHookSym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)")
+	if dp.preHook, ok = preHookSym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {
+		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)")
 	}
 	// Looking up for PostHook method
 	postHookSym, err := plugin.Lookup("PostHook")

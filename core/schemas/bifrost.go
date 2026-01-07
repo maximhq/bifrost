@@ -17,7 +17,8 @@ type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
 	Account            Account
-	Plugins            []Plugin
+	LLMPlugins         []LLMPlugin
+	MCPPlugins         []MCPPlugin
 	Logger             Logger
 	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
@@ -359,6 +360,24 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	}
 }
 
+type MCPRequestType string
+
+const (
+	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
+	MCPRequestTypeResponsesToolCall MCPRequestType = "responses_tool_call" // Responses API format
+)
+
+// BifrostMCPRequest is the request struct for all MCP requests.
+// only ONE of the following fields should be set:
+// - ChatAssistantMessageToolCall
+// - ResponsesToolMessage
+type BifrostMCPRequest struct {
+	RequestType MCPRequestType
+
+	*ChatAssistantMessageToolCall
+	*ResponsesToolMessage
+}
+
 //* Response Structs
 
 // BifrostResponse represents the complete result from any bifrost request.
@@ -436,6 +455,15 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	}
 
 	return &BifrostResponseExtraFields{}
+}
+
+// BifrostMCPResponse is the response struct for all MCP responses.
+// only ONE of the following fields should be set:
+// - ChatMessage
+// - ResponsesMessage
+type BifrostMCPResponse struct {
+	ChatMessage      *ChatMessage
+	ResponsesMessage *ResponsesMessage
 }
 
 // BifrostResponseExtraFields contains additional fields in a response.

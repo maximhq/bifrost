@@ -126,7 +126,7 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 
 // PreHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	fmt.Println("PreHook called")
 	// Modify the request or return a short-circuit to skip provider call
 	return req, nil, nil
@@ -181,7 +181,7 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 
 // PreHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	fmt.Println("PreHook called")
 	// Modify the request or return a short-circuit to skip provider call
 	return req, nil, nil
@@ -313,10 +313,10 @@ Called before each provider request. Use this to:
 **Short-Circuiting Example:**
 
 ```go
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Return cached response without calling provider
 	if cachedResponse := checkCache(req) {
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Response: cachedResponse,
 		}, nil
 	}
@@ -524,7 +524,7 @@ var (
 	mu           sync.Mutex
 )
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	mu.Lock()
 	requestCount++
 	count := requestCount
@@ -561,13 +561,13 @@ func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifros
 ```go
 var cache sync.Map
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Generate cache key from request
 	key := generateCacheKey(req)
 	
 	// Check cache
 	if cached, ok := cache.Load(key); ok {
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Response: cached.(*schemas.BifrostResponse),
 		}, nil
 	}

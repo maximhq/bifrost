@@ -237,7 +237,7 @@ func (plugin *Plugin) getOrCreateLogger(logRepoID string) (*logging.Logger, erro
 // Returns:
 //   - *schemas.BifrostRequest: The original request, unmodified
 //   - error: Any error that occurred during trace/generation creation
-func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	var traceID string
 	var traceName string
 	var sessionID string

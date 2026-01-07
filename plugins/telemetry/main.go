@@ -293,7 +293,7 @@ func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 
 // PreHook records the start time of the request in the context.
 // This time is used later in PostHook to calculate request duration.
-func (p *PrometheusPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *PrometheusPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	return req, nil, nil
 }
