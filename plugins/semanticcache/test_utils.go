@@ -22,7 +22,7 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 
 	host := os.Getenv("WEAVIATE_HOST")
 	if host == "" {
-		host = "localhost:9000"
+		host = "127.0.0.1:9000"
 	}
 
 	apiKey := os.Getenv("WEAVIATE_API_KEY")
@@ -360,7 +360,7 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 		Enabled: true,
 	}, logger)
 	if err != nil {
-		t.Fatalf("Vector store not available or failed to connect: %v", err)
+		t.Skipf("Vector store not available or failed to connect: %v", err)
 	}
 
 	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store)
@@ -540,6 +540,22 @@ func CreateResponsesRequestWithInstructions(content string, instructions string,
 // CreateStreamingResponsesRequest creates a streaming Responses API request for testing
 func CreateStreamingResponsesRequest(content string, temperature float64, maxTokens int) *schemas.BifrostResponsesRequest {
 	return CreateBasicResponsesRequest(content, temperature, maxTokens)
+}
+
+// CreateImageGenerationRequest creates an image generation request for testing
+func CreateImageGenerationRequest(prompt string, size string, quality string) *schemas.BifrostImageGenerationRequest {
+	return &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-image-1",
+		Input: &schemas.ImageGenerationInput{
+			Prompt: prompt,
+		},
+		Params: &schemas.ImageGenerationParameters{
+			Size:    bifrost.Ptr(size),
+			Quality: bifrost.Ptr(quality),
+			N:       bifrost.Ptr(1),
+		},
+	}
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key

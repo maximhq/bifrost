@@ -42,6 +42,7 @@ providers:
     speech: "tts-1"
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
+    image_generation: "gpt-image-1"
     streaming: "gpt-4o-mini"
     thinking: "gpt-5.1"
     batch_file_upload: "gpt-4o-mini"
@@ -93,6 +94,8 @@ providers:
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
+    image_generation: "gemini-2.5-flash-image"
+    imagen: "imagen-4.0-generate-001"
     streaming: "gemini-2.5-flash"
     batch_create: "gemini-2.5-flash"
     batch_inline: "gemini-2.5-flash"
@@ -184,6 +187,7 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
+    image_generation: true
     thinking: true
     prompt_caching: false
     list_models: true
@@ -265,6 +269,8 @@ provider_scenarios:
     transcription: true
     transcription_streaming: true
     embeddings: true
+    image_generation: true  # Gemini image generation via responseModalities
+    imagen: true  # Imagen via :predict endpoint
     thinking: true
     prompt_caching: false
     list_models: true
@@ -430,6 +436,8 @@ scenario_capabilities:
   transcription: "transcription"
   transcription_streaming: "transcription"
   embeddings: "embeddings"
+  image_generation: "image_generation"  # Uses image_generation model
+  imagen: "imagen"  # Uses imagen model (Gemini/Vertex)
   thinking: "thinking"
   prompt_caching: "chat"
   list_models: "chat"

@@ -2609,10 +2609,16 @@ func HandleOpenAIImageGenerationStreaming(
 				chunk.B64JSON = *response.B64JSON
 			}
 
+			// Set raw response on every chunk if enabled
+			if sendBackRawResponse {
+				chunk.ExtraFields.RawResponse = jsonData
+			}
+
 			if isCompleted {
 				chunk.Usage = collectedUsage
 				// For completed chunk, use total latency from start
 				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
 				}

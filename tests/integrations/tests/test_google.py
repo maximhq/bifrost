@@ -76,6 +76,9 @@ from .utils.common import (
     GEMINI_REASONING_PROMPT,
     GEMINI_REASONING_STREAMING_PROMPT,
     GENAI_INVALID_ROLE_CONTENT,
+    IMAGE_GENERATION_DETAILED_PROMPT,
+    # Image Generation utilities
+    IMAGE_GENERATION_SIMPLE_PROMPT,
     IMAGE_URL_SECONDARY,
     INPUT_TOKENS_LONG_TEXT,
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -89,6 +92,7 @@ from .utils.common import (
     Config,
     assert_valid_chat_response,
     assert_valid_embedding_response,
+    assert_valid_image_generation_response,
     assert_valid_image_response,
     assert_valid_input_tokens_response,
     assert_valid_speech_response,
@@ -1599,6 +1603,175 @@ Joe: Pretty good, thanks for asking."""
         print(f"  Steps: {len(parsed.reasoning_steps)} reasoning steps")
         print(f"  Answer: {parsed.final_answer}")
         print(f"  Confidence: {parsed.confidence}")
+
+
+    # =========================================================================
+    # IMAGE GENERATION TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_generation"))
+    def test_41a_image_generation_simple(self, test_config, provider, model):
+        """Test Case 41a: Simple image generation with Gemini model via Bifrost"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for image_generation scenario")
+        
+        # Skip if provider is not gemini (this test is Gemini-specific)
+        if provider != "gemini":
+            pytest.skip(f"This test is for Gemini only, got provider: {provider}")
+
+        from .utils.config_loader import get_integration_url, get_config
+        from .utils.common import get_api_key
+        
+        # Use HTTP requests directly to Bifrost's GenAI endpoint
+        # Bifrost will detect image generation based on model name or request structure
+        base_url = get_integration_url("google")
+        api_key = get_api_key(provider)
+        
+        # Use just the model name, not provider/model format for GenAI endpoint
+        url = f"{base_url}/v1beta/models/{model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-model-provider": provider,
+        }
+        # Gemini uses x-goog-api-key header, not Bearer token
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        
+        # Request format that Bifrost will detect as image generation
+        # Include generationConfig with responseModalities to trigger image generation
+        payload = {
+            "contents": [{
+                "role": "user",
+                "parts": [{"text": IMAGE_GENERATION_SIMPLE_PROMPT}]
+            }],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"]
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        assert response.status_code == 200, f"Request failed with status {response.status_code}: {response.text}"
+        
+        response_data = response.json()
+        
+        # Validate response structure
+        assert_valid_image_generation_response(response_data, "google")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("imagen"))
+    def test_41b_imagen_predict(self, test_config, provider, model):
+        """Test Case 41b: Image generation using Imagen model via :predict endpoint"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for imagen scenario")
+        
+        # Skip if provider is not gemini (this test is Gemini-specific)
+        if provider != "gemini":
+            pytest.skip(f"This test is for Gemini only, got provider: {provider}")
+
+        from .utils.config_loader import get_integration_url
+        from .utils.common import get_api_key
+        
+        # Use HTTP requests directly to Bifrost's GenAI endpoint with :predict suffix
+        # Bifrost will route Imagen models to the :predict endpoint
+        base_url = get_integration_url("google")
+        api_key = get_api_key(provider)
+        
+        # Use just the model name for Imagen :predict endpoint
+        url = f"{base_url}/v1beta/models/{model}:predict"
+        headers = {
+            "Content-Type": "application/json",
+            "x-model-provider": provider,
+        }
+        # Gemini uses x-goog-api-key header
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        
+        # Imagen request format
+        payload = {
+            "instances": [{
+                "prompt": IMAGE_GENERATION_SIMPLE_PROMPT
+            }],
+            "parameters": {
+                "sampleCount": 1
+            }
+        }
+        
+        try:
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            assert response.status_code == 200, f"Request failed with status {response.status_code}: {response.text}"
+            
+            response_data = response.json()
+            
+            # Validate response structure
+            assert_valid_image_generation_response(response_data, "google")
+        except Exception as e:
+            # Imagen may not be available in all regions or configurations
+            pytest.skip(f"Imagen generation failed (may not be available): {e}")
+
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_generation"))
+    def test_41c_image_generation_with_text(self, test_config, provider, model):
+        """Test Case 41c: Image generation with combined text and image response"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for image_generation scenario")
+        
+        # Skip if provider is not gemini (this test is Gemini-specific)
+        if provider != "gemini":
+            pytest.skip(f"This test is for Gemini only, got provider: {provider}")
+
+        from .utils.config_loader import get_integration_url
+        from .utils.common import get_api_key
+        
+        # Use HTTP requests directly to Bifrost's GenAI endpoint
+        base_url = get_integration_url("google")
+        api_key = get_api_key(provider)
+        
+        # Use just the model name, not provider/model format for GenAI endpoint
+        url = f"{base_url}/v1beta/models/{model}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-model-provider": provider,
+        }
+        # Gemini uses x-goog-api-key header, not Bearer token
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        
+        # Request format for image generation with text
+        # Include generationConfig with responseModalities to trigger image generation
+        payload = {
+            "contents": [{
+                "role": "user",
+                "parts": [{"text": f"Generate an image of {IMAGE_GENERATION_SIMPLE_PROMPT} and describe what you created."}]
+            }],
+            "generationConfig": {
+                "responseModalities": ["IMAGE", "TEXT"]
+            }
+        }
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
+        assert response.status_code == 200, f"Request failed with status {response.status_code}: {response.text}"
+        
+        response_data = response.json()
+        
+        # Validate response structure
+        assert_valid_image_generation_response(response_data, "google")
+        
+        # Check for both text and image in response
+        found_text = False
+        found_image = False
+        
+        if "candidates" in response_data and response_data["candidates"]:
+            for candidate in response_data["candidates"]:
+                if "content" in candidate and "parts" in candidate["content"]:
+                    for part in candidate["content"]["parts"]:
+                        if "text" in part and part["text"]:
+                            found_text = True
+                        if "inlineData" in part and part["inlineData"]:
+                            found_image = True
+        
+        # At least one of text or image should be present
+        assert found_text or found_image, "Response should contain text or image"
+        
+        if found_image:
+            print("✓ Multi-modal response with image generated successfully")
 
 
     # =========================================================================

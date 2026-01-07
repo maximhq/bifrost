@@ -79,8 +79,17 @@ type GeminiGenerationRequest struct {
 	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is a image generation request
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
+	// Imagen-specific fields for :predict endpoint
+	Instances  []ImagenInstance       `json:"instances,omitempty"`
+	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// ImagenInstance represents a single instance in an Imagen request
+type ImagenInstance struct {
+	Prompt string `json:"prompt,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1664,7 +1673,8 @@ type GeminiImagenRequest struct {
 }
 
 type GeminiImagenParameters struct {
-	NumberOfImages   *int    `json:"numberOfImages,omitempty"`   // 1 - 4
+	NumberOfImages   *int    `json:"numberOfImages,omitempty"`   // 1 - 4 (Imagen 3)
+	SampleCount      *int    `json:"sampleCount,omitempty"`      // 1 - 4 (Vertex AI alias)
 	ImageSize        *string `json:"imageSize,omitempty"`        // "1k", "2k"
 	AspectRatio      *string `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
 	PersonGeneration *string `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"

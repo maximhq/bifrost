@@ -7,6 +7,103 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ToBifrostImageGenerationRequest converts a Gemini generation request to a Bifrost image generation request
+func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schemas.BifrostImageGenerationRequest {
+	if request == nil {
+		return nil
+	}
+
+	bifrostReq := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.Gemini,
+		Model:    request.Model,
+		Input:    &schemas.ImageGenerationInput{},
+		Params:   &schemas.ImageGenerationParameters{},
+	}
+
+	// Convert string fallbacks to Fallback structs
+	if len(request.Fallbacks) > 0 {
+		bifrostReq.Fallbacks = make([]schemas.Fallback, len(request.Fallbacks))
+		for i, fallback := range request.Fallbacks {
+			bifrostReq.Fallbacks[i] = schemas.Fallback{
+				Provider: schemas.Gemini,
+				Model:    fallback,
+			}
+		}
+	}
+
+	// First, try to extract prompt from Imagen format (instances)
+	if len(request.Instances) > 0 && request.Instances[0].Prompt != "" {
+		bifrostReq.Input.Prompt = request.Instances[0].Prompt
+
+		// Extract Imagen parameters
+		if request.Parameters != nil {
+			if request.Parameters.NumberOfImages != nil {
+				bifrostReq.Params.N = request.Parameters.NumberOfImages
+			} else if request.Parameters.SampleCount != nil {
+				bifrostReq.Params.N = request.Parameters.SampleCount
+			}
+			// Convert Imagen size format to standard format
+			if request.Parameters.ImageSize != nil || request.Parameters.AspectRatio != nil {
+				size := convertImagenFormatToSize(request.Parameters.ImageSize, request.Parameters.AspectRatio)
+				if size != "" {
+					bifrostReq.Params.Size = &size
+				}
+			}
+		}
+		return bifrostReq
+	}
+
+	// Fall back to standard Gemini format (contents)
+	if len(request.Contents) > 0 {
+		for _, content := range request.Contents {
+			for _, part := range content.Parts {
+				if part.Text != "" {
+					bifrostReq.Input.Prompt = part.Text
+					break
+				}
+			}
+			if bifrostReq.Input.Prompt != "" {
+				break
+			}
+		}
+	}
+
+	return bifrostReq
+}
+
+// convertImagenFormatToSize converts Imagen imageSize and aspectRatio to standard WxH format
+func convertImagenFormatToSize(imageSize *string, aspectRatio *string) string {
+	// Default size based on imageSize parameter
+	baseSize := 1024
+	if imageSize != nil {
+		switch *imageSize {
+		case "2k":
+			baseSize = 2048
+		case "1k":
+			baseSize = 1024
+		}
+	}
+
+	// Apply aspect ratio
+	if aspectRatio != nil {
+		switch *aspectRatio {
+		case "1:1":
+			return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize)
+		case "3:4":
+			return strconv.Itoa(baseSize*3/4) + "x" + strconv.Itoa(baseSize)
+		case "4:3":
+			return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize*3/4)
+		case "9:16":
+			return strconv.Itoa(baseSize*9/16) + "x" + strconv.Itoa(baseSize)
+		case "16:9":
+			return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize*9/16)
+		}
+	}
+
+	// Default to square
+	return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize)
+}
+
 func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
 	bifrostResp := &schemas.BifrostImageGenerationResponse{
 		ID:    response.ResponseID,
@@ -243,4 +340,57 @@ func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schema
 	}
 
 	return bifrostResp
+}
+
+// ToGeminiImageGenerationResponse converts a BifrostImageGenerationResponse back to Gemini format
+func ToGeminiImageGenerationResponse(bifrostResp *schemas.BifrostImageGenerationResponse) *GenerateContentResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	geminiResp := &GenerateContentResponse{
+		ResponseID:   bifrostResp.ID,
+		ModelVersion: bifrostResp.Model,
+	}
+
+	// Convert image data to candidate parts
+	if len(bifrostResp.Data) > 0 {
+		parts := make([]*Part, 0, len(bifrostResp.Data))
+		for _, imageData := range bifrostResp.Data {
+			// Determine MIME type
+			mimeType := "image/png" // default
+			if bifrostResp.Params != nil && bifrostResp.Params.OutputFormat != "" {
+				mimeType = bifrostResp.Params.OutputFormat
+			}
+
+			part := &Part{
+				InlineData: &Blob{
+					Data:     imageData.B64JSON,
+					MIMEType: mimeType,
+				},
+			}
+			parts = append(parts, part)
+		}
+
+		geminiResp.Candidates = []*Candidate{
+			{
+				Content: &Content{
+					Role:  RoleModel,
+					Parts: parts,
+				},
+				FinishReason: FinishReasonStop,
+			},
+		}
+	}
+
+	// Convert usage metadata
+	if bifrostResp.Usage != nil {
+		geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
+			PromptTokenCount:     int32(bifrostResp.Usage.InputTokens),
+			CandidatesTokenCount: int32(bifrostResp.Usage.OutputTokens),
+			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
+		}
+	}
+
+	return geminiResp
 }

@@ -2834,6 +2834,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					if streamMsg.BifrostTranscriptionStreamResponse != nil {
 						bifrostResponse.TranscriptionStreamResponse = streamMsg.BifrostTranscriptionStreamResponse
 					}
+					if streamMsg.BifrostImageGenerationStreamResponse != nil {
+						bifrostResponse.ImageGenerationStreamResponse = streamMsg.BifrostImageGenerationStreamResponse
+					}
 
 					// Run post hooks on the stream message
 					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, streamMsg.BifrostError)
@@ -2845,6 +2848,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 						streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
 						streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 						streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+						streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
 					}
 					if processedError != nil {
 						streamResponse.BifrostError = processedError
