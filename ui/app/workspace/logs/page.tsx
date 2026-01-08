@@ -9,34 +9,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import {
-	getErrorMessage,
-	useDeleteLogsMutation,
-	useLazyGetLogsQuery,
-	useLazyGetLogsStatsQuery
-} from "@/lib/store";
-import type {
-	ChatMessage,
-	ChatMessageContent,
-	ContentBlock,
-	LogEntry,
-	LogFilters,
-	LogStats,
-	Pagination
-} from "@/lib/types/logs";
+import { getErrorMessage, useDeleteLogsMutation, useLazyGetLogsQuery, useLazyGetLogsStatsQuery } from "@/lib/store";
+import type { ChatMessage, ChatMessageContent, ContentBlock, LogEntry, LogFilters, LogStats, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-// Calculate default timestamps once at module level to prevent constant recalculation
-const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
-const DEFAULT_START_TIME = (() => {
-	const date = new Date();
-	date.setHours(date.getHours() - 24);
-	return Math.floor(date.getTime() / 1000);
-})();
 
 export default function LogsPage() {
 	const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -56,9 +35,15 @@ export default function LogsPage() {
 	const [deleteLogs] = useDeleteLogsMutation();
 
 	const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
-	
+
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+	// Track if user has manually modified the time range
+	const userModifiedTimeRange = useRef<boolean>(false);
+
+	// Get fresh default time range
+	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
 
 	// URL state management with nuqs - all filters and pagination in URL
 	const [urlState, setUrlState] = useQueryStates(
@@ -70,8 +55,8 @@ export default function LogsPage() {
 			selected_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			content_search: parseAsString.withDefault(""),
-			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
-			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
+			start_time: parseAsInteger.withDefault(getDefaultTimeRange().startTime),
+			end_time: parseAsInteger.withDefault(getDefaultTimeRange().endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault("timestamp"),
@@ -84,6 +69,46 @@ export default function LogsPage() {
 			shallow: false,
 		},
 	);
+
+	// Refresh time range defaults on page focus/visibility
+	useEffect(() => {
+		const refreshDefaultsIfStale = () => {
+			// Skip refresh if user has manually modified the time range
+			if (userModifiedTimeRange.current) {
+				return;
+			}
+
+			const defaults = getDefaultTimeRange();
+			// Only update if current values match old defaults (within a small tolerance)
+			// This prevents overwriting user-set values
+			const currentEnd = urlState.end_time;
+			const timeDiff = Math.abs(currentEnd - defaults.endTime);
+			// If end time is more than 5 minutes old, refresh both
+			if (timeDiff > 300) {
+				setUrlState({
+					start_time: defaults.startTime,
+					end_time: defaults.endTime,
+				});
+			}
+		};
+
+		const handleVisibilityChange = () => {
+			if (!document.hidden) {
+				refreshDefaultsIfStale();
+			}
+		};
+
+		const handleFocus = () => {
+			refreshDefaultsIfStale();
+		};
+
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		window.addEventListener("focus", handleFocus);
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+			window.removeEventListener("focus", handleFocus);
+		};
+	}, [urlState.start_time, urlState.end_time, setUrlState]);
 
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
@@ -117,6 +142,11 @@ export default function LogsPage() {
 	// Helper to update filters in URL
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
+			// Mark time range as user-modified if start_time or end_time is being set
+			if (newFilters.start_time !== undefined || newFilters.end_time !== undefined) {
+				userModifiedTimeRange.current = true;
+			}
+
 			setUrlState({
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],

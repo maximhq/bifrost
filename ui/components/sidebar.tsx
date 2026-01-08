@@ -363,10 +363,17 @@ export default function AppSidebar() {
 			hasAccess: hasLogsAccess,
 			subItems: [
 				{
-					title: "Logs",
+					title: "LLM Logs",
 					url: "/workspace/logs",
 					icon: Logs,
-					description: "Request logs & monitoring",
+					description: "LLM request logs & monitoring",
+					hasAccess: hasLogsAccess,
+				},
+				{
+					title: "MCP Logs",
+					url: "/workspace/mcp-logs",
+					icon: MCPIcon,
+					description: "MCP tool execution logs",
 					hasAccess: hasLogsAccess,
 				},
 				{

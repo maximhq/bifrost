@@ -113,6 +113,7 @@ const (
 	FileDeleteRequest            RequestType = "file_delete"
 	FileContentRequest           RequestType = "file_content"
 	CountTokensRequest           RequestType = "count_tokens"
+	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	UnknownRequest               RequestType = "unknown"
 )
 
@@ -154,7 +155,7 @@ const (
 	BifrostContextKeyAccumulatorID                       BifrostContextKey = "bifrost-accumulator-id"                           // string (ID for streaming accumulator lookup - set by tracer for accumulator operations)
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
-	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                   // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
