@@ -8,6 +8,14 @@ import (
 	"gorm.io/gorm"
 )
 
+type MCPConfig struct {
+	ClientConfigs          []TableMCPClient                         `json:"client_configs,omitempty"`      // Per-client execution configurations
+	ToolManagerConfig      *schemas.MCPToolManagerConfig            `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
+	FetchNewRequestIDFunc  func(ctx *schemas.BifrostContext) string `json:"-"`
+	PluginPipelineProvider func() interface{}                       `json:"-"`
+	ReleasePluginPipeline  func(pipeline interface{})               `json:"-"`
+}
+
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
 	ID                     uint    `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
@@ -20,6 +28,7 @@ type TableMCPClient struct {
 	ToolsToExecuteJSON     string  `gorm:"type:text" json:"-"` // JSON serialized []string
 	ToolsToAutoExecuteJSON string  `gorm:"type:text" json:"-"` // JSON serialized []string
 	HeadersJSON            string  `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	ToolPricingJSON        string  `gorm:"type:text" json:"-"` // JSON serialized map[string]float64
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -33,6 +42,7 @@ type TableMCPClient struct {
 	ToolsToExecute     []string                `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute []string                `gorm:"-" json:"tools_to_auto_execute"`
 	Headers            map[string]string       `gorm:"-" json:"headers"`
+	ToolPricing        map[string]float64      `gorm:"-" json:"tool_pricing"`
 }
 
 // TableName sets the table name for each model
@@ -79,6 +89,16 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.HeadersJSON = "{}"
 	}
+
+	if c.ToolPricing != nil {
+		data, err := json.Marshal(c.ToolPricing)
+		if err != nil {
+			return err
+		}
+		c.ToolPricingJSON = string(data)
+	} else {
+		c.ToolPricingJSON = "{}"
+	}
 	return nil
 }
 
@@ -106,6 +126,12 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 
 	if c.HeadersJSON != "" {
 		if err := json.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
+			return err
+		}
+	}
+
+	if c.ToolPricingJSON != "" {
+		if err := json.Unmarshal([]byte(c.ToolPricingJSON), &c.ToolPricing); err != nil {
 			return err
 		}
 	}

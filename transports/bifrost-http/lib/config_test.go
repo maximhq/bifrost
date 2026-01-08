@@ -255,7 +255,7 @@ func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfi
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig, envKeys map[string][]configstore.EnvKeyInfo) error {
+func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig tables.TableMCPClient, envKeys map[string][]configstore.EnvKeyInfo) error {
 	return nil
 }
 

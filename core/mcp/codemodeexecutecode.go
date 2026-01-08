@@ -399,8 +399,11 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 			}
 
 			originalToolName := tool.Function.Name
+			// Strip client prefix and replace - with _ for code mode compatibility
+			unprefixedToolName := stripClientPrefix(originalToolName, clientName)
+			unprefixedToolName = strings.ReplaceAll(unprefixedToolName, "-", "_")
 			// Parse tool name for property name compatibility (used as property name in the runtime)
-			parsedToolName := parseToolName(originalToolName)
+			parsedToolName := parseToolName(unprefixedToolName)
 
 			// Store tool binding
 			toolFunctions[parsedToolName] = toolBinding{
@@ -939,14 +942,18 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 			mcpResp = &schemas.BifrostMCPResponse{
 				ChatMessage: createToolResponseMessage(toolCall, rawResult),
 				ExtraFields: schemas.BifrostMCPResponseExtraFields{
-					ToolName: *toolCall.Function.Name,
-					Latency:  latency,
+					ClientName: clientName,
+					ToolName:   originalToolName,
+					Latency:    latency,
 				},
 			}
 
 			// Log the result
 			resultStr := formatResultForLog(rawResult)
-			appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, toolName, resultStr))
+			// Strip prefix and replace - with _ for code mode display
+			logToolName := stripClientPrefix(toolName, clientName)
+			logToolName = strings.ReplaceAll(logToolName, "-", "_")
+			appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
 		}
 	}
 
@@ -989,11 +996,15 @@ func (m *ToolsManager) callMCPToolDirect(ctx context.Context, client *schemas.MC
 	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
 	defer cancel()
 
+	// Strip prefix and replace - with _ for code mode display
+	logToolName := stripClientPrefix(toolName, clientName)
+	logToolName = strings.ReplaceAll(logToolName, "-", "_")
+
 	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
 	if callErr != nil {
-		logger.Debug(fmt.Sprintf("%s Tool call failed: %s.%s - %v", CodeModeLogPrefix, clientName, toolName, callErr))
-		appendLog(fmt.Sprintf("[TOOL] %s.%s error: %v", clientName, toolName, callErr))
-		return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, toolName, callErr)
+		logger.Debug(fmt.Sprintf("%s Tool call failed: %s.%s - %v", CodeModeLogPrefix, clientName, logToolName, callErr))
+		appendLog(fmt.Sprintf("[TOOL] %s.%s error: %v", clientName, logToolName, callErr))
+		return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, logToolName, callErr)
 	}
 
 	// Extract result
@@ -1003,8 +1014,8 @@ func (m *ToolsManager) callMCPToolDirect(ctx context.Context, client *schemas.MC
 	// Error results start with "Error: " prefix
 	if after, ok := strings.CutPrefix(rawResult, "Error: "); ok {
 		errorMsg := after
-		logger.Debug(fmt.Sprintf("%s Tool returned error result: %s.%s - %s", CodeModeLogPrefix, clientName, toolName, errorMsg))
-		appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, toolName, errorMsg))
+		logger.Debug(fmt.Sprintf("%s Tool returned error result: %s.%s - %s", CodeModeLogPrefix, clientName, logToolName, errorMsg))
+		appendLog(fmt.Sprintf("[TOOL] %s.%s error result: %s", clientName, logToolName, errorMsg))
 		return nil, fmt.Errorf("%s", errorMsg)
 	}
 
@@ -1017,7 +1028,7 @@ func (m *ToolsManager) callMCPToolDirect(ctx context.Context, client *schemas.MC
 
 	// Log the result
 	resultStr := formatResultForLog(finalResult)
-	appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, toolName, resultStr))
+	appendLog(fmt.Sprintf("[TOOL] %s.%s raw response: %s", clientName, logToolName, resultStr))
 
 	return finalResult, nil
 }

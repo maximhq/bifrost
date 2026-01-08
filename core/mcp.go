@@ -810,6 +810,10 @@ func (m *MCPManager) convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.Ch
 	if len(mcpTool.InputSchema.Properties) > 0 {
 		orderedProps := make(schemas.OrderedMap, len(mcpTool.InputSchema.Properties))
 		maps.Copy(orderedProps, mcpTool.InputSchema.Properties)
+
+		// Fix array schemas: ensure all array properties have an 'items' field
+		m.fixArraySchemas(orderedProps)
+
 		properties = &orderedProps
 	} else {
 		// OpenAI function calling API always expects object schemas with properties field present
@@ -1176,4 +1180,65 @@ func (m *MCPManager) cleanup() error {
 
 	m.logger.Info(MCPLogPrefix + " MCP cleanup completed")
 	return nil
+}
+
+// fixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.
+// This prevents validation errors like "array schema missing items" when tools are registered.
+//
+// Parameters:
+//   - properties: The properties map to fix
+func (m *MCPManager) fixArraySchemas(properties map[string]interface{}) {
+	for key, value := range properties {
+		// Check if the value is a map (representing a schema object)
+		if schemaMap, ok := value.(map[string]interface{}); ok {
+			// Check if this is an array type
+			if schemaType, ok := schemaMap["type"].(string); ok && schemaType == "array" {
+				// Check if 'items' is missing
+				if _, hasItems := schemaMap["items"]; !hasItems {
+					// Add a default 'items' schema (any type)
+					schemaMap["items"] = map[string]interface{}{
+						"type": "string", // Default to string, most permissive common type
+					}
+					m.logger.Debug(fmt.Sprintf("%s Fixed array schema for property '%s': added missing 'items' field", MCPLogPrefix, key))
+				} else {
+					// If items exists, recursively fix it in case it's a nested object/array
+					if itemsMap, ok := schemaMap["items"].(map[string]interface{}); ok {
+						if itemsType, ok := itemsMap["type"].(string); ok && itemsType == "object" {
+							if itemsProps, ok := itemsMap["properties"].(map[string]interface{}); ok {
+								m.fixArraySchemas(itemsProps)
+							}
+						}
+					}
+				}
+			}
+
+			// Recursively fix nested object properties
+			if schemaType, ok := schemaMap["type"].(string); ok && schemaType == "object" {
+				if nestedProps, ok := schemaMap["properties"].(map[string]interface{}); ok {
+					m.fixArraySchemas(nestedProps)
+				}
+			}
+
+			// Handle anyOf, oneOf, allOf
+			for _, unionKey := range []string{"anyOf", "oneOf", "allOf"} {
+				if unionArray, ok := schemaMap[unionKey].([]interface{}); ok {
+					for _, unionItem := range unionArray {
+						if unionMap, ok := unionItem.(map[string]interface{}); ok {
+							if unionType, ok := unionMap["type"].(string); ok && unionType == "array" {
+								if _, hasItems := unionMap["items"]; !hasItems {
+									unionMap["items"] = map[string]interface{}{
+										"type": "string",
+									}
+									m.logger.Debug(fmt.Sprintf("%s Fixed array schema in %s for property '%s': added missing 'items' field", MCPLogPrefix, unionKey, key))
+								}
+							}
+							if nestedProps, ok := unionMap["properties"].(map[string]interface{}); ok {
+								m.fixArraySchemas(nestedProps)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }

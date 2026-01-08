@@ -99,7 +99,12 @@ func (m *ToolsManager) handleListToolFiles(ctx context.Context, toolCall schemas
 			// Tool-level: one file per tool
 			for _, tool := range tools {
 				if tool.Function != nil && tool.Function.Name != "" {
-					toolFileName := fmt.Sprintf("servers/%s/%s.d.ts", clientName, tool.Function.Name)
+					// Strip the client prefix from tool name (format: "client-toolname" -> "toolname")
+					// But replace - with _ for valid JavaScript identifiers
+					toolName := stripClientPrefix(tool.Function.Name, clientName)
+					// Replace any remaining hyphens with underscores for JavaScript compatibility
+					toolName = strings.ReplaceAll(toolName, "-", "_")
+					toolFileName := fmt.Sprintf("servers/%s/%s.d.ts", clientName, toolName)
 					files = append(files, toolFileName)
 				}
 			}

@@ -1,7 +1,6 @@
 package governance
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -1013,7 +1012,7 @@ func TestBudgetStateAfterReset(t *testing.T) {
 	// Poll for budget data to reflect the reset
 	_, resetVerified := WaitForAPICondition(t, APIRequest{
 		Method: "GET",
-		Path:   fmt.Sprintf("/api/governance/budgets?from_memory=true"),
+		Path:   "/api/governance/budgets?from_memory=true",
 	}, func(resp *APIResponse) bool {
 		if resp.StatusCode != 200 {
 			return false

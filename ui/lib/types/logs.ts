@@ -608,6 +608,7 @@ export interface MCPToolLogEntry {
 	result?: Record<string, unknown> | string; // JSON parsed tool result
 	error_details?: BifrostError;
 	latency?: number; // Execution time in milliseconds
+	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
 	created_at: string; // ISO string format
 }
@@ -630,6 +631,7 @@ export interface MCPToolLogStats {
 	total_executions: number;
 	success_rate: number;
 	average_latency: number;
+	total_cost: number; // Total cost in dollars
 }
 
 // MCP Tool Log Search Response

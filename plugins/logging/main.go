@@ -5,6 +5,7 @@ package logging
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
@@ -105,6 +107,7 @@ type LoggerPlugin struct {
 	store                 logstore.LogStore
 	disableContentLogging *bool
 	pricingManager        *modelcatalog.ModelCatalog
+	mcpCatalog            *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
 	mu                    sync.Mutex
 	done                  chan struct{}
 	cleanupOnce           sync.Once // Ensures cleanup only runs once
@@ -119,7 +122,7 @@ type LoggerPlugin struct {
 }
 
 // Init creates new logger plugin with given log store
-func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *modelcatalog.ModelCatalog) (*LoggerPlugin, error) {
+func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore logstore.LogStore, pricingManager *modelcatalog.ModelCatalog, mcpCatalog *mcpcatalog.MCPCatalog) (*LoggerPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -127,13 +130,17 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		return nil, fmt.Errorf("logs store cannot be nil")
 	}
 	if pricingManager == nil {
-		logger.Warn("logging plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
+		logger.Warn("logging plugin requires model catalog to calculate cost, all LLM cost calculations will be skipped.")
+	}
+	if mcpCatalog == nil {
+		logger.Warn("logging plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
 	plugin := &LoggerPlugin{
 		ctx:                   ctx,
 		store:                 logsStore,
 		pricingManager:        pricingManager,
+		mcpCatalog:            mcpCatalog,
 		disableContentLogging: config.DisableContentLogging,
 		done:                  make(chan struct{}),
 		logger:                logger,
@@ -717,10 +724,10 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	// Extract server label from tool name (format: {client}_{tool_name})
-	// The first part before underscore is the client/server label
+	// Extract server label from tool name (format: {client}-{tool_name})
+	// The first part before hyphen is the client/server label
 	if fullToolName != "" {
-		if idx := strings.Index(fullToolName, "_"); idx > 0 {
+		if idx := strings.Index(fullToolName, "-"); idx > 0 {
 			serverLabel = fullToolName[:idx]
 			toolName = fullToolName[idx+1:]
 		} else {
@@ -804,6 +811,22 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			updates["latency"] = float64(resp.ExtraFields.Latency)
 		}
 
+		// Calculate MCP tool cost from catalog if available
+		var toolCost float64
+		success := (resp != nil && bifrostErr == nil)
+		if success && resp != nil && p.mcpCatalog != nil && resp.ExtraFields.ClientName != "" && resp.ExtraFields.ToolName != "" {
+			fmt.Printf("looking up pricing data for client: %s, tool: %s\n", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName)
+			// Use separate client name and tool name fields
+			if pricingEntry, ok := p.mcpCatalog.GetPricingData(resp.ExtraFields.ClientName, resp.ExtraFields.ToolName); ok {
+				toolCost = pricingEntry.CostPerExecution
+				fmt.Printf("found pricing data for client: %s, tool: %s: $%.6f\n", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
+				updates["cost"] = toolCost
+				p.logger.Debug("MCP tool cost for %s.%s: $%.6f", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName, toolCost)
+			} else {
+				fmt.Printf("no pricing data found for client: %s, tool: %s\n", resp.ExtraFields.ClientName, resp.ExtraFields.ToolName)
+			}
+		}
+
 		if bifrostErr != nil {
 			updates["status"] = "error"
 			// Serialize error details
@@ -813,6 +836,12 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 				updates["error_details"] = tempEntry.ErrorDetails
 			}
 		} else if resp != nil {
+			respExtraFieldsJSON, err := json.Marshal(resp.ExtraFields)
+			if err != nil {
+				p.logger.Error("failed to marshal response extra fields in PostMCPHook: %v", err)
+			}
+			fmt.Println("response extra fields: ", string(respExtraFieldsJSON))
+
 			updates["status"] = "success"
 			// Store result if content logging is enabled
 			if p.disableContentLogging == nil || !*p.disableContentLogging {

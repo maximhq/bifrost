@@ -461,10 +461,9 @@ type BifrostResponseExtraFields struct {
 }
 
 type BifrostMCPResponseExtraFields struct {
-	ToolName    string      `json:"tool_name"` // in format "{clientName}_{toolName}"
-	Latency     int64       `json:"latency"`   // in milliseconds
-	RawRequest  interface{} `json:"raw_request,omitempty"`
-	RawResponse interface{} `json:"raw_response,omitempty"`
+	ClientName string `json:"client_name"`
+	ToolName   string `json:"tool_name"`
+	Latency    int64  `json:"latency"` // in milliseconds
 }
 
 // BifrostCacheDebug represents debug information about the cache.
@@ -593,7 +592,7 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider"`
-	ModelRequested string        `json:"model_requested"`
-	RequestType    RequestType   `json:"request_type"`
+	Provider       ModelProvider `json:"provider,omitempty"`
+	ModelRequested string        `json:"model_requested,omitempty"`
+	RequestType    RequestType   `json:"request_type,omitempty"`
 }
