@@ -40,13 +40,19 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// Log retrieval with filtering, search, and pagination
+	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
+
+	// MCP Tool Log retrieval with filtering, search, and pagination
+	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
+	r.GET("/api/mcp-logs/stats", lib.ChainMiddlewares(h.getMCPLogsStats, middlewares...))
+	r.GET("/api/mcp-logs/filterdata", lib.ChainMiddlewares(h.getMCPLogsFilterData, middlewares...))
+	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
@@ -502,4 +508,244 @@ func parseCommaSeparated(s string) []string {
 type recalculateCostRequest struct {
 	Filters logstore.SearchFilters `json:"filters"`
 	Limit   *int                   `json:"limit,omitempty"`
+}
+
+// parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
+// Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
+func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
+	filters := &logstore.MCPToolLogSearchFilters{}
+	pagination := &logstore.PaginationOptions{}
+
+	// Extract filters from query parameters
+	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {
+		filters.ToolNames = parseCommaSeparated(toolNames)
+	}
+	if serverLabels := string(ctx.QueryArgs().Peek("server_labels")); serverLabels != "" {
+		filters.ServerLabels = parseCommaSeparated(serverLabels)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
+		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339, startTime)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid start_time format: %w", err)
+		}
+		filters.StartTime = &t
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339, endTime)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid end_time format: %w", err)
+		}
+		filters.EndTime = &t
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		f, err := strconv.ParseFloat(minLatency, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid min_latency format: %w", err)
+		}
+		filters.MinLatency = &f
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		val, err := strconv.ParseFloat(maxLatency, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid max_latency format: %w", err)
+		}
+		filters.MaxLatency = &val
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	// Extract pagination parameters
+	pagination.Limit = 50 // Default limit
+	if limit := string(ctx.QueryArgs().Peek("limit")); limit != "" {
+		i, err := strconv.Atoi(limit)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid limit format: %w", err)
+		}
+		if i <= 0 {
+			return nil, nil, fmt.Errorf("limit must be greater than 0")
+		}
+		if i > 1000 {
+			return nil, nil, fmt.Errorf("limit cannot exceed 1000")
+		}
+		pagination.Limit = i
+	}
+
+	pagination.Offset = 0 // Default offset
+	if offset := string(ctx.QueryArgs().Peek("offset")); offset != "" {
+		i, err := strconv.Atoi(offset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid offset format: %w", err)
+		}
+		if i < 0 {
+			return nil, nil, fmt.Errorf("offset cannot be negative")
+		}
+		pagination.Offset = i
+	}
+
+	// Sort parameters
+	pagination.SortBy = "timestamp" // Default sort field
+	if sortBy := string(ctx.QueryArgs().Peek("sort_by")); sortBy != "" {
+		if sortBy == "timestamp" || sortBy == "latency" {
+			pagination.SortBy = sortBy
+		} else {
+			return nil, nil, fmt.Errorf("invalid sort_by: must be 'timestamp' or 'latency'")
+		}
+	}
+
+	pagination.Order = "desc" // Default sort order
+	if order := string(ctx.QueryArgs().Peek("order")); order != "" {
+		if order == "asc" || order == "desc" {
+			pagination.Order = order
+		} else {
+			return nil, nil, fmt.Errorf("invalid order: must be 'asc' or 'desc'")
+		}
+	}
+
+	return filters, pagination, nil
+}
+
+// parseMCPFilters parses MCP tool log filters from query parameters (without pagination).
+// Returns an error if any required parsing fails.
+func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, error) {
+	filters := &logstore.MCPToolLogSearchFilters{}
+
+	// Extract filters from query parameters
+	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {
+		filters.ToolNames = parseCommaSeparated(toolNames)
+	}
+	if serverLabels := string(ctx.QueryArgs().Peek("server_labels")); serverLabels != "" {
+		filters.ServerLabels = parseCommaSeparated(serverLabels)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
+		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339, startTime)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start_time format: %w", err)
+		}
+		filters.StartTime = &t
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339, endTime)
+		if err != nil {
+			return nil, fmt.Errorf("invalid end_time format: %w", err)
+		}
+		filters.EndTime = &t
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		f, err := strconv.ParseFloat(minLatency, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid min_latency format: %w", err)
+		}
+		filters.MinLatency = &f
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		val, err := strconv.ParseFloat(maxLatency, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid max_latency format: %w", err)
+		}
+		filters.MaxLatency = &val
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	return filters, nil
+}
+
+// ==================== MCP TOOL LOGGING HANDLERS ====================
+
+// getMCPLogs handles GET /api/mcp-logs - Get MCP tool logs with filtering, search, and pagination via query parameters
+func (h *LoggingHandler) getMCPLogs(ctx *fasthttp.RequestCtx) {
+	filters, pagination, err := parseMCPFiltersAndPagination(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := h.logManager.SearchMCPToolLogs(ctx, filters, pagination)
+	if err != nil {
+		logger.Error("failed to search MCP tool logs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getMCPLogsStats handles GET /api/mcp-logs/stats - Get statistics for MCP tool logs with filtering
+func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
+	filters, err := parseMCPFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	stats, err := h.logManager.GetMCPToolLogStats(ctx, filters)
+	if err != nil {
+		logger.Error("failed to get MCP tool log stats: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, stats)
+}
+
+// getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
+func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
+	toolNames, err := h.logManager.GetAvailableToolNames(ctx)
+	if err != nil {
+		logger.Error("failed to get available tool names: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
+		return
+	}
+
+	serverLabels, err := h.logManager.GetAvailableServerLabels(ctx)
+	if err != nil {
+		logger.Error("failed to get available server labels: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"tool_names":    toolNames,
+		"server_labels": serverLabels,
+	})
+}
+
+// deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs
+func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
+		return
+	}
+
+	if err := h.logManager.DeleteMCPToolLogs(ctx, req.IDs); err != nil {
+		logger.Error("failed to delete MCP tool logs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP tool logs")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "MCP tool logs deleted successfully",
+	})
 }

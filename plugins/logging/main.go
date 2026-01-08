@@ -6,11 +6,14 @@ package logging
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -59,7 +62,7 @@ type RecalculateCostResult struct {
 type LogMessage struct {
 	Operation          LogOperation
 	RequestID          string                             // Unique ID for the request
-	ParentRequestID    string                             // Unique ID for the parent request
+	ParentRequestID    string                             // Unique ID for the parent request (used for fallback requests)
 	NumberOfRetries    int                                // Number of retries
 	FallbackIndex      int                                // Fallback index
 	SelectedKeyID      string                             // Selected key ID
@@ -91,11 +94,14 @@ type InitialLogData struct {
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 
+// MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
+type MCPToolLogCallback func(*logstore.MCPToolLog)
+
 type Config struct {
 	DisableContentLogging *bool `json:"disable_content_logging"`
 }
 
-// LoggerPlugin implements the schemas.LLMPlugin interface
+// LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
 type LoggerPlugin struct {
 	ctx                   context.Context
 	store                 logstore.LogStore
@@ -103,9 +109,11 @@ type LoggerPlugin struct {
 	pricingManager        *modelcatalog.ModelCatalog
 	mu                    sync.Mutex
 	done                  chan struct{}
+	cleanupOnce           sync.Once // Ensures cleanup only runs once
 	wg                    sync.WaitGroup
 	logger                schemas.Logger
 	logCallback           LogCallback
+	mcpToolLogCallback    MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests       atomic.Int64
 	cleanupTicker         *time.Ticker // Ticker for cleaning up old processing logs
 	logMsgPool            sync.Pool    // Pool for reusing LogMessage structs
@@ -175,9 +183,15 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
 	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
 	p.logger.Debug("cleaning up old processing logs before %s", thirtyMinutesAgo)
-	// Delete processing logs older than 30 minutes using the store
+
+	// Delete LLM processing logs older than 30 minutes
 	if err := p.store.Flush(p.ctx, thirtyMinutesAgo); err != nil {
-		p.logger.Warn("failed to cleanup old processing logs: %v", err)
+		p.logger.Warn("failed to cleanup old processing LLM logs: %v", err)
+	}
+
+	// Delete MCP tool processing logs older than 30 minutes
+	if err := p.store.FlushMCPToolLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing MCP tool logs: %v", err)
 	}
 }
 
@@ -666,15 +680,242 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 // Cleanup is called when the plugin is being shut down
 func (p *LoggerPlugin) Cleanup() error {
-	// Stop the cleanup ticker
-	if p.cleanupTicker != nil {
-		p.cleanupTicker.Stop()
-	}
-	// Signal the background worker to stop
-	close(p.done)
-	// Wait for the background worker to finish processing remaining items
-	p.wg.Wait()
-	// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
-	// GORM handles connection cleanup automatically
+	p.cleanupOnce.Do(func() {
+		// Stop the cleanup ticker
+		if p.cleanupTicker != nil {
+			p.cleanupTicker.Stop()
+		}
+		// Signal the background worker to stop
+		close(p.done)
+		// Wait for the background worker to finish processing remaining items
+		p.wg.Wait()
+		// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
+		// GORM handles connection cleanup automatically
+	})
 	return nil
+}
+
+// MCP Plugin Interface Implementation
+
+// SetMCPToolLogCallback sets a callback function that will be called for each MCP tool log entry
+func (p *LoggerPlugin) SetMCPToolLogCallback(callback MCPToolLogCallback) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.mcpToolLogCallback = callback
+}
+
+// PreMCPHook is called before an MCP tool execution - creates initial log entry
+// Parameters:
+//   - ctx: The Bifrost context
+//   - req: The MCP request containing tool call information
+//
+// Returns:
+//   - *schemas.BifrostMCPRequest: The unmodified request
+//   - *schemas.MCPPluginShortCircuit: nil (no short-circuiting)
+//   - error: nil (errors are logged but don't fail the request)
+func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	if ctx == nil {
+		p.logger.Error("context is nil in PreMCPHook")
+		return req, nil, nil
+	}
+
+	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok || requestID == "" {
+		p.logger.Error("request-id not found in context or is empty in PreMCPHook")
+		return req, nil, nil
+	}
+
+	// Get parent request ID if this MCP call is part of a larger LLM request (using the MCP agent original request ID)
+	parentRequestID, _ := ctx.Value(schemas.BifrostMCPAgentOriginalRequestID).(string)
+
+	createdTimestamp := time.Now().UTC()
+
+	// Extract tool name and arguments from the request
+	var fullToolName string
+	var toolName string
+	var serverLabel string
+	var arguments interface{}
+
+	if req.ChatAssistantMessageToolCall != nil {
+		if req.ChatAssistantMessageToolCall.Function.Name != nil {
+			fullToolName = *req.ChatAssistantMessageToolCall.Function.Name
+		}
+		// Arguments is a string, not a pointer
+		if req.ChatAssistantMessageToolCall.Function.Arguments != "" {
+			arguments = req.ChatAssistantMessageToolCall.Function.Arguments
+		}
+	} else if req.ResponsesToolMessage != nil {
+		if req.ResponsesToolMessage.Name != nil {
+			fullToolName = *req.ResponsesToolMessage.Name
+		}
+		if req.ResponsesToolMessage.Arguments != nil {
+			arguments = *req.ResponsesToolMessage.Arguments
+		}
+	}
+
+	// Skip execution for codemode tools
+	if bifrost.IsCodemodeTool(fullToolName) {
+		return req, nil, nil
+	}
+
+	// Extract server label from tool name (format: {client}_{tool_name})
+	// The first part before underscore is the client/server label
+	if fullToolName != "" {
+		if idx := strings.Index(fullToolName, "_"); idx > 0 {
+			serverLabel = fullToolName[:idx]
+			toolName = fullToolName[idx+1:]
+		} else {
+			toolName = fullToolName
+		}
+		switch toolName {
+		case mcp.ToolTypeListToolFiles, mcp.ToolTypeReadToolFile, mcp.ToolTypeExecuteToolCode:
+			if serverLabel == "" {
+				serverLabel = "codemode"
+			}
+		}
+	}
+
+	go func() {
+		entry := &logstore.MCPToolLog{
+			ID:          requestID,
+			Timestamp:   createdTimestamp,
+			ToolName:    toolName,
+			ServerLabel: serverLabel,
+			Status:      "processing",
+			CreatedAt:   createdTimestamp,
+		}
+
+		if parentRequestID != "" {
+			entry.LLMRequestID = &parentRequestID
+		}
+
+		// Set arguments if content logging is enabled
+		if p.disableContentLogging == nil || !*p.disableContentLogging {
+			entry.ArgumentsParsed = arguments
+		}
+
+		if err := p.store.CreateMCPToolLog(p.ctx, entry); err != nil {
+			p.logger.Warn("Failed to insert initial MCP tool log entry for request %s: %v", requestID, err)
+		} else {
+			// Call callback for initial log creation
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if p.mcpToolLogCallback != nil {
+				p.mcpToolLogCallback(entry)
+			}
+		}
+	}()
+
+	return req, nil, nil
+}
+
+// PostMCPHook is called after an MCP tool execution - updates the log entry with results
+// Parameters:
+//   - ctx: The Bifrost context
+//   - resp: The MCP response containing tool execution result
+//   - bifrostErr: Any error that occurred during execution
+//
+// Returns:
+//   - *schemas.BifrostMCPResponse: The unmodified response
+//   - *schemas.BifrostError: The unmodified error
+//   - error: nil (errors are logged but don't fail the request)
+func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+	if ctx == nil {
+		p.logger.Error("context is nil in PostMCPHook")
+		return resp, bifrostErr, nil
+	}
+
+	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
+	// We check the tool name from the response instead of context flags
+	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
+		return resp, bifrostErr, nil
+	}
+
+	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+	if !ok || requestID == "" {
+		p.logger.Error("request-id not found in context or is empty in PostMCPHook")
+		return resp, bifrostErr, nil
+	}
+
+	go func() {
+		updates := make(map[string]interface{})
+
+		// Get latency from response ExtraFields
+		if resp != nil {
+			updates["latency"] = float64(resp.ExtraFields.Latency)
+		}
+
+		if bifrostErr != nil {
+			updates["status"] = "error"
+			// Serialize error details
+			tempEntry := &logstore.MCPToolLog{}
+			tempEntry.ErrorDetailsParsed = bifrostErr
+			if err := tempEntry.SerializeFields(); err == nil {
+				updates["error_details"] = tempEntry.ErrorDetails
+			}
+		} else if resp != nil {
+			updates["status"] = "success"
+			// Store result if content logging is enabled
+			if p.disableContentLogging == nil || !*p.disableContentLogging {
+				var result interface{}
+				if resp.ChatMessage != nil {
+					// For ChatMessage, try to parse the content as JSON if it's a string
+					if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
+						contentStr := *resp.ChatMessage.Content.ContentStr
+						var parsedContent interface{}
+						if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
+							// Content is valid JSON, use parsed version
+							result = parsedContent
+						} else {
+							// Content is not valid JSON or failed to parse, store the whole message
+							result = resp.ChatMessage
+						}
+					} else {
+						result = resp.ChatMessage
+					}
+				} else if resp.ResponsesMessage != nil {
+					result = resp.ResponsesMessage
+				}
+				if result != nil {
+					tempEntry := &logstore.MCPToolLog{}
+					tempEntry.ResultParsed = result
+					if err := tempEntry.SerializeFields(); err == nil {
+						updates["result"] = tempEntry.Result
+					}
+				}
+			}
+		} else {
+			updates["status"] = "error"
+			tempEntry := &logstore.MCPToolLog{}
+			tempEntry.ErrorDetailsParsed = &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Message: "MCP tool execution returned nil response",
+				},
+			}
+			if err := tempEntry.SerializeFields(); err == nil {
+				updates["error_details"] = tempEntry.ErrorDetails
+			}
+		}
+
+		processingErr := retryOnNotFound(p.ctx, func() error {
+			return p.store.UpdateMCPToolLog(p.ctx, requestID, updates)
+		})
+		if processingErr != nil {
+			p.logger.Warn("failed to process MCP tool log update for request %s: %v", requestID, processingErr)
+		} else {
+			// Call callback for log update
+			p.mu.Lock()
+			if p.mcpToolLogCallback != nil {
+				if updatedEntry, getErr := p.store.FindMCPToolLog(p.ctx, requestID); getErr == nil {
+					p.mcpToolLogCallback(updatedEntry)
+				} else {
+					p.logger.Warn("failed to find updated entry for callback: %v", getErr)
+				}
+			}
+			p.mu.Unlock()
+		}
+	}()
+
+	return resp, bifrostErr, nil
 }

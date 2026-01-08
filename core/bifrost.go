@@ -681,6 +681,7 @@ func (bifrost *Bifrost) ChatCompletionRequest(ctx *schemas.BifrostContext, req *
 			req,
 			response,
 			bifrost.makeChatCompletionRequest,
+			bifrost.executeMCPToolWithHooks,
 		)
 	}
 
@@ -777,6 +778,7 @@ func (bifrost *Bifrost) ResponsesRequest(ctx *schemas.BifrostContext, req *schem
 			req,
 			response,
 			bifrost.makeResponsesRequest,
+			bifrost.executeMCPToolWithHooks,
 		)
 	}
 
@@ -3774,6 +3776,38 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 	}
 
 	return finalResp, nil
+}
+
+// executeMCPToolWithHooks is a wrapper around handleMCPToolExecution that matches the signature
+// expected by the agent's executeToolFunc parameter. It runs MCP plugin hooks before and after
+// tool execution to enable logging, telemetry, and other plugin functionality.
+func (bifrost *Bifrost) executeMCPToolWithHooks(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	// Defensive check: context must be non-nil to prevent panics in plugin hooks
+	if ctx == nil {
+		return nil, fmt.Errorf("context cannot be nil")
+	}
+
+	if request == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	// Determine request type from the MCP request - explicitly handle all known types
+	var requestType schemas.RequestType
+	switch request.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		requestType = schemas.ChatCompletionRequest
+	case schemas.MCPRequestTypeResponsesToolCall:
+		requestType = schemas.ResponsesRequest
+	default:
+		// Return error for unknown/unsupported request types instead of silently defaulting
+		return nil, fmt.Errorf("unsupported MCP request type: %s", request.RequestType)
+	}
+
+	resp, bifrostErr := bifrost.handleMCPToolExecution(ctx, request, requestType)
+	if bifrostErr != nil {
+		return nil, fmt.Errorf("%s", GetErrorMessage(bifrostErr))
+	}
+	return resp, nil
 }
 
 // PLUGIN MANAGEMENT

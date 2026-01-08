@@ -113,6 +113,7 @@ const (
 	FileDeleteRequest            RequestType = "file_delete"
 	FileContentRequest           RequestType = "file_content"
 	CountTokensRequest           RequestType = "count_tokens"
+	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	UnknownRequest               RequestType = "unknown"
 )
 
