@@ -257,7 +257,7 @@ export interface Annotation {
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
-	object: string; // text.completion, chat.completion, embedding, audio.speech, or audio.transcription
+	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
@@ -591,6 +591,66 @@ export interface WebSocketLogMessage {
 	type: "log";
 	operation: "create" | "update";
 	payload: LogEntry;
+}
+
+// ============================================================================
+// MCP Tool Log Types (separate table from LLM logs)
+// ============================================================================
+
+// MCP Tool Log Entry - represents a single MCP tool execution
+export interface MCPToolLogEntry {
+	id: string;
+	llm_request_id?: string; // Links to the LLM request that triggered this tool call
+	timestamp: string; // ISO string format
+	tool_name: string;
+	server_label?: string; // MCP server that provided the tool
+	arguments?: Record<string, unknown> | string; // JSON parsed tool arguments
+	result?: Record<string, unknown> | string; // JSON parsed tool result
+	error_details?: BifrostError;
+	latency?: number; // Execution time in milliseconds
+	status: string; // "processing", "success", or "error"
+	created_at: string; // ISO string format
+}
+
+// MCP Tool Log Filters
+export interface MCPToolLogFilters {
+	tool_names?: string[];
+	server_labels?: string[];
+	status?: string[];
+	llm_request_ids?: string[];
+	start_time?: string; // RFC3339 format
+	end_time?: string; // RFC3339 format
+	min_latency?: number;
+	max_latency?: number;
+	content_search?: string;
+}
+
+// MCP Tool Log Statistics
+export interface MCPToolLogStats {
+	total_executions: number;
+	success_rate: number;
+	average_latency: number;
+}
+
+// MCP Tool Log Search Response
+export interface MCPToolLogsResponse {
+	logs: MCPToolLogEntry[];
+	pagination: Pagination;
+	stats: MCPToolLogStats;
+	has_logs: boolean;
+}
+
+// MCP Tool Log Filter Data Response
+export interface MCPToolLogFilterData {
+	tool_names: string[];
+	server_labels: string[];
+}
+
+// WebSocket message types for MCP tool logs
+export interface WebSocketMCPToolLogMessage {
+	type: "mcp_tool_log";
+	operation: "create" | "update";
+	payload: MCPToolLogEntry;
 }
 
 // Date utility functions for URL state management

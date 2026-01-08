@@ -64,19 +64,15 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", clientName, client.ExecutionConfig.ToolsToExecute))
-
 		// Add all tools from this client
 		for toolName, tool := range client.ToolMap {
 			// Check if tool should be skipped based on client configuration
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
-				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in tools to execute list", MCPLogPrefix, toolName))
 				continue
 			}
 
 			// Check if tool should be skipped based on request context
 			if shouldSkipToolForRequest(ctx, clientName, toolName) {
-				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
 				continue
 			}
 

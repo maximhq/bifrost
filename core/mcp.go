@@ -304,19 +304,15 @@ func (m *MCPManager) getAvailableTools(ctx context.Context) []schemas.ChatTool {
 			continue
 		}
 
-		m.logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", id, client.ExecutionConfig.ToolsToExecute))
-
 		// Add all tools from this client
 		for toolName, tool := range client.ToolMap {
 			// Check if tool should be skipped based on client configuration
 			if m.shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
-				m.logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in tools to execute list", MCPLogPrefix, toolName))
 				continue
 			}
 
 			// Check if tool should be skipped based on request context
 			if m.shouldSkipToolForRequest(id, toolName, ctx) {
-				m.logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
 				continue
 			}
 

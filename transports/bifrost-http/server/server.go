@@ -1182,6 +1182,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if loggerPlugin != nil {
 		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), s.Config.ClientConfig.AllowedOrigins)
 		loggerPlugin.SetLogCallback(s.WebSocketHandler.BroadcastLogUpdate)
+		loggerPlugin.SetMCPToolLogCallback(s.WebSocketHandler.BroadcastMCPLogUpdate)
 	} else {
 		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, nil, s.Config.ClientConfig.AllowedOrigins)
 	}
