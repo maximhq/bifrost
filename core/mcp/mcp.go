@@ -83,7 +83,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
 	var releasePluginPipeline func(pipeline PluginPipeline)
-	
+
 	if config.PluginPipelineProvider != nil && config.ReleasePluginPipeline != nil {
 		pluginPipelineProvider = func() PluginPipeline {
 			if pipeline := config.PluginPipelineProvider(); pipeline != nil {
@@ -97,15 +97,22 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 			config.ReleasePluginPipeline(pipeline)
 		}
 	}
-	
+
 	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline)
 	// Process client configs: create client map entries and establish connections
 	if len(config.ClientConfigs) > 0 {
+		// Add clients in parallel
+		wg := sync.WaitGroup{}
+		wg.Add(len(config.ClientConfigs))
 		for _, clientConfig := range config.ClientConfigs {
-			if err := manager.AddClient(clientConfig); err != nil {
-				logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
-			}
+			go func(clientConfig schemas.MCPClientConfig) {
+				defer wg.Done()
+				if err := manager.AddClient(clientConfig); err != nil {
+					logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
+				}
+			}(clientConfig)
 		}
+		wg.Wait()
 	}
 	logger.Info(MCPLogPrefix + " MCP Manager initialized")
 	return manager

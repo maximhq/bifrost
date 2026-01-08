@@ -376,7 +376,7 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 	now := time.Now()
 
 	// Execute the tool in Chat format (internal execution format)
-	chatResult, err := m.executeToolInternal(ctx, toolCall)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall)
 	if err != nil {
 		return nil, err
 	}
@@ -384,8 +384,9 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 	latency := time.Since(now).Milliseconds()
 
 	extraFields := schemas.BifrostMCPResponseExtraFields{
-		ToolName: *toolCall.Function.Name,
-		Latency:  latency,
+		ClientName: clientName,
+		ToolName:   originalToolName,
+		Latency:    latency,
 	}
 
 	// Return result in the appropriate format
@@ -415,17 +416,21 @@ func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas
 
 // executeToolInternal is the internal tool executor that works with Chat format.
 // This is used internally by ExecuteTool after format conversion.
-func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+// Returns: (message, clientName, originalToolName, error)
+func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, string, string, error) {
 	toolName := *toolCall.Function.Name
 
-	// Handle code mode tools
+	// Handle code mode tools (they don't have a client, and tool name is the full name)
 	switch toolName {
 	case ToolTypeListToolFiles:
-		return m.handleListToolFiles(ctx, *toolCall)
+		msg, err := m.handleListToolFiles(ctx, *toolCall)
+		return msg, "", toolName, err
 	case ToolTypeReadToolFile:
-		return m.handleReadToolFile(ctx, *toolCall)
+		msg, err := m.handleReadToolFile(ctx, *toolCall)
+		return msg, "", toolName, err
 	case ToolTypeExecuteToolCode:
-		return m.handleExecuteToolCode(ctx, *toolCall)
+		msg, err := m.handleExecuteToolCode(ctx, *toolCall)
+		return msg, "", toolName, err
 	default:
 		// Check if the user has permission to execute the tool call
 		availableTools := m.clientManager.GetToolPerClient(ctx)
@@ -443,18 +448,22 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		}
 
 		if !toolFound {
-			return nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+			return nil, "", "", fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 		}
 
 		client := m.clientManager.GetClientForTool(toolName)
 		if client == nil {
-			return nil, fmt.Errorf("client not found for tool %s", toolName)
+			return nil, "", "", fmt.Errorf("client not found for tool %s", toolName)
 		}
 
 		// Parse tool arguments
 		var arguments map[string]interface{}
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			return nil, fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+		if strings.TrimSpace(toolCall.Function.Arguments) == "" {
+			arguments = map[string]interface{}{}
+		} else {
+			if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+				return nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+			}
 		}
 
 		// Strip the client name prefix from tool name before calling MCP server
@@ -483,10 +492,10 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		if callErr != nil {
 			// Check if it was a timeout error
 			if toolCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+				return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
 			}
 			logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-			return nil, fmt.Errorf("MCP tool call failed: %v", callErr)
+			return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
 		}
 
 		logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
@@ -495,7 +504,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		responseText := extractTextFromMCPResponse(toolResponse, toolName)
 
 		// Create tool response message
-		return createToolResponseMessage(*toolCall, responseText), nil
+		return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, originalToolName, nil
 	}
 }
 

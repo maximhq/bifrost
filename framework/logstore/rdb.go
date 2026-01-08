@@ -560,21 +560,25 @@ func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLog
 			}
 			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
 
-			// Calculate average latency
+			// Calculate average latency and total cost
 			var result struct {
 				AvgLatency sql.NullFloat64 `json:"avg_latency"`
+				TotalCost  sql.NullFloat64 `json:"total_cost"`
 			}
 
 			statsQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
 			statsQuery = s.applyMCPFilters(statsQuery, filters)
 			statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
 
-			if err := statsQuery.Select("AVG(latency) as avg_latency").Scan(&result).Error; err != nil {
+			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(cost) as total_cost").Scan(&result).Error; err != nil {
 				return nil, err
 			}
 
 			if result.AvgLatency.Valid {
 				stats.AverageLatency = result.AvgLatency.Float64
+			}
+			if result.TotalCost.Valid {
+				stats.TotalCost = result.TotalCost.Float64
 			}
 		}
 	}

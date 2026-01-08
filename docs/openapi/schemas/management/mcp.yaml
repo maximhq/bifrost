@@ -32,10 +32,15 @@ MCPClientConfig:
   type: object
   description: MCP client configuration
   properties:
-    id:
+    client_id:
       type: string
+      description: Unique identifier for the MCP client
     name:
       type: string
+      description: Display name for the MCP client
+    is_code_mode_client:
+      type: boolean
+      description: Whether this client is available in code mode
     connection_type:
       $ref: '#/MCPConnectionType'
     connection_string:
@@ -47,6 +52,7 @@ MCPClientConfig:
       type: object
       additionalProperties:
         type: string
+      description: Custom headers to include in requests
     tools_to_execute:
       type: array
       items:
@@ -56,6 +62,25 @@ MCPClientConfig:
         ["*"] => all tools are included
         [] => no tools are included
         ["tool1", "tool2"] => include only the specified tools
+    tools_to_auto_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        List of tools that can be auto-executed without user approval.
+        Must be a subset of tools_to_execute.
+        ["*"] => all executable tools can be auto-executed
+        [] => no tools are auto-executed
+        ["tool1", "tool2"] => only specified tools can be auto-executed
+    tool_pricing:
+      type: object
+      additionalProperties:
+        type: number
+        format: double
+      description: |
+        Per-tool cost in USD for execution.
+        Key is the tool name, value is the cost per execution.
+        Example: {"read_file": 0.001, "write_file": 0.002}
 
 ChatToolFunction:
   type: object

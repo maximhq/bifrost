@@ -2147,7 +2147,15 @@ func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 		tools := make([]schemas.ChatToolFunction, 0, len(client.ToolMap))
 		for _, tool := range client.ToolMap {
 			if tool.Function != nil {
-				tools = append(tools, *tool.Function)
+				// Create a deep copy (for name) of the tool function to avoid modifying the original
+				toolFunction := schemas.ChatToolFunction{}
+				toolFunction.Name = tool.Function.Name
+				toolFunction.Description = tool.Function.Description
+				toolFunction.Parameters = tool.Function.Parameters
+				toolFunction.Strict = tool.Function.Strict
+				// Remove the client prefix from the tool name
+				toolFunction.Name = strings.TrimPrefix(toolFunction.Name, client.ExecutionConfig.Name+"-")
+				tools = append(tools, toolFunction)
 			}
 		}
 

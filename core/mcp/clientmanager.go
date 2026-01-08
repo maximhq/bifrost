@@ -189,6 +189,8 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
+	oldName := client.ExecutionConfig.Name
+
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
 	config.Name = updatedConfig.Name
@@ -199,6 +201,40 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 
 	// Store the updated config
 	client.ExecutionConfig = config
+
+	// If the client name has changed, update all tool name prefixes in the ToolMap
+	if oldName != updatedConfig.Name {
+		oldPrefix := oldName + "-"
+		newPrefix := updatedConfig.Name + "-"
+
+		// Create a new ToolMap with updated tool names
+		newToolMap := make(map[string]schemas.ChatTool, len(client.ToolMap))
+		for oldToolName, tool := range client.ToolMap {
+			var newToolName string
+			if strings.HasPrefix(oldToolName, oldPrefix) {
+				// Update the tool name by replacing the old prefix with the new prefix
+				newToolName = newPrefix + strings.TrimPrefix(oldToolName, oldPrefix)
+			} else {
+				newToolName = oldToolName
+			}
+
+			// Update the tool's function name if it's a function tool
+			if tool.Function != nil {
+				updatedTool := tool
+				updatedTool.Function.Name = newToolName
+				newToolMap[newToolName] = updatedTool
+			} else {
+				newToolMap[newToolName] = tool
+			}
+		}
+
+		// Replace the old ToolMap with the new one
+		client.ToolMap = newToolMap
+
+		// Also update the client Name field
+		client.Name = updatedConfig.Name
+	}
+
 	return nil
 }
 

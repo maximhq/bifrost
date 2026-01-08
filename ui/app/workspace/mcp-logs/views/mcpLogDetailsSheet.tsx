@@ -31,7 +31,7 @@ interface MCPLogDetailSheetProps {
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>;
 }
 
-const LogEntryDetailsView = ({ label, value, className }: { label: string; value: ReactNode; className?: string }) => (
+const LogEntryDetailsView = ({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) => (
 	<div className={className}>
 		<div className="text-muted-foreground text-xs">{label}</div>
 		<div className="text-sm font-medium">{value}</div>
@@ -129,11 +129,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 									.add(log.latency || 0, "ms")
 									.format("YYYY-MM-DD HH:mm:ss A")}
 							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="Latency"
-								value={log.latency !== undefined && log.latency !== null ? `${log.latency.toFixed(2)}ms` : "NA"}
-							/>
+							<LogEntryDetailsView className="w-full" label="Latency" value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"} />
 						</div>
 					</div>
 					<DottedSeparator />
@@ -178,7 +174,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							shouldAdjustInitialHeight={true}
 							maxHeight={250}
 							wrap={true}
-							code={typeof log.arguments === "string" ? log.arguments : JSON.stringify(log.arguments, null, 2)}
+							code={typeof log.arguments === "string" ? log.arguments : JSON.stringify(log.arguments as Record<string, unknown>, null, 2)}
 							lang="json"
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
@@ -212,7 +208,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							shouldAdjustInitialHeight={true}
 							maxHeight={250}
 							wrap={true}
-							code={typeof log.error_details === "string" ? log.error_details : JSON.stringify(log.error_details, null, 2)}
+							code={JSON.stringify(log.error_details, null, 2)}
 							lang="json"
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}

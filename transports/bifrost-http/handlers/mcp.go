@@ -13,6 +13,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -20,7 +21,7 @@ import (
 type MCPManager interface {
 	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
-	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
+	EditMCPClient(ctx context.Context, id string, updatedConfig configstoreTables.TableMCPClient) error
 }
 
 // MCPHandler manages HTTP requests for MCP tool operations
@@ -48,12 +49,19 @@ func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.Bif
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
 }
 
+// MCPClientResponse represents the response structure for MCP clients
+type MCPClientResponse struct {
+	Config configstoreTables.TableMCPClient `json:"config"`
+	Tools  []schemas.ChatToolFunction       `json:"tools"`
+	State  schemas.MCPConnectionState       `json:"state"`
+}
+
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
 func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	// Get clients from store config
 	configsInStore := h.store.MCPConfig
 	if configsInStore == nil {
-		SendJSON(ctx, []schemas.MCPClient{})
+		SendJSON(ctx, []MCPClientResponse{})
 		return
 	}
 
@@ -71,10 +79,10 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Build the final client list, including errored clients
-	clients := make([]schemas.MCPClient, 0, len(configsInStore.ClientConfigs))
+	clients := make([]MCPClientResponse, 0, len(configsInStore.ClientConfigs))
 
 	for _, configClient := range configsInStore.ClientConfigs {
-		if connectedClient, exists := connectedClientsMap[configClient.ID]; exists {
+		if connectedClient, exists := connectedClientsMap[configClient.ClientID]; exists {
 			// Sort tools alphabetically by name
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
 			copy(sortedTools, connectedClient.Tools)
@@ -82,15 +90,16 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
 
-			clients = append(clients, schemas.MCPClient{
-				Config: h.store.RedactMCPClientConfig(connectedClient.Config),
+			// Use TableMCPClient directly
+			clients = append(clients, MCPClientResponse{
+				Config: configClient,
 				Tools:  sortedTools,
-				State:  connectedClient.State, // Use the state from MCPClientState
+				State:  connectedClient.State,
 			})
 		} else {
 			// Client is in config but not connected, mark as errored
-			clients = append(clients, schemas.MCPClient{
-				Config: h.store.RedactMCPClientConfig(configClient),
+			clients = append(clients, MCPClientResponse{
+				Config: configClient,
 				Tools:  []schemas.ChatToolFunction{}, // No tools available since connection failed
 				State:  schemas.MCPConnectionStateError,
 			})
@@ -146,7 +155,7 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
 func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
-	var req schemas.MCPClientConfig
+	var req configstoreTables.TableMCPClient
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
@@ -170,7 +179,21 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
-	if err := h.mcpManager.AddMCPClient(ctx, req); err != nil {
+
+	// Convert to schemas.MCPClientConfig for the runtime MCP manager
+	schemasConfig := schemas.MCPClientConfig{
+		ID:                 req.ClientID,
+		Name:               req.Name,
+		IsCodeModeClient:   req.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
+		ConnectionString:   req.ConnectionString,
+		StdioConfig:        req.StdioConfig,
+		ToolsToExecute:     req.ToolsToExecute,
+		ToolsToAutoExecute: req.ToolsToAutoExecute,
+		Headers:            req.Headers,
+	}
+
+	if err := h.mcpManager.AddMCPClient(ctx, schemasConfig); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
@@ -188,11 +211,14 @@ func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var req schemas.MCPClientConfig
+	// Accept the full table client config to support tool_pricing
+	var req configstoreTables.TableMCPClient
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
+
+	req.ClientID = id
 
 	// Validate tools_to_execute
 	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
@@ -218,6 +244,7 @@ func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// EditMCPClient internally handles database update, env vars, and runtime update
 	if err := h.mcpManager.EditMCPClient(ctx, id, req); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to edit MCP client: %v", err))
 		return

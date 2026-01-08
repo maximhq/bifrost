@@ -469,8 +469,9 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 				autoExecutableTools = append(autoExecutableTools, "*")
 				continue
 			}
-			// Use parsed tool name (as it appears in code)
-			parsedToolName := parseToolName(originalToolName)
+			// Replace - with _ for code mode compatibility, then parse for JS compatibility
+			toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
+			parsedToolName := parseToolName(toolNameForCode)
 			autoExecutableTools = append(autoExecutableTools, parsedToolName)
 		}
 

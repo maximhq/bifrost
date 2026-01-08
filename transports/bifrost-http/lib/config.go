@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bytedance/gopkg/util/logger"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,6 +24,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -72,7 +72,7 @@ type ConfigData struct {
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
 	FrameworkConfig   *framework.FrameworkConfig            `json:"framework,omitempty"`
-	MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
+	MCP               *configstoreTables.MCPConfig          `json:"mcp,omitempty"`
 	Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig *vectorstore.Config                   `json:"vector_store,omitempty"`
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
@@ -91,7 +91,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		EncryptionKey     string                                `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
-		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
+		MCP               *configstoreTables.MCPConfig          `json:"mcp,omitempty"`
 		Governance        *configstore.GovernanceConfig         `json:"governance,omitempty"`
 		VectorStoreConfig json.RawMessage                       `json:"vector_store,omitempty"`
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
@@ -227,7 +227,7 @@ type Config struct {
 	// In-memory storage
 	ClientConfig     configstore.ClientConfig
 	Providers        map[schemas.ModelProvider]configstore.ProviderConfig
-	MCPConfig        *schemas.MCPConfig
+	MCPConfig        *configstoreTables.MCPConfig
 	GovernanceConfig *configstore.GovernanceConfig
 	FrameworkConfig  *framework.FrameworkConfig
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
@@ -242,8 +242,9 @@ type Config struct {
 	// Plugin configs from config file/database
 	PluginConfigs []*schemas.PluginConfig
 
-	// Pricing manager
-	PricingManager *modelcatalog.ModelCatalog
+	// Catalog managers
+	ModelCatalog *modelcatalog.ModelCatalog
+	MCPCatalog   *mcpcatalog.MCPCatalog
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -828,20 +829,20 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 
 // loadMCPConfigFromFile loads and merges MCP config from file
 func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
-	var mcpConfig *schemas.MCPConfig
-	var err error
 	if config.ConfigStore != nil {
 		logger.Debug("getting MCP config from store")
-		mcpConfig, err = config.ConfigStore.GetMCPConfig(ctx)
+		tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get MCP config from store: %v", err)
+		} else if tableMCPConfig != nil {
+			config.MCPConfig = tableMCPConfig
 		}
 	}
-	if mcpConfig != nil {
-		config.MCPConfig = mcpConfig
+
+	if config.MCPConfig != nil {
 		// Merge with config file if present
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
-			mergeMCPConfig(ctx, config, configData, mcpConfig)
+			mergeMCPConfig(ctx, config, configData, config.MCPConfig)
 		}
 	} else if configData.MCP != nil {
 		// MCP config not in store, use config file
@@ -850,8 +851,13 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 		if config.ConfigStore != nil && config.MCPConfig != nil {
 			logger.Debug("updating MCP config in store")
 			for _, clientConfig := range config.MCPConfig.ClientConfigs {
-				if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
-					logger.Warn("failed to create MCP client config: %v", err)
+				schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
+					ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
+				})
+				if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
+					if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
+						logger.Warn("failed to create MCP client config: %v", err)
+					}
 				}
 			}
 		}
@@ -859,17 +865,20 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 }
 
 // mergeMCPConfig merges MCP config from file with store
-func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData, mcpConfig *schemas.MCPConfig) {
+func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData, mcpConfig *configstoreTables.MCPConfig) {
 	logger.Debug("merging MCP config from config file with store")
-	// Process env vars for config file MCP configs
+
+	if configData.MCP == nil {
+		return
+	}
 	tempMCPConfig := configData.MCP
 	config.MCPConfig = tempMCPConfig
-	// Merge ClientConfigs arrays by ID or Name
-	clientConfigsToAdd := make([]schemas.MCPClientConfig, 0)
+	// Merge ClientConfigs arrays by ClientID or Name
+	clientConfigsToAdd := make([]configstoreTables.TableMCPClient, 0)
 	for _, newClientConfig := range tempMCPConfig.ClientConfigs {
 		found := false
 		for _, existingClientConfig := range mcpConfig.ClientConfigs {
-			if (newClientConfig.ID != "" && existingClientConfig.ID == newClientConfig.ID) ||
+			if (newClientConfig.ClientID != "" && existingClientConfig.ClientID == newClientConfig.ClientID) ||
 				(newClientConfig.Name != "" && existingClientConfig.Name == newClientConfig.Name) {
 				found = true
 				break
@@ -885,8 +894,13 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 	if config.ConfigStore != nil && len(clientConfigsToAdd) > 0 {
 		logger.Debug("updating MCP config in store with %d new client configs", len(clientConfigsToAdd))
 		for _, clientConfig := range clientConfigsToAdd {
-			if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
-				logger.Warn("failed to create MCP client config: %v", err)
+			schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
+				ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
+			})
+			if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
+				if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
+					logger.Warn("failed to create MCP client config: %v", err)
+				}
 			}
 		}
 	}
@@ -1470,9 +1484,72 @@ func mergePluginsFromFile(ctx context.Context, config *Config, configData *Confi
 	}
 }
 
+// convertSchemasMCPClientConfigToTable converts schemas.MCPClientConfig to tables.TableMCPClient
+func convertSchemasMCPClientConfigToTable(clientConfig schemas.MCPClientConfig) configstoreTables.TableMCPClient {
+	return configstoreTables.TableMCPClient{
+		ClientID:           clientConfig.ID,
+		Name:               clientConfig.Name,
+		IsCodeModeClient:   clientConfig.IsCodeModeClient,
+		ConnectionType:     string(clientConfig.ConnectionType),
+		ConnectionString:   clientConfig.ConnectionString,
+		StdioConfig:        clientConfig.StdioConfig,
+		ToolsToExecute:     clientConfig.ToolsToExecute,
+		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+		Headers:            clientConfig.Headers,
+	}
+}
+
+// buildMCPPricingDataFromStore builds MCP pricing data from the config store
+func buildMCPPricingDataFromStore(ctx context.Context, configStore configstore.ConfigStore) mcpcatalog.MCPPricingData {
+	mcpPricingData := mcpcatalog.MCPPricingData{}
+	mcpConfig, err := configStore.GetMCPConfig(ctx)
+	if err != nil {
+		logger.Warn("failed to get MCP config from store: %v", err)
+		return mcpPricingData
+	}
+	if mcpConfig != nil {
+		for _, clientConfig := range mcpConfig.ClientConfigs {
+			dbClientConfig, err := configStore.GetMCPClientByName(ctx, clientConfig.Name)
+			if err != nil {
+				logger.Warn("failed to get MCP client config from store: %v", err)
+				continue
+			}
+			for toolName, costPerExecution := range dbClientConfig.ToolPricing {
+				// Tool names in the DB are stored without the client/server prefix.
+				// Build the key using fmt.Sprintf("%s/%s", clientName, toolName) to match
+				// buildMCPPricingDataFromFile and EditMCPClient patterns.
+				mcpPricingData[fmt.Sprintf("%s/%s", dbClientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
+					Server:           dbClientConfig.Name,
+					ToolName:         toolName,
+					CostPerExecution: costPerExecution,
+				}
+			}
+		}
+	}
+	return mcpPricingData
+}
+
+func buildMCPPricingDataFromFile(ctx context.Context, configData *ConfigData) mcpcatalog.MCPPricingData {
+	mcpPricingData := mcpcatalog.MCPPricingData{}
+	if configData == nil || configData.MCP == nil {
+		return mcpPricingData
+	}
+	for _, clientConfig := range configData.MCP.ClientConfigs {
+		for toolName, costPerExecution := range clientConfig.ToolPricing {
+			mcpPricingData[fmt.Sprintf("%s/%s", clientConfig.Name, toolName)] = mcpcatalog.PricingEntry{
+				Server:           clientConfig.Name,
+				ToolName:         toolName,
+				CostPerExecution: costPerExecution,
+			}
+		}
+	}
+	return mcpPricingData
+}
+
 // initFrameworkConfigFromFile initializes framework config and pricing manager from file
 func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	pricingConfig := &modelcatalog.Config{}
+	mcpPricingConfig := &mcpcatalog.Config{}
 	if config.ConfigStore != nil {
 		frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
 		if err != nil {
@@ -1485,6 +1562,7 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 			syncDuration := time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
 			pricingConfig.PricingSyncInterval = &syncDuration
 		}
+		mcpPricingConfig.PricingData = buildMCPPricingDataFromStore(ctx, config.ConfigStore)
 	} else if configData.FrameworkConfig != nil && configData.FrameworkConfig.Pricing != nil {
 		pricingConfig.PricingURL = configData.FrameworkConfig.Pricing.PricingURL
 		syncDuration := time.Duration(*configData.FrameworkConfig.Pricing.PricingSyncInterval) * time.Second
@@ -1503,7 +1581,16 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
-	config.PricingManager = pricingManager
+	config.ModelCatalog = pricingManager
+
+	// Initialize MCP catalog
+	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
+		PricingData: buildMCPPricingDataFromFile(ctx, configData),
+	}, logger)
+	if err != nil {
+		logger.Warn("failed to initialize MCP catalog: %v", err)
+	}
+	config.MCPCatalog = mcpCatalog
 }
 
 // initEncryptionFromFile initializes encryption from config file
@@ -1735,26 +1822,33 @@ func loadDefaultGovernanceConfig(ctx context.Context, config *Config) {
 
 // loadDefaultMCPConfig loads or creates MCP configuration
 func loadDefaultMCPConfig(ctx context.Context, config *Config) error {
-	mcpConfig, err := config.ConfigStore.GetMCPConfig(ctx)
+	tableMCPConfig, err := config.ConfigStore.GetMCPConfig(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get MCP config: %w", err)
 	}
-	if mcpConfig == nil {
+	if tableMCPConfig == nil {
 		if config.MCPConfig != nil {
 			for _, clientConfig := range config.MCPConfig.ClientConfigs {
-				if err := config.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
-					logger.Warn("failed to create MCP client config: %v", err)
-					continue
+				schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
+					ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
+				})
+				if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
+					if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
+						logger.Warn("failed to create MCP client config: %v", err)
+						continue
+					}
 				}
 			}
 			// Refresh from store to ensure parity with persisted state
-			if mcpConfig, err = config.ConfigStore.GetMCPConfig(ctx); err != nil {
+			if tableMCPConfig, err = config.ConfigStore.GetMCPConfig(ctx); err != nil {
 				return fmt.Errorf("failed to get MCP config after update: %w", err)
 			}
-			config.MCPConfig = mcpConfig
+			if tableMCPConfig != nil {
+				config.MCPConfig = tableMCPConfig
+			}
 		}
 	} else {
-		config.MCPConfig = mcpConfig
+		config.MCPConfig = tableMCPConfig
 	}
 	return nil
 }
@@ -1839,7 +1933,22 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
-	config.PricingManager = pricingManager
+	config.ModelCatalog = pricingManager
+
+	// Initialize MCP catalog
+	var mcpCatalog *mcpcatalog.MCPCatalog
+
+	// Build MCP pricing data from database
+	mcpPricingData := buildMCPPricingDataFromStore(ctx, config.ConfigStore)
+
+	mcpCatalog, err = mcpcatalog.Init(ctx, &mcpcatalog.Config{
+		PricingData: mcpPricingData,
+	}, logger)
+	if err != nil {
+		logger.Warn("failed to initialize MCP catalog: %v", err)
+	}
+
+	config.MCPCatalog = mcpCatalog
 	return nil
 }
 
@@ -2531,8 +2640,13 @@ func (c *Config) GetMCPClient(id string) (*schemas.MCPClientConfig, error) {
 	}
 
 	for _, clientConfig := range c.MCPConfig.ClientConfigs {
-		if clientConfig.ID == id {
-			return &clientConfig, nil
+		if clientConfig.ClientID == id {
+			schemasConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
+				ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
+			})
+			if schemasConfig != nil && len(schemasConfig.ClientConfigs) > 0 {
+				return &schemasConfig.ClientConfigs[0], nil
+			}
 		}
 	}
 
@@ -2553,16 +2667,16 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	c.muMCP.Lock()
 	defer c.muMCP.Unlock()
 	if c.MCPConfig == nil {
-		c.MCPConfig = &schemas.MCPConfig{}
+		c.MCPConfig = &configstoreTables.MCPConfig{}
 	}
 	// Generate a unique ID for the client if not provided
 	if clientConfig.ID == "" {
 		clientConfig.ID = uuid.NewString()
 	}
 	// Track new environment variables
-	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, clientConfig)
+	c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs, convertSchemasMCPClientConfigToTable(clientConfig))
 	// Config with processed env vars
-	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
+	if err := c.client.AddMCPClient(clientConfig); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
@@ -2570,6 +2684,20 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if c.ConfigStore != nil {
 		if err := c.ConfigStore.CreateMCPClientConfig(ctx, clientConfig); err != nil {
 			return fmt.Errorf("failed to create MCP client config in store: %w", err)
+		}
+
+		// Update MCP catalog pricing data for the new client
+		if c.MCPCatalog != nil {
+			// Get the created client config from store to get tool_pricing
+			dbClientConfig, err := c.ConfigStore.GetMCPClientByName(ctx, clientConfig.Name)
+			if err != nil {
+				logger.Warn("failed to get MCP client config for catalog update: %v", err)
+			} else if dbClientConfig != nil {
+				for toolName, costPerExecution := range dbClientConfig.ToolPricing {
+					c.MCPCatalog.UpdatePricingData(dbClientConfig.Name, toolName, costPerExecution)
+				}
+				logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", dbClientConfig.Name, len(dbClientConfig.ToolPricing))
+			}
 		}
 	}
 	return nil
@@ -2602,8 +2730,11 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 			}
 		}
 	}
+	// Find and remove client from in-memory config
+	var removedClientConfig *configstoreTables.TableMCPClient
 	for i, clientConfig := range c.MCPConfig.ClientConfigs {
-		if clientConfig.ID == id {
+		if clientConfig.ClientID == id {
+			removedClientConfig = &clientConfig
 			c.MCPConfig.ClientConfigs = append(c.MCPConfig.ClientConfigs[:i], c.MCPConfig.ClientConfigs[i+1:]...)
 			break
 		}
@@ -2611,6 +2742,14 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 	if c.ConfigStore != nil {
 		if err := c.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete MCP client config from store: %w", err)
+		}
+
+		// Delete pricing data from catalog for the removed client
+		if c.MCPCatalog != nil && removedClientConfig != nil {
+			for toolName := range removedClientConfig.ToolPricing {
+				c.MCPCatalog.DeletePricingData(removedClientConfig.Name, toolName)
+			}
+			logger.Debug("removed MCP catalog pricing for client: %s (%d tools)", removedClientConfig.Name, len(removedClientConfig.ToolPricing))
 		}
 	}
 	return nil
@@ -2622,7 +2761,7 @@ func (c *Config) RemoveMCPClient(ctx context.Context, id string) error {
 // Parameters:
 //   - id: ID of the client to edit
 //   - updatedConfig: Updated MCP client configuration
-func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error {
+func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig configstoreTables.TableMCPClient) error {
 	if c.client == nil {
 		return fmt.Errorf("bifrost client not set")
 	}
@@ -2633,11 +2772,11 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 		return fmt.Errorf("no MCP config found")
 	}
 	// Find the existing client config
-	var oldConfig schemas.MCPClientConfig
+	var oldConfig configstoreTables.TableMCPClient
 	var found bool
 	var configIndex int
 	for i, clientConfig := range c.MCPConfig.ClientConfigs {
-		if clientConfig.ID == id {
+		if clientConfig.ClientID == id {
 			oldConfig = clientConfig
 			configIndex = i
 			found = true
@@ -2647,21 +2786,26 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 	if !found {
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
-	// Create a copy of updatedConfig to process env vars
-	processedConfig := updatedConfig
-	// Update the in-memory config with the processed values
-	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
-	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = processedConfig.IsCodeModeClient
-	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
-	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
-	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
+
+	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
+	// Use oldConfig for connection info since those fields are read-only and not sent in update request
+	schemasConfig := schemas.MCPClientConfig{
+		ID:                 updatedConfig.ClientID,
+		Name:               updatedConfig.Name,
+		IsCodeModeClient:   updatedConfig.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(oldConfig.ConnectionType),
+		ConnectionString:   oldConfig.ConnectionString,
+		StdioConfig:        oldConfig.StdioConfig,
+		ToolsToExecute:     updatedConfig.ToolsToExecute,
+		ToolsToAutoExecute: updatedConfig.ToolsToAutoExecute,
+		Headers:            updatedConfig.Headers,
+	}
 
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
 		for _, client := range clients {
 			if client.Config.ID == id {
-				// Give the PROCESSED config (with actual env var values) to bifrost client
-				if err := c.client.EditMCPClient(id, processedConfig); err != nil {
+				if err := c.client.EditMCPClient(id, schemasConfig); err != nil {
 					// Rollback in-memory changes
 					c.MCPConfig.ClientConfigs[configIndex] = oldConfig
 					return fmt.Errorf("failed to edit MCP client: %w", err)
@@ -2675,7 +2819,41 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 		if err := c.ConfigStore.UpdateMCPClientConfig(ctx, id, updatedConfig); err != nil {
 			return fmt.Errorf("failed to update MCP client config in store: %w", err)
 		}
+
+		// Update MCP catalog pricing data for the edited client
+		if c.MCPCatalog != nil {
+			// If the client name has changed, delete all old pricing entries under the old name
+			if updatedConfig.Name != oldConfig.Name {
+				for toolName := range oldConfig.ToolPricing {
+					c.MCPCatalog.DeletePricingData(oldConfig.Name, toolName)
+				}
+				logger.Debug("deleted old MCP catalog pricing for renamed client: %s -> %s (%d tools)", oldConfig.Name, updatedConfig.Name, len(oldConfig.ToolPricing))
+			} else {
+				// If name hasn't changed, remove pricing entries that were deleted
+				for toolName := range oldConfig.ToolPricing {
+					if _, exists := updatedConfig.ToolPricing[toolName]; !exists {
+						c.MCPCatalog.DeletePricingData(updatedConfig.Name, toolName)
+					}
+				}
+			}
+			// Then, add or update pricing entries from the new config (with new name if changed)
+			for toolName, costPerExecution := range updatedConfig.ToolPricing {
+				c.MCPCatalog.UpdatePricingData(updatedConfig.Name, toolName, costPerExecution)
+			}
+			logger.Debug("updated MCP catalog pricing for client: %s (%d tools)", updatedConfig.Name, len(updatedConfig.ToolPricing))
+		}
 	}
+
+	// Update the in-memory configuration with only the fields that were changed
+	// Preserve connection info (connection_type, connection_string, stdio_config) from oldConfig
+	// as these are read-only and not sent in the update request
+	c.MCPConfig.ClientConfigs[configIndex].Name = updatedConfig.Name
+	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = updatedConfig.IsCodeModeClient
+	c.MCPConfig.ClientConfigs[configIndex].Headers = updatedConfig.Headers
+	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = updatedConfig.ToolsToExecute
+	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
+	c.MCPConfig.ClientConfigs[configIndex].ToolPricing = updatedConfig.ToolPricing
+
 	return nil
 }
 
