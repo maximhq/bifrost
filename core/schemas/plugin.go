@@ -3,6 +3,7 @@ package schemas
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -33,6 +34,36 @@ type HTTPRequest struct {
 	Headers map[string]string `json:"headers"` // keys are lowercase
 	Query   map[string]string `json:"query"`   // keys are lowercase
 	Body    []byte            `json:"body"`
+}
+
+func (req *HTTPRequest) CaseInsensitiveHeaderLookup(key string) string {
+	return caseInsensitiveLookup(req.Headers, key)
+}
+func (req *HTTPRequest) CaseInsensitiveQueryLookup(key string) string {
+	return caseInsensitiveLookup(req.Query, key)
+}
+
+// caseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
+func caseInsensitiveLookup(data map[string]string, key string) string {
+	if data == nil || key == "" {
+		return ""
+	}
+	// exact match
+	if v, ok := data[key]; ok {
+		return v
+	}
+	// lower key checks
+	lowerKey := strings.ToLower(key)
+	if v, ok := data[lowerKey]; ok {
+		return v
+	}
+	// case-insensitive iteration
+	for k, v := range data {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
 }
 
 // HTTPResponse is a serializable representation of an HTTP response.
