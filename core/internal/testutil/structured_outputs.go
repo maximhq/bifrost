@@ -418,10 +418,12 @@ func RunStructuredOutputResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx
 							Type: "json_schema",
 							Name: bifrost.Ptr("decision_schema"),
 							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-								Type:                 &typeStr,
-								Properties:           &props,
-								Required:             structuredOutputSchema["required"].([]string),
-								AdditionalProperties: &additionalProps,
+								Type:       &typeStr,
+								Properties: &props,
+								Required:   structuredOutputSchema["required"].([]string),
+								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+									AdditionalPropertiesBool: &additionalProps,
+								},
 							},
 						},
 					},
@@ -532,10 +534,12 @@ func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifros
 						Type: "json_schema",
 						Name: bifrost.Ptr("decision_schema"),
 						JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-							Type:                 &typeStr,
-							Properties:           &props,
-							Required:             structuredOutputSchema["required"].([]string),
-							AdditionalProperties: &additionalProps,
+							Type:       &typeStr,
+							Properties: &props,
+							Required:   structuredOutputSchema["required"].([]string),
+							AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+								AdditionalPropertiesBool: &additionalProps,
+							},
 						},
 					},
 				},

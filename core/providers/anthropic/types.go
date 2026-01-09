@@ -216,22 +216,25 @@ const (
 
 // AnthropicContentBlock represents content in Anthropic message format
 type AnthropicContentBlock struct {
-	Type         AnthropicContentBlockType `json:"type"`                    // "text", "image", "document", "tool_use", "tool_result", "thinking"
-	Text         *string                   `json:"text,omitempty"`          // For text content
-	Thinking     *string                   `json:"thinking,omitempty"`      // For thinking content
-	Signature    *string                   `json:"signature,omitempty"`     // For signature content
-	Data         *string                   `json:"data,omitempty"`          // For data content (encrypted data for redacted thinking, signature does not come with this)
-	ToolUseID    *string                   `json:"tool_use_id,omitempty"`   // For tool_result content
-	ID           *string                   `json:"id,omitempty"`            // For tool_use content
-	Name         *string                   `json:"name,omitempty"`          // For tool_use content
-	Input        any                       `json:"input,omitempty"`         // For tool_use content
-	ServerName   *string                   `json:"server_name,omitempty"`   // For mcp_tool_use content
-	Content      *AnthropicContent         `json:"content,omitempty"`       // For tool_result content
-	Source       *AnthropicSource          `json:"source,omitempty"`        // For image/document content
-	CacheControl *schemas.CacheControl     `json:"cache_control,omitempty"` // For cache control content
-	Citations    *AnthropicCitationsConfig `json:"citations,omitempty"`     // For document content
-	Context      *string                   `json:"context,omitempty"`       // For document content
-	Title        *string                   `json:"title,omitempty"`         // For document content
+	Type             AnthropicContentBlockType `json:"type"`                        // "text", "image", "document", "tool_use", "tool_result", "thinking"
+	Text             *string                   `json:"text,omitempty"`              // For text content
+	Thinking         *string                   `json:"thinking,omitempty"`          // For thinking content
+	Signature        *string                   `json:"signature,omitempty"`         // For signature content
+	Data             *string                   `json:"data,omitempty"`              // For data content (encrypted data for redacted thinking, signature does not come with this)
+	ToolUseID        *string                   `json:"tool_use_id,omitempty"`       // For tool_result content
+	ID               *string                   `json:"id,omitempty"`                // For tool_use content
+	Name             *string                   `json:"name,omitempty"`              // For tool_use content
+	Input            any                       `json:"input,omitempty"`             // For tool_use content
+	ServerName       *string                   `json:"server_name,omitempty"`       // For mcp_tool_use content
+	Content          *AnthropicContent         `json:"content,omitempty"`           // For tool_result content
+	Source           *AnthropicSource          `json:"source,omitempty"`            // For image/document content
+	CacheControl     *schemas.CacheControl     `json:"cache_control,omitempty"`     // For cache control content
+	Citations        *AnthropicCitations       `json:"citations,omitempty"`         // For document content
+	Context          *string                   `json:"context,omitempty"`           // For document content
+	Title            *string                   `json:"title,omitempty"`             // For document content
+	URL              *string                   `json:"url,omitempty"`               // For web_search_result content
+	EncryptedContent *string                   `json:"encrypted_content,omitempty"` // For web_search_result content
+	PageAge          *string                   `json:"page_age,omitempty"`          // For web_search_result content
 }
 
 // AnthropicSource represents image or document source in Anthropic format
@@ -242,9 +245,94 @@ type AnthropicSource struct {
 	URL       *string `json:"url,omitempty"`        // URL (for url type)
 }
 
-// AnthropicCitationsConfig represents citations configuration for documents
-type AnthropicCitationsConfig struct {
-	Enabled bool `json:"enabled"`
+type AnthropicCitationType string
+
+const (
+	AnthropicCitationTypeCharLocation            AnthropicCitationType = "char_location"
+	AnthropicCitationTypePageLocation            AnthropicCitationType = "page_location"
+	AnthropicCitationTypeContentBlockLocation    AnthropicCitationType = "content_block_location"
+	AnthropicCitationTypeWebSearchResultLocation AnthropicCitationType = "web_search_result_location"
+	AnthropicCitationTypeSearchResultLocation    AnthropicCitationType = "search_result_location"
+)
+
+// AnthropicTextCitation represents a single citation in a response
+// Supports multiple citation types: char_location, page_location, content_block_location,
+// web_search_result_location, and search_result_location
+type AnthropicTextCitation struct {
+	Type      AnthropicCitationType `json:"type"` // "char_location", "page_location", "content_block_location", "web_search_result_location", "search_result_location"
+	CitedText string                `json:"cited_text"`
+
+	// File ID char_location, page_location, content_block_location
+	FileID *string `json:"file_id,omitempty"`
+	// Common fields for document-based citations
+	DocumentIndex *int    `json:"document_index,omitempty"`
+	DocumentTitle *string `json:"document_title,omitempty"`
+
+	// Character location fields (type: "char_location")
+	StartCharIndex *int `json:"start_char_index,omitempty"`
+	EndCharIndex   *int `json:"end_char_index,omitempty"`
+
+	// Page location fields (type: "page_location")
+	StartPageNumber *int `json:"start_page_number,omitempty"`
+	EndPageNumber   *int `json:"end_page_number,omitempty"`
+
+	// Content block location fields (type: "content_block_location" or "search_result_location")
+	StartBlockIndex *int `json:"start_block_index,omitempty"`
+	EndBlockIndex   *int `json:"end_block_index,omitempty"`
+
+	// Web search result fields (type: "web_search_result_location")
+	EncryptedIndex *string `json:"encrypted_index,omitempty"`
+	Title          *string `json:"title,omitempty"`
+	URL            *string `json:"url,omitempty"`
+
+	// Search result location fields (type: "search_result_location")
+	SearchResultIndex *int    `json:"search_result_index,omitempty"`
+	Source            *string `json:"source,omitempty"`
+}
+
+// AnthropicCitations can represent either:
+// - Request: {enabled: true}
+// - Response: [{type: "...", cited_text: "...", ...}]
+type AnthropicCitations struct {
+	// For requests (document configuration)
+	Config *schemas.Citations
+	// For responses (array of citations)
+	TextCitations []AnthropicTextCitation
+}
+
+// Custom marshal/unmarshal methods
+func (ac *AnthropicCitations) MarshalJSON() ([]byte, error) {
+	if ac.Config != nil && ac.TextCitations != nil {
+		return nil, fmt.Errorf("AnthropicCitations: both Config and TextCitations are set; only one should be non-nil")
+	}
+
+	if ac.Config != nil {
+		return sonic.Marshal(ac.Config)
+	}
+	if ac.TextCitations != nil {
+		return sonic.Marshal(ac.TextCitations)
+	}
+	return sonic.Marshal(nil)
+}
+
+func (ac *AnthropicCitations) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as array of citations
+	var textCitations []AnthropicTextCitation
+	if err := sonic.Unmarshal(data, &textCitations); err == nil {
+		ac.Config = nil
+		ac.TextCitations = textCitations
+		return nil
+	}
+
+	// Try to unmarshal as config object first
+	var config schemas.Citations
+	if err := sonic.Unmarshal(data, &config); err == nil {
+		ac.TextCitations = nil
+		ac.Config = &config
+		return nil
+	}
+
+	return fmt.Errorf("citations field is neither a config object nor an array of citations")
 }
 
 // AnthropicImageContent represents image content in Anthropic format

@@ -273,12 +273,12 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type                 string      `json:"type"`                           // Type of the parameters
-	Description          *string     `json:"description,omitempty"`          // Description of the parameters
-	Required             []string    `json:"required,omitempty"`             // Required parameter names
-	Properties           *OrderedMap `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string    `json:"enum,omitempty"`                 // Enum values for the parameters
-	AdditionalProperties *bool       `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Type                 string                      `json:"type"`                           // Type of the parameters
+	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
+	Required             []string                    `json:"required,omitempty"`             // Required parameter names
+	Properties           *OrderedMap                 `json:"properties,omitempty"`           // Parameter properties
+	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
@@ -294,6 +294,12 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal parameters string: %w", err)
 		}
 		*t = ToolFunctionParameters(temp)
+		// Normalize additionalProperties: null to omitted field
+		if t.AdditionalProperties != nil &&
+			t.AdditionalProperties.AdditionalPropertiesBool == nil &&
+			t.AdditionalProperties.AdditionalPropertiesMap == nil {
+			t.AdditionalProperties = nil
+		}
 		return nil
 	}
 
@@ -304,10 +310,73 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*t = ToolFunctionParameters(temp)
+	// Normalize additionalProperties: null to omitted field
+	if t.AdditionalProperties != nil &&
+		t.AdditionalProperties.AdditionalPropertiesBool == nil &&
+		t.AdditionalProperties.AdditionalPropertiesMap == nil {
+		t.AdditionalProperties = nil
+	}
 	return nil
 }
 
 type OrderedMap map[string]interface{}
+
+type AdditionalPropertiesStruct struct {
+	AdditionalPropertiesBool *bool
+	AdditionalPropertiesMap  *OrderedMap
+}
+
+// MarshalJSON implements custom JSON marshalling for AdditionalPropertiesStruct.
+// It marshals either AdditionalPropertiesBool or AdditionalPropertiesMap based on which is set.
+func (a AdditionalPropertiesStruct) MarshalJSON() ([]byte, error) {
+
+	// if both are set, return an error
+	if a.AdditionalPropertiesBool != nil && a.AdditionalPropertiesMap != nil {
+		return nil, fmt.Errorf("both AdditionalPropertiesBool and AdditionalPropertiesMap are set; only one should be non-nil")
+	}
+
+	// If bool is set, marshal as boolean
+	if a.AdditionalPropertiesBool != nil {
+		return Marshal(*a.AdditionalPropertiesBool)
+	}
+
+	// If map is set, marshal as object
+	if a.AdditionalPropertiesMap != nil {
+		return Marshal(a.AdditionalPropertiesMap)
+	}
+
+	// If both are nil, return null
+	return Marshal(nil)
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for AdditionalPropertiesStruct.
+// It handles both boolean and object types for additionalProperties.
+func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		a.AdditionalPropertiesBool = nil
+		a.AdditionalPropertiesMap = nil
+		return nil
+	}
+
+	// First, try to unmarshal as a boolean
+	var boolValue bool
+	if err := Unmarshal(data, &boolValue); err == nil {
+		a.AdditionalPropertiesMap = nil
+		a.AdditionalPropertiesBool = &boolValue
+		return nil
+	}
+
+	// If that fails, try to unmarshal as a map
+	var mapValue OrderedMap
+	if err := Unmarshal(data, &mapValue); err == nil {
+		a.AdditionalPropertiesBool = nil
+		a.AdditionalPropertiesMap = &mapValue
+		return nil
+	}
+
+	// If both fail, return an error
+	return fmt.Errorf("additionalProperties must be either a boolean or an object")
+}
 
 // normalizeOrderedMap recursively converts JSON-like data into a tree where
 // all objects are OrderedMap, and arrays are []interface{} of normalized values.

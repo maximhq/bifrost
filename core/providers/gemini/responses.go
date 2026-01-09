@@ -243,25 +243,44 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 						if msg.ResponsesToolMessage.Name != nil {
 							functionCall.Name = *msg.ResponsesToolMessage.Name
 						}
+
+						// Extract thought signature from CallID if present
+						var thoughtSignature []byte
 						if msg.ResponsesToolMessage.CallID != nil {
-							functionCall.ID = *msg.ResponsesToolMessage.CallID
+							callID := *msg.ResponsesToolMessage.CallID
+							// Check if the ID contains a thought signature (format: "ToolName_ts_base64signature")
+							if strings.Contains(callID, thoughtSignatureSeparator) {
+								parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+								if len(parts) == 2 {
+									// Try to decode the signature part
+									if decodedSig, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+										thoughtSignature = decodedSig
+									}
+								}
+							}
+							functionCall.ID = callID
 						}
 
 						part := &Part{
 							FunctionCall: functionCall,
 						}
 
-						// Look ahead to see if the next message is a reasoning message with encrypted content
-						// (thought signature for this function call)
-						if i+1 < len(bifrostResp.Output) {
-							nextMsg := bifrostResp.Output[i+1]
-							if nextMsg.Type != nil && *nextMsg.Type == schemas.ResponsesMessageTypeReasoning &&
-								nextMsg.ResponsesReasoning != nil && nextMsg.ResponsesReasoning.EncryptedContent != nil {
-								decodedSig, err := base64.StdEncoding.DecodeString(*nextMsg.ResponsesReasoning.EncryptedContent)
-								if err == nil {
-									part.ThoughtSignature = decodedSig
-									// Mark this reasoning message as consumed
-									consumedIndices[i+1] = true
+						// Use thought signature from CallID if we extracted one
+						if len(thoughtSignature) > 0 {
+							part.ThoughtSignature = thoughtSignature
+						} else {
+							// Otherwise, look ahead to see if the next message is a reasoning message with encrypted content
+							// (thought signature for this function call)
+							if i+1 < len(bifrostResp.Output) {
+								nextMsg := bifrostResp.Output[i+1]
+								if nextMsg.Type != nil && *nextMsg.Type == schemas.ResponsesMessageTypeReasoning &&
+									nextMsg.ResponsesReasoning != nil && nextMsg.ResponsesReasoning.EncryptedContent != nil {
+									decodedSig, err := base64.StdEncoding.DecodeString(*nextMsg.ResponsesReasoning.EncryptedContent)
+									if err == nil {
+										part.ThoughtSignature = decodedSig
+										// Mark this reasoning message as consumed
+										consumedIndices[i+1] = true
+									}
 								}
 							}
 						}
@@ -435,12 +454,27 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 					if bifrostResp.Item.ResponsesToolMessage.Name != nil {
 						functionCall.Name = *bifrostResp.Item.ResponsesToolMessage.Name
 					}
+
+					var thoughtSig string
 					if bifrostResp.Item.ResponsesToolMessage.CallID != nil {
+						// Extract thought signature from CallID if present
+						if strings.Contains(*bifrostResp.Item.ResponsesToolMessage.CallID, thoughtSignatureSeparator) {
+							parts := strings.SplitN(*bifrostResp.Item.ResponsesToolMessage.CallID, thoughtSignatureSeparator, 2)
+							if len(parts) == 2 {
+								thoughtSig = parts[1]
+							}
+						}
 						functionCall.ID = *bifrostResp.Item.ResponsesToolMessage.CallID
 					}
-					candidate.Content.Parts = append(candidate.Content.Parts, &Part{
+					functionCallPart := &Part{
 						FunctionCall: functionCall,
-					})
+					}
+					if thoughtSig != "" {
+						if decodedSig, err := base64.RawURLEncoding.DecodeString(thoughtSig); err == nil {
+							functionCallPart.ThoughtSignature = decodedSig
+						}
+					}
+					candidate.Content.Parts = append(candidate.Content.Parts, functionCallPart)
 				}
 			}
 		}
@@ -1020,9 +1054,15 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 	}
 	state.ToolArgumentBuffers[outputIndex] = argsJSON
 
+	// Attach thought signature to ID if present
+	if len(part.ThoughtSignature) > 0 && !strings.Contains(toolUseID, thoughtSignatureSeparator) {
+		encoded := base64.RawURLEncoding.EncodeToString(part.ThoughtSignature)
+		toolUseID = fmt.Sprintf("%s%s%s", toolUseID, thoughtSignatureSeparator, encoded)
+	}
+
 	// Emit output_item.added for function call
 	status := "in_progress"
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+	addedEvent := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
@@ -1037,10 +1077,12 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 				Arguments: &argsJSON,
 			},
 		},
-	})
+	}
+
+	responses = append(responses, addedEvent)
 
 	// Gemini sends complete function calls, so immediately emit done event
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+	doneEvent := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 		SequenceNumber: sequenceNumber + len(responses),
 		OutputIndex:    &outputIndex,
@@ -1052,7 +1094,9 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 				Name:   &part.FunctionCall.Name,
 			},
 		},
-	})
+	}
+
+	responses = append(responses, doneEvent)
 
 	state.HasStartedToolCall = true
 
@@ -1819,6 +1863,12 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					callID = part.FunctionCall.Name
 				}
 
+				// Attach thought signature to callID (same as streaming path)
+				if len(part.ThoughtSignature) > 0 && !strings.Contains(callID, thoughtSignatureSeparator) {
+					thoughtSig := base64.RawURLEncoding.EncodeToString(part.ThoughtSignature)
+					callID = fmt.Sprintf("%s%s%s", callID, thoughtSignatureSeparator, thoughtSig)
+				}
+
 				name := part.FunctionCall.Name
 				toolMsg := &schemas.ResponsesToolMessage{
 					CallID:    &callID,
@@ -1831,21 +1881,6 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 					ResponsesToolMessage: toolMsg,
 				}
 				messages = append(messages, msg)
-
-				// Preserve thought signature if present (required for Gemini 3 Pro)
-				// Store it in a separate ResponsesReasoning message for better scalability
-				if len(part.ThoughtSignature) > 0 {
-					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
-					reasoningMsg := schemas.ResponsesMessage{
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
-						ResponsesReasoning: &schemas.ResponsesReasoning{
-							Summary:          []schemas.ResponsesReasoningSummary{},
-							EncryptedContent: &thoughtSig,
-						},
-					}
-					messages = append(messages, reasoningMsg)
-				}
 
 			case part.FunctionResponse != nil:
 				// Function response message
@@ -1865,8 +1900,19 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				// Also set the tool name if present (Gemini associates on name)
 				if name := strings.TrimSpace(part.FunctionResponse.Name); name != "" {
 					msg.ResponsesToolMessage.Name = schemas.Ptr(name)
+				} else {
+					// set name from call id
+					// if it contains a thought signature, remove it
+					if strings.Contains(part.FunctionResponse.ID, thoughtSignatureSeparator) {
+						parts := strings.SplitN(part.FunctionResponse.ID, thoughtSignatureSeparator, 2)
+						if len(parts) == 2 {
+							name := parts[0]
+							msg.ResponsesToolMessage.Name = schemas.Ptr(name)
+						}
+					} else {
+						msg.ResponsesToolMessage.Name = schemas.Ptr(part.FunctionResponse.ID)
+					}
 				}
-
 				messages = append(messages, msg)
 
 			case part.InlineData != nil:
@@ -2339,6 +2385,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					}
 
+					var thoughtSig string
 					part := &Part{
 						FunctionCall: &FunctionCall{
 							Name: *msg.ResponsesToolMessage.Name,
@@ -2346,7 +2393,22 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						},
 					}
 					if msg.ResponsesToolMessage.CallID != nil {
+						if strings.Contains(*msg.ResponsesToolMessage.CallID, thoughtSignatureSeparator) {
+							parts := strings.SplitN(*msg.ResponsesToolMessage.CallID, thoughtSignatureSeparator, 2)
+							if len(parts) == 2 {
+								thoughtSig = parts[1] // Extract signature (after separator)
+							}
+						}
+						// Keep the full CallID as-is (don't strip thought signature)
 						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+					}
+					if thoughtSig != "" {
+						var err error
+						part.ThoughtSignature, err = base64.RawURLEncoding.DecodeString(thoughtSig)
+						if err != nil {
+							// Silently ignore decode errors - ID will be used without signature
+							thoughtSig = ""
+						}
 					}
 
 					// Preserve thought signature from ResponsesReasoning message (required for Gemini 3 Pro)
@@ -2389,10 +2451,9 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						FunctionResponse: &FunctionResponse{
 							Name:     funcName,
 							Response: responseMap,
+							ID:       *msg.ResponsesToolMessage.CallID,
 						},
 					}
-					// Keep ID = CallID
-					part.FunctionResponse.ID = *msg.ResponsesToolMessage.CallID
 					content.Parts = append(content.Parts, part)
 				}
 			}

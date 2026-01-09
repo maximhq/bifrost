@@ -19,6 +19,9 @@ const DefaultCompletionMaxTokens = 8192 // Default max output tokens for Gemini 
 const DefaultReasoningMinBudget = 1024  // Default minimum reasoning budget for Gemini
 const DynamicReasoningBudget = -1       // Special value for dynamic reasoning budget in Gemini
 
+// thoughtSignatureSeparator is used to separate the base ID from the thought signature in tool IDs
+const thoughtSignatureSeparator = "_ts_"
+
 type Role string
 
 const (

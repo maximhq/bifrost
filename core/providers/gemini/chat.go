@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -90,6 +91,17 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 		candidate := response.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			for _, part := range candidate.Content.Parts {
+				// Handle thought/reasoning text separately - add to reasoning details
+				if part.Text != "" && part.Thought {
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index: len(reasoningDetails),
+						Type:  schemas.BifrostReasoningDetailsTypeText,
+						Text:  &part.Text,
+					})
+					continue
+				}
+
+				// Handle regular text
 				if part.Text != "" {
 					contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 						Type: schemas.ChatContentBlockTypeText,
@@ -115,6 +127,18 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						callID = part.FunctionCall.ID
 					}
 
+					// Extract thought signature from CallID if embedded (Gemini 3 behavior)
+					var extractedSig []byte
+					if strings.Contains(callID, thoughtSignatureSeparator) {
+						parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+						if len(parts) == 2 {
+							if decoded, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+								extractedSig = decoded
+								callID = parts[0] // Use base ID without signature for the tool call
+							}
+						}
+					}
+
 					toolCall := schemas.ChatAssistantMessageToolCall{
 						Index:    uint16(len(toolCalls)),
 						Type:     schemas.Ptr(string(schemas.ChatToolChoiceTypeFunction)),
@@ -123,6 +147,17 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					}
 
 					toolCalls = append(toolCalls, toolCall)
+
+					// If we extracted a signature from CallID, add it to reasoning details
+					if len(extractedSig) > 0 {
+						thoughtSig := base64.StdEncoding.EncodeToString(extractedSig)
+						reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+							Index:     len(reasoningDetails),
+							Type:      schemas.BifrostReasoningDetailsTypeEncrypted,
+							Signature: &thoughtSig,
+							ID:        schemas.Ptr(fmt.Sprintf("tool_call_%s", callID)),
+						})
+					}
 				}
 
 				if part.FunctionResponse != nil {
@@ -137,6 +172,8 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						})
 					}
 				}
+
+				// Handle standalone thought signature (not embedded in CallID)
 				if part.ThoughtSignature != nil {
 					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
 					reasoningDetail := schemas.ChatReasoningDetails{
@@ -150,6 +187,13 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 						callID := part.FunctionCall.Name
 						if part.FunctionCall.ID != "" {
 							callID = part.FunctionCall.ID
+						}
+						// Strip signature from ID if present
+						if strings.Contains(callID, thoughtSignatureSeparator) {
+							parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+							if len(parts) == 2 {
+								callID = parts[0]
+							}
 						}
 						reasoningDetail.ID = schemas.Ptr(fmt.Sprintf("tool_call_%s", callID))
 					}
@@ -239,15 +283,18 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 		}
 
 		var textContent string
-		var thoughtContent string
 		var toolCalls []schemas.ChatAssistantMessageToolCall
 		var reasoningDetails []schemas.ChatReasoningDetails
 
 		for _, part := range candidate.Content.Parts {
 			switch {
 			case part.Text != "" && part.Thought:
-				// Thought/reasoning content
-				thoughtContent += part.Text
+				// Thought/reasoning content - add to reasoning details
+				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+					Index: len(reasoningDetails),
+					Type:  schemas.BifrostReasoningDetailsTypeText,
+					Text:  &part.Text,
+				})
 
 			case part.Text != "":
 				// Regular text content
@@ -268,6 +315,18 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 					callID = part.FunctionCall.ID
 				}
 
+				// Extract thought signature from CallID if embedded (Gemini 3 behavior)
+				var extractedSig []byte
+				if strings.Contains(callID, thoughtSignatureSeparator) {
+					parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+					if len(parts) == 2 {
+						if decoded, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+							extractedSig = decoded
+							callID = parts[0] // Use base ID without signature for the tool call
+						}
+					}
+				}
+
 				toolCall := schemas.ChatAssistantMessageToolCall{
 					Index: uint16(len(toolCalls)),
 					Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
@@ -279,6 +338,16 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 				}
 
 				toolCalls = append(toolCalls, toolCall)
+
+				// If we extracted a signature from CallID, add it to reasoning details
+				if len(extractedSig) > 0 {
+					thoughtSig := base64.StdEncoding.EncodeToString(extractedSig)
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index:     len(reasoningDetails),
+						Type:      schemas.BifrostReasoningDetailsTypeEncrypted,
+						Signature: &thoughtSig,
+					})
+				}
 
 			case part.FunctionResponse != nil:
 				// Extract the output from the response and add to text content
@@ -304,11 +373,6 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 			delta.Content = &textContent
 		}
 
-		// Set thought content if present
-		if thoughtContent != "" {
-			delta.Reasoning = &thoughtContent
-		}
-
 		// Set reasoning details if present
 		if len(reasoningDetails) > 0 {
 			delta.ReasoningDetails = reasoningDetails
@@ -321,7 +385,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 	}
 
 	// Check if delta has any content - if not and it's not the last chunk, skip it
-	hasDeltaContent := delta.Role != nil || delta.Content != nil || delta.Reasoning != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
+	hasDeltaContent := delta.Role != nil || delta.Content != nil || len(delta.ToolCalls) > 0 || len(delta.ReasoningDetails) > 0
 	if !hasDeltaContent && !isLastChunk {
 		return nil, nil, false
 	}

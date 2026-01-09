@@ -555,8 +555,10 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 										"enum": []interface{}{"active", "inactive"},
 									},
 								},
-								Required:             []string{"user_id", "status"},
-								AdditionalProperties: schemas.Ptr(false),
+								Required: []string{"user_id", "status"},
+								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+									AdditionalPropertiesBool: schemas.Ptr(false),
+								},
 							},
 						},
 					},

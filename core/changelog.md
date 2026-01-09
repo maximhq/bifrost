@@ -1,1 +1,6 @@
 - chore: added case-insensitive helper methods for header and query parameter lookups in HTTPRequest
+- feat: add raw request data to bifrost error responses
+- fix: add support for AdditionalProperties structures (both boolean and object types)
+- fix: improve thought signature handling in gemini for function calls
+- fix: enhance citations structure to support multiple citation types
+- fix: anthropic streaming events through integration

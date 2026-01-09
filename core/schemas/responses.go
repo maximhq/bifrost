@@ -129,14 +129,14 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 type ResponsesTextConfigFormatJSONSchema struct {
-	Name                 *string         `json:"name,omitempty"`
-	Schema               *any            `json:"schema,omitempty"`
-	Description          *string         `json:"description,omitempty"`
-	Strict               *bool           `json:"strict,omitempty"`
-	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
-	Properties           *map[string]any `json:"properties,omitempty"`
-	Required             []string        `json:"required,omitempty"`
-	Type                 *string         `json:"type,omitempty"`
+	Name                 *string                     `json:"name,omitempty"`
+	Schema               *any                        `json:"schema,omitempty"`
+	Description          *string                     `json:"description,omitempty"`
+	Strict               *bool                       `json:"strict,omitempty"`
+	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"`
+	Properties           *map[string]any             `json:"properties,omitempty"`
+	Required             []string                    `json:"required,omitempty"`
+	Type                 *string                     `json:"type,omitempty"`
 }
 
 type ResponsesResponseConversation struct {
@@ -416,6 +416,10 @@ type ResponsesMessageContentBlock struct {
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
+type Citations struct {
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type ResponsesInputMessageContentBlockImage struct {

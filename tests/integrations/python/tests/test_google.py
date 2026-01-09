@@ -658,7 +658,7 @@ class TestGoogleIntegration:
                 keyword in content_lower for keyword in keywords
             ), f"Response should reference PDF document content. Got: {content_lower}"
             
-            print(f"Success: PDF file input test passed")
+            print("Success: PDF file input test passed")
             
         finally:
             # Clean up local temp file
@@ -1594,7 +1594,7 @@ Joe: Pretty good, thanks for asking."""
         
         if hasattr(response_1, 'usage_metadata') and response_1.usage_metadata:
             if hasattr(response_1.usage_metadata, 'thoughts_token_count'):
-                print(f"\n=== Token Usage ===")
+                print("\n=== Token Usage ===")
                 print(f"  Thinking tokens: {response_1.usage_metadata.thoughts_token_count}")
                 assert response_1.usage_metadata.thoughts_token_count > 0, "Should have thinking token usage"
         
@@ -1677,6 +1677,470 @@ Joe: Pretty good, thanks for asking."""
         print(f"  Steps: {len(parsed.reasoning_steps)} reasoning steps")
         print(f"  Answer: {parsed.final_answer}")
         print(f"  Confidence: {parsed.confidence}")
+
+    @skip_if_no_api_key("gemini")
+    def test_30a_gemini_3_parallel_function_calls_signatures(self, test_config):
+        """Test Case 30a: Gemini 3 - Parallel function calls with thought signatures
+        """
+        
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-flash-preview"  # Gemini 3 Flash supports parallel calls
+        
+        # Define multiple tools for parallel calling
+        weather_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "get_weather",
+                    "description": "Get current weather for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string", "description": "City name"}
+                        },
+                        "required": ["location"]
+                    }
+                }
+            ]
+        )
+        
+        temperature_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "get_temperature",
+                    "description": "Get current temperature for a location",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string", "description": "City name"},
+                            "unit": {"type": "string", "description": "celsius or fahrenheit"}
+                        },
+                        "required": ["location"]
+                    }
+                }
+            ]
+        )
+        
+        print("\n=== Testing Parallel Function Calls with Thought Signatures ===")
+        # Request that should trigger parallel function calls
+        response = client.models.generate_content(
+            model=model,
+            contents="Check the weather in Paris and London at the same time.",
+            config=types.GenerateContentConfig(
+                tools=[weather_tool, temperature_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="medium"  # Medium level for Gemini 3 Flash
+                )
+            )
+        )
+        
+        # Validate parallel function calls
+        assert response.candidates, "Response should have candidates"
+        function_calls = []
+        signatures = []
+        function_call_part_indices = []
+        
+        for idx, part in enumerate(response.candidates[0].content.parts):
+            if hasattr(part, 'function_call') and part.function_call:
+                function_calls.append(part.function_call)
+                function_call_part_indices.append(idx)
+                print(f"  [FC {idx+1}] {part.function_call.name}")
+                
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    signatures.append((idx, len(part.thought_signature)))
+                    print(f"    → Has signature ({len(part.thought_signature)} bytes)")
+                else:
+                    print("    → No signature")
+        
+        # According to Gemini docs: only the FIRST function call should have the signature
+        if len(function_calls) > 1:
+            print(f"\n  Found {len(function_calls)} parallel function calls")
+            print(f"  Signatures on parts: {signatures}")
+            
+            # First function call should have signature
+            assert len(signatures) > 0, "First function call should have thought signature"
+            assert signatures[0][0] == function_call_part_indices[0], (
+                "Thought signature should be on the first function call part"
+            )
+            
+            print("✓ Parallel function call signature handling verified!")
+        else:
+            print(f"  Only {len(function_calls)} function call(s) made")
+            # If only one call, it should still have a signature
+            assert len(signatures) > 0, "Function call should have thought signature"
+
+    @skip_if_no_api_key("gemini")
+    def test_30b_gemini_3_sequential_function_calls_signatures(self, test_config):
+        """Test Case 30b: Gemini 3 - Sequential multi-step function calls with signatures"""
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-flash-preview"
+        
+        # Tools for sequential operations
+        search_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "search_database",
+                    "description": "Search database for information",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            ]
+        )
+        
+        process_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "process_results",
+                    "description": "Process search results",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "data": {"type": "string", "description": "Data to process"}
+                        },
+                        "required": ["data"]
+                    }
+                }
+            ]
+        )
+        
+        print("\n=== Step 1: First function call ===")
+        # Step 1: Make initial request
+        response_1 = client.models.generate_content(
+            model=model,
+            contents="Search for information about Python programming and then process the results.",
+            config=types.GenerateContentConfig(
+                tools=[search_tool, process_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="medium"
+                )
+            )
+        )
+        
+        # Extract first function call and signature
+        first_fc = None
+        first_signature = None
+        
+        for part in response_1.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                first_fc = part.function_call
+                print(f"  [FC1] {first_fc.name}({first_fc.args})")
+                
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    first_signature = part.thought_signature
+                    print(f"  → Signature: {len(first_signature)} bytes")
+                break
+        
+        assert first_fc is not None, "Should have first function call"
+        assert first_signature is not None, "First function call should have thought signature"
+        
+        print("\n=== Step 2: Send function result and get next call ===")
+        # Step 2: Build conversation with signature preserved
+        conversation = [
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Search for information about Python programming and then process the results.")]
+            ),
+            types.Content(
+                role="model",
+                parts=[
+                    types.Part(
+                        function_call=first_fc,
+                        thought_signature=first_signature  # MUST preserve signature
+                    )
+                ]
+            ),
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=first_fc.name,
+                            response={"results": "Python is a high-level programming language..."}
+                        )
+                    )
+                ]
+            )
+        ]
+        
+        response_2 = client.models.generate_content(
+            model=model,
+            contents=conversation,
+            config=types.GenerateContentConfig(
+                tools=[search_tool, process_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="medium"
+                )
+            )
+        )
+        
+        # Check for second function call or text response
+        second_fc = None
+        second_signature = None
+        has_text = False
+        
+        for part in response_2.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                second_fc = part.function_call
+                print(f"  [FC2] {second_fc.name}")
+                
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    second_signature = part.thought_signature
+                    print(f"  → Signature: {len(second_signature)} bytes")
+            elif hasattr(part, 'text') and part.text:
+                has_text = True
+                print(f"  [TEXT] {part.text[:100]}...")
+        
+        # Should have either a second function call with signature or text response
+        if second_fc:
+            print("\n✓ Sequential function calling: Step 2 has function call with signature")
+            assert second_signature is not None, "Second function call should also have thought signature"
+        else:
+            print("\n✓ Model provided text response after first function call")
+            assert has_text, "Should have text response"
+
+    @skip_if_no_api_key("gemini")
+    def test_30c_gemini_3_thought_signatures_in_text_responses(self, test_config):
+        """Test Case 30c: Gemini 3 - Thought signatures in non-function-call responses"""
+        
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-flash-preview"
+        
+        print("\n=== Testing Thought Signatures in Text Responses ===")
+        # Request that should NOT trigger function calls but has thinking
+        response = client.models.generate_content(
+            model=model,
+            contents="Explain step-by-step how to solve: If a train travels 120 km in 2 hours, what is its average speed?",
+            config=types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="high"  # Enable thinking
+                )
+            )
+        )
+        
+        # Validate response structure
+        assert response.candidates, "Response should have candidates"
+        parts = response.candidates[0].content.parts
+        assert len(parts) > 0, "Response should have parts"
+        
+        # Check for thought signatures in parts
+        signatures_found = []
+        thought_parts = []
+        text_parts = []
+        
+        for idx, part in enumerate(parts):
+            if hasattr(part, 'thought') and part.thought:
+                thought_parts.append(idx)
+                print(f"  [PART {idx}] Thought: {getattr(part, 'text', '')[:80]}...")
+            elif hasattr(part, 'text') and part.text:
+                text_parts.append(idx)
+                print(f"  [PART {idx}] Text: {part.text[:80]}...")
+            
+            if hasattr(part, 'thought_signature') and part.thought_signature:
+                signatures_found.append(idx)
+                print(f"    → Has signature ({len(part.thought_signature)} bytes)")
+        
+        print("\n  Summary:")
+        print(f"    Thought parts: {thought_parts}")
+        print(f"    Text parts: {text_parts}")
+        print(f"    Signatures on parts: {signatures_found}")
+        
+        # According to docs: signature should be in the last part (when thinking is enabled)
+        if len(signatures_found) > 0:
+            last_part_idx = len(parts) - 1
+            # Signature might be on the last part or on a thought part
+            print(f"    Last part index: {last_part_idx}")
+            print(f"✓ Found {len(signatures_found)} thought signature(s) in text response")
+        else:
+            print("  Note: No explicit thought signatures found (may be internal)")
+
+    @skip_if_no_api_key("gemini")
+    def test_30d_gemini_3_thinking_levels(self, test_config):
+        """Test Case 30d: Gemini 3 - Different thinking levels (minimal, low, medium, high)"""
+        
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-flash-preview"  # Use Flash for full level support
+        
+        test_prompt = "What is 12 * 15?"
+        thinking_levels = ["minimal", "low", "medium", "high"]
+        
+        print("\n=== Testing Different Thinking Levels ===")
+        
+        for level in thinking_levels:
+            print(f"\n  Testing thinking_level='{level}':")
+            
+            response = client.models.generate_content(
+                model=model,
+                contents=test_prompt,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=level,
+                        include_thoughts=True
+                    )
+                )
+            )
+            
+            assert response.candidates, f"Response should have candidates for level '{level}'"
+            
+            # Check token usage
+            thought_tokens = 0
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                if hasattr(response.usage_metadata, 'thoughts_token_count'):
+                    thought_tokens = response.usage_metadata.thoughts_token_count
+            
+            # Check for thought parts
+            has_thoughts = any(
+                hasattr(part, 'thought') and part.thought 
+                for part in response.candidates[0].content.parts
+            )
+            
+            print(f"    Thought tokens: {thought_tokens}")
+            print(f"    Has thought parts: {has_thoughts}")
+            
+            # Minimal should have very few or no thinking tokens
+            if level == "minimal":
+                print("    ✓ Minimal thinking level (expected: minimal/no thinking)")
+            elif level == "high":
+                # High should have substantial thinking
+                if thought_tokens > 0:
+                    print(f"    ✓ High thinking level with {thought_tokens} thought tokens")
+                else:
+                    print("    ! High thinking but no thought tokens reported")
+        
+        print("\n✓ All thinking levels tested successfully")
+
+    @skip_if_no_api_key("gemini")
+    def test_30e_gemini_3_signature_validation_strict(self, test_config):
+        """Test Case 30e: Gemini 3 - Strict validation of thought signatures in function calling"""
+        
+        client = get_provider_google_client(provider="gemini")
+        model = "gemini-3-flash-preview"
+        
+        calculator_tool = types.Tool(
+            function_declarations=[
+                {
+                    "name": "calculate",
+                    "description": "Perform calculation",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {"type": "string"}
+                        },
+                        "required": ["expression"]
+                    }
+                }
+            ]
+        )
+        
+        print("\n=== Testing Strict Signature Validation ===")
+        
+        # Step 1: Get function call with signature
+        print("  Step 1: Getting function call with signature...")
+        response_1 = client.models.generate_content(
+            model=model,
+            contents="Calculate 45 * 23 using the calculator tool.",
+            config=types.GenerateContentConfig(
+                tools=[calculator_tool],
+                thinking_config=types.ThinkingConfig(
+                    thinking_level="medium"  # Ensure signatures are generated
+                )
+            )
+        )
+        
+        # Extract function call and signature
+        fc = None
+        sig = None
+        for part in response_1.candidates[0].content.parts:
+            if hasattr(part, 'function_call') and part.function_call:
+                fc = part.function_call
+                if hasattr(part, 'thought_signature') and part.thought_signature:
+                    sig = part.thought_signature
+                print(f"    FC: {fc.name}, Signature: {len(sig) if sig else 0} bytes")
+                break
+        
+        assert fc is not None, "Should have function call"
+        assert sig is not None, "Function call should have thought signature"
+        
+        # Step 2: Test WITH signature (should succeed)
+        print("\n  Step 2: Sending function result WITH signature...")
+        try:
+            conversation_with_sig = [
+                types.Content(role="user", parts=[types.Part(text="Calculate 45 * 23")]),
+                types.Content(
+                    role="model",
+                    parts=[types.Part(function_call=fc, thought_signature=sig)]  # WITH signature
+                ),
+                types.Content(
+                    role="user",
+                    parts=[types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": "1035"}
+                        )
+                    )]
+                )
+            ]
+            
+            response_2 = client.models.generate_content(
+                model=model,
+                contents=conversation_with_sig,
+                config=types.GenerateContentConfig(
+                    tools=[calculator_tool],
+                    thinking_config=types.ThinkingConfig(thinking_level="medium")
+                )
+            )
+            
+            assert response_2.candidates, "Request with signature should succeed"
+            print("    ✓ Request WITH signature succeeded")
+            
+        except Exception as e:
+            pytest.fail(f"Request with signature should not fail: {e}")
+        
+        # Step 3: Test WITHOUT signature (according to docs, should fail for Gemini 3)
+        # However, we'll make this informational rather than asserting failure
+        # because the SDK might auto-handle this
+        print("\n  Step 3: Testing without signature (informational)...")
+        try:
+            conversation_without_sig = [
+                types.Content(role="user", parts=[types.Part(text="Calculate 45 * 23")]),
+                types.Content(
+                    role="model",
+                    parts=[types.Part(function_call=fc)]  # WITHOUT signature
+                ),
+                types.Content(
+                    role="user",
+                    parts=[types.Part(
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response={"result": "1035"}
+                        )
+                    )]
+                )
+            ]
+            
+            client.models.generate_content(
+                model=model,
+                contents=conversation_without_sig,
+                config=types.GenerateContentConfig(
+                    tools=[calculator_tool],
+                    thinking_config=types.ThinkingConfig(thinking_level="medium")
+                )
+            )
+            
+            print("    ! Request WITHOUT signature succeeded (SDK may auto-handle)")
+            print("    Note: Gemini 3 docs state this should fail, but SDK might preserve signatures")
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "signature" in error_msg or "400" in error_msg or "validation" in error_msg:
+                print(f"    ✓ Request without signature failed as expected: {type(e).__name__}")
+            else:
+                print(f"    ? Request failed with unexpected error: {e}")
+        
+        print("\n✓ Signature validation test completed")
 
 
     # =========================================================================

@@ -175,7 +175,7 @@ func ToAnthropicChatRequest(bifrostReq *schemas.BifrostChatRequest) (*AnthropicM
 				toolMsg := messages[i]
 				if toolMsg.ChatToolMessage != nil && toolMsg.ChatToolMessage.ToolCallID != nil {
 					toolResult := AnthropicContentBlock{
-						Type:      "tool_result",
+						Type:      AnthropicContentBlockTypeToolResult,
 						ToolUseID: toolMsg.ChatToolMessage.ToolCallID,
 					}
 
