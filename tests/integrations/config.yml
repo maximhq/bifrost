@@ -186,6 +186,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: false
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -227,6 +228,7 @@ provider_scenarios:
     embeddings: false
     thinking: true
     prompt_caching: true
+    citations: true
     list_models: true
     responses: true
     responses_image: true
@@ -267,6 +269,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: false
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -348,6 +351,7 @@ provider_scenarios:
     embeddings: true
     thinking: true
     prompt_caching: true
+    citations: false
     list_models: true
     responses: true
     responses_image: true
@@ -386,6 +390,7 @@ provider_scenarios:
     embeddings: true
     thinking: false
     prompt_caching: false
+    citations: false
     list_models: false
     responses: true
     responses_image: true
@@ -432,6 +437,7 @@ scenario_capabilities:
   embeddings: "embeddings"
   thinking: "thinking"
   prompt_caching: "chat"
+  citations: "chat"
   list_models: "chat"
   langchain_structured_output: "chat"  # LangChain structured output uses chat capability
   pydantic_structured_output: "chat"  # Structured output uses chat capability

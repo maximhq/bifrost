@@ -1,0 +1,1 @@
+- fix: anthropic citations handling to support both request configuration and response parsing with a unified type structure.
