@@ -231,6 +231,23 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
+// GetAndSetValue gets a value from the internal userValues map and sets it
+func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
+	// Check if the key is a reserved key
+	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+		// we silently drop writes for these reserved keys				
+		return bc.userValues[key]
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any)
+	}	
+	oldValue := bc.userValues[key]
+	bc.userValues[key] = value
+	return oldValue
+}
+
 // GetUserValues returns a copy of all user-set values in this context.
 // If the parent is also a PluginContext, the values are merged with parent values
 // (this context's values take precedence over parent values).

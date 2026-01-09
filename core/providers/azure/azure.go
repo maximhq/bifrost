@@ -1006,7 +1006,19 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.SpeechStreamRequest, provider.logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.SpeechStreamRequest, provider.logger)
+			}
+			close(responseChan)
+		}()
+		// Always release response on exit; bodyStream close should prevent indefinite blocking.
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
 
 		// Check if response is compressed
 		bodyStream := resp.BodyStream()
@@ -1021,13 +1033,10 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		var accumulated []byte
 
 		for {
-			// Check if context is done
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
-
 			// Read from stream
 			n, readErr := bodyStream.Read(readBuffer)
 			if n > 0 {
@@ -1057,7 +1066,6 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					// Check if this has "data: " prefix (standard SSE format)
 					if bytes.HasPrefix(event, []byte("data: ")) {
 						audioData = event[6:] // Skip "data: " prefix
-
 						// Check for [DONE] marker
 						if bytes.Equal(audioData, []byte("[DONE]")) {
 							return
@@ -1115,6 +1123,10 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 			// Handle read errors
 			if readErr != nil {
+				// If context was cancelled/timed out, let defer handle it
+				if ctx.Err() != nil {
+					return
+				}
 				if readErr != io.EOF {
 					provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", readErr))
 				}

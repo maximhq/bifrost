@@ -438,8 +438,18 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, provider.logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, provider.logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks
@@ -454,13 +464,12 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		var currentData string
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
 
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			
 			line := scanner.Text()
 
 			// Skip empty lines (event delimiter)
@@ -498,6 +507,11 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {	
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		}

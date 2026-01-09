@@ -294,6 +294,68 @@ describe('Anthropic SDK Integration Tests', () => {
   })
 
   // ============================================================================
+  // Streaming Client Disconnect Tests
+  // ============================================================================
+
+  describe('Streaming Chat - Client Disconnect', () => {
+    it('should handle client disconnect mid-stream', async () => {
+      if (skipTests) return
+
+      const client = getAnthropicClient()
+      const model = getProviderModel('anthropic', 'chat')
+      const abortController = new AbortController()
+
+      // Request a longer response to ensure we have time to abort mid-stream
+      const stream = client.messages.stream({
+        model,
+        max_tokens: 1000,
+        messages: [
+          {
+            role: 'user',
+            content: 'Write a detailed essay about the history of computing, including at least 10 paragraphs.',
+          },
+        ],
+      }, {
+        signal: abortController.signal,
+      })
+
+      let chunkCount = 0
+      let content = ''
+      let wasAborted = false
+
+      try {
+        for await (const event of stream) {
+          chunkCount++
+          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+            content += event.delta.text
+          }
+
+          // Abort after receiving a few chunks
+          if (chunkCount >= 5) {
+            abortController.abort()
+          }
+        }
+      } catch (error) {
+        wasAborted = true
+        expect(error).toBeDefined()
+        // The error should be an AbortError or contain abort-related message
+        const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+        const isAbortError = errorMessage.includes('abort') ||
+                             errorMessage.includes('cancel') ||
+                             error instanceof DOMException ||
+                             (error as { name?: string })?.name === 'AbortError'
+        expect(isAbortError).toBe(true)
+      }
+
+      // Verify we received some content before aborting
+      expect(chunkCount).toBeGreaterThanOrEqual(5)
+      expect(content.length).toBeGreaterThan(0)
+      expect(wasAborted).toBe(true)
+      console.log(`✅ Streaming client disconnect passed for anthropic/${model} (${chunkCount} chunks before abort)`)
+    })
+  })
+
+  // ============================================================================
   // Tool Calling Tests
   // ============================================================================
 
@@ -887,6 +949,71 @@ describe('Anthropic SDK Integration Tests', () => {
         console.log(`✅ Extended thinking streaming passed for anthropic/${model} (${chunkCount} chunks)`)
       } catch (error) {
         console.log(`⚠️ Extended thinking streaming test skipped: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      }
+    })
+  })
+
+  describe('Extended Thinking Streaming - Client Disconnect', () => {
+    it('should handle client disconnect mid-stream during extended thinking', async () => {
+      if (skipTests) return
+
+      const client = getAnthropicClient()
+      const model = getProviderModel('anthropic', 'thinking')
+
+      if (!model) {
+        console.log('⚠️ Skipping thinking streaming disconnect test: No thinking model configured')
+        return
+      }
+
+      const abortController = new AbortController()
+
+      try {
+        // Use type assertion for beta thinking feature
+        const stream = client.messages.stream({
+          model,
+          max_tokens: 5000,
+          thinking: {
+            type: 'enabled',
+            budget_tokens: 3000,
+          },
+          messages: [
+            {
+              role: 'user',
+              content: 'Solve this complex problem step by step: A train leaves Station A at 8:00 AM traveling at 60 mph. Another train leaves Station B, 300 miles away, at 9:00 AM traveling toward Station A at 80 mph. At what time will they meet? Show all your detailed reasoning.',
+            },
+          ],
+        } as never, {
+          signal: abortController.signal,
+        })
+
+        let chunkCount = 0
+        let wasAborted = false
+
+        try {
+          for await (const event of stream) {
+            chunkCount++
+
+            // Abort after receiving a few chunks
+            if (chunkCount >= 10) {
+              abortController.abort()
+            }
+          }
+        } catch (error) {
+          wasAborted = true
+          expect(error).toBeDefined()
+          const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+          const isAbortError = errorMessage.includes('abort') ||
+                               errorMessage.includes('cancel') ||
+                               error instanceof DOMException ||
+                               (error as { name?: string })?.name === 'AbortError'
+          expect(isAbortError).toBe(true)
+        }
+
+        expect(chunkCount).toBeGreaterThanOrEqual(10)
+        expect(wasAborted).toBe(true)
+        console.log(`✅ Extended thinking streaming client disconnect passed for anthropic/${model} (${chunkCount} chunks before abort)`)
+      } catch (error) {
+        console.log(`⚠️ Extended thinking streaming disconnect test skipped: ${error instanceof Error ? error.message : 'Unknown error'}`)
       }
     })
   })

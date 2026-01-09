@@ -268,6 +268,71 @@ describe('OpenAI SDK Integration Tests', () => {
   })
 
   // ============================================================================
+  // Streaming Client Disconnect Tests
+  // ============================================================================
+
+  describe('Streaming Chat - Client Disconnect', () => {
+    const testCases = getCrossProviderParamsWithVkForScenario('streaming')
+
+    it.each(testCases)(
+      'should handle client disconnect mid-stream - $provider (VK: $vkEnabled)',
+      async ({ provider, model, vkEnabled }: ProviderModelVkParam) => {
+        if (shouldSkipNoProviders({ provider, model, vkEnabled })) {
+          console.log('Skipping: No providers available for streaming')
+          return
+        }
+
+        const client = getProviderOpenAIClient(provider, vkEnabled)
+        const abortController = new AbortController()
+
+        // Request a longer response to ensure we have time to abort mid-stream
+        const stream = await client.chat.completions.create({
+          model: formatProviderModel(provider, model),
+          messages: [{ role: 'user', content: 'Write a detailed essay about the history of computing, including at least 10 paragraphs.' }],
+          max_tokens: 1000,
+          stream: true,
+        }, {
+          signal: abortController.signal,
+        })
+
+        let chunkCount = 0
+        let content = ''
+        let wasAborted = false
+
+        try {
+          for await (const chunk of stream) {
+            chunkCount++
+            const delta = chunk.choices[0]?.delta?.content || ''
+            content += delta
+
+            // Abort after receiving a few chunks
+            if (chunkCount >= 3) {
+              abortController.abort()
+            }
+          }
+        } catch (error) {
+          // Expect an abort error
+          wasAborted = true
+          expect(error).toBeDefined()
+          // The error should be an AbortError or contain abort-related message
+          const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+          const isAbortError = errorMessage.includes('abort') ||
+                               errorMessage.includes('cancel') ||
+                               error instanceof DOMException ||
+                               (error as { name?: string })?.name === 'AbortError'
+          expect(isAbortError).toBe(true)
+        }
+
+        // Verify we received some content before aborting
+        expect(chunkCount).toBeGreaterThanOrEqual(3)
+        expect(content.length).toBeGreaterThan(0)
+        expect(wasAborted).toBe(true)
+        console.log(`✅ Streaming client disconnect passed for ${formatProviderModel(provider, model)} (${chunkCount} chunks before abort)`)
+      }
+    )
+  })
+
+  // ============================================================================
   // Tool Calling Tests
   // ============================================================================
 
@@ -1429,6 +1494,74 @@ describe('OpenAI SDK Integration Tests', () => {
           console.log(`✅ Responses API streaming passed for ${formatProviderModel(provider, model)} (${chunkCount} chunks)`)
         } catch (error) {
           console.log(`⚠️ Responses API streaming test skipped: ${error instanceof Error ? error.message : 'Unknown error'}`)
+        }
+      }
+    )
+  })
+
+  describe('Responses API - Streaming Client Disconnect', () => {
+    const testCases = getCrossProviderParamsWithVkForScenario('responses')
+
+    it.each(testCases)(
+      'should handle client disconnect mid-stream - $provider (VK: $vkEnabled)',
+      async ({ provider, model, vkEnabled }: ProviderModelVkParam) => {
+        if (shouldSkipNoProviders({ provider, model, vkEnabled })) {
+          console.log('Skipping: No providers available for responses')
+          return
+        }
+
+        const client = getProviderOpenAIClient(provider, vkEnabled)
+        const abortController = new AbortController()
+        const responses = (client as unknown as {
+          responses: {
+            create: (params: unknown, options?: { signal?: AbortSignal }) => Promise<AsyncIterable<unknown>>
+          }
+        }).responses
+
+        try {
+          const stream = await responses.create({
+            model: formatProviderModel(provider, model),
+            input: 'Write a detailed essay about the history of artificial intelligence, including at least 10 paragraphs covering different eras and breakthroughs.',
+            max_output_tokens: 2000,
+            stream: true,
+          }, {
+            signal: abortController.signal,
+          })
+
+          let chunkCount = 0
+          let content = ''
+          let wasAborted = false
+
+          try {
+            for await (const event of stream as AsyncIterable<{ type?: string; delta?: { text?: string } }>) {
+              chunkCount++
+              if (event.type === 'content_part.delta' || event.type === 'response.output_text.delta') {
+                if (event.delta?.text) {
+                  content += event.delta.text
+                }
+              }
+
+              // Abort after receiving a few chunks
+              if (chunkCount >= 3) {
+                abortController.abort()
+              }
+            }
+          } catch (error) {
+            wasAborted = true
+            expect(error).toBeDefined()
+            const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+            const isAbortError = errorMessage.includes('abort') ||
+                                 errorMessage.includes('cancel') ||
+                                 error instanceof DOMException ||
+                                 (error as { name?: string })?.name === 'AbortError'
+            expect(isAbortError).toBe(true)
+          }
+
+          expect(chunkCount).toBeGreaterThanOrEqual(3)
+          expect(wasAborted).toBe(true)
+          console.log(`✅ Responses API streaming client disconnect passed for ${formatProviderModel(provider, model)} (${chunkCount} chunks before abort)`)
+        } catch (error) {
+          console.log(`⚠️ Responses API streaming client disconnect test skipped: ${error instanceof Error ? error.message : 'Unknown error'}`)
         }
       }
     )

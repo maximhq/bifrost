@@ -205,6 +205,68 @@ describe('LangChain.js Integration Tests', () => {
       })
     })
 
+    describe('Streaming Chat - Client Disconnect', () => {
+      it('should handle client disconnect mid-stream', async () => {
+        if (skipTests) return
+
+        const baseUrl = getIntegrationUrl('openai')
+        const apiKey = hasApiKey('openai') ? getApiKey('openai') : 'dummy-key'
+        const modelName = getProviderModel('openai', 'chat')
+
+        // Create model with longer max tokens for a longer response
+        const model = new ChatOpenAI({
+          modelName,
+          openAIApiKey: apiKey,
+          configuration: {
+            baseURL: baseUrl,
+          },
+          maxTokens: 1000,
+          timeout: 300000,
+        })
+
+        const abortController = new AbortController()
+        const messages = convertToLangChainMessages([
+          { role: 'user', content: 'Write a detailed essay about the history of computing, including at least 10 paragraphs.' },
+        ])
+
+        const stream = await model.stream(messages, {
+          signal: abortController.signal,
+        })
+
+        let chunkCount = 0
+        let content = ''
+        let wasAborted = false
+
+        try {
+          for await (const chunk of stream) {
+            chunkCount++
+            if (chunk.content) {
+              content += typeof chunk.content === 'string' ? chunk.content : JSON.stringify(chunk.content)
+            }
+
+            // Abort after receiving a few chunks
+            if (chunkCount >= 3) {
+              abortController.abort()
+            }
+          }
+        } catch (error) {
+          wasAborted = true
+          expect(error).toBeDefined()
+          const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+          const isAbortError = errorMessage.includes('abort') ||
+                               errorMessage.includes('cancel') ||
+                               error instanceof DOMException ||
+                               (error as { name?: string })?.name === 'AbortError'
+          expect(isAbortError).toBe(true)
+        }
+
+        expect(chunkCount).toBeGreaterThanOrEqual(3)
+        expect(content.length).toBeGreaterThan(0)
+        expect(wasAborted).toBe(true)
+        console.log(`✅ LangChain OpenAI streaming client disconnect passed (${chunkCount} chunks before abort)`)
+      })
+    })
+
     describe('Tool Calling', () => {
       it('should make tool calls', async () => {
         if (skipTests) return
@@ -310,6 +372,66 @@ describe('LangChain.js Integration Tests', () => {
 
         expect(content.length).toBeGreaterThan(0)
         console.log(`✅ LangChain Anthropic streaming chat passed`)
+      })
+    })
+
+    describe('Streaming Chat - Client Disconnect', () => {
+      it('should handle client disconnect mid-stream', async () => {
+        if (skipTests) return
+
+        const baseUrl = getIntegrationUrl('anthropic')
+        const apiKey = hasApiKey('anthropic') ? getApiKey('anthropic') : 'dummy-key'
+        const modelName = getProviderModel('anthropic', 'chat')
+
+        // Create model with longer max tokens for a longer response
+        const model = new ChatAnthropic({
+          modelName,
+          anthropicApiKey: apiKey,
+          anthropicApiUrl: baseUrl,
+          maxTokens: 1000,
+          maxRetries: 3,
+        })
+
+        const abortController = new AbortController()
+        const messages = convertToLangChainMessages([
+          { role: 'user', content: 'Write a detailed essay about the history of computing, including at least 10 paragraphs.' },
+        ])
+
+        const stream = await model.stream(messages, {
+          signal: abortController.signal,
+        })
+
+        let chunkCount = 0
+        let content = ''
+        let wasAborted = false
+
+        try {
+          for await (const chunk of stream) {
+            chunkCount++
+            if (chunk.content) {
+              content += typeof chunk.content === 'string' ? chunk.content : JSON.stringify(chunk.content)
+            }
+
+            // Abort after receiving a few chunks
+            if (chunkCount >= 5) {
+              abortController.abort()
+            }
+          }
+        } catch (error) {
+          wasAborted = true
+          expect(error).toBeDefined()
+          const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+          const isAbortError = errorMessage.includes('abort') ||
+                               errorMessage.includes('cancel') ||
+                               error instanceof DOMException ||
+                               (error as { name?: string })?.name === 'AbortError'
+          expect(isAbortError).toBe(true)
+        }
+
+        expect(chunkCount).toBeGreaterThanOrEqual(5)
+        expect(content.length).toBeGreaterThan(0)
+        expect(wasAborted).toBe(true)
+        console.log(`✅ LangChain Anthropic streaming client disconnect passed (${chunkCount} chunks before abort)`)
       })
     })
 

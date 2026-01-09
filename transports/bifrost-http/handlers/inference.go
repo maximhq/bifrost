@@ -671,14 +671,12 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
-
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
 	}
-
 	defer cancel() // Ensure cleanup on function exit
-
+	// Complete the request
 	resp, bifrostErr := h.client.ChatCompletionRequest(bifrostCtx, bifrostChatReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -1295,6 +1293,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		}
 		// Note: OpenAI responses API doesn't use [DONE] marker, it ends when the stream closes
 		// Stream completed normally, Bifrost handles cleanup internally
+		cancel()
 	})
 }
 

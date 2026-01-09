@@ -2,10 +2,11 @@
 
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
 interface DataTableProps {
@@ -42,6 +43,25 @@ export function LogsDataTable({
 	fetchStats,
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
+	const tableContainerRef = useRef<HTMLDivElement>(null);
+	const calculatedPageSize = useTablePageSize(tableContainerRef);
+
+	// Refs to avoid stale closures in the page size effect
+	const paginationRef = useRef(pagination);
+	const onPaginationChangeRef = useRef(onPaginationChange);
+	paginationRef.current = pagination;
+	onPaginationChangeRef.current = onPaginationChange;
+
+	// Update pagination limit when calculated page size increases (don't reduce on size reduction)
+	useEffect(() => {
+		if (calculatedPageSize && calculatedPageSize > paginationRef.current.limit) {
+			onPaginationChangeRef.current({
+				...paginationRef.current,
+				limit: calculatedPageSize,
+				offset: 0, // Reset to first page when page size changes
+			});
+		}
+	}, [calculatedPageSize]);
 
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
 		const newSorting = typeof updaterOrValue === "function" ? updaterOrValue(sorting) : updaterOrValue;
@@ -86,8 +106,8 @@ export function LogsDataTable({
 	return (
 		<div className="space-y-2">
 			<LogFiltersComponent filters={filters} onFiltersChange={onFiltersChange} liveEnabled={liveEnabled} onLiveToggle={onLiveToggle} fetchLogs={fetchLogs} fetchStats={fetchStats} />
-			<div className="max-h-[calc(100vh-16.5rem)] rounded-sm border">
-				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
+		<div ref={tableContainerRef} className="h-[calc(100vh-16.5rem)] rounded-sm border">
+			<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
 					<TableHeader className="px-2">
 						{table.getHeaderGroups().map((headerGroup) => (
 							<TableRow key={headerGroup.id}>

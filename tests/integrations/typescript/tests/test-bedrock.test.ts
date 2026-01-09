@@ -322,6 +322,84 @@ describe('Bedrock SDK Integration Tests', () => {
   })
 
   // ============================================================================
+  // Streaming Client Disconnect Tests
+  // ============================================================================
+
+  describe('Streaming Chat - Client Disconnect', () => {
+    const testCases = getCrossProviderParamsWithVkForScenario('streaming', ['bedrock'])
+
+    it.each(testCases)(
+      'should handle client disconnect mid-stream - $provider (VK: $vkEnabled)',
+      async ({ provider, model, vkEnabled }: ProviderModelVkParam) => {
+        if (shouldSkipNoProviders({ provider, model, vkEnabled })) {
+          console.log('Skipping: No providers available for streaming')
+          return
+        }
+
+        const client = getBedrockRuntimeClient()
+        const abortController = new AbortController()
+
+        // Request a longer response to ensure we have time to abort mid-stream
+        const messages = convertToBedrockMessages([
+          { role: 'user', content: 'Write a detailed essay about the history of computing, including at least 10 paragraphs.' },
+        ])
+        const modelId = formatProviderModel(provider, model)
+
+        const command = new ConverseStreamCommand({
+          modelId,
+          messages,
+          inferenceConfig: { maxTokens: 1000 },
+        })
+
+        const response = await client.send(command, {
+          abortSignal: abortController.signal,
+        })
+
+        let chunkCount = 0
+        let content = ''
+        let wasAborted = false
+
+        try {
+          if (response.stream) {
+            for await (const event of response.stream) {
+              chunkCount++
+              if (event.contentBlockDelta) {
+                const delta = event.contentBlockDelta.delta
+                if (delta && 'text' in delta && delta.text) {
+                  content += delta.text
+                }
+              }
+
+              // Abort after receiving a few chunks
+              if (chunkCount >= 5) {
+                abortController.abort()
+              }
+            }
+          }
+        } catch (error) {
+          wasAborted = true
+          expect(error).toBeDefined()
+          // The error should be an AbortError or contain abort-related message
+          const errorMessage = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+          const errorName = (error as { name?: string })?.name?.toLowerCase() || ''
+          const isAbortError = errorMessage.includes('abort') ||
+                               errorMessage.includes('cancel') ||
+                               errorName.includes('abort') ||
+                               error instanceof DOMException ||
+                               (error as { name?: string })?.name === 'AbortError'
+          expect(isAbortError).toBe(true)
+        }
+
+        // Verify we received some content before aborting
+        expect(chunkCount).toBeGreaterThanOrEqual(5)
+        expect(content.length).toBeGreaterThan(0)
+        expect(wasAborted).toBe(true)
+        console.log(`✅ Streaming client disconnect passed for ${modelId} (${chunkCount} chunks before abort)`)
+      }
+    )
+  })
+
+  // ============================================================================
   // Tool Calling Tests
   // ============================================================================
 

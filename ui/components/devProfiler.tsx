@@ -1,9 +1,10 @@
 'use client'
 
-import { useGetDevPprofQuery } from '@/lib/store'
+import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from '@/lib/store'
+import type { GoroutineGroup } from '@/lib/store/apis/devApi'
 import { isDevelopmentMode } from '@/lib/utils/port'
-import { Activity, ChevronDown, ChevronUp, Cpu, HardDrive, X } from 'lucide-react'
-import React, { useCallback, useMemo, useState } from 'react'
+import { Activity, AlertTriangle, ChevronDown, ChevronRight, ChevronUp, Cpu, EyeOff, HardDrive, RotateCcw, TrendingUp, X } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -52,15 +53,292 @@ function truncateFunction (fn: string): string {
   return last
 }
 
+// Get category badge color
+function getCategoryColor (category: string): string {
+  switch (category) {
+    case 'per-request':
+      return 'text-amber-400 bg-amber-400/10'
+    case 'background':
+      return 'text-blue-400 bg-blue-400/10'
+    default:
+      return 'text-zinc-400 bg-zinc-400/10'
+  }
+}
+
+// Extract file path from stack (first line containing .go:)
+function getStackFilePath (stack: string[]): string {
+  for (const line of stack) {
+    // Match file path like "/path/to/file.go:123" and extract just the path
+    const match = line.match(/^\s*([^\s]+\.go):\d+/)
+    if (match) {
+      return match[1]
+    }
+  }
+  return ''
+}
+
+// Generate a stable ID for a goroutine group
+function getGoroutineId (g: GoroutineGroup): string {
+  return `${g.top_func}::${g.state}::${g.count}::${g.wait_minutes ?? 0}`
+}
+
+// localStorage key for skipped goroutine file paths
+const SKIPPED_GOROUTINE_FILES_KEY = 'devProfiler.skippedGoroutineFiles'
+
+// Load skipped goroutine file paths from localStorage
+function loadSkippedGoroutineFiles (): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const stored = localStorage.getItem(SKIPPED_GOROUTINE_FILES_KEY)
+    return stored ? new Set(JSON.parse(stored)) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+
+// Save skipped goroutine file paths to localStorage
+function saveSkippedGoroutineFiles (skipped: Set<string>): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(SKIPPED_GOROUTINE_FILES_KEY, JSON.stringify([...skipped]))
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+// Goroutine Health Section subcomponent
+interface GoroutineHealthProps {
+  goroutineData: {
+    summary: {
+      background: number
+      per_request: number
+      long_waiting: number
+      potentially_stuck: number
+    }
+    total_goroutines: number
+  } | undefined
+  goroutineHealth: 'healthy' | 'warning' | 'critical'
+  goroutineTrend: {
+    isGrowing: boolean
+    growthPercent: number
+    avg: number
+  } | null
+  problemGoroutines: GoroutineGroup[]
+  expandedGoroutines: Set<string>
+  toggleGoroutineExpand: (id: string) => void
+  skippedGoroutines: Set<string>
+  onSkipGoroutine: (topFunc: string) => void
+  onClearSkipped: () => void
+}
+
+function GoroutineHealthSection ({
+  goroutineData,
+  goroutineHealth,
+  goroutineTrend,
+  problemGoroutines,
+  expandedGoroutines,
+  toggleGoroutineExpand,
+  skippedGoroutines,
+  onSkipGoroutine,
+  onClearSkipped,
+}: GoroutineHealthProps): React.ReactNode {
+  if (!goroutineData) return null
+
+  const { summary, total_goroutines } = goroutineData
+
+  return (
+    <div className="p-3">
+      {/* Header with health status */}
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Activity className="h-3 w-3 text-emerald-400" />
+          <span className="text-zinc-400">Goroutine Health</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {goroutineTrend?.isGrowing && (
+            <span className="flex items-center gap-1 text-amber-400" title="Goroutine count growing">
+              <TrendingUp className="h-3 w-3" />
+              <span className="text-[10px]">+{goroutineTrend.growthPercent.toFixed(0)}%</span>
+            </span>
+          )}
+          {goroutineHealth === 'critical' && (
+            <span className="flex items-center gap-1 rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-400">
+              <AlertTriangle className="h-3 w-3" />
+              Stuck
+            </span>
+          )}
+          {goroutineHealth === 'warning' && (
+            <span className="flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-400">
+              <AlertTriangle className="h-3 w-3" />
+              Long Wait
+            </span>
+          )}
+          {goroutineHealth === 'healthy' && (
+            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-400">
+              Healthy
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Summary stats */}
+      <div className="mb-2 grid grid-cols-4 gap-2 rounded bg-zinc-800/50 p-2">
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-zinc-500">Total</span>
+          <span className="font-semibold text-emerald-400">{total_goroutines}</span>
+        </div>
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-zinc-500">Background</span>
+          <span className="font-semibold text-blue-400">{summary.background}</span>
+        </div>
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-zinc-500">Per-Request</span>
+          <span className="font-semibold text-amber-400">{summary.per_request}</span>
+        </div>
+        <div className="flex flex-col items-center">
+          <span className="text-[10px] text-zinc-500">Stuck</span>
+          <span className={`font-semibold ${summary.potentially_stuck > 0 ? 'text-red-400' : 'text-zinc-500'}`}>
+            {summary.potentially_stuck}
+          </span>
+        </div>
+      </div>
+
+      {/* Problem goroutines list */}
+      {(problemGoroutines.length > 0 || skippedGoroutines.size > 0) && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-zinc-500">Potential Leaks</span>
+            {skippedGoroutines.size > 0 && (
+              <button
+                onClick={onClearSkipped}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200"
+                title="Clear all hidden goroutines"
+              >
+                <RotateCcw className="h-2.5 w-2.5" />
+                {skippedGoroutines.size} hidden
+              </button>
+            )}
+          </div>
+          {problemGoroutines.map((g) => {
+            const gid = getGoroutineId(g)
+            return (
+            <div key={gid} className="group relative rounded bg-zinc-800">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleGoroutineExpand(gid)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    toggleGoroutineExpand(gid)
+                  }
+                }}
+                className="flex w-full cursor-pointer flex-col gap-1 px-2 py-1.5 pr-8 text-left hover:bg-zinc-700/50"
+              >
+                <div className="flex w-full items-center gap-2">
+                  {expandedGoroutines.has(gid) ? (
+                    <ChevronDown className="h-3 w-3 shrink-0 text-zinc-500" />
+                  ) : (
+                    <ChevronRight className="h-3 w-3 shrink-0 text-zinc-500" />
+                  )}
+                  <span className="min-w-0 flex-1 break-all text-zinc-300" title={g.top_func}>
+                    {truncateFunction(g.top_func)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 pl-5 text-[10px]">
+                  <span className={`rounded px-1 py-0.5 ${getCategoryColor(g.category)}`}>
+                    {g.category}
+                  </span>
+                  <span className="text-zinc-500">{g.count}x</span>
+                  {g.wait_minutes != null && (
+                    <span className="text-amber-400">{g.wait_minutes}m waiting</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const filePath = getStackFilePath(g.stack)
+                  if (filePath) onSkipGoroutine(filePath)
+                }}
+                className="absolute right-1 top-1.5 shrink-0 rounded p-1 text-zinc-500 opacity-0 transition-opacity hover:bg-zinc-600 hover:text-zinc-300 group-hover:opacity-100"
+                title="Hide goroutines from this file"
+              >
+                <EyeOff className="h-3 w-3" />
+              </button>
+              {expandedGoroutines.has(gid) && (
+                <div className="border-t border-zinc-700 bg-zinc-900/50 px-2 py-1.5">
+                  <div className="mb-1 text-[10px] text-zinc-500">
+                    State: <span className="text-zinc-400">{g.state}</span>
+                    {g.wait_reason && (
+                      <span className="ml-2">Wait: <span className="text-amber-400">{g.wait_reason}</span></span>
+                    )}
+                  </div>
+                  <div className="max-h-32 overflow-y-auto overflow-x-hidden">
+                    {g.stack.slice(0, 10).map((line, j) => (
+                      <div key={j} className="break-all text-[9px] text-zinc-500">
+                        {line}
+                      </div>
+                    ))}
+                    {g.stack.length > 10 && (
+                      <div className="text-[9px] text-zinc-600">
+                        ... {g.stack.length - 10} more frames
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )})}
+        
+          {problemGoroutines.length === 0 && skippedGoroutines.size > 0 && (
+            <div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">
+              All potential leaks hidden
+            </div>
+          )}
+          {problemGoroutines.length === 0 && skippedGoroutines.size === 0 && (summary.long_waiting > 0 || summary.potentially_stuck > 0) && (
+            <div className="rounded bg-zinc-800/30 px-2 py-2 text-center text-[10px] text-zinc-500">
+              {summary.long_waiting > 0 && summary.potentially_stuck > 0
+                ? `${summary.long_waiting} long-waiting and ${summary.potentially_stuck} stuck goroutines (background workers filtered)`
+                : summary.long_waiting > 0
+                  ? `${summary.long_waiting} long-waiting goroutines (background workers filtered)`
+                  : `${summary.potentially_stuck} stuck goroutines (background workers filtered)`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* No problems message */}
+      {problemGoroutines.length === 0 && summary.long_waiting === 0 && summary.potentially_stuck === 0 && (
+        <div className="rounded bg-zinc-800/30 py-2 text-center text-[10px] text-zinc-500">
+          No goroutine leaks detected
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function DevProfiler (): React.ReactNode {
   const [isVisible, setIsVisible] = useState(true)
   const [isExpanded, setIsExpanded] = useState(true)
   const [isDismissed, setIsDismissed] = useState(false)
+  const [expandedGoroutines, setExpandedGoroutines] = useState<Set<string>>(new Set())
+  const [skippedGoroutines, setSkippedGoroutines] = useState<Set<string>>(() => loadSkippedGoroutineFiles())
+
+  // Sync skipped goroutines to localStorage
+  useEffect(() => {
+    saveSkippedGoroutineFiles(skippedGoroutines)
+  }, [skippedGoroutines])
 
   // Only fetch in development mode and when not dismissed
   const shouldFetch = isDevelopmentMode() && !isDismissed
 
   const { data, isLoading, error } = useGetDevPprofQuery(undefined, {
+    pollingInterval: shouldFetch ? 10000 : 0, // Poll every 10 seconds
+    skip: !shouldFetch,
+  })
+
+  const { data: goroutineData } = useGetDevGoroutinesQuery(undefined, {
     pollingInterval: shouldFetch ? 10000 : 0, // Poll every 10 seconds
     skip: !shouldFetch,
   })
@@ -84,8 +362,66 @@ export function DevProfiler (): React.ReactNode {
     }))
   }, [data?.history])
 
+  // Detect goroutine count trend (growing = potential leak)
+  const goroutineTrend = useMemo(() => {
+    if (!data?.history || data.history.length < 5) return null
+    const recent = data.history.slice(-5)
+    const avg = recent.reduce((sum, p) => sum + p.goroutines, 0) / recent.length
+    const current = data.runtime.num_goroutine
+    const isGrowing = current > avg * 1.1 // 10% above average
+    const growthPercent = avg > 0 ? ((current - avg) / avg) * 100 : 0
+    return { isGrowing, growthPercent, avg }
+  }, [data?.history, data?.runtime.num_goroutine])
+
+  // Filter problem goroutines (stuck or long-waiting, excluding expected background workers and skipped)
+  const problemGoroutines = useMemo(() => {
+    if (!goroutineData?.groups) return []
+    return goroutineData.groups
+      .filter((g) => {
+        if (!g.wait_minutes || g.wait_minutes < 1) return false
+        if (g.category === 'background') return false
+        const filePath = getStackFilePath(g.stack)
+        if (filePath && skippedGoroutines.has(filePath)) return false
+        return true
+      })
+      .slice(0, 5)
+  }, [goroutineData?.groups, skippedGoroutines])
+
+  // Get goroutine health status
+  const goroutineHealth = useMemo(() => {
+    if (!goroutineData?.summary) return 'healthy'
+    const { potentially_stuck, long_waiting } = goroutineData.summary
+    if (potentially_stuck > 0) return 'critical'
+    if (long_waiting > 0) return 'warning'
+    return 'healthy'
+  }, [goroutineData?.summary])
+
   const handleDismiss = useCallback(() => {
     setIsDismissed(true)
+  }, [])
+
+  const toggleGoroutineExpand = useCallback((id: string) => {
+    setExpandedGoroutines((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  const handleSkipGoroutine = useCallback((topFunc: string) => {
+    setSkippedGoroutines((prev) => {
+      const next = new Set(prev)
+      next.add(topFunc)
+      return next
+    })
+  }, [])
+
+  const handleClearSkipped = useCallback(() => {
+    setSkippedGoroutines(new Set())
   }, [])
 
   const handleToggleExpand = useCallback(() => {
@@ -160,7 +496,7 @@ export function DevProfiler (): React.ReactNode {
       )}
 
       {isExpanded && data && (
-        <div className="max-h-[70vh] overflow-y-auto">
+        <div className="max-h-[70vh] overflow-y-auto overflow-x-hidden custom-scrollbar">
           {/* Current Stats */}
           <div className="grid grid-cols-3 gap-2 border-b border-zinc-700 p-3">
             <div className="flex flex-col">
@@ -360,7 +696,7 @@ export function DevProfiler (): React.ReactNode {
           </div>
 
           {/* Top Allocations */}
-          <div className="p-3">
+          <div className="border-b border-zinc-700 p-3">
             <div className="mb-2 flex items-center gap-2">
               <HardDrive className="h-3 w-3 text-rose-400" />
               <span className="text-zinc-400">Top Allocations</span>
@@ -394,6 +730,19 @@ export function DevProfiler (): React.ReactNode {
               ))}
             </div>
           </div>
+
+          {/* Goroutine Health */}
+          <GoroutineHealthSection
+            goroutineData={goroutineData}
+            goroutineHealth={goroutineHealth}
+            goroutineTrend={goroutineTrend}
+            problemGoroutines={problemGoroutines}
+            expandedGoroutines={expandedGoroutines}
+            toggleGoroutineExpand={toggleGoroutineExpand}
+            skippedGoroutines={skippedGoroutines}
+            onSkipGoroutine={handleSkipGoroutine}
+            onClearSkipped={handleClearSkipped}
+          />
 
           {/* Footer with info */}
           <div className="border-t border-zinc-700 bg-zinc-800 px-3 py-2 text-[10px] text-zinc-500">

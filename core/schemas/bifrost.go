@@ -448,6 +448,7 @@ type BifrostCacheDebug struct {
 
 const (
 	RequestCancelled = "request_cancelled"
+	RequestTimedOut  = "request_timed_out"
 )
 
 // BifrostStream represents a stream of responses from the Bifrost system.
