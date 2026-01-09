@@ -26,7 +26,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts
 
 all: help
 
@@ -630,10 +630,10 @@ test-chatbot: ## Run interactive chatbot integration test (Usage: RUN_CHATBOT_TE
 	fi
 	@cd core && RUN_CHATBOT_TEST=1 go test -v -run TestChatbot
 
-test-integrations: ## Run Python integration tests (Usage: make test-integrations [INTEGRATION=openai] [TESTCASE=test_name] [PATTERN=substring] [VERBOSE=1])
+test-integrations-py: ## Run Python integration tests (Usage: make test-integrations-py [INTEGRATION=openai] [TESTCASE=test_name] [PATTERN=substring] [VERBOSE=1])
 	@echo "$(GREEN)Running Python integration tests...$(NC)"
-	@if [ ! -d "tests/integrations" ]; then \
-		echo "$(RED)Error: tests/integrations directory not found$(NC)"; \
+	@if [ ! -d "tests/integrations/python" ]; then \
+		echo "$(RED)Error: tests/integrations/python directory not found$(NC)"; \
 		exit 1; \
 	fi; \
 	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
@@ -643,7 +643,7 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 	fi; \
 	if [ -n "$(TESTCASE)" ] && [ -z "$(INTEGRATION)" ]; then \
 		echo "$(RED)Error: TESTCASE requires INTEGRATION to be specified$(NC)"; \
-		echo "$(YELLOW)Usage: make test-integrations INTEGRATION=anthropic TESTCASE=test_05_end2end_tool_calling$(NC)"; \
+		echo "$(YELLOW)Usage: make test-integrations-py INTEGRATION=anthropic TESTCASE=test_05_end2end_tool_calling$(NC)"; \
 		exit 1; \
 	fi; \
 	if [ -f .env ]; then \
@@ -660,7 +660,7 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 		echo "$(GREEN)✓ Bifrost is already running$(NC)"; \
 	else \
 		echo "$(YELLOW)Bifrost not running, starting it...$(NC)"; \
-		./tmp/bifrost-http -host "$$TEST_HOST" -port "$$TEST_PORT" -log-style "$(LOG_STYLE)" -log-level "$(LOG_LEVEL)" -app-dir tests/integrations > /tmp/bifrost-test.log 2>&1 & \
+		./tmp/bifrost-http -host "$$TEST_HOST" -port "$$TEST_PORT" -log-style "$(LOG_STYLE)" -log-level "$(LOG_LEVEL)" -app-dir tests/integrations/python > /tmp/bifrost-test.log 2>&1 & \
 		BIFROST_PID=$$!; \
 		BIFROST_STARTED=1; \
 		echo "$(YELLOW)Waiting for Bifrost to be ready...$(NC)"; \
@@ -698,30 +698,26 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-				cd tests/integrations && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py::$(TESTCASE) $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			elif [ -n "$(PATTERN)" ]; then \
 				echo "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
-				cd tests/integrations && pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
-				cd tests/integrations && pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && pytest tests/test_$(INTEGRATION).py $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		else \
 			if [ -n "$(PATTERN)" ]; then \
 				echo "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
-				cd tests/integrations && pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && pytest -k "$(PATTERN)" $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			else \
 				echo "$(CYAN)Running all integration tests...$(NC)"; \
-				cd tests/integrations && pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
+				cd tests/integrations/python && pytest $(if $(VERBOSE),-v,-q) || TEST_FAILED=1; \
 			fi; \
 		fi; \
 	else \
 		echo "$(CYAN)Using uv (fast mode)$(NC)"; \
-		cd tests/integrations && \
-		if [ ! -f .venv/bin/python ]; then \
-			echo "$(YELLOW)Installing dependencies with uv...$(NC)"; \
-			uv venv && uv pip install -r requirements.txt; \
-		fi; \
+		cd tests/integrations/python && \
 		if [ -n "$(INTEGRATION)" ]; then \
 			if [ -n "$(TESTCASE)" ]; then \
 				echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
@@ -762,6 +758,114 @@ test-integrations: ## Run Python integration tests (Usage: make test-integration
 		exit 1; \
 	else \
 		echo "$(GREEN)✓ Integration tests complete$(NC)"; \
+	fi
+
+test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-integrations-ts [INTEGRATION=openai] [TESTCASE=test_name] [PATTERN=substring] [VERBOSE=1])
+	@echo "$(GREEN)Running TypeScript integration tests...$(NC)"
+	@if [ ! -d "tests/integrations/typescript" ]; then \
+		echo "$(RED)Error: tests/integrations/typescript directory not found$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -n "$(TESTCASE)" ] && [ -z "$(INTEGRATION)" ]; then \
+		echo "$(RED)Error: TESTCASE requires INTEGRATION to be specified$(NC)"; \
+		echo "$(YELLOW)Usage: make test-integrations-ts INTEGRATION=openai TESTCASE=test_simple_chat$(NC)"; \
+		exit 1; \
+	fi; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	BIFROST_STARTED=0; \
+	BIFROST_PID=""; \
+	TAIL_PID=""; \
+	TEST_PORT=$${PORT:-8080}; \
+	TEST_HOST=$${HOST:-localhost}; \
+	echo "$(CYAN)Checking if Bifrost is running on $$TEST_HOST:$$TEST_PORT...$(NC)"; \
+	if curl -s -o /dev/null -w "%{http_code}" http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null | grep -q "200\|404"; then \
+		echo "$(GREEN)✓ Bifrost is already running$(NC)"; \
+	else \
+		echo "$(YELLOW)Bifrost not running, starting it...$(NC)"; \
+		./tmp/bifrost-http -host "$$TEST_HOST" -port "$$TEST_PORT" -log-style "$(LOG_STYLE)" -log-level "$(LOG_LEVEL)" -app-dir tests/integrations/typescript > /tmp/bifrost-test.log 2>&1 & \
+		BIFROST_PID=$$!; \
+		BIFROST_STARTED=1; \
+		echo "$(YELLOW)Waiting for Bifrost to be ready...$(NC)"; \
+		echo "$(CYAN)Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
+		(tail -f /tmp/bifrost-test.log 2>/dev/null | grep -E "error|panic|Error|ERRO|fatal|Fatal|FATAL" --line-buffered &) & \
+		TAIL_PID=$$!; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			if curl -s -o /dev/null http://$$TEST_HOST:$$TEST_PORT/health 2>/dev/null; then \
+				echo "$(GREEN)✓ Bifrost is ready (PID: $$BIFROST_PID)$(NC)"; \
+				break; \
+			fi; \
+			if [ $$i -eq 10 ]; then \
+				echo "$(RED)Failed to start Bifrost$(NC)"; \
+				echo "$(YELLOW)Bifrost logs:$(NC)"; \
+				cat /tmp/bifrost-test.log 2>/dev/null || echo "No log file found"; \
+				[ -n "$$BIFROST_PID" ] && kill $$BIFROST_PID 2>/dev/null; \
+				[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null; \
+				exit 1; \
+			fi; \
+			sleep 1; \
+		done; \
+	fi; \
+	TEST_FAILED=0; \
+	if ! which npm > /dev/null 2>&1; then \
+		echo "$(RED)Error: npm not found$(NC)"; \
+		echo "$(YELLOW)Install Node.js: https://nodejs.org/$(NC)"; \
+		[ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ] && kill $$BIFROST_PID 2>/dev/null; \
+		[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null; \
+		exit 1; \
+	fi; \
+	echo "$(CYAN)Using npm$(NC)"; \
+	cd tests/integrations/typescript && \
+	if [ ! -d "node_modules" ]; then \
+		echo "$(YELLOW)Installing dependencies...$(NC)"; \
+		npm install; \
+	fi; \
+	if [ -n "$(INTEGRATION)" ]; then \
+		if [ -n "$(TESTCASE)" ]; then \
+			echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
+			npm test -- tests/test-$(INTEGRATION).test.ts -t "$(TESTCASE)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
+			npm test -- tests/test-$(INTEGRATION).test.ts -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
+			npm test -- tests/test-$(INTEGRATION).test.ts $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+		fi; \
+	else \
+		if [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
+			npm test -- -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running all integration tests...$(NC)"; \
+			npm test $(if $(VERBOSE),-- --reporter=verbose,) || TEST_FAILED=1; \
+		fi; \
+	fi; \
+	if [ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ]; then \
+		echo "$(YELLOW)Stopping Bifrost (PID: $$BIFROST_PID)...$(NC)"; \
+		kill $$BIFROST_PID 2>/dev/null || true; \
+		[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null || true; \
+		wait $$BIFROST_PID 2>/dev/null || true; \
+		echo "$(GREEN)✓ Bifrost stopped$(NC)"; \
+		if [ $$TEST_FAILED -eq 1 ]; then \
+			echo ""; \
+			echo "$(YELLOW)Last 50 lines of Bifrost logs:$(NC)"; \
+			tail -50 /tmp/bifrost-test.log 2>/dev/null || echo "No log file found"; \
+		fi; \
+	fi; \
+	echo ""; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		echo "$(RED)✗ TypeScript integration tests failed$(NC)"; \
+		echo "$(CYAN)Full Bifrost logs: /tmp/bifrost-test.log$(NC)"; \
+		exit 1; \
+	else \
+		echo "$(GREEN)✓ TypeScript integration tests complete$(NC)"; \
 	fi
 
 # Quick start with example config
