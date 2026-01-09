@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -61,6 +60,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Create operations for both APIs
 		chatOperation1 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -74,10 +74,11 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			return client.ChatCompletionRequest(ctx, chatReq)
+			return client.ChatCompletionRequest(bfCtx, chatReq)
 		}
 
 		responsesOperation1 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -90,7 +91,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					MaxOutputTokens: bifrost.Ptr(150),
 				},
 			}
-			return client.ResponsesRequest(ctx, responsesReq)
+			return client.ResponsesRequest(bfCtx, responsesReq)
 		}
 
 		// Execute dual API test for Step 1
@@ -198,6 +199,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Create operations for both APIs - Step 2 (processing tool results)
 		chatOperation2 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -207,10 +209,11 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			return client.ChatCompletionRequest(ctx, chatReq)
+			return client.ChatCompletionRequest(bfCtx, chatReq)
 		}
 
 		responsesOperation2 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -219,7 +222,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					MaxOutputTokens: bifrost.Ptr(200),
 				},
 			}
-			return client.ResponsesRequest(ctx, responsesReq)
+			return client.ResponsesRequest(bfCtx, responsesReq)
 		}
 
 		// Execute dual API test for Step 2 (processing tool results)
@@ -334,6 +337,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Create operations for both APIs - Step 3
 		chatOperation3 := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -343,10 +347,11 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			return client.ChatCompletionRequest(ctx, chatReq)
+			return client.ChatCompletionRequest(bfCtx, chatReq)
 		}
 
 		responsesOperation3 := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    model,
@@ -355,7 +360,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					MaxOutputTokens: bifrost.Ptr(200),
 				},
 			}
-			return client.ResponsesRequest(ctx, responsesReq)
+			return client.ResponsesRequest(bfCtx, responsesReq)
 		}
 
 		// Execute dual API test for Step 3

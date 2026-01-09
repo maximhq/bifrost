@@ -1,6 +1,6 @@
 "use client"
 
-import APIKeysView from "@enterprise/components/api-keys/APIKeysView"
+import APIKeysView from "@enterprise/components/api-keys/apiKeysIndexView"
 
 export default function APIKeysPage() {
   return (

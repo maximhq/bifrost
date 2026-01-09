@@ -36,7 +36,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 // GetKeysForProvider returns the API keys configured for a specific provider.
 // Keys are already processed (environment variables resolved) by the store.
 // Implements the Account interface.
-func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	if baseAccount.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
@@ -49,7 +49,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, provide
 	keys := config.Keys
 
 	if baseAccount.store.ClientConfig.EnableGovernance {
-		if v := (*ctx).Value(schemas.BifrostContextKey("bf-governance-include-only-keys")); v != nil {
+		if v := ctx.Value(schemas.BifrostContextKey("bf-governance-include-only-keys")); v != nil {
 			if includeOnlyKeys, ok := v.([]string); ok {
 				if len(includeOnlyKeys) == 0 {
 					// header present but empty means "no keys allowed"

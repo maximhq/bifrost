@@ -1,7 +1,6 @@
 package bedrock
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -46,7 +45,7 @@ func normalizeBedrockFilename(filename string) string {
 }
 
 // convertParameters handles parameter conversion
-func convertChatParameters(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
+func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) error {
 	// Parameters are optional - if not provided, just skip conversion
 	if bifrostReq.Params == nil {
 		return nil
@@ -676,7 +675,7 @@ func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
 
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
 // Returns nil if no response_format is present or if it's not a json_schema type
-func convertResponseFormatToTool(ctx *context.Context, params *schemas.ChatParameters) *BedrockTool {
+func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.ChatParameters) *BedrockTool {
 	if params == nil || params.ResponseFormat == nil {
 		return nil
 	}
@@ -718,7 +717,7 @@ func convertResponseFormatToTool(ctx *context.Context, params *schemas.ChatParam
 
 	// set bifrost context key structured output tool name
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
-	(*ctx) = context.WithValue(*ctx, schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
 	// Create the Bedrock tool
 	return &BedrockTool{
@@ -733,7 +732,7 @@ func convertResponseFormatToTool(ctx *context.Context, params *schemas.ChatParam
 }
 
 // convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
-func convertTextFormatToTool(ctx *context.Context, textConfig *schemas.ResponsesTextConfig) *BedrockTool {
+func convertTextFormatToTool(ctx *schemas.BifrostContext, textConfig *schemas.ResponsesTextConfig) *BedrockTool {
 	if textConfig == nil || textConfig.Format == nil {
 		return nil
 	}
@@ -754,7 +753,7 @@ func convertTextFormatToTool(ctx *context.Context, textConfig *schemas.Responses
 	}
 
 	toolName = fmt.Sprintf("bf_so_%s", toolName)
-	(*ctx) = context.WithValue(*ctx, schemas.BifrostContextKeyStructuredOutputToolName, toolName)
+	ctx.SetValue(schemas.BifrostContextKeyStructuredOutputToolName, toolName)
 
 	var schemaObj any
 	if format.JSONSchema != nil {

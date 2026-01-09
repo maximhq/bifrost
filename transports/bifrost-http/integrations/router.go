@@ -69,7 +69,7 @@ import (
 // ExtensionRouter defines the interface that all integration routers must implement
 // to register their routes with the main HTTP router.
 type ExtensionRouter interface {
-	RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware)
+	RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware)
 }
 
 // StreamingRequest interface for requests that support streaming
@@ -98,116 +98,115 @@ type FileRequest struct {
 }
 
 // BatchRequestConverter is a function that converts integration-specific batch requests to Bifrost format.
-type BatchRequestConverter func(ctx *context.Context, req interface{}) (*BatchRequest, error)
+type BatchRequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error)
 
 // FileRequestConverter is a function that converts integration-specific file requests to Bifrost format.
-type FileRequestConverter func(ctx *context.Context, req interface{}) (*FileRequest, error)
+type FileRequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error)
 
 // RequestConverter is a function that converts integration-specific requests to Bifrost format.
 // It takes the parsed request object and returns a BifrostRequest ready for processing.
-type RequestConverter func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error)
+type RequestConverter func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error)
 
 // ListModelsResponseConverter is a function that converts BifrostListModelsResponse to integration-specific format.
 // It takes a BifrostListModelsResponse and returns the format expected by the specific integration.
-type ListModelsResponseConverter func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error)
+type ListModelsResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error)
 
 // TextResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific format.
 // It takes a BifrostTextCompletionResponse and returns the format expected by the specific integration.
-type TextResponseConverter func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error)
+type TextResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error)
 
 // ChatResponseConverter is a function that converts BifrostChatResponse to integration-specific format.
 // It takes a BifrostChatResponse and returns the format expected by the specific integration.
-type ChatResponseConverter func(ctx *context.Context, resp *schemas.BifrostChatResponse) (interface{}, error)
+type ChatResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error)
 
 // ResponsesResponseConverter is a function that converts BifrostResponsesResponse to integration-specific format.
 // It takes a BifrostResponsesResponse and returns the format expected by the specific integration.
-type ResponsesResponseConverter func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error)
+type ResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error)
 
 // EmbeddingResponseConverter is a function that converts BifrostEmbeddingResponse to integration-specific format.
 // It takes a BifrostEmbeddingResponse and returns the format expected by the specific integration.
-type EmbeddingResponseConverter func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error)
+type EmbeddingResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error)
 
 // SpeechResponseConverter is a function that converts BifrostSpeechResponse to integration-specific format.
 // It takes a BifrostSpeechResponse and returns the format expected by the specific integration.
-type SpeechResponseConverter func(ctx *context.Context, resp *schemas.BifrostSpeechResponse) (interface{}, error)
+type SpeechResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error)
 
 // TranscriptionResponseConverter is a function that converts BifrostTranscriptionResponse to integration-specific format.
 // It takes a BifrostTranscriptionResponse and returns the format expected by the specific integration.
-type TranscriptionResponseConverter func(ctx *context.Context, resp *schemas.BifrostTranscriptionResponse) (interface{}, error)
+type TranscriptionResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error)
 
 // BatchCreateResponseConverter is a function that converts BifrostBatchCreateResponse to integration-specific format.
 // It takes a BifrostBatchCreateResponse and returns the format expected by the specific integration.
-type BatchCreateResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchCreateResponse) (interface{}, error)
+type BatchCreateResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error)
 
 // BatchListResponseConverter is a function that converts BifrostBatchListResponse to integration-specific format.
 // It takes a BifrostBatchListResponse and returns the format expected by the specific integration.
-type BatchListResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchListResponse) (interface{}, error)
+type BatchListResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error)
 
 // BatchRetrieveResponseConverter is a function that converts BifrostBatchRetrieveResponse to integration-specific format.
 // It takes a BifrostBatchRetrieveResponse and returns the format expected by the specific integration.
-type BatchRetrieveResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error)
+type BatchRetrieveResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error)
 
 // BatchCancelResponseConverter is a function that converts BifrostBatchCancelResponse to integration-specific format.
 // It takes a BifrostBatchCancelResponse and returns the format expected by the specific integration.
-type BatchCancelResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchCancelResponse) (interface{}, error)
+type BatchCancelResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error)
 
 // BatchResultsResponseConverter is a function that converts BifrostBatchResultsResponse to integration-specific format.
 // It takes a BifrostBatchResultsResponse and returns the format expected by the specific integration.
-type BatchResultsResponseConverter func(ctx *context.Context, resp *schemas.BifrostBatchResultsResponse) (interface{}, error)
+type BatchResultsResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchResultsResponse) (interface{}, error)
 
 // FileUploadResponseConverter is a function that converts BifrostFileUploadResponse to integration-specific format.
 // It takes a BifrostFileUploadResponse and returns the format expected by the specific integration.
-type FileUploadResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error)
+type FileUploadResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error)
 
 // FileListResponseConverter is a function that converts BifrostFileListResponse to integration-specific format.
 // It takes a BifrostFileListResponse and returns the format expected by the specific integration.
-type FileListResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error)
+type FileListResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error)
 
 // FileRetrieveResponseConverter is a function that converts BifrostFileRetrieveResponse to integration-specific format.
 // It takes a BifrostFileRetrieveResponse and returns the format expected by the specific integration.
-type FileRetrieveResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error)
+type FileRetrieveResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error)
 
 // FileDeleteResponseConverter is a function that converts BifrostFileDeleteResponse to integration-specific format.
 // It takes a BifrostFileDeleteResponse and returns the format expected by the specific integration.
-type FileDeleteResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error)
+type FileDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error)
 
 // FileContentResponseConverter is a function that converts BifrostFileContentResponse to integration-specific format.
 // It takes a BifrostFileContentResponse and returns the format expected by the specific integration.
 // Note: This may return binary data or a wrapper object depending on the integration.
-type FileContentResponseConverter func(ctx *context.Context, resp *schemas.BifrostFileContentResponse) (interface{}, error)
+type FileContentResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileContentResponse) (interface{}, error)
 
 // CountTokensResponseConverter is a function that converts BifrostCountTokensResponse to integration-specific format.
 // It takes a BifrostCountTokensResponse and returns the format expected by the specific integration.
-type CountTokensResponseConverter func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error)
+type CountTokensResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error)
 
 // TextStreamResponseConverter is a function that converts BifrostTextCompletionResponse to integration-specific streaming format.
 // It takes a BifrostTextCompletionResponse and returns the event type and the streaming format expected by the specific integration.
-type TextStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error)
+type TextStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error)
 
 // ChatStreamResponseConverter is a function that converts BifrostChatResponse to integration-specific streaming format.
 // It takes a BifrostChatResponse and returns the event type and the streaming format expected by the specific integration.
-type ChatStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostChatResponse) (string, interface{}, error)
+type ChatStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error)
 
 // ResponsesStreamResponseConverter is a function that converts BifrostResponsesStreamResponse to integration-specific streaming format.
-// It takes a BifrostResponsesStreamResponse and returns the list of event types and the list of streaming formats expected by the specific integration. (so that one bifrost response chunk can be converted to multiple streaming chunks by the specific integration)
-// The list of event types and streaming formats are returned in the same order as the bifrost response chunks.
-type ResponsesStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error)
+// It takes a BifrostResponsesStreamResponse and returns a single event type and payload, which can itself encode one or more SSE events if needed by the integration.
+type ResponsesStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error)
 
 // SpeechStreamResponseConverter is a function that converts BifrostSpeechStreamResponse to integration-specific streaming format.
 // It takes a BifrostSpeechStreamResponse and returns the event type and the streaming format expected by the specific integration.
-type SpeechStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error)
+type SpeechStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error)
 
 // TranscriptionStreamResponseConverter is a function that converts BifrostTranscriptionStreamResponse to integration-specific streaming format.
 // It takes a BifrostTranscriptionStreamResponse and returns the event type and the streaming format expected by the specific integration.
-type TranscriptionStreamResponseConverter func(ctx *context.Context, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error)
+type TranscriptionStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error)
 
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
-type ErrorConverter func(ctx *context.Context, err *schemas.BifrostError) interface{}
+type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
 
 // StreamErrorConverter is a function that converts BifrostError to integration-specific streaming error format.
 // It takes a BifrostError and returns the streaming error format expected by the specific integration.
-type StreamErrorConverter func(ctx *context.Context, err *schemas.BifrostError) interface{}
+type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
 
 // RequestParser is a function that handles custom request body parsing.
 // It replaces the default JSON parsing when configured (e.g., for multipart/form-data).
@@ -219,7 +218,7 @@ type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
 // It can be used to modify the request object (e.g., extract model from URL parameters)
 // or perform validation. If it returns an error, the request processing stops.
 // It can also modify the bifrost context based on the request context before it is given to Bifrost.
-type PreRequestCallback func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error
+type PreRequestCallback func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error
 
 // PostRequestCallback is called after processing the request but before sending the response.
 // It can be used to modify the response or perform additional logging/metrics.
@@ -322,7 +321,7 @@ func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, ro
 
 // RegisterRoutes registers all configured routes on the given fasthttp router.
 // This method implements the ExtensionRouter interface.
-func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	for _, route := range g.routes {
 		// Validate route configuration at startup to fail fast
 		method := strings.ToUpper(route.Method)
@@ -393,10 +392,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore.ShouldAllowDirectKeys(), g.handlerStore.GetHeaderFilterConfig())
 
 		// Set send back raw response flag for all integration requests
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySendBackRawResponse, true)
+		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 
 		// Set integration type to context
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyIntegrationType, string(config.Type))
+		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodHead {
@@ -432,7 +431,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		if ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)) != nil {
 			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
 			if ok {
-				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			}
 		}
 
@@ -504,20 +503,19 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 }
 
 // handleNonStreamingRequest handles regular (non-streaming) requests
-func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context) {
+func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, bifrostReq *schemas.BifrostRequest, bifrostCtx *schemas.BifrostContext) {
 	// Use the cancellable context from ConvertToBifrostContext
 	// While we can't detect client disconnects until we try to write, having a cancellable context
 	// allows providers that check ctx.Done() to cancel early if needed. This is less critical than
 	// streaming requests (where we actively detect write errors), but still provides a mechanism
 	// for providers to respect cancellation.
-	requestCtx := *bifrostCtx
-
 	var response interface{}
+
 	var err error
 
 	switch {
 	case bifrostReq.ListModelsRequest != nil:
-		listModelsResponse, bifrostErr := g.client.ListModelsRequest(requestCtx, bifrostReq.ListModelsRequest)
+		listModelsResponse, bifrostErr := g.client.ListModelsRequest(bifrostCtx, bifrostReq.ListModelsRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -537,7 +535,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
 	case bifrostReq.TextCompletionRequest != nil:
-		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(requestCtx, bifrostReq.TextCompletionRequest)
+		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -560,7 +558,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TextResponseConverter(bifrostCtx, textCompletionResponse)
 	case bifrostReq.ChatRequest != nil:
-		chatResponse, bifrostErr := g.client.ChatCompletionRequest(requestCtx, bifrostReq.ChatRequest)
+		chatResponse, bifrostErr := g.client.ChatCompletionRequest(bifrostCtx, bifrostReq.ChatRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -583,7 +581,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
 	case bifrostReq.ResponsesRequest != nil:
-		responsesResponse, bifrostErr := g.client.ResponsesRequest(requestCtx, bifrostReq.ResponsesRequest)
+		responsesResponse, bifrostErr := g.client.ResponsesRequest(bifrostCtx, bifrostReq.ResponsesRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -606,7 +604,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
 	case bifrostReq.EmbeddingRequest != nil:
-		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(requestCtx, bifrostReq.EmbeddingRequest)
+		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(bifrostCtx, bifrostReq.EmbeddingRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -629,7 +627,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
 	case bifrostReq.SpeechRequest != nil:
-		speechResponse, bifrostErr := g.client.SpeechRequest(requestCtx, bifrostReq.SpeechRequest)
+		speechResponse, bifrostErr := g.client.SpeechRequest(bifrostCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -663,7 +661,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 	case bifrostReq.TranscriptionRequest != nil:
-		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(requestCtx, bifrostReq.TranscriptionRequest)
+		transcriptionResponse, bifrostErr := g.client.TranscriptionRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -686,7 +684,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
 	case bifrostReq.CountTokensRequest != nil:
-		countTokensResponse, bifrostErr := g.client.CountTokensRequest(requestCtx, bifrostReq.CountTokensRequest)
+		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -726,9 +724,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 }
 
 // handleBatchRequest handles batch API requests (create, list, retrieve, cancel, results)
-func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, batchReq *BatchRequest, bifrostCtx *context.Context) {
-	requestCtx := *bifrostCtx
-
+func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, batchReq *BatchRequest, bifrostCtx *schemas.BifrostContext) {
 	var response interface{}
 	var err error
 
@@ -738,7 +734,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch create request"))
 			return
 		}
-		batchResponse, bifrostErr := g.client.BatchCreateRequest(requestCtx, batchReq.CreateRequest)
+		batchResponse, bifrostErr := g.client.BatchCreateRequest(bifrostCtx, batchReq.CreateRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -760,7 +756,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch list request"))
 			return
 		}
-		batchResponse, bifrostErr := g.client.BatchListRequest(requestCtx, batchReq.ListRequest)
+		batchResponse, bifrostErr := g.client.BatchListRequest(bifrostCtx, batchReq.ListRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -782,7 +778,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch retrieve request"))
 			return
 		}
-		batchResponse, bifrostErr := g.client.BatchRetrieveRequest(requestCtx, batchReq.RetrieveRequest)
+		batchResponse, bifrostErr := g.client.BatchRetrieveRequest(bifrostCtx, batchReq.RetrieveRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -804,7 +800,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch cancel request"))
 			return
 		}
-		batchResponse, bifrostErr := g.client.BatchCancelRequest(requestCtx, batchReq.CancelRequest)
+		batchResponse, bifrostErr := g.client.BatchCancelRequest(bifrostCtx, batchReq.CancelRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -826,7 +822,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch results request"))
 			return
 		}
-		batchResponse, bifrostErr := g.client.BatchResultsRequest(requestCtx, batchReq.ResultsRequest)
+		batchResponse, bifrostErr := g.client.BatchResultsRequest(bifrostCtx, batchReq.ResultsRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -857,8 +853,8 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 }
 
 // handleFileRequest handles file API requests (upload, list, retrieve, delete, content)
-func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, fileReq *FileRequest, bifrostCtx *context.Context) {
-	requestCtx := *bifrostCtx
+func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config RouteConfig, req interface{}, fileReq *FileRequest, bifrostCtx *schemas.BifrostContext) {
+	
 
 	var response interface{}
 	var err error
@@ -869,7 +865,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file upload request"))
 			return
 		}
-		fileResponse, bifrostErr := g.client.FileUploadRequest(requestCtx, fileReq.UploadRequest)
+		fileResponse, bifrostErr := g.client.FileUploadRequest(bifrostCtx, fileReq.UploadRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -891,7 +887,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file list request"))
 			return
 		}
-		fileResponse, bifrostErr := g.client.FileListRequest(requestCtx, fileReq.ListRequest)
+		fileResponse, bifrostErr := g.client.FileListRequest(bifrostCtx, fileReq.ListRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -922,7 +918,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file retrieve request"))
 			return
 		}
-		fileResponse, bifrostErr := g.client.FileRetrieveRequest(requestCtx, fileReq.RetrieveRequest)
+		fileResponse, bifrostErr := g.client.FileRetrieveRequest(bifrostCtx, fileReq.RetrieveRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -944,7 +940,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file delete request"))
 			return
 		}
-		fileResponse, bifrostErr := g.client.FileDeleteRequest(requestCtx, fileReq.DeleteRequest)
+		fileResponse, bifrostErr := g.client.FileDeleteRequest(bifrostCtx, fileReq.DeleteRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -966,7 +962,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid file content request"))
 			return
 		}
-		fileResponse, bifrostErr := g.client.FileContentRequest(requestCtx, fileReq.ContentRequest)
+		fileResponse, bifrostErr := g.client.FileContentRequest(bifrostCtx, fileReq.ContentRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
 			return
@@ -1019,7 +1015,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
-func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *context.Context, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostReq *schemas.BifrostRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
 	// Set headers based on route type
 	if config.Type == RouteConfigTypeBedrock {
 		// AWS Event Stream headers for Bedrock
@@ -1040,22 +1036,20 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	// That keeps goroutines and upstream tokens alive long after the SSE writer has exited.
 	//
 	// We now get a cancellable context from ConvertToBifrostContext so we can cancel the upstream stream immediately when the client disconnects.
-	streamCtx := *bifrostCtx
-
 	var stream chan *schemas.BifrostStream
 	var bifrostErr *schemas.BifrostError
 
 	// Handle different request types
 	if bifrostReq.TextCompletionRequest != nil {
-		stream, bifrostErr = g.client.TextCompletionStreamRequest(streamCtx, bifrostReq.TextCompletionRequest)
+		stream, bifrostErr = g.client.TextCompletionStreamRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 	} else if bifrostReq.ChatRequest != nil {
-		stream, bifrostErr = g.client.ChatCompletionStreamRequest(streamCtx, bifrostReq.ChatRequest)
+		stream, bifrostErr = g.client.ChatCompletionStreamRequest(bifrostCtx, bifrostReq.ChatRequest)
 	} else if bifrostReq.ResponsesRequest != nil {
-		stream, bifrostErr = g.client.ResponsesStreamRequest(streamCtx, bifrostReq.ResponsesRequest)
+		stream, bifrostErr = g.client.ResponsesStreamRequest(bifrostCtx, bifrostReq.ResponsesRequest)
 	} else if bifrostReq.SpeechRequest != nil {
-		stream, bifrostErr = g.client.SpeechStreamRequest(streamCtx, bifrostReq.SpeechRequest)
+		stream, bifrostErr = g.client.SpeechStreamRequest(bifrostCtx, bifrostReq.SpeechRequest)
 	} else if bifrostReq.TranscriptionRequest != nil {
-		stream, bifrostErr = g.client.TranscriptionStreamRequest(streamCtx, bifrostReq.TranscriptionRequest)
+		stream, bifrostErr = g.client.TranscriptionStreamRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -1134,10 +1128,24 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 // The cancel function is called ONLY when client disconnects are detected via write errors.
 // Bifrost handles cleanup internally for normal completion and errors, so we only cancel
 // upstream streams when write errors indicate the client has disconnected.
-func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, config RouteConfig, streamChan chan *schemas.BifrostStream, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamChan chan *schemas.BifrostStream, cancel context.CancelFunc) {
+	// Signal to tracing middleware that trace completion should be deferred
+	// The streaming callback will complete the trace after the stream ends
+	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+
+	// Get the trace completer function for use in the streaming callback
+	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func())
+
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
-		defer w.Flush()
+		defer func() {
+			w.Flush()
+			// Complete the trace after streaming finishes
+			// This ensures all spans (including llm.call) are properly ended before the trace is sent to OTEL
+			if traceCompleter != nil {
+				traceCompleter()
+			}
+		}()
 
 		// Create encoder for AWS Event Stream if needed
 		var eventStreamEncoder *eventstream.Encoder

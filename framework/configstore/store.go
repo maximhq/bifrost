@@ -4,6 +4,7 @@ package configstore
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -100,6 +101,7 @@ type ConfigStore interface {
 	DeleteCustomer(ctx context.Context, id string) error
 
 	// Rate limit CRUD
+	GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error)
 	GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error)
 	CreateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error
 	UpdateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error
@@ -146,6 +148,9 @@ type ConfigStore interface {
 
 	// Generic transaction manager
 	ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error
+
+	// Not found retry wrapper
+	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

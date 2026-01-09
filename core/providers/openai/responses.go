@@ -152,6 +152,15 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			}
+
+			// Handle xAI-specific parameter filtering
+			// Only grok-3-mini supports reasoning_effort
+			if bifrostReq.Provider == schemas.XAI &&
+				schemas.IsGrokReasoningModel(bifrostReq.Model) &&
+				!strings.Contains(bifrostReq.Model, "grok-3-mini") {
+				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
+				req.ResponsesParameters.Reasoning.Effort = nil
+			}
 		}
 
 		// Filter out tools that OpenAI doesn't support

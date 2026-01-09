@@ -152,7 +152,7 @@ export function ModelMultiselect({
 			noResultsFoundPlaceholder="No models found"
 			emptyResultPlaceholder={provider ? "Start typing to search models..." : "Please select a provider first"}
 			views={{
-				dropdownIndicator: () => <></>,				
+				dropdownIndicator: () => <></>,
 				multiValue: (multiValueProps: MultiValueProps<ModelOption>) => {
 					return (
 						<div

@@ -1,14 +1,33 @@
 "use client";
 
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+	AlertDialogTrigger,
+} from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { DollarSign, FileText, Timer, Trash2 } from "lucide-react";
+import { Clipboard, DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
 import moment from "moment";
+import { toast } from "sonner";
 import { CodeEditor } from "./codeEditor";
 import LogChatMessageView from "./logChatMessageView";
 import LogEntryDetailsView from "./logEntryDetailsView";
@@ -34,13 +53,131 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 		} catch (ignored) {}
 	}
 
+	const copyRequestBody = async () => {
+		try {
+			// Check if request is for responses, chat, speech, text completion, or embedding (exclude transcriptions)
+			const object = log.object?.toLowerCase() || "";
+			const isChat = object === "chat_completion" || object === "chat_completion_stream";
+			const isResponses = object === "responses" || object === "responses_stream";
+			const isSpeech = object === "speech" || object === "speech_stream";
+			const isTextCompletion = object === "text_completion" || object === "text_completion_stream";
+			const isEmbedding = object === "embedding";
+			const isTranscription = object === "transcription" || object === "transcription_stream";
+
+			// Skip if transcription
+			if (isTranscription) {
+				toast.error("Copy request body is not available for transcription requests");
+				return;
+			}
+
+			// Skip if not a supported request type
+			if (!isChat && !isResponses && !isSpeech && !isTextCompletion && !isEmbedding) {
+				toast.error("Copy request body is only available for chat, responses, speech, text completion, and embedding requests");
+				return;
+			}
+
+			// Helper function to extract text content from ChatMessage
+			const extractTextFromMessage = (message: any): string => {
+				if (!message || !message.content) {
+					return "";
+				}
+				if (typeof message.content === "string") {
+					return message.content;
+				}
+				if (Array.isArray(message.content)) {
+					return message.content
+						.filter((block: any) => block && block.type === "text" && block.text)
+						.map((block: any) => block.text || "")
+						.join("");
+				}
+				return "";
+			};
+
+			// Helper function to extract texts from ChatMessage content blocks (for embeddings)
+			const extractTextsFromMessage = (message: any): string[] => {
+				if (!message || !message.content) {
+					return [];
+				}
+				if (typeof message.content === "string") {
+					return message.content ? [message.content] : [];
+				}
+				if (Array.isArray(message.content)) {
+					return message.content.filter((block: any) => block && block.type === "text" && block.text).map((block: any) => block.text);
+				}
+				return [];
+			};
+
+			// Build request body following OpenAI schema
+			const requestBody: any = {
+				model: log.provider && log.model ? `${log.provider}/${log.model}` : log.model || "",
+			};
+
+			// Add messages/input/prompt based on request type
+			if (isChat && log.input_history && log.input_history.length > 0) {
+				requestBody.messages = log.input_history;
+			} else if (isResponses && log.responses_input_history && log.responses_input_history.length > 0) {
+				requestBody.input = log.responses_input_history;
+			} else if (isSpeech && log.speech_input) {
+				requestBody.input = log.speech_input.input;
+			} else if (isTextCompletion && log.input_history && log.input_history.length > 0) {
+				// For text completions, extract prompt from input_history
+				const firstMessage = log.input_history[0];
+				const prompt = extractTextFromMessage(firstMessage);
+				if (prompt) {
+					requestBody.prompt = prompt;
+				}
+			} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+				// For embeddings, extract all texts from input_history
+				const texts: string[] = [];
+				for (const message of log.input_history) {
+					const messageTexts = extractTextsFromMessage(message);
+					texts.push(...messageTexts);
+				}
+				if (texts.length > 0) {
+					// Use single string if only one text, otherwise use array
+					requestBody.input = texts.length === 1 ? texts[0] : texts;
+				}
+			}
+
+			// Add params (excluding tools and instructions as they're handled separately in OpenAI schema)
+			if (log.params) {
+				const paramsCopy = { ...log.params };
+				// Remove tools and instructions from params as they're typically top-level in OpenAI schema
+				// Keep all other params (temperature, max_tokens, voice, etc.)
+				delete paramsCopy.tools;
+				delete paramsCopy.instructions;
+
+				// Merge remaining params into request body
+				Object.assign(requestBody, paramsCopy);
+			}
+
+			// Add tools if they exist (for chat and responses) - OpenAI schema has tools at top level
+			if ((isChat || isResponses) && log.params?.tools && Array.isArray(log.params.tools) && log.params.tools.length > 0) {
+				requestBody.tools = log.params.tools;
+			}
+
+			// Add instructions if they exist (for responses) - OpenAI schema has instructions at top level
+			if (isResponses && log.params?.instructions) {
+				requestBody.instructions = log.params.instructions;
+			}
+
+			const requestBodyJson = JSON.stringify(requestBody, null, 2);
+			navigator.clipboard.writeText(requestBodyJson).then(() => {
+				toast.success("Request body copied to clipboard");
+			}).catch((error) => {
+				toast.error("Failed to copy request body");
+			});
+		} catch (error) {
+			toast.error("Failed to copy request body");
+		}
+	};
 	// Extract audio format from request params
 	// Format can be in params.audio?.format or params.extra_params?.audio?.format
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8" expandable>
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -50,16 +187,45 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							</Badge>
 						</SheetTitle>
 					</div>
-					<Button
-						variant="outline"
-						className="ml-auto"
-						onClick={() => {
-							handleDelete(log);
-							onOpenChange(false);
-						}}
-					>
-						<Trash2 />
-					</Button>
+					<AlertDialog>
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button variant="ghost" size="icon">
+									<MoreVertical className="h-3 w-3" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuItem onClick={copyRequestBody}>
+									<Clipboard className="h-4 w-4" />
+									Copy request body
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<AlertDialogTrigger asChild>
+									<DropdownMenuItem variant="destructive">
+										<Trash2 className="h-4 w-4" />
+										Delete log
+									</DropdownMenuItem>
+								</AlertDialogTrigger>
+							</DropdownMenuContent>
+						</DropdownMenu>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
+								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel>Cancel</AlertDialogCancel>
+								<AlertDialogAction
+									onClick={() => {
+										handleDelete(log);
+										onOpenChange(false);
+									}}
+								>
+									Delete
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
 				</SheetHeader>
 				<div className="space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
@@ -338,7 +504,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				</div>
 				{toolsParameter && (
 					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Tools</div>
+						<div className="border-b px-6 py-2 text-sm font-medium">Tools ({log.params?.tools?.length || 0})</div>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}

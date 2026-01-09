@@ -66,7 +66,8 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		expectations1 = ModifyExpectationsForProvider(expectations1, testConfig.Provider)
 
 		response1, bifrostErr := WithChatTestRetry(t, chatRetryConfig1, retryContext1, expectations1, "MultiTurnConversation_Step1", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			return client.ChatCompletionRequest(ctx, firstRequest)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ChatCompletionRequest(bfCtx, firstRequest)
 		})
 
 		if bifrostErr != nil {
@@ -133,7 +134,8 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		expectations2.ShouldNotContainWords = []string{"don't know", "can't remember", "forgot"} // Memory failure indicators
 
 	response2, bifrostErr := WithChatTestRetry(t, chatRetryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-		return client.ChatCompletionRequest(ctx, secondRequest)
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		return client.ChatCompletionRequest(bfCtx, secondRequest)
 	})
 
 	if bifrostErr != nil {

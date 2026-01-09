@@ -110,9 +110,9 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					OnFinalFail: retryConfig.OnFinalFail,
 				}
 
-				requestCtx := context.Background()
-
+				
 				speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+					requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 					return client.SpeechRequest(requestCtx, request)
 				})
 
@@ -216,9 +216,10 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				OnFinalFail: retryConfig.OnFinalFail,
 			}
 
-			requestCtx := context.Background()
+			
 
 			speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+				requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				return client.SpeechRequest(requestCtx, request)
 			})
 			if bifrostErr != nil {
@@ -298,9 +299,9 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						OnFinalFail: voiceRetryConfig.OnFinalFail,
 					}
 
-					requestCtx := context.Background()
-
+					
 					speechResponse, bifrostErr := WithSpeechTestRetry(t, voiceSpeechRetryConfig, voiceRetryContext, expectations, "SpeechSynthesis_VoiceType_"+voiceType, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+						requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 						return client.SpeechRequest(requestCtx, request)
 					})
 

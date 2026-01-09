@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"context"
 	"errors"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -34,7 +33,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereChatRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereChatRequest); ok {
 				return &schemas.BifrostRequest{
 					ChatRequest: cohereReq.ToBifrostChatRequest(),
@@ -42,7 +41,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ChatResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (interface{}, error) {
+		ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Cohere {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -50,11 +49,11 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return resp, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
 		},
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.Cohere {
 					if resp.ExtraFields.RawResponse != nil {
 						return "", resp.ExtraFields.RawResponse, nil
@@ -62,7 +61,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 				return "", resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 		},
@@ -75,7 +74,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereEmbeddingRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereEmbeddingRequest); ok {
 				return &schemas.BifrostRequest{
 					EmbeddingRequest: cohereReq.ToBifrostEmbeddingRequest(),
@@ -83,7 +82,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid embedding request type")
 		},
-		EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Cohere {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -91,7 +90,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return resp, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
 		},
 	})
@@ -103,7 +102,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereCountTokensRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereCountTokensRequest); ok {
 				return &schemas.BifrostRequest{
 					CountTokensRequest: cohereReq.ToBifrostResponsesRequest(),
@@ -111,7 +110,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid count tokens request type")
 		},
-		CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+		CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Cohere {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -119,7 +118,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return resp, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return err
 		},
 	})

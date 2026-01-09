@@ -2,8 +2,6 @@ package schemas
 
 import (
 	"fmt"
-
-	"github.com/bytedance/sonic"
 )
 
 // BifrostTextCompletionRequest is the request struct for text completion requests
@@ -96,20 +94,20 @@ func (t *TextCompletionInput) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("text completion input must set exactly one of: prompt_str or prompt_array")
 	}
 	if t.PromptStr != nil {
-		return sonic.Marshal(*t.PromptStr)
+		return Marshal(*t.PromptStr)
 	}
-	return sonic.Marshal(t.PromptArray)
+	return Marshal(t.PromptArray)
 }
 
 func (t *TextCompletionInput) UnmarshalJSON(data []byte) error {
 	var prompt string
-	if err := sonic.Unmarshal(data, &prompt); err == nil {
+	if err := Unmarshal(data, &prompt); err == nil {
 		t.PromptStr = &prompt
 		t.PromptArray = nil
 		return nil
 	}
 	var promptArray []string
-	if err := sonic.Unmarshal(data, &promptArray); err == nil {
+	if err := Unmarshal(data, &promptArray); err == nil {
 		t.PromptStr = nil
 		t.PromptArray = promptArray
 		return nil

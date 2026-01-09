@@ -273,9 +273,8 @@ class TestOpenAIIntegration:
         response = client.chat.completions.create(
             model=format_provider_model(provider, model),
             messages=SIMPLE_CHAT_MESSAGES,
-            max_tokens=100,
+            max_tokens=100,            
         )
-
         assert_valid_chat_response(response)
         assert response.choices[0].message.content is not None
         assert len(response.choices[0].message.content) > 0
@@ -582,6 +581,7 @@ class TestOpenAIIntegration:
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
+            extra_body={"reasoning": {"effort": "high"}}
         )
 
         content, chunk_count, tool_calls_detected = collect_streaming_content(

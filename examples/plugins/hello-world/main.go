@@ -15,10 +15,14 @@ func GetName() string {
 	return "Hello World Plugin"
 }
 
-func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	fmt.Println("TransportInterceptor called")
+func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	fmt.Println("HTTPTransportIntercept called")
+	// Modify request in-place
+	req.Headers["x-hello-world-plugin"] = "transport-interceptor-value"
+	// Store value in context for PreHook/PostHook
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"), "transport-interceptor-value")
-	return headers, body, nil
+	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit
+	return nil, nil
 }
 
 func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {

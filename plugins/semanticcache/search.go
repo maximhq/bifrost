@@ -103,7 +103,7 @@ func (plugin *Plugin) performSemanticSearch(ctx *schemas.BifrostContext, req *sc
 
 	cacheThreshold := plugin.config.Threshold
 
-	thresholdValue := (*ctx).Value(CacheThresholdKey)
+	thresholdValue := ctx.Value(CacheThresholdKey)
 	if thresholdValue != nil {
 		threshold, ok := thresholdValue.(float64)
 		if !ok {
@@ -297,7 +297,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	// Mark cache-hit once to avoid concurrent ctx writes
 	ctx.SetValue(isCacheHitKey, true)
 	ctx.SetValue(cacheHitTypeKey, cacheType)
-	
+
 	// Create stream channel
 	streamChan := make(chan *schemas.BifrostStream)
 

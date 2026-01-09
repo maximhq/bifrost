@@ -6,28 +6,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/streaming"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
 // logger is the logger for the OTEL plugin
 var logger schemas.Logger
-
-// ContextKey is a custom type for context keys to prevent collisions
-type ContextKey string
-
-// Context keys for otel plugin
-const (
-	TraceIDKey ContextKey = "plugin-otel-trace-id"
-	SpanIDKey  ContextKey = "plugin-otel-span-id"
-)
 
 // OTELResponseAttributesEnvKey is the environment variable key for the OTEL resource attributes
 // We check if this is present in the environment variables and if so, we will use it to set the attributes for all spans at the resource level
@@ -65,7 +52,9 @@ type Config struct {
 	TLSCACert    string            `json:"tls_ca_cert"`
 }
 
-// OtelPlugin is the plugin for OpenTelemetry
+// OtelPlugin is the plugin for OpenTelemetry.
+// It implements the ObservabilityPlugin interface to receive completed traces
+// from the tracing middleware and forward them to an OTEL collector.
 type OtelPlugin struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -80,14 +69,9 @@ type OtelPlugin struct {
 
 	attributesFromEnvironment []*commonpb.KeyValue
 
-	ongoingSpans *TTLSyncMap
-
 	client OtelClient
 
 	pricingManager *modelcatalog.ModelCatalog
-	accumulator    *streaming.Accumulator // Accumulator for streaming chunks
-
-	emitWg sync.WaitGroup // Track in-flight emissions
 }
 
 // Init function for the OTEL plugin
@@ -100,7 +84,7 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		logger.Warn("otel plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
 	var err error
-	// If headers are present , and any of them start with env., we will replace the value with the environment variable
+	// If headers are present, and any of them start with env., we will replace the value with the environment variable
 	if config.Headers != nil {
 		for key, value := range config.Headers {
 			if newValue, ok := strings.CutPrefix(value, "env."); ok {
@@ -132,11 +116,8 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 		url:                       config.CollectorURL,
 		traceType:                 config.TraceType,
 		headers:                   config.Headers,
-		ongoingSpans:              NewTTLSyncMap(20*time.Minute, 1*time.Minute),
 		protocol:                  config.Protocol,
 		pricingManager:            pricingManager,
-		accumulator:               streaming.NewAccumulator(pricingManager, logger),
-		emitWg:                    sync.WaitGroup{},
 		bifrostVersion:            bifrostVersion,
 		attributesFromEnvironment: attributesFromEnvironment,
 	}
@@ -164,9 +145,9 @@ func (p *OtelPlugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-func (p *OtelPlugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportIntercept is not used for this plugin
+func (p *OtelPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // ValidateConfig function for the OTEL plugin
@@ -205,139 +186,53 @@ func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 	return &otelConfig, nil
 }
 
-// PreHook function for the OTEL plugin
-func (p *OtelPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
-	if p.client == nil {
-		logger.Warn("otel client is not initialized")
-		return req, nil, nil
-	}
-	traceIDValue := ctx.Value(schemas.BifrostContextKeyRequestID)
-	if traceIDValue == nil {
-		logger.Warn("trace id not found in context")
-		return req, nil, nil
-	}
-	traceID, ok := traceIDValue.(string)
-	if !ok {
-		logger.Warn("trace id not found in context")
-		return req, nil, nil
-	}
-	spanID := fmt.Sprintf("%s-root-span", traceID)
-	createdTimestamp := time.Now()
-	if bifrost.IsStreamRequestType(req.RequestType) {
-		p.accumulator.CreateStreamAccumulator(traceID, createdTimestamp)
-	}
-	p.ongoingSpans.Set(traceID, p.createResourceSpan(traceID, spanID, time.Now(), req))
+// PreHook is a no-op - tracing is handled via the Inject method.
+// The OTEL plugin receives completed traces from TracingMiddleware.
+func (p *OtelPlugin) PreHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	return req, nil, nil
 }
 
-// PostHook function for the OTEL plugin
-func (p *OtelPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	traceIDValue := ctx.Value(schemas.BifrostContextKeyRequestID)
-	if traceIDValue == nil {
-		logger.Warn("trace id not found in context")
-		return resp, bifrostErr, nil
-	}
-	traceID, ok := traceIDValue.(string)
-	if !ok {
-		logger.Warn("trace id not found in context")
-		return resp, bifrostErr, nil
-	}
-
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
-
-	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-
-	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
-
-	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-id"))
-	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-name"))
-	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
-	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
-
-	// Track every PostHook emission, stream and non-stream.
-	p.emitWg.Add(1)
-	go func() {
-		defer p.emitWg.Done()
-		span, ok := p.ongoingSpans.Get(traceID)
-		if !ok {
-			logger.Warn("span not found in ongoing spans")
-			return
-		}
-		requestType, _, _ := bifrost.GetResponseFields(resp, bifrostErr)
-		if span, ok := span.(*ResourceSpan); ok {
-			// We handle streaming responses differently, we will use the accumulator to process the response and then emit the final response
-			if bifrost.IsStreamRequestType(requestType) {
-				streamResponse, err := p.accumulator.ProcessStreamingResponse(ctx, resp, bifrostErr)
-				if err != nil {
-					logger.Debug("failed to process streaming response: %v", err)
-				}
-				if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
-					defer p.ongoingSpans.Delete(traceID)
-					if err := p.client.Emit(p.ctx, []*ResourceSpan{completeResourceSpan(
-						span,
-						time.Now(),
-						streamResponse.ToBifrostResponse(),
-						bifrostErr,
-						p.pricingManager,
-						virtualKeyID,
-						virtualKeyName,
-						selectedKeyID,
-						selectedKeyName,
-						numberOfRetries,
-						fallbackIndex,
-						teamID,
-						teamName,
-						customerID,
-						customerName,
-					)}); err != nil {
-						logger.Error("failed to emit response span for request %s: %v", traceID, err)
-					}
-				}
-				return
-			}
-			defer p.ongoingSpans.Delete(traceID)
-			rs := completeResourceSpan(
-				span,
-				time.Now(),
-				resp,
-				bifrostErr,
-				p.pricingManager,
-				virtualKeyID,
-				virtualKeyName,
-				selectedKeyID,
-				selectedKeyName,
-				numberOfRetries,
-				fallbackIndex,
-				teamID,
-				teamName,
-				customerID,
-				customerName,
-			)
-			if err := p.client.Emit(p.ctx, []*ResourceSpan{rs}); err != nil {
-				logger.Error("failed to emit response span for request %s: %v", traceID, err)
-			}
-		}
-	}()
+// PostHook is a no-op - tracing is handled via the Inject method.
+// The OTEL plugin receives completed traces from TracingMiddleware.
+func (p *OtelPlugin) PostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return resp, bifrostErr, nil
+}
+
+// Inject receives a completed trace and sends it to the OTEL collector.
+// Implements schemas.ObservabilityPlugin interface.
+// This method is called asynchronously by TracingMiddleware after the response
+// has been written to the client.
+func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
+	if trace == nil {
+		return nil
+	}
+	if p.client == nil {
+		logger.Warn("otel client is not initialized")
+		return nil
+	}
+
+	// Convert schemas.Trace to OTEL ResourceSpan
+	resourceSpan := p.convertTraceToResourceSpan(trace)
+
+	// Emit to collector
+	if err := p.client.Emit(ctx, []*ResourceSpan{resourceSpan}); err != nil {
+		logger.Error("failed to emit trace %s: %v", trace.TraceID, err)
+		return err
+	}
+
+	return nil
 }
 
 // Cleanup function for the OTEL plugin
 func (p *OtelPlugin) Cleanup() error {
-	p.emitWg.Wait()
 	if p.cancel != nil {
 		p.cancel()
-	}
-	if p.ongoingSpans != nil {
-		p.ongoingSpans.Stop()
-	}
-	if p.accumulator != nil {
-		p.accumulator.Cleanup()
 	}
 	if p.client != nil {
 		return p.client.Close()
 	}
 	return nil
 }
+
+// Compile-time check that OtelPlugin implements ObservabilityPlugin
+var _ schemas.ObservabilityPlugin = (*OtelPlugin)(nil)

@@ -7,8 +7,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	"github.com/bytedance/sonic"
 )
 
 // Ptr creates a pointer to any value.
@@ -267,7 +265,7 @@ func JsonifyInput(input interface{}) string {
 	if input == nil {
 		return "{}"
 	}
-	jsonString, err := sonic.MarshalString(input)
+	jsonString, err := MarshalString(input)
 	if err != nil {
 		return "{}"
 	}
@@ -727,6 +725,106 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 	return copy
 }
 
+// DeepCopyChatTool creates a deep copy of a ChatTool
+// to prevent shared data mutation between different plugin accumulators
+func DeepCopyChatTool(original ChatTool) ChatTool {
+	copyTool := ChatTool{
+		Type: original.Type,
+	}
+
+	// Deep copy Function if present
+	if original.Function != nil {
+		copyTool.Function = &ChatToolFunction{
+			Name: original.Function.Name,
+		}
+
+		if original.Function.Description != nil {
+			copyDescription := *original.Function.Description
+			copyTool.Function.Description = &copyDescription
+		}
+
+		if original.Function.Parameters != nil {
+			copyParams := &ToolFunctionParameters{
+				Type: original.Function.Parameters.Type,
+			}
+
+			if original.Function.Parameters.Description != nil {
+				copyParamDesc := *original.Function.Parameters.Description
+				copyParams.Description = &copyParamDesc
+			}
+
+			if original.Function.Parameters.Required != nil {
+				copyParams.Required = make([]string, len(original.Function.Parameters.Required))
+				copy(copyParams.Required, original.Function.Parameters.Required)
+			}
+
+			if original.Function.Parameters.Properties != nil {
+				// Deep copy the map
+				copyProps := make(map[string]interface{}, len(*original.Function.Parameters.Properties))
+				for k, v := range *original.Function.Parameters.Properties {
+					copyProps[k] = DeepCopy(v)
+				}
+				orderedProps := OrderedMap(copyProps)
+				copyParams.Properties = &orderedProps
+			}
+
+			if original.Function.Parameters.Enum != nil {
+				copyParams.Enum = make([]string, len(original.Function.Parameters.Enum))
+				copy(copyParams.Enum, original.Function.Parameters.Enum)
+			}
+
+			if original.Function.Parameters.AdditionalProperties != nil {
+				copyAdditionalProps := *original.Function.Parameters.AdditionalProperties
+				copyParams.AdditionalProperties = &copyAdditionalProps
+			}
+
+			copyTool.Function.Parameters = copyParams
+		}
+
+		if original.Function.Strict != nil {
+			copyStrict := *original.Function.Strict
+			copyTool.Function.Strict = &copyStrict
+		}
+	}
+
+	// Deep copy Custom if present
+	if original.Custom != nil {
+		copyTool.Custom = &ChatToolCustom{}
+
+		if original.Custom.Format != nil {
+			copyFormat := &ChatToolCustomFormat{
+				Type: original.Custom.Format.Type,
+			}
+
+			if original.Custom.Format.Grammar != nil {
+				copyGrammar := &ChatToolCustomGrammarFormat{
+					Definition: original.Custom.Format.Grammar.Definition,
+					Syntax:     original.Custom.Format.Grammar.Syntax,
+				}
+				copyFormat.Grammar = copyGrammar
+			}
+
+			copyTool.Custom.Format = copyFormat
+		}
+	}
+
+	// Deep copy CacheControl if present
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{
+			Type: original.CacheControl.Type,
+		}
+
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+
+		copyTool.CacheControl = copyCacheControl
+	}
+
+	return copyTool
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
@@ -1056,6 +1154,32 @@ func IsMistralModel(model string) bool {
 
 func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
+}
+
+// List of grok reasoning models
+var grokReasoningModels = []string{
+	"grok-3",
+	"grok-3-mini",
+	"grok-4",
+	"grok-4-fast-reasoning",
+	"grok-4-fast-non-reasoning",
+	"grok-4-1-fast-reasoning",
+	"grok-code-fast-1",
+}
+
+// IsGrokReasoningModel checks if the given model is a grok reasoning model
+func IsGrokReasoningModel(model string) bool {
+	// Check if the model matches any of the reasoning models
+	for _, reasoningModel := range grokReasoningModels {
+		if strings.Contains(model, reasoningModel) {
+			// Make sure it's not a non-reasoning variant like "grok-4-fast-non-reasoning"
+			if strings.Contains(model, "non-reasoning") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // Precompiled regexes for different kinds of version suffixes.

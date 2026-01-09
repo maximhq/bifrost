@@ -1,7 +1,6 @@
 package bedrock
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1205,7 +1204,7 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 }
 
 // ToBifrostResponsesRequest converts a BedrockConverseRequest to Bifrost Responses Request format
-func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *context.Context) (*schemas.BifrostResponsesRequest, error) {
+func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) (*schemas.BifrostResponsesRequest, error) {
 	if request == nil {
 		return nil, fmt.Errorf("bedrock request is nil")
 	}
@@ -1435,7 +1434,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *context.Co
 }
 
 // ToBedrockResponsesRequest converts a BifrostRequest (Responses structure) back to BedrockConverseRequest
-func ToBedrockResponsesRequest(ctx *context.Context, bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
+func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
@@ -1453,6 +1452,15 @@ func ToBedrockResponsesRequest(ctx *context.Context, bifrostReq *schemas.Bifrost
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
 			bedrockReq.System = systemMessages
+		} else {
+			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil {
+				// if no system messages, check if instructions are present
+				bedrockReq.System = []BedrockSystemMessage{
+					{
+						Text: bifrostReq.Params.Instructions,
+					},
+				}
+			}
 		}
 	}
 
@@ -1697,7 +1705,7 @@ func ToBedrockResponsesRequest(ctx *context.Context, bifrostReq *schemas.Bifrost
 }
 
 // ToBifrostResponsesResponse converts BedrockConverseResponse to BifrostResponsesResponse
-func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *context.Context) (*schemas.BifrostResponsesResponse, error) {
+func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas.BifrostContext) (*schemas.BifrostResponsesResponse, error) {
 	if response == nil {
 		return nil, fmt.Errorf("bedrock response is nil")
 	}
@@ -2484,7 +2492,7 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 
 // ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
 // This is the main conversion method from Bedrock to Bifrost - handles all message types and content blocks
-func ConvertBedrockMessagesToBifrostMessages(ctx *context.Context, bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+func ConvertBedrockMessagesToBifrostMessages(ctx *schemas.BifrostContext, bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Convert system messages first
@@ -2630,14 +2638,14 @@ func createTextMessage(
 }
 
 // convertSingleBedrockMessageToBifrostMessages converts a single Bedrock message to Bifrost messages
-func convertSingleBedrockMessageToBifrostMessages(ctx *context.Context, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
+func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, msg *BedrockMessage, isOutputMessage bool) []schemas.ResponsesMessage {
 	var outputMessages []schemas.ResponsesMessage
 	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
 
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
-	if ctx != nil && *ctx != nil {
-		if toolName, ok := (*ctx).Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
+	if ctx != nil {
+		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			structuredOutputToolName = toolName
 		}
 	}

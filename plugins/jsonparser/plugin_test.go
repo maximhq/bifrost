@@ -23,7 +23,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 
 // GetKeysForProvider returns a mock API key configuration for testing.
 // Uses the OPENAI_API_KEY environment variable for authentication.
-func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
 			Value:  os.Getenv("OPENAI_API_KEY"),
@@ -52,7 +52,7 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 // Required environment variables:
 //   - OPENAI_API_KEY: Your OpenAI API key for the test request
 func TestJsonParserPluginEndToEnd(t *testing.T) {
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	// Check if OpenAI API key is set
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Skip("OPENAI_API_KEY is not set, skipping end-to-end test")
@@ -202,7 +202,7 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 	}
 
 	// Create context with plugin enabled
-	newContext := context.WithValue(ctx, EnableStreamingJSONParser, true)
+	newContext := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(EnableStreamingJSONParser, true)
 
 	// Make the streaming request
 	responseChan, bifrostErr := client.ChatCompletionStreamRequest(newContext, request)

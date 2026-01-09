@@ -51,8 +51,9 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 // Test executeRequestWithRetries - success scenarios
 func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
-	ctx := context.Background()
-
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	// Adding dummy tracer to the context
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	// Test immediate success
 	t.Run("ImmediateSuccess", func(t *testing.T) {
 		callCount := 0
@@ -62,12 +63,13 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
-			&ctx,
+			ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			nil,
 		)
 
 		if callCount != 1 {
@@ -95,12 +97,13 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
-			&ctx,
+			ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			nil,
 		)
 
 		if callCount != 3 {
@@ -118,7 +121,8 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 // Test executeRequestWithRetries - retry limits
 func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	config := createTestConfig(2, 100*time.Millisecond, 1*time.Second)
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
 		handler := func() (string, *schemas.BifrostError) {
@@ -128,12 +132,13 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 		}
 
 		result, err := executeRequestWithRetries(
-			&ctx,
+			ctx,
 			config,
 			handler,
 			schemas.ChatCompletionRequest,
 			schemas.OpenAI,
 			"gpt-4",
+			nil,
 		)
 
 		// Should try: initial + 2 retries = 3 total attempts
@@ -158,7 +163,8 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 // Test executeRequestWithRetries - non-retryable errors
 func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	testCases := []struct {
 		name  string
 		error *schemas.BifrostError
@@ -190,12 +196,13 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 			}
 
 			result, err := executeRequestWithRetries(
-				&ctx,
+				ctx,
 				config,
 				handler,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
+				nil,
 			)
 
 			if callCount != 1 {
@@ -214,7 +221,8 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 // Test executeRequestWithRetries - retryable conditions
 func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 	config := createTestConfig(1, 100*time.Millisecond, 1*time.Second)
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	testCases := []struct {
 		name  string
 		error *schemas.BifrostError
@@ -262,12 +270,13 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 			}
 
 			result, err := executeRequestWithRetries(
-				&ctx,
+				ctx,
 				config,
 				handler,
 				schemas.ChatCompletionRequest,
 				schemas.OpenAI,
 				"gpt-4",
+				nil,
 			)
 
 			// Should try: initial + 1 retry = 2 total attempts
@@ -287,7 +296,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 // Test calculateBackoff - exponential growth (base calculations without jitter)
 func TestCalculateBackoff_ExponentialGrowth(t *testing.T) {
 	config := createTestConfig(5, 100*time.Millisecond, 5*time.Second)
-
+	
 	// Test the base exponential calculation by checking that results fall within expected ranges
 	// Since we can't easily mock rand.Float64, we'll test the bounds instead
 	testCases := []struct {
@@ -471,8 +480,8 @@ func TestIsRateLimitError_EdgeCases(t *testing.T) {
 // Test retry logging and attempt counting
 func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	config := createTestConfig(2, 50*time.Millisecond, 1*time.Second)
-	ctx := context.Background()
-
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	// Capture calls and timing for verification
 	var attemptCounts []int
 	callCount := 0
@@ -490,12 +499,13 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 	}
 
 	result, err := executeRequestWithRetries(
-		&ctx,
+		ctx,
 		config,
 		handler,
 		schemas.ChatCompletionRequest,
 		schemas.OpenAI,
 		"gpt-4",
+		nil,
 	)
 
 	// Verify call progression
@@ -632,7 +642,7 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 	return nil, fmt.Errorf("provider %s not configured", provider)
 }
 
-func (ma *MockAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
 	if keys, exists := ma.keys[provider]; exists {
 		return keys, nil
 	}
@@ -647,7 +657,7 @@ func TestUpdateProvider(t *testing.T) {
 		account.AddProvider(schemas.OpenAI, 5, 1000)
 
 		// Initialize Bifrost
-		ctx := context.Background()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bifrost, err := Init(ctx, schemas.BifrostConfig{
 			Account: account,
 			Logger:  NewDefaultLogger(schemas.LogLevelError), // Keep tests quiet

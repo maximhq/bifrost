@@ -2,8 +2,6 @@ package schemas
 
 import (
 	"fmt"
-
-	"github.com/bytedance/sonic"
 )
 
 type BifrostEmbeddingRequest struct {
@@ -58,16 +56,16 @@ func (e *EmbeddingInput) MarshalJSON() ([]byte, error) {
 	}
 
 	if e.Text != nil {
-		return sonic.Marshal(*e.Text)
+		return Marshal(*e.Text)
 	}
 	if e.Texts != nil {
-		return sonic.Marshal(e.Texts)
+		return Marshal(e.Texts)
 	}
 	if e.Embedding != nil {
-		return sonic.Marshal(e.Embedding)
+		return Marshal(e.Embedding)
 	}
 	if e.Embeddings != nil {
-		return sonic.Marshal(e.Embeddings)
+		return Marshal(e.Embeddings)
 	}
 
 	return nil, fmt.Errorf("invalid embedding input")
@@ -80,25 +78,25 @@ func (e *EmbeddingInput) UnmarshalJSON(data []byte) error {
 	e.Embeddings = nil
 	// Try string
 	var s string
-	if err := sonic.Unmarshal(data, &s); err == nil {
+	if err := Unmarshal(data, &s); err == nil {
 		e.Text = &s
 		return nil
 	}
 	// Try []string
 	var ss []string
-	if err := sonic.Unmarshal(data, &ss); err == nil {
+	if err := Unmarshal(data, &ss); err == nil {
 		e.Texts = ss
 		return nil
 	}
 	// Try []int
 	var i []int
-	if err := sonic.Unmarshal(data, &i); err == nil {
+	if err := Unmarshal(data, &i); err == nil {
 		e.Embedding = i
 		return nil
 	}
 	// Try [][]int
 	var i2 [][]int
-	if err := sonic.Unmarshal(data, &i2); err == nil {
+	if err := Unmarshal(data, &i2); err == nil {
 		e.Embeddings = i2
 		return nil
 	}
@@ -129,13 +127,13 @@ type EmbeddingStruct struct {
 
 func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 	if be.EmbeddingStr != nil {
-		return sonic.Marshal(be.EmbeddingStr)
+		return Marshal(be.EmbeddingStr)
 	}
 	if be.EmbeddingArray != nil {
-		return sonic.Marshal(be.EmbeddingArray)
+		return Marshal(be.EmbeddingArray)
 	}
 	if be.Embedding2DArray != nil {
-		return sonic.Marshal(be.Embedding2DArray)
+		return Marshal(be.Embedding2DArray)
 	}
 	return nil, fmt.Errorf("no embedding found")
 }
@@ -143,21 +141,21 @@ func (be EmbeddingStruct) MarshalJSON() ([]byte, error) {
 func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		be.EmbeddingStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of float32
 	var arrayContent []float32
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+	if err := Unmarshal(data, &arrayContent); err == nil {
 		be.EmbeddingArray = arrayContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct 2D array of float32
 	var arrayContent2D [][]float32
-	if err := sonic.Unmarshal(data, &arrayContent2D); err == nil {
+	if err := Unmarshal(data, &arrayContent2D); err == nil {
 		be.Embedding2DArray = arrayContent2D
 		return nil
 	}

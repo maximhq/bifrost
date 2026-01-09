@@ -9,6 +9,105 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
+// to prevent shared data mutation between different chunks
+func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *schemas.ChatStreamResponseChoiceDelta {
+	if original == nil {
+		return nil
+	}
+
+	copy := &schemas.ChatStreamResponseChoiceDelta{}
+
+	if original.Role != nil {
+		copyRole := *original.Role
+		copy.Role = &copyRole
+	}
+
+	if original.Content != nil {
+		copyContent := *original.Content
+		copy.Content = &copyContent
+	}
+
+	if original.Refusal != nil {
+		copyRefusal := *original.Refusal
+		copy.Refusal = &copyRefusal
+	}
+
+	if original.Reasoning != nil {
+		copyReasoning := *original.Reasoning
+		copy.Reasoning = &copyReasoning
+	}
+
+	// Deep copy ReasoningDetails slice
+	if original.ReasoningDetails != nil {
+		copy.ReasoningDetails = make([]schemas.ChatReasoningDetails, len(original.ReasoningDetails))
+		for i, rd := range original.ReasoningDetails {
+			copyRd := schemas.ChatReasoningDetails{
+				Index: rd.Index,
+				Type:  rd.Type,
+			}
+			if rd.ID != nil {
+				copyID := *rd.ID
+				copyRd.ID = &copyID
+			}
+			if rd.Text != nil {
+				copyText := *rd.Text
+				copyRd.Text = &copyText
+			}
+			if rd.Signature != nil {
+				copySig := *rd.Signature
+				copyRd.Signature = &copySig
+			}
+			if rd.Summary != nil {
+				copySummary := *rd.Summary
+				copyRd.Summary = &copySummary
+			}
+			if rd.Data != nil {
+				copyData := *rd.Data
+				copyRd.Data = &copyData
+			}
+			copy.ReasoningDetails[i] = copyRd
+		}
+	}
+
+	// Deep copy ToolCalls slice
+	if original.ToolCalls != nil {
+		copy.ToolCalls = make([]schemas.ChatAssistantMessageToolCall, len(original.ToolCalls))
+		for i, tc := range original.ToolCalls {
+			copyTc := schemas.ChatAssistantMessageToolCall{
+				Index:    tc.Index,
+				Function: tc.Function, // struct value, safe to copy directly
+			}
+			if tc.ID != nil {
+				copyID := *tc.ID
+				copyTc.ID = &copyID
+			}
+			if tc.Type != nil {
+				copyType := *tc.Type
+				copyTc.Type = &copyType
+			}
+			// Deep copy Function's Name pointer
+			if tc.Function.Name != nil {
+				copyName := *tc.Function.Name
+				copyTc.Function.Name = &copyName
+			}
+			copy.ToolCalls[i] = copyTc
+		}
+	}
+
+	// Deep copy Audio
+	if original.Audio != nil {
+		copy.Audio = &schemas.ChatAudioMessageAudio{
+			ID:         original.Audio.ID,
+			Data:       original.Audio.Data,
+			ExpiresAt:  original.Audio.ExpiresAt,
+			Transcript: original.Audio.Transcript,
+		}
+	}
+
+	return copy
+}
+
 // buildCompleteMessageFromChunks builds a complete message from accumulated chunks
 func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
 	completeMessage := &schemas.ChatMessage{
@@ -18,6 +117,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	sort.Slice(chunks, func(i, j int) bool {
 		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
 	})
+
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
 			continue
@@ -26,80 +126,121 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		if chunk.Delta.Role != nil {
 			completeMessage.Role = schemas.ChatMessageRole(*chunk.Delta.Role)
 		}
-		// Append content
+		// Append content delta
 		if chunk.Delta.Content != nil && *chunk.Delta.Content != "" {
 			a.appendContentToMessage(completeMessage, *chunk.Delta.Content)
 		}
-		// Handle refusal
+		// Handle refusal delta
 		if chunk.Delta.Refusal != nil && *chunk.Delta.Refusal != "" {
 			if completeMessage.ChatAssistantMessage == nil {
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Refusal == nil {
-				completeMessage.ChatAssistantMessage.Refusal = bifrost.Ptr(*chunk.Delta.Refusal)
+				// Deep copy on first assignment
+				refusalCopy := *chunk.Delta.Refusal
+				completeMessage.ChatAssistantMessage.Refusal = &refusalCopy
 			} else {
 				*completeMessage.ChatAssistantMessage.Refusal += *chunk.Delta.Refusal
 			}
 		}
-		// Handle reasoning
+		// Handle reasoning delta
 		if chunk.Delta.Reasoning != nil && *chunk.Delta.Reasoning != "" {
 			if completeMessage.ChatAssistantMessage == nil {
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Reasoning == nil {
-				completeMessage.ChatAssistantMessage.Reasoning = bifrost.Ptr(*chunk.Delta.Reasoning)
+				// Deep copy on first assignment
+				reasoningCopy := *chunk.Delta.Reasoning
+				completeMessage.ChatAssistantMessage.Reasoning = &reasoningCopy
 			} else {
 				*completeMessage.ChatAssistantMessage.Reasoning += *chunk.Delta.Reasoning
 			}
 		}
-		// Handle reasoning details
+		// Handle reasoning details delta
 		if len(chunk.Delta.ReasoningDetails) > 0 {
 			if completeMessage.ChatAssistantMessage == nil {
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
-			// Check if the reasoning detail already exists on that index, if so, update it else add it to the list
-			for _, reasoningDetail := range chunk.Delta.ReasoningDetails {
+			// Accumulate reasoning details by index
+			for _, rd := range chunk.Delta.ReasoningDetails {
 				found := false
 				for i := range completeMessage.ChatAssistantMessage.ReasoningDetails {
-					existingReasoningDetail := &completeMessage.ChatAssistantMessage.ReasoningDetails[i]
-					if existingReasoningDetail.Index == reasoningDetail.Index {
-						// Update text - accumulate if both exist
-						if reasoningDetail.Text != nil {
-							if existingReasoningDetail.Text == nil {
-								existingReasoningDetail.Text = reasoningDetail.Text
+					existingRd := &completeMessage.ChatAssistantMessage.ReasoningDetails[i]
+					if existingRd.Index == rd.Index {
+						// Found matching index - accumulate text delta
+						if rd.Text != nil && *rd.Text != "" {
+							if existingRd.Text == nil {
+								// Deep copy on first assignment
+								textCopy := *rd.Text
+								existingRd.Text = &textCopy
 							} else {
-								*existingReasoningDetail.Text += *reasoningDetail.Text
+								*existingRd.Text += *rd.Text
 							}
 						}
-						// Update signature - overwrite (signatures are typically final)
-						if reasoningDetail.Signature != nil {
-							existingReasoningDetail.Signature = reasoningDetail.Signature
-						}
-						// Update other fields if present
-						if reasoningDetail.Summary != nil {
-							if existingReasoningDetail.Summary == nil {
-								existingReasoningDetail.Summary = reasoningDetail.Summary
+						// Accumulate summary delta
+						if rd.Summary != nil && *rd.Summary != "" {
+							if existingRd.Summary == nil {
+								summaryCopy := *rd.Summary
+								existingRd.Summary = &summaryCopy
 							} else {
-								*existingReasoningDetail.Summary += *reasoningDetail.Summary
+								*existingRd.Summary += *rd.Summary
 							}
 						}
-						if reasoningDetail.Data != nil {
-							if existingReasoningDetail.Data == nil {
-								existingReasoningDetail.Data = reasoningDetail.Data
+						// Accumulate data delta
+						if rd.Data != nil && *rd.Data != "" {
+							if existingRd.Data == nil {
+								dataCopy := *rd.Data
+								existingRd.Data = &dataCopy
 							} else {
-								*existingReasoningDetail.Data += *reasoningDetail.Data
+								*existingRd.Data += *rd.Data
 							}
 						}
-						if reasoningDetail.Type != "" {
-							existingReasoningDetail.Type = reasoningDetail.Type
+						// Overwrite signature (typically sent once at the end)
+						if rd.Signature != nil {
+							sigCopy := *rd.Signature
+							existingRd.Signature = &sigCopy
+						}
+						// Update type if present
+						if rd.Type != "" {
+							existingRd.Type = rd.Type
+						}
+						// Update ID if present
+						if rd.ID != nil {
+							idCopy := *rd.ID
+							existingRd.ID = &idCopy
 						}
 						found = true
 						break
 					}
 				}
-				// If not found, add it to the list
+				// If not found, add new entry with deep copied values
 				if !found {
-					completeMessage.ChatAssistantMessage.ReasoningDetails = append(completeMessage.ChatAssistantMessage.ReasoningDetails, reasoningDetail)
+					newRd := schemas.ChatReasoningDetails{
+						Index: rd.Index,
+						Type:  rd.Type,
+					}
+					if rd.ID != nil {
+						idCopy := *rd.ID
+						newRd.ID = &idCopy
+					}
+					if rd.Text != nil {
+						textCopy := *rd.Text
+						newRd.Text = &textCopy
+					}
+					if rd.Signature != nil {
+						sigCopy := *rd.Signature
+						newRd.Signature = &sigCopy
+					}
+					if rd.Summary != nil {
+						summaryCopy := *rd.Summary
+						newRd.Summary = &summaryCopy
+					}
+					if rd.Data != nil {
+						dataCopy := *rd.Data
+						newRd.Data = &dataCopy
+					}
+					completeMessage.ChatAssistantMessage.ReasoningDetails = append(
+						completeMessage.ChatAssistantMessage.ReasoningDetails, newRd)
 				}
 			}
 		}
@@ -109,7 +250,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Audio == nil {
-				// First chunk with audio - initialize
+				// First chunk with audio - initialize with copies
 				completeMessage.ChatAssistantMessage.Audio = &schemas.ChatAudioMessageAudio{
 					ID:         chunk.Delta.Audio.ID,
 					Data:       chunk.Delta.Audio.Data,
@@ -138,6 +279,7 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 			a.accumulateToolCallsInMessage(completeMessage, chunk.Delta.ToolCalls)
 		}
 	}
+
 	return completeMessage
 }
 
@@ -146,27 +288,31 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	accumulator := a.getOrCreateStreamAccumulator(requestID)
 	// Lock the accumulator
 	accumulator.mu.Lock()
-	defer func() {
-		if isFinalChunk {
-			// Cleanup BEFORE unlocking to prevent other goroutines from accessing chunks being returned to pool
-			a.cleanupStreamAccumulator(requestID)
-		}
-		accumulator.mu.Unlock()
-	}()
+	defer accumulator.mu.Unlock()
+	// Note: Cleanup is handled by CleanupStreamAccumulator when refcount reaches 0
+	// This is called from completeDeferredSpan after streaming ends
+
+	// Calculate Time to First Token (TTFT) in milliseconds
+	var ttft int64
+	if !accumulator.StartTimestamp.IsZero() && !accumulator.FirstChunkTimestamp.IsZero() {
+		ttft = accumulator.FirstChunkTimestamp.Sub(accumulator.StartTimestamp).Nanoseconds() / 1e6
+	}
+
 	// Initialize accumulated data
 	data := &AccumulatedData{
-		RequestID:      requestID,
-		Status:         "success",
-		Stream:         true,
-		StartTimestamp: accumulator.StartTimestamp,
-		EndTimestamp:   accumulator.FinalTimestamp,
-		Latency:        0,
-		OutputMessage:  nil,
-		ToolCalls:      nil,
-		ErrorDetails:   nil,
-		TokenUsage:     nil,
-		CacheDebug:     nil,
-		Cost:           nil,
+		RequestID:        requestID,
+		Status:           "success",
+		Stream:           true,
+		StartTimestamp:   accumulator.StartTimestamp,
+		EndTimestamp:     accumulator.FinalTimestamp,
+		Latency:          0,
+		TimeToFirstToken: ttft,
+		OutputMessage:    nil,
+		ToolCalls:        nil,
+		ErrorDetails:     nil,
+		TokenUsage:       nil,
+		CacheDebug:       nil,
+		Cost:             nil,
 	}
 	// Build complete message from accumulated chunks
 	completeMessage := a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
@@ -190,20 +336,14 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		data.ToolCalls = data.OutputMessage.ChatAssistantMessage.ToolCalls
 	}
 	data.ErrorDetails = respErr
-	// Update token usage from final chunk if available
-	if len(accumulator.ChatStreamChunks) > 0 {
-		lastChunk := accumulator.ChatStreamChunks[len(accumulator.ChatStreamChunks)-1]
+	// Update metadata from the chunk with highest index (contains TokenUsage, Cost, FinishReason)
+	if lastChunk := accumulator.getLastChatChunk(); lastChunk != nil {
 		if lastChunk.TokenUsage != nil {
 			data.TokenUsage = lastChunk.TokenUsage
 		}
-		// Handle cache debug
 		if lastChunk.SemanticCacheDebug != nil {
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
-	}
-	// Update cost from final chunk if available
-	if len(accumulator.ChatStreamChunks) > 0 {
-		lastChunk := accumulator.ChatStreamChunks[len(accumulator.ChatStreamChunks)-1]
 		if lastChunk.Cost != nil {
 			data.Cost = lastChunk.Cost
 		}
@@ -231,11 +371,11 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 // processChatStreamingResponse processes a chat streaming response
 func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*ProcessedStreamResponse, error) {
 	a.logger.Debug("[streaming] processing chat streaming response")
-	// Extract request ID from context
-	requestID, ok := (*ctx).Value(schemas.BifrostContextKeyRequestID).(string)
+	// Extract accumulator ID from context
+	requestID, ok := getAccumulatorID(ctx)
 	if !ok || requestID == "" {
 		// Log error but don't fail the request
-		return nil, fmt.Errorf("request-id not found in context or is empty")
+		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
 	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
@@ -280,9 +420,8 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		if len(result.ChatResponse.Choices) > 0 {
 			choice := result.ChatResponse.Choices[0]
 			if choice.ChatStreamResponseChoice != nil {
-				// Shallow-copy struct and deep-copy slices to avoid aliasing
-				copied := choice.ChatStreamResponseChoice.Delta
-				chunk.Delta = copied
+				// Deep copy delta to prevent shared data mutation between chunks
+				chunk.Delta = deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
 				chunk.FinishReason = choice.FinishReason
 			}
 		}
@@ -305,40 +444,38 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	if addErr := a.addChatStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
 		return nil, fmt.Errorf("failed to add stream chunk for request %s: %w", requestID, addErr)
 	}
-	// If this is the final chunk, process accumulated chunks asynchronously
-	// Use the IsComplete flag to prevent duplicate processing
+	// If this is the final chunk, process accumulated chunks
+	// Always return data on final chunk - multiple plugins may need the result
 	if isFinalChunk {
-		shouldProcess := false
-		// Get the accumulator to check if processing has already been triggered
+		// Get the accumulator and mark as complete (idempotent)
 		accumulator := a.getOrCreateStreamAccumulator(requestID)
 		accumulator.mu.Lock()
-		shouldProcess = !accumulator.IsComplete
-		// Mark as complete when we're about to process
-		if shouldProcess {
+		if !accumulator.IsComplete {
 			accumulator.IsComplete = true
 		}
 		accumulator.mu.Unlock()
-		if shouldProcess {
-			data, processErr := a.processAccumulatedChatStreamingChunks(requestID, bifrostErr, isFinalChunk)
-			if processErr != nil {
-				a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
-				return nil, processErr
-			}
-			var rawRequest interface{}
-			if result != nil && result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
-				rawRequest = result.ChatResponse.ExtraFields.RawRequest
-			}
-			return &ProcessedStreamResponse{
-				Type:       StreamResponseTypeFinal,
-				RequestID:  requestID,
-				StreamType: streamType,
-				Provider:   provider,
-				Model:      model,
-				Data:       data,
-				RawRequest: &rawRequest,
-			}, nil
+
+		// Always process and return data on final chunk
+		// Multiple plugins can call this - the processing is idempotent
+		data, processErr := a.processAccumulatedChatStreamingChunks(requestID, bifrostErr, isFinalChunk)
+		if processErr != nil {
+			a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
+			return nil, processErr
 		}
-		return nil, nil
+		var rawRequest interface{}
+		if result != nil && result.ChatResponse != nil && result.ChatResponse.ExtraFields.RawRequest != nil {
+			rawRequest = result.ChatResponse.ExtraFields.RawRequest
+		} else if result != nil && result.TextCompletionResponse != nil && result.TextCompletionResponse.ExtraFields.RawRequest != nil {
+			rawRequest = result.TextCompletionResponse.ExtraFields.RawRequest
+		}
+		return &ProcessedStreamResponse{
+			RequestID:  requestID,
+			StreamType: streamType,
+			Provider:   provider,
+			Model:      model,
+			Data:       data,
+			RawRequest: &rawRequest,
+		}, nil
 	}
 	// This is going to be a delta response
 	data, processErr := a.processAccumulatedChatStreamingChunks(requestID, bifrostErr, isFinalChunk)
@@ -348,7 +485,6 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	}
 	// This is not the final chunk, so we will send back the delta
 	return &ProcessedStreamResponse{
-		Type:       StreamResponseTypeDelta,
 		RequestID:  requestID,
 		StreamType: streamType,
 		Provider:   provider,

@@ -380,7 +380,8 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 				// Execute with retry framework
 				operation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-					return client.ChatCompletionRequest(ctx, chatReq)
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.ChatCompletionRequest(bfCtx, chatReq)
 				}
 
 				response, err := WithChatTestRetry(t, retryConfig, retryContext, expectations, query.name, operation)

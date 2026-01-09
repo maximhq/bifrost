@@ -3,8 +3,6 @@ package schemas
 import (
 	"encoding/base64"
 	"fmt"
-
-	"github.com/bytedance/sonic"
 )
 
 // DefaultPageSize is the default page size for listing models
@@ -182,7 +180,7 @@ func encodePaginationCursor(offset int, lastID string) (string, error) {
 		LastID: lastID,
 	}
 
-	jsonData, err := sonic.Marshal(cursor)
+	jsonData, err := Marshal(cursor)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal pagination cursor: %w", err)
 	}
@@ -206,7 +204,7 @@ func decodePaginationCursor(token string) paginationCursor {
 	}
 
 	var cursor paginationCursor
-	if err := sonic.Unmarshal(decoded, &cursor); err != nil {
+	if err := Unmarshal(decoded, &cursor); err != nil {
 		return paginationCursor{}
 	}
 

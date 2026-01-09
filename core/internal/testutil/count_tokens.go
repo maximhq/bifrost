@@ -70,7 +70,8 @@ func RunCountTokenTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			expectations,
 			"CountTokens",
 			func() (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-				return client.CountTokensRequest(ctx, countTokensReq)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.CountTokensRequest(bfCtx, countTokensReq)
 			},
 		)
 

@@ -11,7 +11,7 @@ services:
             - http
         environment:
             - CLUSTER_HOSTNAME=weaviate
-            - CLUSTER_ADVERTISE_ADDR=172.38.0.12
+            - CLUSTER_ADVERTISE_ADDR=172.28.0.12
             - CLUSTER_GOSSIP_BIND_PORT=7946
             - CLUSTER_DATA_BIND_PORT=7947
             - DISABLE_TELEMETRY=true
@@ -26,7 +26,7 @@ services:
             - weaviate_data:/var/lib/weaviate
         networks:
             bifrost_network:
-                ipv4_address: 172.38.0.12
+                ipv4_address: 172.28.0.12
 
     # Redis Stack instance for vector store tests
     redis-stack:
@@ -39,7 +39,7 @@ services:
             - redis_data:/data
         networks:
             bifrost_network:
-                ipv4_address: 172.38.0.13
+                ipv4_address: 172.28.0.13
         healthcheck:
             test: ["CMD", "redis-cli", "ping"]
             interval: 30s
@@ -55,15 +55,15 @@ services:
             - qdrant_data:/qdrant/storage
         networks:
             bifrost_network:
-                ipv4_address: 172.38.0.14
+                ipv4_address: 172.28.0.14
 
 networks:
     bifrost_network:
         driver: bridge
         ipam:
             config:
-                - subnet: 172.38.0.0/16
-                  gateway: 172.38.0.1
+                - subnet: 172.28.0.0/16
+                  gateway: 172.28.0.1
 
 volumes:
     weaviate_data:

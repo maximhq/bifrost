@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -298,7 +297,7 @@ func TestCacheTypeErrorHandling(t *testing.T) {
 
 	// Test invalid cache type (should fallback to default)
 	ctx1 := CreateContextWithCacheKey("test-cache-error-handling")
-	ctx1 = context.WithValue(ctx1, CacheTypeKey, "invalid_cache_type")
+	ctx1 = ctx1.WithValue(CacheTypeKey, "invalid_cache_type")
 
 	t.Log("Testing invalid cache type (should fallback to default behavior)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
@@ -311,7 +310,7 @@ func TestCacheTypeErrorHandling(t *testing.T) {
 
 	// Test nil cache type (should use default)
 	ctx2 := CreateContextWithCacheKey("test-cache-error-handling")
-	ctx2 = context.WithValue(ctx2, CacheTypeKey, nil)
+	ctx2 = ctx2.WithValue(CacheTypeKey, nil)
 
 	t.Log("Testing nil cache type (should use default behavior)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx2, testRequest)

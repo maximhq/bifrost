@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -34,7 +33,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &gemini.GeminiGenerationRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
 					return &schemas.BifrostRequest{
@@ -60,26 +59,26 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
-		ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 			return gemini.ToGeminiResponsesResponse(resp), nil
 		},
-		SpeechResponseConverter: func(ctx *context.Context, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
+		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
 			return gemini.ToGeminiSpeechResponse(resp), nil
 		},
-		TranscriptionResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
+		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			return gemini.ToGeminiTranscriptionResponse(resp), nil
 		},
-		CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+		CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
 			return gemini.ToGeminiCountTokensResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		StreamConfig: &StreamConfig{
-			ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				geminiResponse := gemini.ToGeminiResponsesStreamResponse(resp)
 				// Skip lifecycle events with no Gemini equivalent
 				if geminiResponse == nil {
@@ -87,7 +86,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				}
 				return "", geminiResponse, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return gemini.ToGeminiError(err)
 			},
 		},
@@ -101,7 +100,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostListModelsRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 				return &schemas.BifrostRequest{
 					ListModelsRequest: listModelsReq,
@@ -109,10 +108,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ListModelsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+			ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 			return gemini.ToGeminiListModelsResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		PreCallback: extractGeminiListModelsParams,
@@ -134,7 +133,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			return &schemas.BifrostFileUploadRequest{}
 		},
 		RequestParser: parseGeminiFileUploadRequest,
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if uploadReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
 				uploadReq.Provider = schemas.Gemini
 				return &FileRequest{
@@ -144,13 +143,13 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			}
 			return nil, errors.New("invalid file upload request type")
 		},
-		FileUploadResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
+		FileUploadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileUploadResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 	})
@@ -163,7 +162,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileListRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
 				listReq.Provider = schemas.Gemini
 				return &FileRequest{
@@ -173,13 +172,13 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			}
 			return nil, errors.New("invalid file list request type")
 		},
-		FileListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error) {
+		FileListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileListResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		PreCallback: extractGeminiFileListQueryParams,
@@ -193,7 +192,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileRetrieveRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if retrieveReq, ok := req.(*schemas.BifrostFileRetrieveRequest); ok {
 				retrieveReq.Provider = schemas.Gemini
 				return &FileRequest{
@@ -203,13 +202,13 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			}
 			return nil, errors.New("invalid file retrieve request type")
 		},
-		FileRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
+		FileRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileRetrieveResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		PreCallback: extractGeminiFileIDFromPath,
@@ -223,7 +222,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileDeleteRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
 				deleteReq.Provider = schemas.Gemini
 				return &FileRequest{
@@ -233,13 +232,13 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			}
 			return nil, errors.New("invalid file delete request type")
 		},
-		FileDeleteResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
+		FileDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return map[string]interface{}{}, nil // Gemini returns empty response on delete
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
 		},
 		PreCallback: extractGeminiFileIDFromPath,
@@ -293,7 +292,7 @@ func parseGeminiFileUploadRequest(ctx *fasthttp.RequestCtx, req interface{}) err
 }
 
 // extractGeminiFileListQueryParams extracts query parameters for Gemini file list requests
-func extractGeminiFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractGeminiFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
 		listReq.Provider = schemas.Gemini
 
@@ -314,7 +313,7 @@ func extractGeminiFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *cont
 }
 
 // extractGeminiFileIDFromPath extracts file_id from path parameters for Gemini
-func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	fileID := ctx.UserValue("file_id")
 	if fileID == nil {
 		return errors.New("file_id is required")
@@ -354,7 +353,7 @@ var embeddingPaths = []string{
 }
 
 // extractAndSetModelFromURL extracts model from URL and sets it in the request
-func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
 	if model == nil {
 		return fmt.Errorf("model parameter is required")
@@ -482,7 +481,7 @@ func isAudioMimeType(mimeType string) bool {
 }
 
 // extractGeminiListModelsParams extracts query parameters for list models request
-func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 		// Set provider to Gemini
 		listModelsReq.Provider = schemas.Gemini

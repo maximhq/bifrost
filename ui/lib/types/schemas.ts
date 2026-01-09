@@ -94,11 +94,11 @@ export const s3BucketConfigSchema = z.object({
 	bucket_name: z.string().min(1, "Bucket name is required"),
 	prefix: z.string().optional(),
 	is_default: z.boolean().optional(),
-})
+});
 
 export const batchS3ConfigSchema = z.object({
 	buckets: z.array(s3BucketConfigSchema).optional(),
-})
+});
 
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
@@ -464,6 +464,9 @@ export const coreConfigSchema = z.object({
 	allow_direct_keys: z.boolean().default(false),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
+	mcp_agent_depth: z.number().min(1).default(10),
+	mcp_tool_execution_timeout: z.number().min(1).default(30),
+	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
 });
 
 // Bifrost config schema
@@ -602,9 +605,33 @@ export const maximFormSchema = z.object({
 
 // MCP Client update schema
 export const mcpClientUpdateSchema = z.object({
-	name: z.string().min(1, "Name is required"),
+	is_code_mode_client: z.boolean().optional(),
+	name: z
+		.string()
+		.min(1, "Name is required")
+		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
+		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
+		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
 	headers: z.record(z.string(), z.string()).optional(),
 	tools_to_execute: z
+		.array(z.string())
+		.optional()
+		.refine(
+			(tools) => {
+				if (!tools || tools.length === 0) return true;
+				const hasWildcard = tools.includes("*");
+				return !hasWildcard || tools.length === 1;
+			},
+			{ message: "Wildcard '*' cannot be combined with other tool names" },
+		)
+		.refine(
+			(tools) => {
+				if (!tools) return true;
+				return tools.length === new Set(tools).size;
+			},
+			{ message: "Duplicate tool names are not allowed" },
+		),
+	tools_to_auto_execute: z
 		.array(z.string())
 		.optional()
 		.refine(
@@ -625,7 +652,7 @@ export const mcpClientUpdateSchema = z.object({
 });
 
 // Global proxy type schema
-export const globalProxyTypeSchema = z.enum(['http', 'socks5', 'tcp']);
+export const globalProxyTypeSchema = z.enum(["http", "socks5", "tcp"]);
 
 // Global proxy configuration schema
 export const globalProxyConfigSchema = z
@@ -652,8 +679,8 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: 'Proxy URL is required when proxy is enabled',
-			path: ['url'],
+			message: "Proxy URL is required when proxy is enabled",
+			path: ["url"],
 		},
 	)
 	.refine(
@@ -670,8 +697,8 @@ export const globalProxyConfigSchema = z
 			return true;
 		},
 		{
-			message: 'Must be a valid URL (e.g., http://proxy.example.com:8080)',
-			path: ['url'],
+			message: "Must be a valid URL (e.g., http://proxy.example.com:8080)",
+			path: ["url"],
 		},
 	);
 

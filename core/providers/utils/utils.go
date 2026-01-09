@@ -832,7 +832,7 @@ func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse b
 }
 
 // SendCreatedEventResponsesChunk sends a ResponsesStreamResponseTypeCreated event.
-func SendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
+func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeCreated,
 		SequenceNumber: 0,
@@ -853,7 +853,7 @@ func SendCreatedEventResponsesChunk(ctx context.Context, postHookRunner schemas.
 }
 
 // SendInProgressEventResponsesChunk sends a ResponsesStreamResponseTypeInProgress event
-func SendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
+func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, provider schemas.ModelProvider, model string, startTime time.Time, responseChan chan *schemas.BifrostStream) {
 	chunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
 		SequenceNumber: 1,
@@ -877,16 +877,30 @@ func SendInProgressEventResponsesChunk(ctx context.Context, postHookRunner schem
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// It also completes the deferred LLM span when the final chunk is sent (StreamEndIndicator is true).
 func ProcessAndSendResponse(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	response *schemas.BifrostResponse,
 	responseChan chan *schemas.BifrostStream,
 ) {
-	// Run post hooks on the response
-	processedResponse, processedError := postHookRunner(&ctx, response, nil)
+	// Accumulate chunk for tracing (common for all providers)
+	if tracer, ok := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer); ok && tracer != nil {
+		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			tracer.AddStreamingChunk(traceID, response)
+		}
+	}
+
+	// Run post hooks on the response first so span reflects post-processed data
+	processedResponse, processedError := postHookRunner(ctx, response, nil)
 
 	if HandleStreamControlSkip(processedError) {
+		// Even if skipping, complete the deferred span if this is the final chunk
+		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+			if final, ok := isFinalChunk.(bool); ok && final {
+				completeDeferredSpan(ctx, processedResponse, processedError)
+			}
+		}
 		return
 	}
 
@@ -906,6 +920,13 @@ func ProcessAndSendResponse(
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
 		return
+	}
+
+	// Check if this is the final chunk and complete deferred span with post-processed data
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final {
+			completeDeferredSpan(ctx, processedResponse, processedError)
+		}
 	}
 }
 
@@ -913,17 +934,24 @@ func ProcessAndSendResponse(
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
+// It also completes the deferred LLM span when the final chunk is sent (StreamEndIndicator is true).
 func ProcessAndSendBifrostError(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	bifrostErr *schemas.BifrostError,
 	responseChan chan *schemas.BifrostStream,
 	logger schemas.Logger,
 ) {
-	// Send scanner error through channel
-	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostErr)
+	// Run post hooks first so span reflects post-processed data
+	processedResponse, processedError := postHookRunner(ctx, nil, bifrostErr)
 
 	if HandleStreamControlSkip(processedError) {
+		// Even if skipping, complete the deferred span if this is the final chunk
+		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+			if final, ok := isFinalChunk.(bool); ok && final {
+				completeDeferredSpan(ctx, processedResponse, processedError)
+			}
+		}
 		return
 	}
 
@@ -942,6 +970,13 @@ func ProcessAndSendBifrostError(
 	select {
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
+	}
+
+	// Check if this is the final chunk and complete deferred span with post-processed data
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final {
+			completeDeferredSpan(ctx, processedResponse, processedError)
+		}
 	}
 }
 
@@ -950,7 +985,7 @@ func ProcessAndSendBifrostError(
 // the common pattern of running post hooks, handling errors, and sending responses with
 // proper context cancellation handling.
 func ProcessAndSendError(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	err error,
 	responseChan chan *schemas.BifrostStream,
@@ -973,7 +1008,7 @@ func ProcessAndSendError(
 				ModelRequested: model,
 			},
 		}
-	processedResponse, processedError := postHookRunner(&ctx, nil, bifrostError)
+	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
 		return
@@ -1246,10 +1281,10 @@ func extractSuccessfulListModelsResponses(
 // It launches concurrent requests for all keys and waits for all goroutines to complete.
 // It returns the aggregated response or an error if the request fails.
 func HandleMultipleListModelsRequests(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	keys []schemas.Key,
 	request *schemas.BifrostListModelsRequest,
-	listModelsByKey func(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
+	listModelsByKey func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
 	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	startTime := time.Now()
@@ -1384,4 +1419,95 @@ func GetBudgetTokensFromReasoningEffort(
 	budget := minBudgetTokens + int(ratio*float64(maxTokens-minBudgetTokens))
 
 	return budget, nil
+}
+
+// completeDeferredSpan completes the deferred LLM span for streaming requests.
+// This is called when the final chunk is processed (when StreamEndIndicator is true).
+// It retrieves the deferred span handle from TraceStore using the trace ID from context,
+// populates response attributes from accumulated chunks, and ends the span.
+func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) {
+	if ctx == nil {
+		return
+	}
+
+	// Get the trace ID from context (this IS available in the provider's goroutine)
+	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if !ok || traceID == "" {
+		return
+	}
+
+	// Get the tracer from context
+	tracerVal := ctx.Value(schemas.BifrostContextKeyTracer)
+	if tracerVal == nil {
+		return
+	}
+	tracer, ok := tracerVal.(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+
+	// Get the deferred span handle from TraceStore using trace ID
+	handle := tracer.GetDeferredSpanHandle(traceID)
+	if handle == nil {
+		return
+	}
+
+	// Set total latency from the final chunk
+	if result != nil {
+		extraFields := result.GetExtraFields()
+		if extraFields.Latency > 0 {
+			tracer.SetAttribute(handle, "gen_ai.response.total_latency_ms", extraFields.Latency)
+		}
+	}
+
+	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
+	// This builds a complete BifrostResponse from all the streaming chunks
+	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
+	if accumulatedResp != nil {
+		// Use accumulated response for attributes (includes full content, tool calls, etc.)
+		tracer.PopulateLLMResponseAttributes(handle, accumulatedResp, err)
+
+		// Set Time to First Token (TTFT) attribute
+		if ttftMs > 0 {
+			tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+		}
+
+		// Set total chunks attribute
+		if chunkCount > 0 {
+			tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
+		}
+	} else if result != nil {
+		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
+		tracer.PopulateLLMResponseAttributes(handle, result, err)
+	}
+
+	// Finalize aggregated post-hook spans before ending the LLM span
+	// This creates one span per plugin with average execution time
+	// We need to set the llm.call span ID in context so post-hook spans become its children
+	if finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context)); ok && finalizer != nil {
+		// Get the deferred span ID (the llm.call span) to set as parent for post-hook spans
+		spanID := tracer.GetDeferredSpanID(traceID)
+		if spanID != "" {
+			finalizerCtx := context.WithValue(ctx, schemas.BifrostContextKeySpanID, spanID)
+			finalizer(finalizerCtx)
+		} else {
+			finalizer(ctx)
+		}
+	}
+
+	// End span with appropriate status
+	if err != nil {
+		if err.Error != nil {
+			tracer.SetAttribute(handle, "error", err.Error.Message)
+		}
+		if err.StatusCode != nil {
+			tracer.SetAttribute(handle, "status_code", *err.StatusCode)
+		}
+		tracer.EndSpan(handle, schemas.SpanStatusError, "streaming request failed")
+	} else {
+		tracer.EndSpan(handle, schemas.SpanStatusOk, "")
+	}
+
+	// Clear the deferred span from TraceStore
+	tracer.ClearDeferredSpan(traceID)
 }

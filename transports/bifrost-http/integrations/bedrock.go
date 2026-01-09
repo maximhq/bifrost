@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -39,7 +38,7 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockConverseRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest(ctx)
 				if err != nil {
@@ -51,10 +50,10 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 			return bedrock.ToBedrockConverseResponse(resp)
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
 		PreCallback: bedrockPreCallback(handlerStore),
@@ -71,7 +70,7 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockConverseRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				// Mark as streaming request
 				bedrockReq.Stream = true
@@ -85,11 +84,11 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
 		StreamConfig: &StreamConfig{
-			ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 				bedrockEvent, err := bedrock.ToBedrockConverseStreamResponse(resp)
 				if err != nil {
 					return "", nil, err
@@ -116,7 +115,7 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockTextCompletionRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockTextCompletionRequest); ok {
 				// Mark as streaming request
 				bedrockReq.Stream = true
@@ -126,11 +125,11 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 			}
 			return nil, errors.New("invalid request type")
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
 		StreamConfig: &StreamConfig{
-			TextStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
+			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 				if resp == nil {
 					return "", nil, nil
 				}
@@ -161,7 +160,7 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockTextCompletionRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockTextCompletionRequest); ok {
 				return &schemas.BifrostRequest{
 					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(),
@@ -169,10 +168,10 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid request type")
 		},
-		TextResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			return bedrock.ToBedrockTextCompletionResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
 		PreCallback: bedrockPreCallback(handlerStore),
@@ -201,9 +200,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchJobRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockBatchJobRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 
 				// Convert Bedrock batch request to Bifrost format
 				// For Bedrock: use S3 URIs directly
@@ -269,7 +268,7 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid batch create request type")
 		},
-		BatchCreateResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+		BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
 			// Only return raw response for native Bedrock calls
 			// For cross-provider routing, always convert to Bedrock format
 			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Bedrock {
@@ -277,16 +276,16 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return bedrock.ToBedrockBatchJobResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			// Extract provider from header for cross-provider routing
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return bedrockBatchPreCallback(handlerStore)(ctx, bifrostCtx, req)
 		},
@@ -300,9 +299,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchListRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockBatchListRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				bifrostReq := bedrock.ToBifrostBatchListRequest(bedrockReq, provider)
 				return &BatchRequest{
 					Type:        schemas.BatchListRequest,
@@ -311,7 +310,7 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid batch list request type")
 		},
-		BatchListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+		BatchListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
 			// Only return raw response for native Bedrock calls
 			// For cross-provider routing, always convert to Bedrock format
 			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Bedrock {
@@ -319,16 +318,16 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return bedrock.ToBedrockBatchJobListResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			// Extract provider from header for cross-provider routing
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractBedrockBatchListQueryParams(handlerStore)(ctx, bifrostCtx, req)
 		},
@@ -342,9 +341,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchRetrieveRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockBatchRetrieveRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				bifrostReq := bedrock.ToBifrostBatchRetrieveRequest(bedrockReq, provider)
 				return &BatchRequest{
 					Type:            schemas.BatchRetrieveRequest,
@@ -353,7 +352,7 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid batch retrieve request type")
 		},
-		BatchRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+		BatchRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
 			// Only return raw response for native Bedrock calls
 			// For cross-provider routing, always convert to Bedrock format
 			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Bedrock {
@@ -361,16 +360,16 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return bedrock.ToBedrockBatchJobRetrieveResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			// Extract provider from header for cross-provider routing
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractBedrockJobArnFromPath(handlerStore)(ctx, bifrostCtx, req)
 		},
@@ -384,9 +383,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchCancelRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockBatchCancelRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				bifrostReq := bedrock.ToBifrostBatchCancelRequest(bedrockReq, provider)
 				return &BatchRequest{
 					Type:          schemas.BatchCancelRequest,
@@ -395,7 +394,7 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid batch cancel request type")
 		},
-		BatchCancelResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
+		BatchCancelResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
 			// Only return raw response for native Bedrock calls
 			// For cross-provider routing, always convert to Bedrock format
 			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Bedrock {
@@ -403,16 +402,16 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return bedrock.ToBedrockBatchCancelResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToBedrockError(err)
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			// Extract provider from header for cross-provider routing
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractBedrockJobArnFromPath(handlerStore)(ctx, bifrostCtx, req)
 		},
@@ -421,8 +420,8 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 }
 
 // bedrockBatchPreCallback returns a pre-callback for Bedrock batch create requests
-func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Handle direct key authentication if allowed
 		if !handlerStore.ShouldAllowDirectKeys() {
 			return nil
@@ -446,7 +445,7 @@ func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.R
 			if region != "" {
 				key.BedrockKeyConfig.Region = &region
 			}
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			return nil
 		}
 
@@ -469,7 +468,7 @@ func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.R
 				key.BedrockKeyConfig.SessionToken = &sessionToken
 			}
 
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 
 		return nil
@@ -478,7 +477,7 @@ func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.R
 
 // extractBedrockBatchListQueryParams extracts query parameters for Bedrock batch list requests
 func extractBedrockBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Handle authentication
 		if err := bedrockBatchPreCallback(handlerStore)(ctx, bifrostCtx, req); err != nil {
 			return err
@@ -530,7 +529,7 @@ func parseS3URI(uri string) (bucket, key string) {
 
 // extractBedrockJobArnFromPath extracts job_arn from path parameters for Bedrock
 func extractBedrockJobArnFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Handle authentication
 		if err := bedrockBatchPreCallback(handlerStore)(ctx, bifrostCtx, req); err != nil {
 			return err
@@ -594,9 +593,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			return &bedrock.BedrockFileUploadRequest{}
 		},
 		RequestParser: parseS3PutObjectRequest,
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if uploadReq, ok := req.(*bedrock.BedrockFileUploadRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				prefix := ""
 				if uploadReq.Key != "" {
 					keyComponents := strings.Split(uploadReq.Key, "/")
@@ -620,19 +619,19 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid file upload request type")
 		},
-		FileUploadResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
+		FileUploadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
 			// S3 PutObject returns empty body with ETag header
 			return nil, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToS3ErrorXML("InternalError", err.Error.Message, "", "")
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return nil
 		},
@@ -647,9 +646,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileContentRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if contentReq, ok := req.(*bedrock.BedrockFileContentRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				return &FileRequest{
 					Type: schemas.FileContentRequest,
 					ContentRequest: &schemas.BifrostFileContentRequest{
@@ -660,11 +659,11 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid file content request type")
 		},
-		FileContentResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileContentResponse) (interface{}, error) {
+		FileContentResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileContentResponse) (interface{}, error) {
 			// Return raw content
 			return resp.Content, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToS3ErrorXML("NoSuchKey", err.Error.Message, "", "")
 		},
 		PreCallback:  extractS3BucketKeyFromPath(handlerStore, "content"),
@@ -679,9 +678,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileRetrieveRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if retrieveReq, ok := req.(*bedrock.BedrockFileRetrieveRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				return &FileRequest{
 					Type: schemas.FileRetrieveRequest,
 					RetrieveRequest: &schemas.BifrostFileRetrieveRequest{
@@ -698,19 +697,19 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid file retrieve request type")
 		},
-		FileRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
+		FileRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
 			// HEAD returns empty body, headers set in PostCallback
 			return nil, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return nil // HEAD returns no body on error
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractS3BucketKeyFromPath(handlerStore, "retrieve")(ctx, bifrostCtx, req)
 		},
@@ -725,9 +724,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileDeleteRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if deleteReq, ok := req.(*bedrock.BedrockFileDeleteRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				return &FileRequest{
 					Type: schemas.FileDeleteRequest,
 					DeleteRequest: &schemas.BifrostFileDeleteRequest{
@@ -744,19 +743,19 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid file delete request type")
 		},
-		FileDeleteResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
+		FileDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
 			// S3 DeleteObject returns empty body
 			return nil, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToS3ErrorXML("InternalError", err.Error.Message, "", "")
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractS3BucketKeyFromPath(handlerStore, "delete")(ctx, bifrostCtx, req)
 		},
@@ -771,9 +770,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileListRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if listReq, ok := req.(*bedrock.BedrockFileListRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				return &FileRequest{
 					Type: schemas.FileListRequest,
 					ListRequest: &schemas.BifrostFileListRequest{
@@ -789,7 +788,7 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			}
 			return nil, errors.New("invalid file list request type")
 		},
-		FileListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error) {
+		FileListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error) {
 			// Use raw S3 XML response directly if available (passthrough from core provider)
 			if resp.ExtraFields.RawResponse != nil {
 				if rawBytes, ok := resp.ExtraFields.RawResponse.([]byte); ok {
@@ -800,26 +799,26 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 			bucket := ""
 			prefix := ""
 			maxKeys := 1000
-			if b := (*ctx).Value(s3ContextKeyBucket); b != nil {
+			if b := ctx.Value(s3ContextKeyBucket); b != nil {
 				bucket = b.(string)
 			}
-			if p := (*ctx).Value(s3ContextKeyPrefix); p != nil {
+			if p := ctx.Value(s3ContextKeyPrefix); p != nil {
 				prefix = p.(string)
 			}
-			if m := (*ctx).Value(s3ContextKeyMaxKeys); m != nil {
+			if m := ctx.Value(s3ContextKeyMaxKeys); m != nil {
 				maxKeys = m.(int)
 			}
 			return bedrock.ToS3ListObjectsV2XML(resp, bucket, prefix, maxKeys), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return bedrock.ToS3ErrorXML("InternalError", err.Error.Message, "", "")
 		},
-		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+		PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 			provider := string(ctx.Request.Header.Peek("x-model-provider"))
 			if provider != "" {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 			} else {
-				*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+				bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 			}
 			return extractS3ListObjectsV2Params(handlerStore)(ctx, bifrostCtx, req)
 		},
@@ -868,7 +867,7 @@ func parseS3PutObjectRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
 
 // extractS3BucketKeyFromPath extracts bucket and key from path for S3 operations
 func extractS3BucketKeyFromPath(handlerStore lib.HandlerStore, opType string) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Handle authentication first
 		if err := bedrockBatchPreCallback(handlerStore)(ctx, bifrostCtx, req); err != nil {
 			return err
@@ -883,9 +882,9 @@ func extractS3BucketKeyFromPath(handlerStore lib.HandlerStore, opType string) Pr
 
 		provider := string(ctx.Request.Header.Peek("x-model-provider"))
 		if provider != "" {
-			*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+			bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 		} else {
-			*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.Bedrock)
+			bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
 		}
 
 		bucketStr := bucket.(string)
@@ -923,7 +922,7 @@ func extractS3BucketKeyFromPath(handlerStore lib.HandlerStore, opType string) Pr
 
 // extractS3ListObjectsV2Params extracts query params for S3 ListObjectsV2
 func extractS3ListObjectsV2Params(handlerStore lib.HandlerStore) PreRequestCallback {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Handle authentication first
 		if err := bedrockBatchPreCallback(handlerStore)(ctx, bifrostCtx, req); err != nil {
 			return err
@@ -948,9 +947,9 @@ func extractS3ListObjectsV2Params(handlerStore lib.HandlerStore) PreRequestCallb
 		}
 
 		// Store in context for response formatting
-		*bifrostCtx = context.WithValue(*bifrostCtx, s3ContextKeyBucket, bucketStr)
-		*bifrostCtx = context.WithValue(*bifrostCtx, s3ContextKeyPrefix, prefix)
-		*bifrostCtx = context.WithValue(*bifrostCtx, s3ContextKeyMaxKeys, maxKeys)
+		bifrostCtx.SetValue(s3ContextKeyBucket, bucketStr)
+		bifrostCtx.SetValue(s3ContextKeyPrefix, prefix)
+		bifrostCtx.SetValue(s3ContextKeyMaxKeys, maxKeys)
 
 		if listReq, ok := req.(*bedrock.BedrockFileListRequest); ok {
 			listReq.MaxKeys = maxKeys
@@ -1015,8 +1014,8 @@ func s3ListObjectsV2PostCallback(ctx *fasthttp.RequestCtx, req interface{}, resp
 }
 
 // bedrockPreCallback returns a pre-callback that extracts model ID and handles direct authentication
-func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Extract modelId from path parameter
 		modelIDVal := ctx.UserValue("modelId")
 		if modelIDVal == nil {
@@ -1085,7 +1084,7 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			if region != "" {
 				key.BedrockKeyConfig.Region = &region
 			}
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			return nil
 		} else if accessKey != "" && secretKey != "" {
 			// Case 2: AWS Credentials Authentication
@@ -1109,7 +1108,7 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 				key.BedrockKeyConfig.SessionToken = &sessionToken
 			}
 
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 
 		return nil

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -17,13 +18,6 @@ const (
 	StreamTypeResponses     StreamType = "responses"
 )
 
-type StreamResponseType string
-
-const (
-	StreamResponseTypeDelta StreamResponseType = "delta"
-	StreamResponseTypeFinal StreamResponseType = "final"
-)
-
 // AccumulatedData contains the accumulated data for a stream
 type AccumulatedData struct {
 	RequestID           string
@@ -31,6 +25,7 @@ type AccumulatedData struct {
 	Status              string
 	Stream              bool
 	Latency             int64 // in milliseconds
+	TimeToFirstToken    int64 // Time to first token in milliseconds (streaming only)
 	StartTimestamp      time.Time
 	EndTimestamp        time.Time
 	OutputMessage       *schemas.ChatMessage
@@ -102,19 +97,85 @@ type ResponsesStreamChunk struct {
 type StreamAccumulator struct {
 	RequestID                 string
 	StartTimestamp            time.Time
+	FirstChunkTimestamp       time.Time // Timestamp when the first chunk was received (for TTFT calculation)
 	ChatStreamChunks          []*ChatStreamChunk
 	ResponsesStreamChunks     []*ResponsesStreamChunk
 	TranscriptionStreamChunks []*TranscriptionStreamChunk
 	AudioStreamChunks         []*AudioStreamChunk
-	IsComplete                bool
-	FinalTimestamp            time.Time
-	mu                        sync.Mutex
-	Timestamp                 time.Time
+
+	// De-dup maps to prevent chunk loss on out-of-order arrival
+	ChatChunksSeen          map[int]struct{}
+	ResponsesChunksSeen     map[int]struct{}
+	TranscriptionChunksSeen map[int]struct{}
+	AudioChunksSeen         map[int]struct{}
+
+	// Track highest ChunkIndex for metadata extraction (TokenUsage, Cost, FinishReason)
+	MaxChatChunkIndex          int
+	MaxResponsesChunkIndex     int
+	MaxTranscriptionChunkIndex int
+	MaxAudioChunkIndex         int
+
+	IsComplete     bool
+	FinalTimestamp time.Time
+	mu             sync.Mutex
+	Timestamp      time.Time
+	refCount       atomic.Int64
+}
+
+// getLastChatChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
+func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
+	if sa.MaxChatChunkIndex < 0 {
+		return nil
+	}
+	for _, chunk := range sa.ChatStreamChunks {
+		if chunk.ChunkIndex == sa.MaxChatChunkIndex {
+			return chunk
+		}
+	}
+	return nil
+}
+
+// getLastResponsesChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
+func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
+	if sa.MaxResponsesChunkIndex < 0 {
+		return nil
+	}
+	for _, chunk := range sa.ResponsesStreamChunks {
+		if chunk.ChunkIndex == sa.MaxResponsesChunkIndex {
+			return chunk
+		}
+	}
+	return nil
+}
+
+// getLastTranscriptionChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
+func (sa *StreamAccumulator) getLastTranscriptionChunk() *TranscriptionStreamChunk {
+	if sa.MaxTranscriptionChunkIndex < 0 {
+		return nil
+	}
+	for _, chunk := range sa.TranscriptionStreamChunks {
+		if chunk.ChunkIndex == sa.MaxTranscriptionChunkIndex {
+			return chunk
+		}
+	}
+	return nil
+}
+
+// getLastAudioChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
+func (sa *StreamAccumulator) getLastAudioChunk() *AudioStreamChunk {
+	if sa.MaxAudioChunkIndex < 0 {
+		return nil
+	}
+	for _, chunk := range sa.AudioStreamChunks {
+		if chunk.ChunkIndex == sa.MaxAudioChunkIndex {
+			return chunk
+		}
+	}
+	return nil
 }
 
 // ProcessedStreamResponse represents a processed streaming response
 type ProcessedStreamResponse struct {
-	Type       StreamResponseType
 	RequestID  string
 	StreamType StreamType
 	Provider   schemas.ModelProvider
@@ -159,7 +220,23 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.RawRequest != nil {
 			resp.TextCompletionResponse.ExtraFields.RawRequest = p.RawRequest
 		}
+		if p.Data.RawResponse != nil {
+			resp.TextCompletionResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			resp.TextCompletionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
 	case StreamTypeChat:
+		var message *schemas.ChatMessage
+		if p.Data.OutputMessage != nil {
+			message = &schemas.ChatMessage{
+				Role:                 p.Data.OutputMessage.Role,
+				Content:              p.Data.OutputMessage.Content,
+				ChatAssistantMessage: p.Data.OutputMessage.ChatAssistantMessage,
+				ChatToolMessage:      p.Data.OutputMessage.ChatToolMessage,
+				Name:                 p.Data.OutputMessage.Name,
+			}
+		}
 		chatResp := &schemas.BifrostChatResponse{
 			ID:      p.RequestID,
 			Object:  "chat.completion",
@@ -169,36 +246,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 				{
 					Index:        0,
 					FinishReason: p.Data.FinishReason,
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: message,
+					},
 				},
 			},
 			Usage: p.Data.TokenUsage,
-		}
-
-		// Get reference to the choice in the slice so we can modify it
-		choice := &chatResp.Choices[0]
-
-		if p.Data.OutputMessage.Content.ContentStr != nil {
-			choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{
-				Message: &schemas.ChatMessage{
-					Role: schemas.ChatMessageRoleAssistant,
-					Content: &schemas.ChatMessageContent{
-						ContentStr: p.Data.OutputMessage.Content.ContentStr,
-					},
-				},
-			}
-		}
-		if p.Data.OutputMessage.ChatAssistantMessage != nil {
-			if choice.ChatNonStreamResponseChoice == nil {
-				choice.ChatNonStreamResponseChoice = &schemas.ChatNonStreamResponseChoice{
-					Message: &schemas.ChatMessage{
-						Role:                 schemas.ChatMessageRoleAssistant,
-						ChatAssistantMessage: p.Data.OutputMessage.ChatAssistantMessage,
-					},
-				}
-			} else {
-				// If we already have a message, we need to add the ChatAssistantMessage to it
-				choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage = p.Data.OutputMessage.ChatAssistantMessage
-			}
 		}
 
 		resp.ChatResponse = chatResp
@@ -210,6 +263,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.RawRequest != nil {
 			resp.ChatResponse.ExtraFields.RawRequest = p.RawRequest
+		}
+		if p.Data.RawResponse != nil {
+			resp.ChatResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			resp.ChatResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
 	case StreamTypeResponses:
 		responsesResp := &schemas.BifrostResponsesResponse{}
@@ -229,6 +288,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.RawRequest != nil {
 			responsesResp.ExtraFields.RawRequest = p.RawRequest
 		}
+		if p.Data.RawResponse != nil {
+			responsesResp.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			responsesResp.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
 		resp.ResponsesResponse = responsesResp
 	case StreamTypeAudio:
 		speechResp := p.Data.AudioOutput
@@ -245,6 +310,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.RawRequest != nil {
 			resp.SpeechResponse.ExtraFields.RawRequest = p.RawRequest
 		}
+		if p.Data.RawResponse != nil {
+			resp.SpeechResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			resp.SpeechResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
+		}
 	case StreamTypeTranscription:
 		transcriptionResp := p.Data.TranscriptionOutput
 		if transcriptionResp == nil {
@@ -259,6 +330,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 		if p.RawRequest != nil {
 			resp.TranscriptionResponse.ExtraFields.RawRequest = p.RawRequest
+		}
+		if p.Data.RawResponse != nil {
+			resp.TranscriptionResponse.ExtraFields.RawResponse = *p.Data.RawResponse
+		}
+		if p.Data.CacheDebug != nil {
+			resp.TranscriptionResponse.ExtraFields.CacheDebug = p.Data.CacheDebug
 		}
 	}
 	return resp

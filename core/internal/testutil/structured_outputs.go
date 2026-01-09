@@ -102,12 +102,12 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 
 	chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := ctx
+		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
 			extraHeaders := map[string][]string{
 				"anthropic-beta": {"structured-outputs-2025-11-13"},
 			}
-			reqCtx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 		}
 
 		chatReq := &schemas.BifrostChatRequest{
@@ -217,12 +217,12 @@ func RunStructuredOutputChatStreamTest(t *testing.T, client *bifrost.Bifrost, ct
 		}
 
 		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := ctx
+		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
 			extraHeaders := map[string][]string{
 				"anthropic-beta": {"structured-outputs-2025-11-13"},
 			}
-			reqCtx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 		}
 
 		request := &schemas.BifrostChatRequest{
@@ -373,12 +373,12 @@ func RunStructuredOutputResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx
 		}
 
 		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := ctx
+		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
 			extraHeaders := map[string][]string{
 				"anthropic-beta": {"structured-outputs-2025-11-13"},
 			}
-			reqCtx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 		}
 
 		retryConfig := GetTestRetryConfigForScenario("StructuredOutputResponses", testConfig)
@@ -510,12 +510,12 @@ func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifros
 		}
 
 		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := ctx
+		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
 			extraHeaders := map[string][]string{
 				"anthropic-beta": {"structured-outputs-2025-11-13"},
 			}
-			reqCtx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 		}
 
 		typeStr := "object"

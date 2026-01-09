@@ -95,7 +95,19 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 												type="number"
 												placeholder="10"
 												{...field}
-												onChange={(e) => field.onChange(Number.parseInt(e.target.value) || 0)}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number.parseInt(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+												}}
 											/>
 										</FormControl>
 										<FormMessage />
@@ -115,7 +127,19 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 												type="number"
 												placeholder="10"
 												{...field}
-												onChange={(e) => field.onChange(Number.parseInt(e.target.value) || 0)}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number.parseInt(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+												}}
 											/>
 										</FormControl>
 										<FormMessage />
@@ -142,6 +166,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 											<Switch
 												size="md"
 												checked={field.value}
+												disabled={!hasUpdateProviderAccess}
 												onCheckedChange={(checked) => {
 													field.onChange(checked);
 													form.trigger("send_back_raw_request");
@@ -172,6 +197,7 @@ export function PerformanceFormFragment({ provider }: PerformanceFormFragmentPro
 											<Switch
 												size="md"
 												checked={field.value}
+												disabled={!hasUpdateProviderAccess}
 												onCheckedChange={(checked) => {
 													field.onChange(checked);
 													form.trigger("send_back_raw_response");

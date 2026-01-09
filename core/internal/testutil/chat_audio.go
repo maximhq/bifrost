@@ -74,7 +74,8 @@ func RunChatAudioTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			response, err := client.ChatCompletionRequest(ctx, chatReq)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			response, err := client.ChatCompletionRequest(bfCtx, chatReq)
 			if err != nil {
 				return nil, err
 			}
@@ -202,7 +203,8 @@ func RunChatAudioStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		responseChannel, bifrostErr := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-			return client.ChatCompletionStreamRequest(ctx, chatReq)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ChatCompletionStreamRequest(bfCtx, chatReq)
 		})
 
 		// Enhanced error handling

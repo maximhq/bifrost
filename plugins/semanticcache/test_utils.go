@@ -85,7 +85,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 	return []schemas.ModelProvider{schemas.OpenAI}, nil
 }
 
-func (baseAccount *BaseAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
 			Value:  os.Getenv("OPENAI_API_KEY"),
@@ -297,7 +297,7 @@ func getMockRules() []mocker.MockRule {
 }
 
 // getMockedBifrostClient creates a Bifrost client with a mocker plugin for testing
-func getMockedBifrostClient(t *testing.T, ctx context.Context, logger schemas.Logger, semanticCachePlugin schemas.Plugin) *bifrost.Bifrost {
+func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.Plugin) *bifrost.Bifrost {
 	mockerCfg := mocker.MockerConfig{
 		Enabled: true,
 		Rules:   getMockRules(),
@@ -335,6 +335,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 	return NewTestSetupWithConfig(t, &Config{
 		Provider:          schemas.OpenAI,
 		EmbeddingModel:    "text-embedding-3-small",
+		Dimension:         1536,
 		Threshold:         0.8,
 		CleanUpOnShutdown: true,
 		Keys: []schemas.Key{
@@ -349,7 +350,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 
 // NewTestSetupWithConfig creates a new test setup with custom configuration
 func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 
 	// Keep Weaviate for embeddings, as mocker only affects chat completions
@@ -362,7 +363,7 @@ func NewTestSetupWithConfig(t *testing.T, config *Config) *TestSetup {
 		t.Fatalf("Vector store not available or failed to connect: %v", err)
 	}
 
-	plugin, err := Init(context.Background(), config, logger, store)
+	plugin, err := Init(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config, logger, store)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -542,32 +543,28 @@ func CreateStreamingResponsesRequest(content string, temperature float64, maxTok
 }
 
 // CreateContextWithCacheKey creates a context with the test cache key
-func CreateContextWithCacheKey(value string) context.Context {
-	return context.WithValue(context.Background(), CacheKey, value)
+func CreateContextWithCacheKey(value string) *schemas.BifrostContext {
+	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value)
 }
 
 // CreateContextWithCacheKeyAndType creates a context with cache key and cache type
-func CreateContextWithCacheKeyAndType(value string, cacheType CacheType) context.Context {
-	ctx := context.WithValue(context.Background(), CacheKey, value)
-	return context.WithValue(ctx, CacheTypeKey, cacheType)
+func CreateContextWithCacheKeyAndType(value string, cacheType CacheType) *schemas.BifrostContext {
+	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTypeKey, cacheType)
 }
 
 // CreateContextWithCacheKeyAndTTL creates a context with cache key and custom TTL
-func CreateContextWithCacheKeyAndTTL(value string, ttl time.Duration) context.Context {
-	ctx := context.WithValue(context.Background(), CacheKey, value)
-	return context.WithValue(ctx, CacheTTLKey, ttl)
+func CreateContextWithCacheKeyAndTTL(value string, ttl time.Duration) *schemas.BifrostContext {
+	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, CacheKey, value).WithValue(CacheTTLKey, ttl)
 }
 
 // CreateContextWithCacheKeyAndThreshold creates a context with cache key and custom threshold
-func CreateContextWithCacheKeyAndThreshold(value string, threshold float64) context.Context {
-	ctx := context.WithValue(context.Background(), CacheKey, value)
-	return context.WithValue(ctx, CacheThresholdKey, threshold)
+func CreateContextWithCacheKeyAndThreshold(value string, threshold float64) *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheThresholdKey, threshold)
 }
 
 // CreateContextWithCacheKeyAndNoStore creates a context with cache key and no-store flag
-func CreateContextWithCacheKeyAndNoStore(value string, noStore bool) context.Context {
-	ctx := context.WithValue(context.Background(), CacheKey, value)
-	return context.WithValue(ctx, CacheNoStoreKey, noStore)
+func CreateContextWithCacheKeyAndNoStore(value string, noStore bool) *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, value).WithValue(CacheNoStoreKey, noStore)
 }
 
 // CreateTestSetupWithConversationThreshold creates a test setup with custom conversation history threshold
@@ -575,6 +572,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
+		Dimension:                    1536,
 		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,
@@ -595,6 +593,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 	config := &Config{
 		Provider:            schemas.OpenAI,
 		EmbeddingModel:      "text-embedding-3-small",
+		Dimension:           1536,
 		CleanUpOnShutdown:   true,
 		Threshold:           0.8,
 		ExcludeSystemPrompt: &excludeSystem,
@@ -615,6 +614,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 	config := &Config{
 		Provider:                     schemas.OpenAI,
 		EmbeddingModel:               "text-embedding-3-small",
+		Dimension:                    1536,
 		CleanUpOnShutdown:            true,
 		Threshold:                    0.8,
 		ConversationHistoryThreshold: threshold,

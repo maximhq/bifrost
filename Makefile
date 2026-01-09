@@ -44,7 +44,7 @@ help: ## Show this help message
 	@echo "  LOG_LEVEL         Logger level: debug|info|warn|error (default: info)"
 	@echo "  APP_DIR           App data directory inside container (default: /app/data)"
 	@echo "  LOCAL             Use local go.work for builds (e.g., make build LOCAL=1)"
-	@echo "  DEBUG             Enable air + delve debugger on port 2345 (e.g., make dev DEBUG=1)"
+	@echo "  DEBUG             Enable delve debugger on port 2345 (e.g., make dev DEBUG=1, make test-core DEBUG=1)"
 	@echo ""
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
@@ -333,7 +333,7 @@ test: install-gotestsum ## Run tests for bifrost-http
 		echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
 	fi
 
-test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=openai TESTCASE=TestName or PATTERN=substring)
+test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usage: make test-core PROVIDER=openai TESTCASE=TestName or PATTERN=substring, DEBUG=1 for debugger)
 	@echo "$(GREEN)Running core tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
 	@if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
@@ -356,6 +356,10 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
 		set -a; . ./.env; set +a; \
 	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)Debug mode enabled - delve debugger will listen on port 2345$(NC)"; \
+		echo "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+	fi; \
 	if [ -n "$(PROVIDER)" ]; then \
 		PROVIDER_TEST_NAME=$$(echo "$(PROVIDER)" | awk '{print toupper(substr($$0,1,1)) tolower(substr($$0,2))}' | sed 's/openai/OpenAI/i; s/sgl/SGL/i'); \
 		if [ -n "$(TESTCASE)" ]; then \
@@ -365,10 +369,14 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 			CLEAN_TESTCASE=$$(echo "$$CLEAN_TESTCASE" | sed 's|^Test[A-Z][A-Za-z]*/[A-Z][A-Za-z]*Tests/||'); \
 			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$$CLEAN_TESTCASE...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$(echo $$CLEAN_TESTCASE | sed 's|/|_|g').xml"; \
-			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
-				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
-				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+			if [ -n "$(DEBUG)" ]; then \
+				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+			else \
+				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+					--format=$(GOTESTSUM_FORMAT) \
+					--junitfile=../../../$$REPORT_FILE \
+					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -389,10 +397,14 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 		elif [ -n "$(PATTERN)" ]; then \
 			echo "$(CYAN)Running tests matching '$(PATTERN)' for $${PROVIDER_TEST_NAME}...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$(PATTERN).xml"; \
-			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
-				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
-				-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+			if [ -n "$(DEBUG)" ]; then \
+				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+			else \
+				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+					--format=$(GOTESTSUM_FORMAT) \
+					--junitfile=../../../$$REPORT_FILE \
+					-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -413,10 +425,14 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 		else \
 			echo "$(CYAN)Running Test$${PROVIDER_TEST_NAME}...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER).xml"; \
-			cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
-				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
-				-- -v -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+			if [ -n "$(DEBUG)" ]; then \
+				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+			else \
+				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
+					--format=$(GOTESTSUM_FORMAT) \
+					--junitfile=../../../$$REPORT_FILE \
+					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
@@ -444,16 +460,24 @@ test-core: install-gotestsum ## Run core tests (Usage: make test-core PROVIDER=o
 		if [ -n "$(PATTERN)" ]; then \
 			echo "$(CYAN)Running tests matching '$(PATTERN)' across all providers...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
-			cd core && GOWORK=off gotestsum \
-				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../$$REPORT_FILE \
-				-- -v -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+			if [ -n "$(DEBUG)" ]; then \
+				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+			else \
+				cd core && GOWORK=off gotestsum \
+					--format=$(GOTESTSUM_FORMAT) \
+					--junitfile=../$$REPORT_FILE \
+					-- -v -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+			fi; \
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \
-			cd core && GOWORK=off gotestsum \
-				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../$$REPORT_FILE \
-				-- -v ./providers/... || TEST_FAILED=1; \
+			if [ -n "$(DEBUG)" ]; then \
+				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 ./providers/... -- -test.v || TEST_FAILED=1; \
+			else \
+				cd core && GOWORK=off gotestsum \
+					--format=$(GOTESTSUM_FORMAT) \
+					--junitfile=../$$REPORT_FILE \
+					-- -v ./providers/... || TEST_FAILED=1; \
+			fi; \
 		fi; \
 		cd ..; \
 		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \

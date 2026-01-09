@@ -11,6 +11,7 @@ import (
 
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -47,7 +48,7 @@ func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, all
 }
 
 // RegisterRoutes registers all WebSocket-related routes
-func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...lib.BifrostHTTPMiddleware) {
+func (h *WebSocketHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/ws", lib.ChainMiddlewares(h.connectStream, middlewares...))
 }
 

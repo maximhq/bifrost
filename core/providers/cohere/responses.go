@@ -1031,7 +1031,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 
 	// Process ResponsesInput (which contains the Responses items)
 	if bifrostReq.Input != nil {
-		cohereReq.Messages = ConvertBifrostMessagesToCohereMessages(bifrostReq.Input)
+		cohereReq.Messages = ConvertBifrostMessagesToCohereMessages(bifrostReq.Input, bifrostReq.Params)
 	}
 
 	return cohereReq, nil
@@ -1082,7 +1082,7 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 // ConvertBifrostMessagesToCohereMessages converts an array of Bifrost ResponsesMessage to Cohere message format
 // This is the main conversion method from Bifrost to Cohere - handles all message types and returns messages
-func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesMessage) []CohereMessage {
+func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesMessage, params *schemas.ResponsesParameters) []CohereMessage {
 	var cohereMessages []CohereMessage
 	var systemContent []string
 	var pendingReasoningContentBlocks []CohereContentBlock
@@ -1210,6 +1210,13 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 		systemMsg := CohereMessage{
 			Role:    "system",
 			Content: NewStringContent(strings.Join(systemContent, "\n")),
+		}
+		cohereMessages = append([]CohereMessage{systemMsg}, cohereMessages...)
+	} else if params != nil && params.Instructions != nil {
+		// if no system messages, check if instructions are present
+		systemMsg := CohereMessage{
+			Role:    "system",
+			Content: NewStringContent(*params.Instructions),
 		}
 		cohereMessages = append([]CohereMessage{systemMsg}, cohereMessages...)
 	}

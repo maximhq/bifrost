@@ -348,6 +348,17 @@ func (s *WeaviateStore) Delete(ctx context.Context, className string, id string)
 }
 
 func (s *WeaviateStore) DeleteAll(ctx context.Context, className string, queries []Query) ([]DeleteResult, error) {
+	// Check if class exists first to avoid 500 errors from Weaviate
+	exists, err := s.client.Schema().ClassExistenceChecker().
+		WithClassName(className).
+		Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check class existence: %w", err)
+	}
+	if !exists {
+		return []DeleteResult{}, nil // Class doesn't exist, nothing to delete
+	}
+
 	where := buildWeaviateFilter(queries)
 
 	res, err := s.client.Batch().ObjectsBatchDeleter().

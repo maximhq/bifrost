@@ -337,6 +337,111 @@ Lists models available in the specified project and region with metadata and dep
 }
 ```
 
+## Custom vs Non-Custom Models
+
+<Warning>
+**Important**: Vertex AI's List Models API **only returns custom fine-tuned models** that have been deployed to your project. It does NOT return standard foundation models (Gemini, Claude, etc.).
+</Warning>
+
+To provide a complete model listing experience, Bifrost performs **multi-pass model discovery**:
+
+### Three-Pass Model Discovery
+
+1. **First Pass - Custom Models from API Response**
+   - Queries Vertex AI's List Models API
+   - Returns only custom fine-tuned models deployed to your project
+   - Custom models are identified by having deployment values that contain only digits
+   - Example: `"deployment": "1234567890"`
+
+2. **Second Pass - Non-Custom Models from Deployments**
+   - Adds standard foundation models from your `deployments` configuration
+   - Non-custom models have alphanumeric deployment values (e.g., `gemini-pro`, `claude-3-5-sonnet`)
+   - Filters by `allowedModels` if specified
+   - Example: `"deployment": "gemini-2.0-flash"`
+
+3. **Third Pass - Allowed Models Not in Deployments**
+   - Adds models specified in `allowedModels` that weren't in the `deployments` map
+   - Ensures all explicitly allowed models appear in the list
+   - Uses the model name itself as the deployment value
+   - Skips digit-only model IDs (reserved for custom models)
+
+### Model Filtering Logic
+
+- **If `allowedModels` is empty**: All models from all three passes are included
+- **If `allowedModels` is non-empty**: Only models/deployments with keys in `allowedModels` are included
+- **Duplicate Prevention**: Each model ID is tracked to prevent duplicates across passes
+
+### Model Name Formatting
+
+Non-custom models from deployments and allowed models are automatically formatted for display:
+
+- `gemini-pro` → "Gemini Pro"
+- `claude-3-5-sonnet` → "Claude 3 5 Sonnet"
+- `gemini_2_flash` → "Gemini 2 Flash"
+
+Formatting uses title case and converts hyphens/underscores to spaces.
+
+### Example Configuration
+
+<Tabs>
+<Tab title="With Custom Models Only">
+
+```json
+{
+  "vertex_key_config": {
+    "project_id": "my-project",
+    "region": "us-central1",
+    "deployments": {
+      "my-gemini-ft": "1234567890",
+      "my-claude-ft": "9876543210"
+    }
+  }
+}
+```
+
+This returns only your custom fine-tuned models from the API.
+
+</Tab>
+<Tab title="With Foundation Models">
+
+```json
+{
+  "vertex_key_config": {
+    "project_id": "my-project",
+    "region": "us-central1",
+    "deployments": {
+      "gemini-2.0-flash": "gemini-2.0-flash",
+      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022"
+    }
+  }
+}
+```
+
+This returns both custom models AND foundation models from deployments.
+
+</Tab>
+<Tab title="With Allowed Models Filter">
+
+```json
+{
+  "vertex_key_config": {
+    "project_id": "my-project",
+    "region": "us-central1",
+    "deployments": {
+      "gemini-2.0-flash": "gemini-2.0-flash",
+      "claude-3-5-sonnet": "claude-3-5-sonnet-v2@20241022",
+      "gemini-1.5-pro": "gemini-1.5-pro"
+    },
+    "allowedModels": ["gemini-2.0-flash", "claude-3-5-sonnet"]
+  }
+}
+```
+
+Only returns `gemini-2.0-flash` and `claude-3-5-sonnet`, excluding `gemini-1.5-pro`.
+
+</Tab>
+</Tabs>
+
 ### Pagination
 
 Model listing is paginated automatically. If more than 100 models exist, `next_page_token` will be present. Bifrost handles pagination internally.
@@ -385,6 +490,14 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 **Behavior**: Vertex returns float64 embeddings, converted to float32 for Bifrost
 **Impact**: Minor precision loss (expected for embeddings)
 **Code**: `embedding.go:84-87`
+</Accordion>
+
+<Accordion title="List Models API Returns Only Custom Models">
+**Severity**: High
+**Behavior**: Vertex AI's List Models API only returns custom fine-tuned models, NOT foundation models
+**Impact**: Bifrost performs three-pass discovery to include foundation models from deployments and allowedModels configuration
+**Why**: This is a Vertex AI API limitation - foundation models must be explicitly configured
+**Code**: `models.go:76-217`
 </Accordion>
 
 ---

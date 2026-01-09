@@ -20,7 +20,7 @@ func normalizeText(text string) string {
 }
 
 // generateEmbedding generates an embedding for the given text using the configured provider.
-func (plugin *Plugin) generateEmbedding(ctx context.Context, text string) ([]float32, int, error) {
+func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string) ([]float32, int, error) {
 	// Create embedding request
 	embeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider: plugin.config.Provider,

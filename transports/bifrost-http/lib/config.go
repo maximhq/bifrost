@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"gorm.io/gorm"
@@ -44,6 +45,11 @@ type HandlerStore interface {
 const (
 	MinRetryBackoff = 100 * time.Millisecond     // Minimum retry backoff: 100ms
 	MaxRetryBackoff = 1000000 * time.Millisecond // Maximum retry backoff: 1000000ms (1000 seconds)
+)
+
+const (
+	DBLookupMaxRetries = 5
+	DBLookupDelay      = 1 * time.Second
 )
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -227,7 +233,8 @@ type Config struct {
 	EnvKeys map[string][]configstore.EnvKeyInfo
 
 	// Plugin configs - atomic for lock-free reads with CAS updates
-	Plugins atomic.Pointer[[]schemas.Plugin]
+	Plugins      atomic.Pointer[[]schemas.Plugin]
+	PluginLoader plugins.PluginLoader
 
 	// Plugin configs from config file/database
 	PluginConfigs []*schemas.PluginConfig
@@ -247,6 +254,9 @@ var DefaultClientConfig = configstore.ClientConfig{
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},
 	MaxRequestBodySizeMB:    100,
+	MCPAgentDepth:           10,
+	MCPToolExecutionTimeout: 30,
+	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
 	EnableLiteLLMFallbacks:  false,
 }
 
@@ -465,7 +475,7 @@ func initStoresFromFile(ctx context.Context, config *Config, configData *ConfigD
 	return nil
 }
 
-// loadClientConfigFromFile loads and merges client config from file with store
+// loadClientConfigFromFile loads and merges client config from file with store using hash-based reconciliation
 func loadClientConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
 	var clientConfig *configstore.ClientConfig
 	var err error
@@ -477,33 +487,30 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 		}
 	}
 
-	if clientConfig != nil {
-		config.ClientConfig = *clientConfig
-		// For backward compatibility, handle cases where max request body size is not set
-		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
-			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
-		}
-
-		// Merge with config file if present
-		if configData.Client != nil {
-			mergeClientConfig(&config.ClientConfig, configData.Client)
-			// Update store with merged config
-			if config.ConfigStore != nil {
-				logger.Debug("updating merged client config in store")
-				if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
-					logger.Warn("failed to update merged client config: %v", err)
-				}
-			}
-		}
-	} else {
+	// Case 1: No config in DB - use file config (or defaults)
+	if clientConfig == nil {
 		logger.Debug("client config not found in store, using config file")
 		if configData.Client != nil {
 			config.ClientConfig = *configData.Client
 			if config.ClientConfig.MaxRequestBodySizeMB == 0 {
 				config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
 			}
+			// Generate hash for the file config
+			fileHash, hashErr := configData.Client.GenerateClientConfigHash()
+			if hashErr != nil {
+				logger.Warn("failed to generate client config hash: %v", hashErr)
+			} else {
+				config.ClientConfig.ConfigHash = fileHash
+			}
 		} else {
 			config.ClientConfig = DefaultClientConfig
+			// Generate hash for default config
+			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHash()
+			if hashErr != nil {
+				logger.Warn("failed to generate default client config hash: %v", hashErr)
+			} else {
+				config.ClientConfig.ConfigHash = defaultHash
+			}
 		}
 		if config.ConfigStore != nil {
 			logger.Debug("updating client config in store")
@@ -511,6 +518,48 @@ func loadClientConfigFromFile(ctx context.Context, config *Config, configData *C
 				logger.Warn("failed to update client config: %v", err)
 			}
 		}
+		return
+	}
+
+	// Case 2: Config exists in DB
+	config.ClientConfig = *clientConfig
+	// For backward compatibility, handle cases where max request body size is not set
+	if config.ClientConfig.MaxRequestBodySizeMB == 0 {
+		config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+	}
+
+	// Case 2a: No file config - use DB config as-is
+	if configData.Client == nil {
+		logger.Debug("no client config in file, using DB config")
+		return
+	}
+
+	// Case 2b: Both DB and file config exist - use hash-based reconciliation
+	fileHash, hashErr := configData.Client.GenerateClientConfigHash()
+	if hashErr != nil {
+		logger.Warn("failed to generate client config hash from file: %v", hashErr)
+		return
+	}
+
+	if clientConfig.ConfigHash != fileHash {
+		// Hash mismatch - config.json was changed, sync from file
+		logger.Debug("client config hash mismatch, syncing from config file")
+		config.ClientConfig = *configData.Client
+		config.ClientConfig.ConfigHash = fileHash
+		// Apply defaults for zero values
+		if config.ClientConfig.MaxRequestBodySizeMB == 0 {
+			config.ClientConfig.MaxRequestBodySizeMB = DefaultClientConfig.MaxRequestBodySizeMB
+		}
+		// Update store with file config
+		if config.ConfigStore != nil {
+			logger.Debug("updating client config in store from file")
+			if err = config.ConfigStore.UpdateClientConfig(ctx, &config.ClientConfig); err != nil {
+				logger.Warn("failed to update client config: %v", err)
+			}
+		}
+	} else {
+		// Hash matches - keep DB config (preserves UI changes)
+		logger.Debug("client config hash matches, keeping DB config")
 	}
 }
 
@@ -869,7 +918,6 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 
 	if mcpConfig != nil {
 		config.MCPConfig = mcpConfig
-
 		// Merge with config file if present
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
 			mergeMCPConfig(ctx, config, configData, mcpConfig)
@@ -1117,9 +1165,24 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", newVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
+					processedValue, envVar, err := config.processEnvValue(configData.Governance.VirtualKeys[i].Value)
+					if err != nil {
+						logger.Warn("failed to process env var for virtual key %s: %v", configData.Governance.VirtualKeys[i].ID, err)
+						continue
+					}
+					configData.Governance.VirtualKeys[i].Value = processedValue
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
-				} else {
+					if envVar != "" {
+						config.EnvKeys[envVar] = append(config.EnvKeys[envVar], configstore.EnvKeyInfo{
+							EnvVar:     envVar,
+							Provider:   "",
+							KeyType:    "virtual_key",
+							ConfigPath: fmt.Sprintf("governance.virtual_keys[%s].value", configData.Governance.VirtualKeys[i].ID),
+							KeyID:      "",
+						})
+					}
+				} else {				
 					logger.Debug("config hash matches for virtual key %s, keeping DB config", newVirtualKey.ID)
 				}
 				break
@@ -1564,7 +1627,11 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 		Pricing: pricingConfig,
 	}
 
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
+	var pricingManager *modelcatalog.ModelCatalog
+	var err error
+
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
@@ -1939,7 +2006,9 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	}
 
 	// Initialize pricing manager
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, logger)
+	var pricingManager *modelcatalog.ModelCatalog
+	// Use default modelcatalog initialization when no enterprise overrides are provided
+	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
 		logger.Warn("failed to initialize pricing manager: %v", err)
 	}
@@ -2888,7 +2957,7 @@ func (c *Config) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClien
 	if err := c.client.AddMCPClient(c.MCPConfig.ClientConfigs[len(c.MCPConfig.ClientConfigs)-1]); err != nil {
 		c.MCPConfig.ClientConfigs = c.MCPConfig.ClientConfigs[:len(c.MCPConfig.ClientConfigs)-1]
 		c.cleanupEnvKeys("", clientConfig.ID, newEnvKeys)
-		return fmt.Errorf("failed to add MCP client: %w", err)
+		return fmt.Errorf("failed to connect MCP client: %w", err)
 	}
 
 	if c.ConfigStore != nil {
@@ -3037,8 +3106,10 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 
 	// Update the in-memory config with the processed values
 	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
+	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = processedConfig.IsCodeModeClient
 	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
+	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
 
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
@@ -3073,12 +3144,14 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.MCPClientConfig {
 	// Create a copy with basic fields
 	configCopy := schemas.MCPClientConfig{
-		ID:               config.ID,
-		Name:             config.Name,
-		ConnectionType:   config.ConnectionType,
-		ConnectionString: config.ConnectionString,
-		StdioConfig:      config.StdioConfig,
-		ToolsToExecute:   append([]string{}, config.ToolsToExecute...),
+		ID:                 config.ID,
+		Name:               config.Name,
+		IsCodeModeClient:   config.IsCodeModeClient,
+		ConnectionType:     config.ConnectionType,
+		ConnectionString:   config.ConnectionString,
+		StdioConfig:        config.StdioConfig,
+		ToolsToExecute:     append([]string{}, config.ToolsToExecute...),
+		ToolsToAutoExecute: append([]string{}, config.ToolsToAutoExecute...),
 	}
 
 	// Handle connection string if present

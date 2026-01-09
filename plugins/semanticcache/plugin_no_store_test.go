@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -172,8 +171,8 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 
 	// Test no-store with direct cache type
 	ctx1 := CreateContextWithCacheKey("test-no-store-cache-types")
-	ctx1 = context.WithValue(ctx1, CacheNoStoreKey, true)
-	ctx1 = context.WithValue(ctx1, CacheTypeKey, CacheTypeDirect)
+	ctx1 = ctx1.WithValue(CacheNoStoreKey, true)
+	ctx1 = ctx1.WithValue(CacheTypeKey, CacheTypeDirect)
 
 	t.Log("Testing no-store with CacheTypeKey=direct...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
@@ -193,8 +192,8 @@ func TestCacheNoStoreWithCacheTypes(t *testing.T) {
 
 	// Test no-store with semantic cache type
 	ctx2 := CreateContextWithCacheKey("test-no-store-cache-types")
-	ctx2 = context.WithValue(ctx2, CacheNoStoreKey, true)
-	ctx2 = context.WithValue(ctx2, CacheTypeKey, CacheTypeSemantic)
+	ctx2 = ctx2.WithValue(CacheNoStoreKey, true)
+	ctx2 = ctx2.WithValue(CacheTypeKey, CacheTypeSemantic)
 
 	t.Log("Testing no-store with CacheTypeKey=semantic...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)
@@ -224,7 +223,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 
 	// Test with invalid no-store value (non-boolean)
 	ctx1 := CreateContextWithCacheKey("test-no-store-errors")
-	ctx1 = context.WithValue(ctx1, CacheNoStoreKey, "invalid")
+	ctx1 = ctx1.WithValue(CacheNoStoreKey, "invalid")
 
 	t.Log("Testing no-store with invalid value (should cache normally)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
@@ -248,7 +247,7 @@ func TestCacheNoStoreErrorHandling(t *testing.T) {
 
 	// Test with nil value (should cache normally)
 	ctx2 := CreateContextWithCacheKey("test-no-store-nil")
-	ctx2 = context.WithValue(ctx2, CacheNoStoreKey, nil)
+	ctx2 = ctx2.WithValue(CacheNoStoreKey, nil)
 
 	t.Log("Testing no-store with nil value (should cache normally)...")
 	response3, err3 := setup.Client.ChatCompletionRequest(ctx2, testRequest)

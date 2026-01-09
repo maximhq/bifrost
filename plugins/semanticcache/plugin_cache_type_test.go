@@ -1,7 +1,6 @@
 package semanticcache
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -148,7 +147,7 @@ func TestCacheTypeInvalidValue(t *testing.T) {
 
 	// Create context with invalid cache type
 	ctx := CreateContextWithCacheKey("test-invalid-cache-type")
-	ctx = context.WithValue(ctx, CacheTypeKey, "invalid_type")
+	ctx = ctx.WithValue(CacheTypeKey, "invalid_type")
 
 	testRequest := CreateBasicChatRequest("Test invalid cache type", 0.7, 50)
 

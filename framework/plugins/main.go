@@ -14,11 +14,12 @@ type DynamicPluginConfig struct {
 
 // Config is the configuration for the plugins framework
 type Config struct {
+	
 	Plugins []DynamicPluginConfig `json:"plugins"`
 }
 
 // LoadPlugins loads the plugins from the config
-func LoadPlugins(config *Config) ([]schemas.Plugin, error) {
+func LoadPlugins(loader PluginLoader, config *Config) ([]schemas.Plugin, error) {
 	plugins := []schemas.Plugin{}
 	if config == nil {
 		return plugins, nil
@@ -27,7 +28,7 @@ func LoadPlugins(config *Config) ([]schemas.Plugin, error) {
 		if !dp.Enabled {
 			continue
 		}
-		plugin, err := loadDynamicPlugin(dp.Path, dp.Config)
+		plugin, err := loader.LoadDynamicPlugin(dp.Path, dp.Config)
 		if err != nil {
 			return nil, err
 		}

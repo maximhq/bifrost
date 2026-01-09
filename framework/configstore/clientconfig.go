@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -46,6 +47,9 @@ type ClientConfig struct {
 	AllowedOrigins          []string                         `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	MaxRequestBodySizeMB    int                              `json:"max_request_body_size_mb"`            // The maximum request body size in MB
 	EnableLiteLLMFallbacks  bool                             `json:"enable_litellm_fallbacks"`            // Enable litellm-specific fallbacks for text completion for Groq
+	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
+	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
+	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
@@ -96,6 +100,24 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableLiteLLMFallbacks:true"))
 	} else {
 		hash.Write([]byte("enableLiteLLMFallbacks:false"))
+	}
+
+	if c.MCPAgentDepth > 0 {
+		hash.Write([]byte("mcpAgentDepth:" + strconv.Itoa(c.MCPAgentDepth)))
+	} else {
+		hash.Write([]byte("mcpAgentDepth:0"))
+	}
+
+	if c.MCPToolExecutionTimeout > 0 {
+		hash.Write([]byte("mcpToolExecutionTimeout:" + strconv.Itoa(c.MCPToolExecutionTimeout)))
+	} else {
+		hash.Write([]byte("mcpToolExecutionTimeout:0"))
+	}
+
+	if c.MCPCodeModeBindingLevel != "" {
+		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
+	} else {
+		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
 	}
 
 	// Hash integer fields

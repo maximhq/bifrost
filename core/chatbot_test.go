@@ -56,7 +56,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 }
 
 // GetKeysForProvider returns the API keys and associated models for a given provider.
-func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	switch providerKey {
 	case schemas.OpenAI:
 		return []schemas.Key{
@@ -306,8 +306,8 @@ func (s *ChatSession) getAvailableProviders() []schemas.ModelProvider {
 			availableProviders = append(availableProviders, provider)
 			continue
 		}
-		ctx := context.Background()
-		keys, err := s.account.GetKeysForProvider(&ctx, provider)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		keys, err := s.account.GetKeysForProvider(ctx, provider)
 		if err == nil && len(keys) > 0 && keys[0].Value != "" {
 			availableProviders = append(availableProviders, provider)
 		}
@@ -317,8 +317,8 @@ func (s *ChatSession) getAvailableProviders() []schemas.ModelProvider {
 
 // getAvailableModels returns available models for a given provider
 func (s *ChatSession) getAvailableModels(provider schemas.ModelProvider) []string {
-	ctx := context.Background()
-	keys, err := s.account.GetKeysForProvider(&ctx, provider)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	keys, err := s.account.GetKeysForProvider(ctx, provider)
 	if err != nil || len(keys) == 0 {
 		return []string{}
 	}
@@ -486,7 +486,7 @@ func (s *ChatSession) SendMessage(message string) (string, error) {
 	stopChan, wg := startLoader()
 
 	// Send request
-	response, err := s.client.ChatCompletionRequest(context.Background(), request)
+	response, err := s.client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
 
 	// Stop loading animation
 	stopLoader(stopChan, wg)
@@ -563,7 +563,7 @@ func (s *ChatSession) handleToolCalls(assistantMessage schemas.ChatMessage) (str
 		stopChan, wg := startLoader()
 
 		// Execute the tool using Bifrost's integrated MCP functionality
-		toolResult, err := s.client.ExecuteMCPTool(context.Background(), toolCall)
+		toolResult, err := s.client.ExecuteChatMCPTool(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), toolCall)
 
 		// Stop loading animation
 		stopLoader(stopChan, wg)
@@ -638,7 +638,7 @@ func (s *ChatSession) synthesizeToolResults() (string, error) {
 	stopChan, wg := startLoader()
 
 	// Send synthesis request
-	synthesisResponse, err := s.client.ChatCompletionRequest(context.Background(), synthesisRequest)
+	synthesisResponse, err := s.client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), synthesisRequest)
 
 	// Stop loading animation
 	stopLoader(stopChan, wg)

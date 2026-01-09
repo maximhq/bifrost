@@ -54,3 +54,5 @@ test-reports
 
 # Cursor specific
 .cursor/
+build/
+target/

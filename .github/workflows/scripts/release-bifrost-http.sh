@@ -237,7 +237,7 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   SERVER_LOG=$(mktemp)
   
   # Start the server in background with a timeout, logging to file and console
-  timeout 180s $TEST_BINARY --app-dir "$config_path" --port 18080 --log-level debug 2>&1 | tee "$SERVER_LOG" &
+  timeout 120s $TEST_BINARY --app-dir "$config_path" --port 18080 --log-level debug 2>&1 | tee "$SERVER_LOG" &
   SERVER_PID=$!
   
   # Wait for server to be ready by looking for the startup message
@@ -313,7 +313,17 @@ echo "✅ Transport build validation successful"
 
 # Commit and push changes if any
 # First, pull latest changes to avoid conflicts
-git pull origin main
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+  # In detached HEAD state (common in CI), use GITHUB_REF_NAME or default to main
+  CURRENT_BRANCH="${GITHUB_REF_NAME:-main}"
+fi
+
+echo "Pulling latest changes from origin/$CURRENT_BRANCH..."
+if ! git pull origin "$CURRENT_BRANCH"; then
+  echo "❌ Error: git pull origin $CURRENT_BRANCH failed"
+  exit 1
+fi
 
 # Stage any changes made to transports/
 git add transports/

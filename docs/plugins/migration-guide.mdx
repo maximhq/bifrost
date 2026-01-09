@@ -77,7 +77,7 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 // Modify req in-place. Return (*HTTPResponse, nil) to short-circuit.
 func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	// Add custom header (in-place modification)
-	req.Headers["X-Custom-Header"] = "value"
+	req.Headers["x-custom-header"] = "value"
 	
 	// Modify body (in-place modification)
 	var body map[string]any
@@ -128,13 +128,13 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 
 **v1.3.x:**
 ```go
-headers["Authorization"] = "Bearer " + token
+headers["authorization"] = "Bearer " + token
 return headers, body, nil
 ```
 
 **v1.4.x+:**
 ```go
-req.Headers["Authorization"] = "Bearer " + token
+req.Headers["authorization"] = "Bearer " + token
 return nil, nil
 ```
 
@@ -147,7 +147,7 @@ apiKey := headers["X-API-Key"]
 
 **v1.4.x+:**
 ```go
-apiKey := req.Headers["X-API-Key"]
+apiKey := req.Headers["x-api-key"]
 ```
 
 ### Conditional Processing
@@ -155,7 +155,7 @@ apiKey := req.Headers["X-API-Key"]
 **v1.3.x:**
 ```go
 func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	if headers["X-Skip-Processing"] == "true" {
+	if headers["x-skip-processing"] == "true" {
 		return headers, body, nil
 	}
 	// Process...
@@ -166,7 +166,7 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 **v1.4.x+:**
 ```go
 func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if req.Headers["X-Skip-Processing"] == "true" {
+	if req.Headers["x-skip-processing"] == "true" {
 		return nil, nil // Continue without modification
 	}
 	// Process...
@@ -179,7 +179,7 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 **v1.3.x:**
 ```go
 func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	if headers["X-API-Key"] == "" {
+	if headers["x-api-key"] == "" {
 		return nil, nil, fmt.Errorf("missing API key")
 	}
 	return headers, body, nil
@@ -189,7 +189,7 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 **v1.4.x+:**
 ```go
 func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if req.Headers["X-API-Key"] == "" {
+	if req.Headers["x-api-key"] == "" {
 		// Return a custom response to short-circuit
 		return &schemas.HTTPResponse{
 			StatusCode: 401,
@@ -284,10 +284,10 @@ Make sure you're modifying `req.Headers` directly:
 
 ```go
 // Set header (case-sensitive keys)
-req.Headers["X-Custom-Header"] = "value"
+req.Headers["x-custom-header"] = "value"
 
 // Read header
-value := req.Headers["X-Custom-Header"]
+value := req.Headers["x-custom-header"]
 ```
 
 ## Need Help?

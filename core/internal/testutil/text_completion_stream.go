@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -65,7 +64,8 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		// Use proper streaming retry wrapper for the stream request
 		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-			return client.TextCompletionStreamRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.TextCompletionStreamRequest(bfCtx, request)
 		})
 
 		// Enhanced error handling
@@ -264,7 +264,8 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				}
 
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.TextCompletionStreamRequest(ctx, request)
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.TextCompletionStreamRequest(bfCtx, request)
 				})
 
 				RequireNoError(t, err, "Text completion stream with varied prompts failed")
@@ -406,7 +407,8 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				}
 
 				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.TextCompletionStreamRequest(ctx, request)
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.TextCompletionStreamRequest(bfCtx, request)
 				})
 
 				RequireNoError(t, err, "Text completion stream with parameters failed")

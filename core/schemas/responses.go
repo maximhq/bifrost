@@ -2,8 +2,6 @@ package schemas
 
 import (
 	"fmt"
-
-	"github.com/bytedance/sonic"
 )
 
 // =============================================================================
@@ -56,7 +54,7 @@ type BifrostResponsesResponse struct {
 	MaxToolCalls       *int                                `json:"max_tool_calls,omitempty"`
 	Metadata           *map[string]any                     `json:"metadata,omitempty"`
 	Model              string                              `json:"model"`
-	Output             []ResponsesMessage                  `json:"output,omitempty"`
+	Output             []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
 	PreviousResponseID *string                             `json:"previous_response_id,omitempty"`
 	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"`            // Reference to a prompt template and variables
@@ -155,13 +153,13 @@ func (rc ResponsesResponseConversation) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ResponsesResponseConversationStr != nil {
-		return sonic.Marshal(*rc.ResponsesResponseConversationStr)
+		return Marshal(*rc.ResponsesResponseConversationStr)
 	}
 	if rc.ResponsesResponseConversationStruct != nil {
-		return sonic.Marshal(rc.ResponsesResponseConversationStruct)
+		return Marshal(rc.ResponsesResponseConversationStruct)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -170,14 +168,14 @@ func (rc ResponsesResponseConversation) MarshalJSON() ([]byte, error) {
 func (rc *ResponsesResponseConversation) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		rc.ResponsesResponseConversationStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var structContent ResponsesResponseConversationStruct
-	if err := sonic.Unmarshal(data, &structContent); err == nil {
+	if err := Unmarshal(data, &structContent); err == nil {
 		rc.ResponsesResponseConversationStruct = &structContent
 		return nil
 	}
@@ -199,13 +197,13 @@ func (rc ResponsesResponseInstructions) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ResponsesResponseInstructionsStr != nil {
-		return sonic.Marshal(*rc.ResponsesResponseInstructionsStr)
+		return Marshal(*rc.ResponsesResponseInstructionsStr)
 	}
 	if rc.ResponsesResponseInstructionsArray != nil {
-		return sonic.Marshal(rc.ResponsesResponseInstructionsArray)
+		return Marshal(rc.ResponsesResponseInstructionsArray)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -214,14 +212,14 @@ func (rc ResponsesResponseInstructions) MarshalJSON() ([]byte, error) {
 func (rc *ResponsesResponseInstructions) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		rc.ResponsesResponseInstructionsStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ResponsesMessage
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+	if err := Unmarshal(data, &arrayContent); err == nil {
 		rc.ResponsesResponseInstructionsArray = arrayContent
 		return nil
 	}
@@ -359,13 +357,13 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if rc.ContentStr != nil {
-		return sonic.Marshal(*rc.ContentStr)
+		return Marshal(*rc.ContentStr)
 	}
 	if rc.ContentBlocks != nil {
-		return sonic.Marshal(rc.ContentBlocks)
+		return Marshal(rc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesMessageContent.
@@ -374,14 +372,14 @@ func (rc ResponsesMessageContent) MarshalJSON() ([]byte, error) {
 func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		rc.ContentStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ResponsesMessageContentBlock
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+	if err := Unmarshal(data, &arrayContent); err == nil {
 		rc.ContentBlocks = arrayContent
 		return nil
 	}
@@ -501,38 +499,38 @@ type ResponsesToolMessageActionStruct struct {
 
 func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	if action.ResponsesComputerToolCallAction != nil {
-		return sonic.Marshal(action.ResponsesComputerToolCallAction)
+		return Marshal(action.ResponsesComputerToolCallAction)
 	}
 	if action.ResponsesWebSearchToolCallAction != nil {
-		return sonic.Marshal(action.ResponsesWebSearchToolCallAction)
+		return Marshal(action.ResponsesWebSearchToolCallAction)
 	}
 	if action.ResponsesLocalShellToolCallAction != nil {
-		return sonic.Marshal(action.ResponsesLocalShellToolCallAction)
+		return Marshal(action.ResponsesLocalShellToolCallAction)
 	}
 	if action.ResponsesMCPApprovalRequestAction != nil {
-		return sonic.Marshal(action.ResponsesMCPApprovalRequestAction)
+		return Marshal(action.ResponsesMCPApprovalRequestAction)
 	}
 	return nil, fmt.Errorf("responses tool message action struct is neither a computer tool call action nor a web search tool call action nor a local shell tool call action nor a mcp approval request action")
 }
 
 func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error {
 	var computerToolCallAction ResponsesComputerToolCallAction
-	if err := sonic.Unmarshal(data, &computerToolCallAction); err == nil {
+	if err := Unmarshal(data, &computerToolCallAction); err == nil {
 		action.ResponsesComputerToolCallAction = &computerToolCallAction
 		return nil
 	}
 	var webSearchToolCallAction ResponsesWebSearchToolCallAction
-	if err := sonic.Unmarshal(data, &webSearchToolCallAction); err == nil {
+	if err := Unmarshal(data, &webSearchToolCallAction); err == nil {
 		action.ResponsesWebSearchToolCallAction = &webSearchToolCallAction
 		return nil
 	}
 	var localShellToolCallAction ResponsesLocalShellToolCallAction
-	if err := sonic.Unmarshal(data, &localShellToolCallAction); err == nil {
+	if err := Unmarshal(data, &localShellToolCallAction); err == nil {
 		action.ResponsesLocalShellToolCallAction = &localShellToolCallAction
 		return nil
 	}
 	var mcpApprovalRequestAction ResponsesMCPApprovalRequestAction
-	if err := sonic.Unmarshal(data, &mcpApprovalRequestAction); err == nil {
+	if err := Unmarshal(data, &mcpApprovalRequestAction); err == nil {
 		action.ResponsesMCPApprovalRequestAction = &mcpApprovalRequestAction
 		return nil
 	}
@@ -547,29 +545,29 @@ type ResponsesToolMessageOutputStruct struct {
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesToolCallOutputStr != nil {
-		return sonic.Marshal(*output.ResponsesToolCallOutputStr)
+		return Marshal(*output.ResponsesToolCallOutputStr)
 	}
 	if output.ResponsesFunctionToolCallOutputBlocks != nil {
-		return sonic.Marshal(output.ResponsesFunctionToolCallOutputBlocks)
+		return Marshal(output.ResponsesFunctionToolCallOutputBlocks)
 	}
 	if output.ResponsesComputerToolCallOutput != nil {
-		return sonic.Marshal(output.ResponsesComputerToolCallOutput)
+		return Marshal(output.ResponsesComputerToolCallOutput)
 	}
 	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data")
 }
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {
 	var str string
-	if err := sonic.Unmarshal(data, &str); err == nil {
+	if err := Unmarshal(data, &str); err == nil {
 		output.ResponsesToolCallOutputStr = &str
 		return nil
 	}
 	var array []ResponsesMessageContentBlock
-	if err := sonic.Unmarshal(data, &array); err == nil {
+	if err := Unmarshal(data, &array); err == nil {
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
 	var computerToolCallOutput ResponsesComputerToolCallOutputData
-	if err := sonic.Unmarshal(data, &computerToolCallOutput); err == nil {
+	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
 		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
 		return nil
 	}
@@ -685,13 +683,13 @@ func (rf ResponsesFunctionToolCallOutput) MarshalJSON() ([]byte, error) {
 	}
 
 	if rf.ResponsesFunctionToolCallOutputStr != nil {
-		return sonic.Marshal(*rf.ResponsesFunctionToolCallOutputStr)
+		return Marshal(*rf.ResponsesFunctionToolCallOutputStr)
 	}
 	if rf.ResponsesFunctionToolCallOutputBlocks != nil {
-		return sonic.Marshal(rf.ResponsesFunctionToolCallOutputBlocks)
+		return Marshal(rf.ResponsesFunctionToolCallOutputBlocks)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesFunctionToolCallOutput.
@@ -700,7 +698,7 @@ func (rf ResponsesFunctionToolCallOutput) MarshalJSON() ([]byte, error) {
 func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 	// Parse as generic object to check if it contains content-like fields
 	var genericObj map[string]interface{}
-	if err := sonic.Unmarshal(data, &genericObj); err != nil {
+	if err := Unmarshal(data, &genericObj); err != nil {
 		return err
 	}
 
@@ -720,14 +718,14 @@ func (rf *ResponsesFunctionToolCallOutput) UnmarshalJSON(data []byte) error {
 
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		rf.ResponsesFunctionToolCallOutputStr = &stringContent
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ResponsesMessageContentBlock
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+	if err := Unmarshal(data, &arrayContent); err == nil {
 		rf.ResponsesFunctionToolCallOutputBlocks = arrayContent
 		return nil
 	}
@@ -794,10 +792,10 @@ func (o ResponsesCodeInterpreterOutput) MarshalJSON() ([]byte, error) {
 
 	// Marshal whichever one is present
 	if o.ResponsesCodeInterpreterOutputLogs != nil {
-		return sonic.Marshal(o.ResponsesCodeInterpreterOutputLogs)
+		return Marshal(o.ResponsesCodeInterpreterOutputLogs)
 	}
 	if o.ResponsesCodeInterpreterOutputImage != nil {
-		return sonic.Marshal(o.ResponsesCodeInterpreterOutputImage)
+		return Marshal(o.ResponsesCodeInterpreterOutputImage)
 	}
 
 	// Return null if neither is set
@@ -815,7 +813,7 @@ func (o *ResponsesCodeInterpreterOutput) UnmarshalJSON(data []byte) error {
 	var typeStruct struct {
 		Type string `json:"type"`
 	}
-	if err := sonic.Unmarshal(data, &typeStruct); err != nil {
+	if err := Unmarshal(data, &typeStruct); err != nil {
 		return fmt.Errorf("failed to read type field: %w", err)
 	}
 
@@ -823,7 +821,7 @@ func (o *ResponsesCodeInterpreterOutput) UnmarshalJSON(data []byte) error {
 	switch typeStruct.Type {
 	case "logs":
 		var logs ResponsesCodeInterpreterOutputLogs
-		if err := sonic.Unmarshal(data, &logs); err != nil {
+		if err := Unmarshal(data, &logs); err != nil {
 			return fmt.Errorf("failed to unmarshal logs output: %w", err)
 		}
 		o.ResponsesCodeInterpreterOutputLogs = &logs
@@ -832,7 +830,7 @@ func (o *ResponsesCodeInterpreterOutput) UnmarshalJSON(data []byte) error {
 
 	case "image":
 		var image ResponsesCodeInterpreterOutputImage
-		if err := sonic.Unmarshal(data, &image); err != nil {
+		if err := Unmarshal(data, &image); err != nil {
 			return fmt.Errorf("failed to unmarshal image output: %w", err)
 		}
 		o.ResponsesCodeInterpreterOutputImage = &image
@@ -982,13 +980,13 @@ func (tc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if tc.ResponsesToolChoiceStr != nil {
-		return sonic.Marshal(tc.ResponsesToolChoiceStr)
+		return Marshal(tc.ResponsesToolChoiceStr)
 	}
 	if tc.ResponsesToolChoiceStruct != nil {
-		return sonic.Marshal(tc.ResponsesToolChoiceStruct)
+		return Marshal(tc.ResponsesToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -997,14 +995,14 @@ func (tc ResponsesToolChoice) MarshalJSON() ([]byte, error) {
 func (tc *ResponsesToolChoice) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var toolChoiceStr string
-	if err := sonic.Unmarshal(data, &toolChoiceStr); err == nil {
+	if err := Unmarshal(data, &toolChoiceStr); err == nil {
 		tc.ResponsesToolChoiceStr = &toolChoiceStr
 		return nil
 	}
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var responsesToolChoiceStruct ResponsesToolChoiceStruct
-	if err := sonic.Unmarshal(data, &responsesToolChoiceStruct); err == nil {
+	if err := Unmarshal(data, &responsesToolChoiceStruct); err == nil {
 		tc.ResponsesToolChoiceStruct = &responsesToolChoiceStruct
 		return nil
 	}
@@ -1115,14 +1113,14 @@ func (f *ResponsesToolFileSearchFilter) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("unknown filter type: %s", f.Type)
 	}
 
-	return sonic.Marshal(result)
+	return Marshal(result)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ResponsesToolFileSearchFilter
 func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a map to inspect the type field
 	var raw map[string]interface{}
-	if err := sonic.Unmarshal(data, &raw); err != nil {
+	if err := Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("failed to unmarshal filter JSON: %w", err)
 	}
 
@@ -1147,7 +1145,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 		f.ResponsesToolFileSearchCompoundFilter = nil
 
 		// Unmarshal into the comparison filter
-		if err := sonic.Unmarshal(data, f.ResponsesToolFileSearchComparisonFilter); err != nil {
+		if err := Unmarshal(data, f.ResponsesToolFileSearchComparisonFilter); err != nil {
 			return fmt.Errorf("failed to unmarshal comparison filter: %w", err)
 		}
 
@@ -1165,7 +1163,7 @@ func (f *ResponsesToolFileSearchFilter) UnmarshalJSON(data []byte) error {
 		f.ResponsesToolFileSearchComparisonFilter = nil
 
 		// Unmarshal into the compound filter
-		if err := sonic.Unmarshal(data, f.ResponsesToolFileSearchCompoundFilter); err != nil {
+		if err := Unmarshal(data, f.ResponsesToolFileSearchCompoundFilter); err != nil {
 			return fmt.Errorf("failed to unmarshal compound filter: %w", err)
 		}
 
@@ -1273,7 +1271,7 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 	}
 
 	if as.Setting != nil {
-		return sonic.Marshal(*as.Setting)
+		return Marshal(*as.Setting)
 	}
 	if as.Always != nil || as.Never != nil {
 		// Marshal as an object with always/never fields
@@ -1284,17 +1282,17 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 		if as.Never != nil {
 			obj["never"] = as.Never
 		}
-		return sonic.Marshal(obj)
+		return Marshal(obj)
 	}
 	// If all are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ResponsesToolMCPAllowedToolsApprovalSetting
 func (as *ResponsesToolMCPAllowedToolsApprovalSetting) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var settingStr string
-	if err := sonic.Unmarshal(data, &settingStr); err == nil {
+	if err := Unmarshal(data, &settingStr); err == nil {
 		as.Setting = &settingStr
 		return nil
 	}
@@ -1304,7 +1302,7 @@ func (as *ResponsesToolMCPAllowedToolsApprovalSetting) UnmarshalJSON(data []byte
 		Always *ResponsesToolMCPAllowedToolsApprovalFilter `json:"always,omitempty"`
 		Never  *ResponsesToolMCPAllowedToolsApprovalFilter `json:"never,omitempty"`
 	}
-	if err := sonic.Unmarshal(data, &obj); err == nil {
+	if err := Unmarshal(data, &obj); err == nil {
 		as.Always = obj.Always
 		as.Never = obj.Never
 		return nil

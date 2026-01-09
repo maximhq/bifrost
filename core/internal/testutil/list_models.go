@@ -5,7 +5,6 @@ import (
 	"os"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -60,7 +59,8 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		}
 
 		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModels", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return client.ListModelsRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ListModelsRequest(bfCtx, request)
 		})
 
 		if bifrostErr != nil {
@@ -161,7 +161,8 @@ func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModelsPagination", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return client.ListModelsRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ListModelsRequest(bfCtx, request)
 		})
 
 		if bifrostErr != nil {
@@ -203,7 +204,8 @@ func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			}
 
 			nextPageResponse, nextPageErr := WithListModelsTestRetry(t, listModelsRetryConfig, nextPageRetryContext, expectations, "ListModelsPagination_NextPage", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-				return client.ListModelsRequest(ctx, nextPageRequest)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ListModelsRequest(bfCtx, nextPageRequest)
 			})
 
 			if nextPageErr != nil {

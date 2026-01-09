@@ -1,13 +1,10 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-// PluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
-// It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
-type PluginShortCircuit struct {
-	Response *BifrostResponse    // If set, short-circuit with this response (skips provider call)
-	Stream   chan *BifrostStream // If set, short-circuit with this stream (skips provider call)
-	Error    *BifrostError       // If set, short-circuit with this error (can set AllowFallbacks field)
-}
+import (
+	"context"
+	"sync"
+)
 
 // PluginStatus constants
 const (
@@ -27,6 +24,59 @@ type PluginStatus struct {
 	Logs   []string `json:"logs"`
 }
 
+// HTTPRequest is a serializable representation of an HTTP request.
+// Used for plugin HTTP transport interception (supports both native .so and WASM plugins).
+// This type is pooled for allocation control - use AcquireHTTPRequest and ReleaseHTTPRequest.
+type HTTPRequest struct {
+	Method  string            `json:"method"`
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"` // keys are lowercase
+	Query   map[string]string `json:"query"`   // keys are lowercase
+	Body    []byte            `json:"body"`
+}
+
+// HTTPResponse is a serializable representation of an HTTP response.
+// Used for short-circuit responses in plugin HTTP transport interception.
+type HTTPResponse struct {
+	StatusCode int               `json:"status_code"`
+	Headers    map[string]string `json:"headers"`
+	Body       []byte            `json:"body"`
+}
+
+// httpRequestPool is the pool for HTTPRequest objects to reduce allocations.
+var httpRequestPool = sync.Pool{
+	New: func() any {
+		return &HTTPRequest{
+			Headers: make(map[string]string, 16),
+			Query:   make(map[string]string, 8),
+		}
+	},
+}
+
+// AcquireHTTPRequest gets an HTTPRequest from the pool.
+// The returned HTTPRequest is ready to use with pre-allocated maps.
+// Call ReleaseHTTPRequest when done to return it to the pool.
+func AcquireHTTPRequest() *HTTPRequest {
+	return httpRequestPool.Get().(*HTTPRequest)
+}
+
+// ReleaseHTTPRequest returns an HTTPRequest to the pool.
+// The HTTPRequest is reset before being returned to the pool.
+// Do not use the HTTPRequest after calling this function.
+func ReleaseHTTPRequest(req *HTTPRequest) {
+	if req == nil {
+		return
+	}
+	// Clear the maps
+	clear(req.Headers)
+	clear(req.Query)
+	// Reset fields
+	req.Method = ""
+	req.Path = ""
+	req.Body = nil
+	httpRequestPool.Put(req)
+}
+
 // Plugin defines the interface for Bifrost plugins.
 // Plugins can intercept and modify requests and responses at different stages
 // of the processing pipeline.
@@ -35,7 +85,7 @@ type PluginStatus struct {
 // PostHooks are executed in the reverse order of PreHooks.
 //
 // Execution order:
-// 1. TransportInterceptor (HTTP transport only, modifies raw headers/body before entering Bifrost core)
+// 1. HTTPTransportIntercept (HTTP transport only, modifies raw headers/body before entering Bifrost core)
 // 2. PreHook (executed in registration order)
 // 3. Provider call
 // 4. PostHook (executed in reverse order of PreHooks)
@@ -62,11 +112,18 @@ type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
 
-	// TransportInterceptor is called at the HTTP transport layer before requests enter Bifrost core.
-	// It allows plugins to modify raw HTTP headers and body before transformation into BifrostRequest.
+	// HTTPTransportIntercept is called at the HTTP transport layer before requests enter Bifrost core.
+	// It receives a serializable HTTPRequest and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
-	// Returns modified headers, modified body, and any error that occurred during interception.
-	TransportInterceptor(ctx *BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+	// Works with both native .so plugins and WASM plugins due to serializable types.
+	//
+	// Return values:
+	// - (nil, nil): Continue to next plugin/handler, request modifications are applied
+	// - (*HTTPResponse, nil): Short-circuit with this response, skip remaining plugins and provider call
+	// - (nil, error): Short-circuit with error response
+	//
+	// Return nil for both values if the plugin doesn't need HTTP transport interception.
+	HTTPTransportIntercept(ctx *BifrostContext, req *HTTPRequest) (*HTTPResponse, error)
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.
@@ -94,4 +151,34 @@ type PluginConfig struct {
 	Path    *string `json:"path,omitempty"`
 	Version *int16  `json:"version,omitempty"`
 	Config  any     `json:"config,omitempty"`
+}
+
+// ObservabilityPlugin is an interface for plugins that receive completed traces
+// for forwarding to observability backends (e.g., OTEL collectors, Datadog, etc.)
+//
+// ObservabilityPlugins are called asynchronously after the HTTP response has been
+// written to the wire, ensuring they don't add latency to the client response.
+//
+// Plugins implementing this interface will:
+// 1. Continue to work as regular plugins via PreHook/PostHook
+// 2. Additionally receive completed traces via the Inject method
+//
+// Example backends: OpenTelemetry collectors, Datadog, Jaeger, Maxim, etc.
+//
+// Note: Go type assertion (plugin.(ObservabilityPlugin)) is used to identify
+// plugins implementing this interface - no marker method is needed.
+type ObservabilityPlugin interface {
+	Plugin
+
+	// Inject receives a completed trace for forwarding to observability backends.
+	// This method is called asynchronously after the response has been written to the client.
+	// The trace contains all spans that were added during request processing.
+	//
+	// Implementations should:
+	// - Convert the trace to their backend's format
+	// - Send the trace to the backend (can be async)
+	// - Handle errors gracefully (log and continue)
+	//
+	// The context passed is a fresh background context, not the request context.
+	Inject(ctx context.Context, trace *Trace) error
 }

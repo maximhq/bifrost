@@ -113,6 +113,130 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 	return ct
 }
 
+// ToChatAssistantMessageToolCall converts a ResponsesToolMessage to ChatAssistantMessageToolCall format.
+// This is useful for executing Responses API tool calls using the Chat API tool executor.
+//
+// Returns:
+//   - *ChatAssistantMessageToolCall: The converted tool call in Chat API format
+//
+// Example:
+//
+//	responsesToolMsg := &ResponsesToolMessage{
+//	    CallID:    Ptr("call-123"),
+//	    Name:      Ptr("calculate"),
+//	    Arguments: Ptr("{\"x\": 10, \"y\": 20}"),
+//	}
+//	chatToolCall := responsesToolMsg.ToChatAssistantMessageToolCall()
+func (rtm *ResponsesToolMessage) ToChatAssistantMessageToolCall() *ChatAssistantMessageToolCall {
+	if rtm == nil {
+		return nil
+	}
+
+	toolCall := &ChatAssistantMessageToolCall{
+		ID:   rtm.CallID,
+		Type: Ptr("function"),
+		Function: ChatAssistantMessageToolCallFunction{
+			Name:      rtm.Name,
+			Arguments: "{}", // Default to empty JSON object for valid JSON unmarshaling
+		},
+	}
+
+	// Extract arguments string
+	if rtm.Arguments != nil {
+		toolCall.Function.Arguments = *rtm.Arguments
+	}
+
+	return toolCall
+}
+
+// ToResponsesToolMessage converts a ChatToolMessage (tool execution result) to ResponsesToolMessage format.
+// This creates a function_call_output message suitable for the Responses API.
+//
+// Returns:
+//   - *ResponsesMessage: A ResponsesMessage with type=function_call_output containing the tool result
+//
+// Example:
+//
+//	chatToolMsg := &ChatMessage{
+//	    Role: ChatMessageRoleTool,
+//	    ChatToolMessage: &ChatToolMessage{
+//	        ToolCallID: Ptr("call-123"),
+//	    },
+//	    Content: &ChatMessageContent{
+//	        ContentStr: Ptr("Result: 30"),
+//	    },
+//	}
+//	responsesMsg := chatToolMsg.ToResponsesToolMessage()
+func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
+	if cm == nil || cm.ChatToolMessage == nil {
+		return nil
+	}
+
+	msgType := ResponsesMessageTypeFunctionCallOutput
+
+	respMsg := &ResponsesMessage{
+		Type: &msgType,
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID: cm.ChatToolMessage.ToolCallID,
+		},
+	}
+
+	// Extract output from content
+	if cm.Content != nil {
+		if cm.Content.ContentStr != nil {
+			output := *cm.Content.ContentStr
+			respMsg.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+				ResponsesToolCallOutputStr: &output,
+			}
+		} else if len(cm.Content.ContentBlocks) > 0 {
+			// For structured content blocks, convert to ResponsesMessageContentBlock
+			respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
+			for i, block := range cm.Content.ContentBlocks {
+				respBlocks[i] = ResponsesMessageContentBlock{
+					Type:         ResponsesMessageContentBlockType(block.Type),
+					Text:         block.Text,
+					CacheControl: block.CacheControl,
+				}
+
+				// Map image
+				if block.ImageURLStruct != nil {
+					respBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
+						ImageURL: &block.ImageURLStruct.URL,
+						Detail:   block.ImageURLStruct.Detail,
+					}
+				}
+
+				// Map file
+				if block.File != nil {
+					respBlocks[i].FileID = block.File.FileID
+					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
+						FileData: block.File.FileData,
+						Filename: block.File.Filename,
+						FileType: block.File.FileType,
+					}
+				}
+
+				// Map audio
+				if block.InputAudio != nil {
+					format := ""
+					if block.InputAudio.Format != nil {
+						format = *block.InputAudio.Format
+					}
+					respBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
+						Data:   block.InputAudio.Data,
+						Format: format,
+					}
+				}
+			}
+			respMsg.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+				ResponsesFunctionToolCallOutputBlocks: respBlocks,
+			}
+		}
+	}
+
+	return respMsg
+}
+
 // =============================================================================
 // TOOL CHOICE CONVERSION METHODS
 // =============================================================================
@@ -324,14 +448,17 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		role = ResponsesInputMessageRoleSystem
 	case ChatMessageRoleTool:
 		messageType = ResponsesMessageTypeFunctionCallOutput
-		role = ResponsesInputMessageRoleUser // Tool messages are typically user role in responses
+		role = "" // tool call output messages don't include a role field
 	case ChatMessageRoleDeveloper:
 		role = ResponsesInputMessageRoleDeveloper
 	}
 
 	rm := ResponsesMessage{
 		Type: &messageType,
-		Role: &role,
+	}
+
+	if role != "" {
+		rm.Role = &role
 	}
 
 	// Handle refusal content specifically - use content blocks with ResponsesOutputMessageContentRefusal
@@ -347,7 +474,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		}
 	} else if cm.Content != nil && cm.Content.ContentStr != nil {
 		// Convert regular string content (if input message then ContentStr, else ContentBlocks)
-		if cm.Role == ChatMessageRoleAssistant {
+		// Skip setting content for function_call_output - content should only be in output field
+		if messageType == ResponsesMessageTypeFunctionCallOutput {
+			// Don't set content for function_call_output - it will be set in ResponsesToolMessage.Output
+		} else if cm.Role == ChatMessageRoleAssistant {
 			rm.Content = &ResponsesMessageContent{
 				ContentBlocks: []ResponsesMessageContentBlock{
 					{Type: ResponsesOutputMessageContentTypeText, Text: cm.Content.ContentStr},
@@ -360,57 +490,62 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		}
 	} else if cm.Content != nil && cm.Content.ContentBlocks != nil {
 		// Convert content blocks
-		responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
-		for i, block := range cm.Content.ContentBlocks {
-			blockType := ResponsesMessageContentBlockType(block.Type)
+		// Skip setting content blocks for function_call_output
+		if messageType == ResponsesMessageTypeFunctionCallOutput {
+			// Don't set content for function_call_output - it will be set in ResponsesToolMessage.Output
+		} else {
+			responseBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
+			for i, block := range cm.Content.ContentBlocks {
+				blockType := ResponsesMessageContentBlockType(block.Type)
 
-			switch block.Type {
-			case ChatContentBlockTypeText:
-				if cm.Role == ChatMessageRoleAssistant {
-					blockType = ResponsesOutputMessageContentTypeText
-				} else {
-					blockType = ResponsesInputMessageContentBlockTypeText
+				switch block.Type {
+				case ChatContentBlockTypeText:
+					if cm.Role == ChatMessageRoleAssistant {
+						blockType = ResponsesOutputMessageContentTypeText
+					} else {
+						blockType = ResponsesInputMessageContentBlockTypeText
+					}
+				case ChatContentBlockTypeImage:
+					blockType = ResponsesInputMessageContentBlockTypeImage
+				case ChatContentBlockTypeFile:
+					blockType = ResponsesInputMessageContentBlockTypeFile
+				case ChatContentBlockTypeInputAudio:
+					blockType = ResponsesInputMessageContentBlockTypeAudio
 				}
-			case ChatContentBlockTypeImage:
-				blockType = ResponsesInputMessageContentBlockTypeImage
-			case ChatContentBlockTypeFile:
-				blockType = ResponsesInputMessageContentBlockTypeFile
-			case ChatContentBlockTypeInputAudio:
-				blockType = ResponsesInputMessageContentBlockTypeAudio
-			}
 
-			responseBlocks[i] = ResponsesMessageContentBlock{
-				Type: blockType,
-				Text: block.Text,
-			}
+				responseBlocks[i] = ResponsesMessageContentBlock{
+					Type: blockType,
+					Text: block.Text,
+				}
 
-			// Convert specific block types
-			if block.ImageURLStruct != nil {
-				responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
-					ImageURL: &block.ImageURLStruct.URL,
-					Detail:   block.ImageURLStruct.Detail,
+				// Convert specific block types
+				if block.ImageURLStruct != nil {
+					responseBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
+						ImageURL: &block.ImageURLStruct.URL,
+						Detail:   block.ImageURLStruct.Detail,
+					}
+				}
+				if block.File != nil {
+					responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
+						FileData: block.File.FileData,
+						Filename: block.File.Filename,
+					}
+					responseBlocks[i].FileID = block.File.FileID
+				}
+				if block.InputAudio != nil {
+					format := ""
+					if block.InputAudio.Format != nil {
+						format = *block.InputAudio.Format
+					}
+					responseBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
+						Data:   block.InputAudio.Data,
+						Format: format,
+					}
 				}
 			}
-			if block.File != nil {
-				responseBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-					FileData: block.File.FileData,
-					Filename: block.File.Filename,
-				}
-				responseBlocks[i].FileID = block.File.FileID
+			rm.Content = &ResponsesMessageContent{
+				ContentBlocks: responseBlocks,
 			}
-			if block.InputAudio != nil {
-				format := ""
-				if block.InputAudio.Format != nil {
-					format = *block.InputAudio.Format
-				}
-				responseBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
-					Data:   block.InputAudio.Data,
-					Format: format,
-				}
-			}
-		}
-		rm.Content = &ResponsesMessageContent{
-			ContentBlocks: responseBlocks,
 		}
 	}
 
@@ -422,9 +557,56 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		}
 
 		// If tool output content exists, add it to function_call_output
-		if rm.Content != nil && rm.Content.ContentStr != nil && *rm.Content.ContentStr != "" {
-			rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
-				ResponsesToolCallOutputStr: rm.Content.ContentStr,
+		// For function_call_output, get content from cm.Content since rm.Content is not set
+		if messageType == ResponsesMessageTypeFunctionCallOutput && cm.Content != nil {
+			// Prefer ContentStr if present
+			if cm.Content.ContentStr != nil && *cm.Content.ContentStr != "" {
+				rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: cm.Content.ContentStr,
+				}
+			} else if len(cm.Content.ContentBlocks) > 0 {
+				// For structured content blocks, convert to ResponsesMessageContentBlock
+				respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
+				for i, block := range cm.Content.ContentBlocks {
+					respBlocks[i] = ResponsesMessageContentBlock{
+						Type:         ResponsesMessageContentBlockType(block.Type),
+						Text:         block.Text,
+						CacheControl: block.CacheControl,
+					}
+
+					// Map image
+					if block.ImageURLStruct != nil {
+						respBlocks[i].ResponsesInputMessageContentBlockImage = &ResponsesInputMessageContentBlockImage{
+							ImageURL: &block.ImageURLStruct.URL,
+							Detail:   block.ImageURLStruct.Detail,
+						}
+					}
+
+					// Map file
+					if block.File != nil {
+						respBlocks[i].FileID = block.File.FileID
+						respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
+							FileData: block.File.FileData,
+							Filename: block.File.Filename,
+							FileType: block.File.FileType,
+						}
+					}
+
+					// Map audio
+					if block.InputAudio != nil {
+						format := ""
+						if block.InputAudio.Format != nil {
+							format = *block.InputAudio.Format
+						}
+						respBlocks[i].Audio = &ResponsesInputMessageContentBlockAudio{
+							Data:   block.InputAudio.Data,
+							Format: format,
+						}
+					}
+				}
+				rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: respBlocks,
+				}
 			}
 		}
 	}

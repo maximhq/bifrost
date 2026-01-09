@@ -10,10 +10,17 @@ import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
+import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
-import { Suspense, useEffect } from "react";
+import { useEffect } from "react";
 import { toast, Toaster } from "sonner";
+
+// Dynamic import - only loaded in development, completely excluded from prod bundle
+const DevProfiler = dynamic(
+  () => import("@/components/devProfiler").then(mod => ({ default: mod.DevProfiler })),
+  { ssr: false }
+);
 
 function AppContent({ children }: { children: React.ReactNode }) {
 	const { data: bifrostConfig, error, isLoading } = useGetCoreConfigQuery({});
@@ -28,7 +35,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 		<WebSocketProvider>
 			<SidebarProvider>
 				<Sidebar />
-				<div className="dark:bg-card custom-scrollbar my-[1rem] h-[calc(100dvh-2rem)] w-full overflow-auto rounded-tl-md rounded-bl-md border border-gray-200 bg-white dark:border-zinc-800">
+				<div className="dark:bg-card custom-scrollbar my-[0.5rem] h-[calc(100dvh-1rem)] w-full overflow-auto rounded-md border border-gray-200 bg-white dark:border-zinc-800 mr-[0.5rem]">
 					<main className="custom-scrollbar relative mx-auto flex flex-col overflow-y-hidden p-4">
 						{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
 					</main>
@@ -58,6 +65,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 					<NuqsAdapter>
 						<RbacProvider>
 							<AppContent>{children}</AppContent>
+							{process.env.NODE_ENV === 'development' && <DevProfiler />}
 						</RbacProvider>
 					</NuqsAdapter>
 				</ReduxProvider>

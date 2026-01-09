@@ -2,19 +2,20 @@
 
 import { FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { BaseProvider, RequestType } from "@/lib/types/config";
 import { isRequestTypeDisabled } from "@/lib/utils/validation";
-import { Control, useFormContext } from "react-hook-form";
 import { Settings2 } from "lucide-react";
 import { useEffect, useMemo } from "react";
+import { Control, useFormContext } from "react-hook-form";
 
 interface AllowedRequestsFieldsProps {
 	control: Control<any>;
 	namePrefix?: string;
 	providerType?: BaseProvider;
+	disabled?: boolean;
 }
 
 // Provider-specific endpoint paths
@@ -73,7 +74,7 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
 
-export function AllowedRequestsFields({ control, namePrefix = "allowed_requests", providerType }: AllowedRequestsFieldsProps) {
+export function AllowedRequestsFields({ control, namePrefix = "allowed_requests", providerType, disabled = false }: AllowedRequestsFieldsProps) {
 	const leftColumn = REQUEST_TYPES.slice(0, 6);
 	const rightColumn = REQUEST_TYPES.slice(6);
 	const { getValues, setValue } = useFormContext();
@@ -106,7 +107,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 						</div>
 						<div className="flex items-center gap-2">
 							{/* Settings icon for path override - only show when enabled */}
-							{allowedField.value && !isDisabled && !isPathOverrideDisabled && (
+							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && (
 								<FormField
 									control={control}
 									name={`request_path_overrides.${requestType.key}`}
@@ -148,7 +149,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 										</Tooltip>
 									</TooltipProvider>
 								) : (
-									<Switch checked={allowedField.value} onCheckedChange={allowedField.onChange} size="md" />
+									<Switch checked={allowedField.value} onCheckedChange={allowedField.onChange} size="md" disabled={disabled} />
 								)}
 							</FormControl>
 						</div>

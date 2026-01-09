@@ -5,7 +5,6 @@ import (
 	"os"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -71,6 +70,7 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 
 		// Test Chat Completions API
 		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -80,7 +80,7 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			response, err := client.ChatCompletionRequest(ctx, chatReq)
+			response, err := client.ChatCompletionRequest(bfCtx, chatReq)
 			if err != nil {
 				return nil, err
 			}
@@ -99,13 +99,14 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 
 		// Test Responses API
 		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider:  testConfig.Provider,
 				Model:     testConfig.ChatModel,
 				Input:     responsesMessages,
 				Fallbacks: testConfig.Fallbacks,
 			}
-			response, err := client.ResponsesRequest(ctx, responsesReq)
+			response, err := client.ResponsesRequest(bfCtx, responsesReq)
 			if err != nil {
 				return nil, err
 			}

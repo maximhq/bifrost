@@ -46,7 +46,6 @@ type Plugin struct {
 	defaultLogRepoID string
 	loggers          map[string]*logging.Logger
 	loggerMutex      *sync.RWMutex
-	accumulator      *streaming.Accumulator
 	logger           schemas.Logger
 }
 
@@ -74,7 +73,6 @@ func Init(config *Config, logger schemas.Logger) (schemas.Plugin, error) {
 		defaultLogRepoID: config.LogRepoID,
 		loggers:          make(map[string]*logging.Logger),
 		loggerMutex:      &sync.RWMutex{},
-		accumulator:      streaming.NewAccumulator(nil, logger),
 		logger:           logger,
 	}
 
@@ -103,6 +101,43 @@ const (
 	LogRepoIDKey      schemas.BifrostContextKey = "log-repo-id"
 )
 
+// convertAccResultToProcessedStreamResponse converts StreamAccumulatorResult to ProcessedStreamResponse
+func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumulatorResult) *streaming.ProcessedStreamResponse {
+	if accResult == nil {
+		return nil
+	}
+	// Determine StreamType based on the response content
+	streamType := streaming.StreamTypeChat
+	if accResult.AudioOutput != nil {
+		streamType = streaming.StreamTypeAudio
+	} else if accResult.TranscriptionOutput != nil {
+		streamType = streaming.StreamTypeTranscription
+	} else if len(accResult.OutputMessages) > 0 {
+		streamType = streaming.StreamTypeResponses
+	}
+	return &streaming.ProcessedStreamResponse{
+		RequestID:  accResult.RequestID,
+		StreamType: streamType,
+		Model:      accResult.Model,
+		Provider:   accResult.Provider,
+		Data: &streaming.AccumulatedData{
+			Status:              accResult.Status,
+			Latency:             accResult.Latency,
+			TimeToFirstToken:    accResult.TimeToFirstToken,
+			OutputMessage:       accResult.OutputMessage,
+			OutputMessages:      accResult.OutputMessages,
+			TokenUsage:          accResult.TokenUsage,
+			Cost:                accResult.Cost,
+			ErrorDetails:        accResult.ErrorDetails,
+			AudioOutput:         accResult.AudioOutput,
+			TranscriptionOutput: accResult.TranscriptionOutput,
+			FinishReason:        accResult.FinishReason,
+			RawResponse:         accResult.RawResponse,
+		},
+		RawRequest: &accResult.RawRequest,
+	}
+}
+
 // The plugin provides request/response tracing functionality by integrating with Maxim's logging system.
 // It supports both chat completion and text completion requests, tracking the entire lifecycle of each request
 // including inputs, parameters, and responses.
@@ -121,9 +156,9 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-func (plugin *Plugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportIntercept is not used for this plugin
+func (plugin *Plugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // getEffectiveLogRepoID determines which single log repo ID to use based on priority:
@@ -213,25 +248,25 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 
 	// Check if context already has traceID and generationID
 	if ctx != nil {
-		if existingGenerationID, ok := (*ctx).Value(GenerationIDKey).(string); ok && existingGenerationID != "" {
+		if existingGenerationID, ok := ctx.Value(GenerationIDKey).(string); ok && existingGenerationID != "" {
 			// If generationID exists, return early
 			return req, nil, nil
 		}
 
-		if existingTraceID, ok := (*ctx).Value(TraceIDKey).(string); ok && existingTraceID != "" {
+		if existingTraceID, ok := ctx.Value(TraceIDKey).(string); ok && existingTraceID != "" {
 			// If traceID exists, and no generationID, create a new generation on the trace
 			traceID = existingTraceID
 		}
 
-		if existingSessionID, ok := (*ctx).Value(SessionIDKey).(string); ok && existingSessionID != "" {
+		if existingSessionID, ok := ctx.Value(SessionIDKey).(string); ok && existingSessionID != "" {
 			sessionID = existingSessionID
 		}
 
-		if existingTraceName, ok := (*ctx).Value(TraceNameKey).(string); ok && existingTraceName != "" {
+		if existingTraceName, ok := ctx.Value(TraceNameKey).(string); ok && existingTraceName != "" {
 			traceName = existingTraceName
 		}
 
-		if existingGenerationName, ok := (*ctx).Value(GenerationNameKey).(string); ok && existingGenerationName != "" {
+		if existingGenerationName, ok := ctx.Value(GenerationNameKey).(string); ok && existingGenerationName != "" {
 			generationName = existingGenerationName
 		}
 	}
@@ -390,7 +425,6 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	// Add generation to the effective log repository
 	logger.AddGenerationToTrace(traceID, &generationConfig)
 
-	var requestID string
 	if ctx != nil {
 		if _, ok := ctx.Value(TraceIDKey).(string); !ok {
 			ctx.SetValue(TraceIDKey, traceID)
@@ -404,10 +438,14 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 			requestID = uuid.New().String()
 			plugin.logger.Warn("%s request ID missing in PreHook, using fallback: %s", PluginLoggerPrefix, requestID)
 		}
-	}
 
-	if bifrost.IsStreamRequestType(req.RequestType) {
-		plugin.accumulator.CreateStreamAccumulator(requestID, time.Now())
+		// If streaming, create accumulator via central tracer using traceID
+		if bifrost.IsStreamRequestType(req.RequestType) {
+			tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
+			if err == nil && tracer != nil && bifrostTraceID != "" {
+				tracer.CreateStreamAccumulator(bifrostTraceID, time.Now())
+			}
+		}
 	}
 
 	return req, nil, nil
@@ -449,16 +487,18 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 		requestType, _, model := bifrost.GetResponseFields(result, bifrostErr)
 
 		var streamResponse *streaming.ProcessedStreamResponse
-		var err error
 		if bifrost.IsStreamRequestType(requestType) {
-			streamResponse, err = plugin.accumulator.ProcessStreamingResponse(ctx, result, bifrostErr)
-			if err != nil {
-				plugin.logger.Error("%s failed to process streaming response: %v", PluginLoggerPrefix, err)
-				return
+			// Use central tracer's accumulator
+			tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
+			if err == nil && tracer != nil && bifrostTraceID != "" {
+				accResult := tracer.ProcessStreamingChunk(ctx, bifrostTraceID, result, bifrostErr)
+				if accResult != nil {
+					streamResponse = convertAccResultToProcessedStreamResponse(accResult)
+				}
 			}
 
-			// Return the result if it is a delta response
-			if streamResponse == nil || streamResponse.Type == streaming.StreamResponseTypeDelta {
+			// Return if no stream response or it's a delta response
+			if streamResponse == nil || !bifrost.IsFinalChunk(ctx) {
 				return
 			}
 		}
@@ -467,7 +507,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 		if err != nil {
 			return
 		}
-		generationID, ok := (*ctx).Value(GenerationIDKey).(string)
+		generationID, ok := ctx.Value(GenerationIDKey).(string)
 		if ok {
 			if bifrostErr != nil {
 				// Safely extract message from nested error
@@ -491,7 +531,11 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 				logger.SetGenerationError(generationID, &genErr)
 
 				if bifrost.IsStreamRequestType(requestType) {
-					plugin.accumulator.CleanupStreamAccumulator(requestID)
+					// Cleanup via central tracer
+					tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
+					if err == nil && tracer != nil && bifrostTraceID != "" {
+						tracer.CleanupStreamAccumulator(bifrostTraceID)
+					}
 				}
 			} else if result != nil {
 				switch requestType {
@@ -514,20 +558,24 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
 					}
 				}
-				if streamResponse != nil && streamResponse.Type == streaming.StreamResponseTypeFinal {
-					plugin.accumulator.CleanupStreamAccumulator(requestID)
+				if streamResponse != nil && bifrost.IsFinalChunk(ctx) {
+					// Cleanup via central tracer
+					tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
+					if err == nil && tracer != nil && bifrostTraceID != "" {
+						tracer.CleanupStreamAccumulator(bifrostTraceID)
+					}
 				}
 			}
 
 			logger.EndGeneration(generationID)
 		}
-		traceID, ok := (*ctx).Value(TraceIDKey).(string)
+		traceID, ok := ctx.Value(TraceIDKey).(string)
 		if ok {
 			logger.EndTrace(traceID)
 		}
 
 		// add tags to the generation and trace
-		tags, ok := (*ctx).Value(TagsKey).(map[string]string)
+		tags, ok := ctx.Value(TagsKey).(map[string]string)
 		if ok {
 			for key, value := range tags {
 				if generationID != "" {
@@ -547,9 +595,6 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 }
 
 func (plugin *Plugin) Cleanup() error {
-	if plugin.accumulator != nil {
-		plugin.accumulator.Cleanup()
-	}
 	// Flush all loggers
 	plugin.loggerMutex.RLock()
 	for _, logger := range plugin.loggers {

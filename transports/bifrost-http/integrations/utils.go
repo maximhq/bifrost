@@ -2,7 +2,6 @@ package integrations
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log"
 	"reflect"
@@ -136,7 +135,7 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 }
 
 // sendStreamError sends an error in streaming format using the stream error converter if available
-func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, config RouteConfig, bifrostErr *schemas.BifrostError) {
+func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
 	var errorResponse interface{}
 
 	// Use stream error converter if available, otherwise fallback to regular error converter
@@ -162,7 +161,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *co
 
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
-func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
+func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
 	} else {
@@ -185,7 +184,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *context.
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
 

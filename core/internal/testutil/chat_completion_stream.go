@@ -55,7 +55,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		// Use proper streaming retry wrapper for the stream request
 		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-			return client.ChatCompletionStreamRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ChatCompletionStreamRequest(bfCtx, request)
 		})
 
 		// Enhanced error handling
@@ -259,7 +260,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				retryConfig,
 				retryContext,
 				func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.ChatCompletionStreamRequest(ctx, request)
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.ChatCompletionStreamRequest(bfCtx, request)
 				},
 				func(responseChannel chan *schemas.BifrostStream) ChatStreamValidationResult {
 					var toolCallDetected bool
@@ -401,7 +403,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 			// Use proper streaming retry wrapper for the stream request
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ChatCompletionStreamRequest(ctx, request)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ChatCompletionStreamRequest(bfCtx, request)
 			})
 
 			RequireNoError(t, err, "Chat completion stream with reasoning failed")
@@ -578,7 +581,8 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				retryConfig,
 				retryContext,
 				func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-					return client.ChatCompletionStreamRequest(ctx, request)
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.ChatCompletionStreamRequest(bfCtx, request)
 				},
 				func(responseChannel chan *schemas.BifrostStream) ChatStreamValidationResult {
 					var reasoningDetected bool

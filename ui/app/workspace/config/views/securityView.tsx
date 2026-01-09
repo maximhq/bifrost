@@ -31,6 +31,9 @@ const defaultConfig: CoreConfig = {
 	max_request_body_size_mb: 100,
 	enable_litellm_fallbacks: false,
 	log_retention_days: 365,
+	mcp_agent_depth: 10,
+	mcp_tool_execution_timeout: 30,
+	mcp_code_mode_binding_level: "server",
 };
 
 export default function SecurityView() {

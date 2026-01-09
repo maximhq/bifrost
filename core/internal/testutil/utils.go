@@ -616,7 +616,8 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 	}
 
 	resp, err := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "GenerateTTSAudioForTest", func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-		return client.SpeechRequest(ctx, req)
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		return client.SpeechRequest(bfCtx, req)
 	})
 	if err != nil {
 		t.Fatalf("TTS request failed after retries: %v", GetErrorMessage(err))

@@ -10,6 +10,15 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
+// getAccumulatorID extracts the ID for accumulator lookup from context.
+// Returns the value of BifrostContextKeyAccumulatorID.
+func getAccumulatorID(ctx *schemas.BifrostContext) (string, bool) {
+	if id, ok := ctx.Value(schemas.BifrostContextKeyAccumulatorID).(string); ok && id != "" {
+		return id, true
+	}
+	return "", false
+}
+
 // Accumulator manages accumulation of streaming chunks
 type Accumulator struct {
 	logger schemas.Logger
@@ -101,14 +110,27 @@ func (a *Accumulator) putResponsesStreamChunk(chunk *ResponsesStreamChunk) {
 	a.responsesStreamChunkPool.Put(chunk)
 }
 
-// CreateStreamAccumulator creates a new stream accumulator for a request
+// createStreamAccumulator creates a new stream accumulator for a request
+// StartTimestamp is set to current time if not provided via CreateStreamAccumulator
 func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulator {
+	now := time.Now()
 	sc := &StreamAccumulator{
-		RequestID:             requestID,
-		ChatStreamChunks:      make([]*ChatStreamChunk, 0),
-		ResponsesStreamChunks: make([]*ResponsesStreamChunk, 0),
-		IsComplete:            false,
-		Timestamp:             time.Now(),
+		RequestID:                  requestID,
+		ChatStreamChunks:           make([]*ChatStreamChunk, 0),
+		ResponsesStreamChunks:      make([]*ResponsesStreamChunk, 0),
+		TranscriptionStreamChunks:  make([]*TranscriptionStreamChunk, 0),
+		AudioStreamChunks:          make([]*AudioStreamChunk, 0),
+		ChatChunksSeen:             make(map[int]struct{}),
+		ResponsesChunksSeen:        make(map[int]struct{}),
+		TranscriptionChunksSeen:    make(map[int]struct{}),
+		AudioChunksSeen:            make(map[int]struct{}),
+		MaxChatChunkIndex:          -1,
+		MaxResponsesChunkIndex:     -1,
+		MaxTranscriptionChunkIndex: -1,
+		MaxAudioChunkIndex:         -1,
+		IsComplete:                 false,
+		Timestamp:                  now,
+		StartTimestamp:             now, // Set default StartTimestamp for proper TTFT/latency calculation
 	}
 	a.streamAccumulators.Store(requestID, sc)
 	return sc
@@ -132,8 +154,19 @@ func (a *Accumulator) addChatStreamChunk(requestID string, chunk *ChatStreamChun
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
-	// Add chunk to the list (chunks arrive in order)
-	accumulator.ChatStreamChunks = append(accumulator.ChatStreamChunks, chunk)
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	// De-dup check - only add if not seen (handles out-of-order arrival and multiple plugins)
+	if _, seen := accumulator.ChatChunksSeen[chunk.ChunkIndex]; !seen {
+		accumulator.ChatChunksSeen[chunk.ChunkIndex] = struct{}{}
+		accumulator.ChatStreamChunks = append(accumulator.ChatStreamChunks, chunk)
+		// Track max index for metadata extraction
+		if chunk.ChunkIndex > accumulator.MaxChatChunkIndex {
+			accumulator.MaxChatChunkIndex = chunk.ChunkIndex
+		}
+	}
 	// Check if this is the final chunk
 	// Set FinalTimestamp when either FinishReason is present or token usage exists
 	// This handles both normal completion chunks and usage-only last chunks
@@ -152,8 +185,18 @@ func (a *Accumulator) addTranscriptionStreamChunk(requestID string, chunk *Trans
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
-	// Add chunk to the list (chunks arrive in order)
-	accumulator.TranscriptionStreamChunks = append(accumulator.TranscriptionStreamChunks, chunk)
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	if _, seen := accumulator.TranscriptionChunksSeen[chunk.ChunkIndex]; !seen {
+		accumulator.TranscriptionChunksSeen[chunk.ChunkIndex] = struct{}{}
+		accumulator.TranscriptionStreamChunks = append(accumulator.TranscriptionStreamChunks, chunk)
+		// Track max index for metadata extraction
+		if chunk.ChunkIndex > accumulator.MaxTranscriptionChunkIndex {
+			accumulator.MaxTranscriptionChunkIndex = chunk.ChunkIndex
+		}
+	}
 	// Check if this is the final chunk
 	// Set FinalTimestamp when either FinishReason is present or token usage exists
 	// This handles both normal completion chunks and usage-only last chunks
@@ -172,8 +215,18 @@ func (a *Accumulator) addAudioStreamChunk(requestID string, chunk *AudioStreamCh
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
-	// Add chunk to the list (chunks arrive in order)
-	accumulator.AudioStreamChunks = append(accumulator.AudioStreamChunks, chunk)
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	if _, seen := accumulator.AudioChunksSeen[chunk.ChunkIndex]; !seen {
+		accumulator.AudioChunksSeen[chunk.ChunkIndex] = struct{}{}
+		accumulator.AudioStreamChunks = append(accumulator.AudioStreamChunks, chunk)
+		// Track max index for metadata extraction
+		if chunk.ChunkIndex > accumulator.MaxAudioChunkIndex {
+			accumulator.MaxAudioChunkIndex = chunk.ChunkIndex
+		}
+	}
 	// Check if this is the final chunk
 	// Set FinalTimestamp when either FinishReason is present or token usage exists
 	// This handles both normal completion chunks and usage-only last chunks
@@ -192,8 +245,18 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	if accumulator.StartTimestamp.IsZero() {
 		accumulator.StartTimestamp = chunk.Timestamp
 	}
-	// Add chunk to the list (chunks arrive in order)
-	accumulator.ResponsesStreamChunks = append(accumulator.ResponsesStreamChunks, chunk)
+	// Track first chunk timestamp for TTFT calculation
+	if accumulator.FirstChunkTimestamp.IsZero() {
+		accumulator.FirstChunkTimestamp = chunk.Timestamp
+	}
+	if _, seen := accumulator.ResponsesChunksSeen[chunk.ChunkIndex]; !seen {
+		accumulator.ResponsesChunksSeen[chunk.ChunkIndex] = struct{}{}
+		accumulator.ResponsesStreamChunks = append(accumulator.ResponsesStreamChunks, chunk)
+		// Track max index for metadata extraction
+		if chunk.ChunkIndex > accumulator.MaxResponsesChunkIndex {
+			accumulator.MaxResponsesChunkIndex = chunk.ChunkIndex
+		}
+	}
 	// Check if this is the final chunk
 	// Set FinalTimestamp when either FinishReason is present or token usage exists
 	// This handles both normal completion chunks and usage-only last chunks
@@ -363,8 +426,11 @@ func (a *Accumulator) Cleanup() {
 }
 
 // CreateStreamAccumulator creates a new stream accumulator for a request
+// It increments the reference counter atomically for concurrent access tracking
 func (a *Accumulator) CreateStreamAccumulator(requestID string, startTimestamp time.Time) *StreamAccumulator {
 	sc := a.getOrCreateStreamAccumulator(requestID)
+	// Atomically increment reference counter
+	sc.refCount.Add(1)
 	// Lock before writing to StartTimestamp
 	sc.mu.Lock()
 	sc.StartTimestamp = startTimestamp
@@ -372,16 +438,25 @@ func (a *Accumulator) CreateStreamAccumulator(requestID string, startTimestamp t
 	return sc
 }
 
-// CleanupStreamAccumulator cleans up the stream accumulator for a request
+// CleanupStreamAccumulator decrements the reference counter for a stream accumulator.
+// The accumulator is only cleaned up when the reference counter reaches 0.
+// This function is idempotent - calling it after cleanup has already happened is safe.
 func (a *Accumulator) CleanupStreamAccumulator(requestID string) error {
 	acc, exists := a.streamAccumulators.Load(requestID)
 	if !exists {
-		return fmt.Errorf("accumulator not found for request ID: %s", requestID)
+		// Accumulator already cleaned up - this is expected when multiple callers
+		// (e.g., completeDeferredSpan and HTTP middleware) both call cleanup
+		return nil
 	}
 	if accumulator, ok := acc.(*StreamAccumulator); ok {
-		accumulator.mu.Lock()
-		defer accumulator.mu.Unlock()
-		a.cleanupStreamAccumulator(requestID)
+		// Atomically decrement reference counter
+		newCount := accumulator.refCount.Add(-1)
+		// Only cleanup when reference counter reaches 0
+		if newCount <= 0 {
+			accumulator.mu.Lock()
+			defer accumulator.mu.Unlock()
+			a.cleanupStreamAccumulator(requestID)
+		}
 	}
 	return nil
 }

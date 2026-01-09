@@ -63,7 +63,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		// Use validation retry wrapper that validates stream content and retries on validation failures
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
 			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ResponsesStreamRequest(ctx, request)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ResponsesStreamRequest(bfCtx, request)
 			},
 			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
 				var fullContent strings.Builder
@@ -332,7 +333,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 			// Use proper streaming retry wrapper for the stream request
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ResponsesStreamRequest(ctx, request)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ResponsesStreamRequest(bfCtx, request)
 			})
 
 			RequireNoError(t, err, "Responses stream with tools failed")
@@ -465,7 +467,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 			// Use proper streaming retry wrapper for the stream request
 			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ResponsesStreamRequest(ctx, request)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ResponsesStreamRequest(bfCtx, request)
 			})
 
 			RequireNoError(t, err, "Responses stream with reasoning failed")
@@ -589,7 +592,8 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		// Use validation retry wrapper that validates lifecycle events and retries on validation failures
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
 			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ResponsesStreamRequest(ctx, request)
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ResponsesStreamRequest(bfCtx, request)
 			},
 			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
 				// Track lifecycle events

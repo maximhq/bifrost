@@ -125,6 +125,7 @@ func RunFileURLChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		}
 
 		response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -134,7 +135,7 @@ func RunFileURLChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			return client.ChatCompletionRequest(ctx, chatReq)
+			return client.ChatCompletionRequest(bfCtx, chatReq)
 		})
 
 		if chatError != nil {
@@ -207,6 +208,7 @@ func RunFileURLResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 		}
 
 		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -216,7 +218,7 @@ func RunFileURLResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
-			return client.ResponsesRequest(ctx, responsesReq)
+			return client.ResponsesRequest(bfCtx, responsesReq)
 		})
 
 		if responsesError != nil {

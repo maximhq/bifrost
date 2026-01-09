@@ -133,6 +133,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -188,6 +189,10 @@ func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *go
 }
 func (m *MockConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
 	return nil
+}
+
+func (m *MockConfigStore) RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error) {
+	return fn(ctx)
 }
 
 // Client config
@@ -307,6 +312,10 @@ func (m *MockConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*ta
 
 func (m *MockConfigStore) GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error) {
+	return []tables.TableRateLimit{}, nil
 }
 
 func (m *MockConfigStore) CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error {
@@ -615,12 +624,12 @@ func makeMCPClientConfig(id, name string) schemas.MCPClientConfig {
 // testLogger is a minimal logger implementation for testing
 type testLogger struct{}
 
-func (l *testLogger) Debug(msg string, args ...any) {}
-func (l *testLogger) Info(msg string, args ...any)  {}
-func (l *testLogger) Warn(msg string, args ...any)  {}
-func (l *testLogger) Error(msg string, args ...any) {}
-func (l *testLogger) Fatal(msg string, args ...any) {}
-func (l *testLogger) SetLevel(level schemas.LogLevel) {}
+func (l *testLogger) Debug(msg string, args ...any)                     {}
+func (l *testLogger) Info(msg string, args ...any)                      {}
+func (l *testLogger) Warn(msg string, args ...any)                      {}
+func (l *testLogger) Error(msg string, args ...any)                     {}
+func (l *testLogger) Fatal(msg string, args ...any)                     {}
+func (l *testLogger) SetLevel(level schemas.LogLevel)                   {}
 func (l *testLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 
 // initTestLogger initializes the global logger for SQLite integration tests
@@ -1828,7 +1837,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 					Weight: dbKey.Weight,
 				})
 				fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
-				if dbKeyHash == fileKeyHash || fileKey.Name == dbKey.Name {					
+				if dbKeyHash == fileKeyHash || fileKey.Name == dbKey.Name {
 					found = true
 					break
 				}
@@ -2189,13 +2198,13 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// All hashes should be unique
 	hashes := map[string]string{
-		"no_optional":    hashNoOptional,
-		"with_network":   hashWithNetwork,
-		"with_proxy":     hashWithProxy,
-		"with_conc":      hashWithConcurrency,
-		"with_custom":    hashWithCustom,
-		"with_raw":       hashWithRawResponse,
-		"all_fields":     hashAllFields,
+		"no_optional":  hashNoOptional,
+		"with_network": hashWithNetwork,
+		"with_proxy":   hashWithProxy,
+		"with_conc":    hashWithConcurrency,
+		"with_custom":  hashWithCustom,
+		"with_raw":     hashWithRawResponse,
+		"all_fields":   hashAllFields,
 	}
 
 	seen := make(map[string]string)
@@ -3001,9 +3010,9 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	sameKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  "sk-original-123", // SAME
+		Value:  "sk-original-123",                  // SAME
 		Models: []string{"gpt-4", "gpt-3.5-turbo"}, // SAME
-		Weight: 1.5, // SAME
+		Weight: 1.5,                                // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -3039,10 +3048,10 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	// - Keep existing keys from DB (they weren't changed in file)
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                 dbConfig.Keys, // Keep original keys from DB
-		NetworkConfig:        fileConfig.NetworkConfig, // Update from file
-		SendBackRawResponse:  fileConfig.SendBackRawResponse, // Update from file
-		ConfigHash:           fileProviderHash, // New provider hash
+		Keys:                dbConfig.Keys,                  // Keep original keys from DB
+		NetworkConfig:       fileConfig.NetworkConfig,       // Update from file
+		SendBackRawResponse: fileConfig.SendBackRawResponse, // Update from file
+		ConfigHash:          fileProviderHash,               // New provider hash
 	}
 
 	// Verify keys are preserved (same values as DB)
@@ -3100,9 +3109,9 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  "sk-new-456",                              // CHANGED!
-		Models: []string{"gpt-4", "gpt-3.5-turbo", "o1"},  // CHANGED!
-		Weight: 2.0,                                        // CHANGED!
+		Value:  "sk-new-456",                             // CHANGED!
+		Models: []string{"gpt-4", "gpt-3.5-turbo", "o1"}, // CHANGED!
+		Weight: 2.0,                                      // CHANGED!
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
@@ -3138,10 +3147,10 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	// - Update keys from file (they were changed)
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                 fileConfig.Keys, // Update keys from file
-		NetworkConfig:        dbConfig.NetworkConfig, // Keep from DB
-		SendBackRawResponse:  dbConfig.SendBackRawResponse, // Keep from DB
-		ConfigHash:           dbProviderHash, // Provider hash unchanged
+		Keys:                fileConfig.Keys,              // Update keys from file
+		NetworkConfig:       dbConfig.NetworkConfig,       // Keep from DB
+		SendBackRawResponse: dbConfig.SendBackRawResponse, // Keep from DB
+		ConfigHash:          dbProviderHash,               // Provider hash unchanged
 	}
 
 	// Verify provider config is preserved
@@ -3200,9 +3209,9 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  "sk-new-456",        // CHANGED
+		Value:  "sk-new-456",            // CHANGED
 		Models: []string{"gpt-4", "o1"}, // CHANGED
-		Weight: 2.0,                  // CHANGED
+		Weight: 2.0,                     // CHANGED
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
@@ -3302,7 +3311,7 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 
 	// === Verify: Both hashes match ===
 	if dbProviderHash != fileProviderHash {
-		t.Errorf("Expected provider hash to be SAME, got DB=%s File=%s", 
+		t.Errorf("Expected provider hash to be SAME, got DB=%s File=%s",
 			dbProviderHash[:16], fileProviderHash[:16])
 	} else {
 		t.Log("✓ Provider hash unchanged")
@@ -3352,9 +3361,9 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	fileKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  "sk-new-value", // CHANGED
+		Value:  "sk-new-value",                   // CHANGED
 		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0, // CHANGED
+		Weight: 2.0,                              // CHANGED
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
@@ -3465,9 +3474,9 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  "sk-key-1", // SAME
+		Value:  "sk-key-1",        // SAME
 		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0, // SAME
+		Weight: 1.0,               // SAME
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-2",
@@ -3594,9 +3603,9 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  "sk-key-1", // SAME
+		Value:  "sk-key-1",        // SAME
 		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0, // SAME
+		Weight: 1.0,               // SAME
 	}
 
 	fileConfig := configstore.ProviderConfig{
@@ -3719,16 +3728,16 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	fileUnchangedKey := schemas.Key{
 		ID:     "key-unchanged",
 		Name:   "unchanged-key",
-		Value:  "sk-unchanged", // SAME
+		Value:  "sk-unchanged",    // SAME
 		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0, // SAME
+		Weight: 1.0,               // SAME
 	}
 	fileChangedKey := schemas.Key{
 		ID:     "key-changed",
 		Name:   "changed-key",
-		Value:  "sk-NEW-value", // CHANGED
+		Value:  "sk-NEW-value",                   // CHANGED
 		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0, // CHANGED
+		Weight: 2.0,                              // CHANGED
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-new",
@@ -4862,8 +4871,8 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 					Endpoint:   "https://new-azure.openai.azure.com", // Changed!
 					APIVersion: stringPtr("2024-10-21"),              // Changed!
 					Deployments: map[string]string{
-						"gpt-4":   "gpt-4-deployment",
-						"gpt-4o":  "gpt-4o-deployment", // Added!
+						"gpt-4":  "gpt-4-deployment",
+						"gpt-4o": "gpt-4o-deployment", // Added!
 					},
 				},
 			},
@@ -5081,7 +5090,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: "AKIAIOSFODNN7EXAMPLE",
 					SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-					Region:    stringPtr("us-west-2"), // Changed!
+					Region:    stringPtr("us-west-2"),                                                           // Changed!
 					ARN:       stringPtr("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
 					Deployments: map[string]string{
 						"claude-3-sonnet": "anthropic.claude-3-sonnet-20240229-v1:0",
@@ -5092,7 +5101,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
-			MaxRetries: 5, // Changed!
+			MaxRetries: 5,                                                 // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -5518,9 +5527,9 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				Value:  "",
 				Weight: 1,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: "AKIAIOSFODNN7EXAMPLE",                        // Different!
-					SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",    // Different!
-					Region:    stringPtr("us-east-1"),                        // Same
+					AccessKey: "AKIAIOSFODNN7EXAMPLE",                     // Different!
+					SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", // Different!
+					Region:    stringPtr("us-east-1"),                     // Same
 					Deployments: map[string]string{
 						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0", // Same
 					},
@@ -5529,7 +5538,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com", // Same
-			MaxRetries: 3,                                                  // Same
+			MaxRetries: 3,                                                 // Same
 		},
 		SendBackRawResponse: false, // Same
 	}
@@ -5610,7 +5619,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   "https://NEW-azure.openai.azure.com", // Changed!
-					APIVersion: stringPtr("2024-10-21"),               // Changed!
+					APIVersion: stringPtr("2024-10-21"),              // Changed!
 					Deployments: map[string]string{
 						"gpt-4o": "gpt-4o-deployment", // Added!
 					},
@@ -5701,7 +5710,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: "AKIAIOSFODNN7EXAMPLE",
 					SecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-					Region:    stringPtr("us-west-2"), // Changed!
+					Region:    stringPtr("us-west-2"),                                                            // Changed!
 					ARN:       stringPtr("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
 					Deployments: map[string]string{
 						"claude-3-opus": "anthropic.claude-3-opus-20240229-v1:0", // Added!
@@ -5711,7 +5720,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
-			MaxRetries: 5,                                                  // Changed!
+			MaxRetries: 5,                                                 // Changed!
 		},
 		SendBackRawResponse: true, // Changed!
 	}
@@ -11464,7 +11473,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch after GORM round-trip for StdioConfig\nBefore save: %s\nAfter load:  %s\nStdioConfig populated: %v", 
+			t.Errorf("Hash mismatch after GORM round-trip for StdioConfig\nBefore save: %s\nAfter load:  %s\nStdioConfig populated: %v",
 				hashBeforeSave, hashAfterLoad, mcpFromDB.StdioConfig != nil)
 		}
 	})
@@ -11495,7 +11504,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch after GORM round-trip for ToolsToExecute\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch after GORM round-trip for ToolsToExecute\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11529,7 +11538,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch after GORM round-trip for Headers\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch after GORM round-trip for Headers\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11561,7 +11570,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GenerateMCPClientHash(mcpFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch after GORM round-trip for all fields\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch after GORM round-trip for all fields\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11600,7 +11609,7 @@ func TestGenerateMCPClientHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch when using Find() (migration pattern)\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch when using Find() (migration pattern)\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11646,7 +11655,7 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch after GORM round-trip for plugin Config\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch after GORM round-trip for plugin Config\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11676,7 +11685,7 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GeneratePluginHash(pluginFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for nested config\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for nested config\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11699,7 +11708,7 @@ func TestGeneratePluginHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GeneratePluginHash(pluginFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for empty config\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for empty config\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11740,7 +11749,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for Profile\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for Profile\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11767,7 +11776,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GenerateTeamHash(teamFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for Config\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for Config\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11794,7 +11803,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GenerateTeamHash(teamFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for Claims\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for Claims\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11823,7 +11832,7 @@ func TestGenerateTeamHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := configstore.GenerateTeamHash(teamFromDB)
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for all fields\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for all fields\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11875,7 +11884,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for NetworkConfig\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for NetworkConfig\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11915,7 +11924,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for ConcurrencyAndBufferSize\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for ConcurrencyAndBufferSize\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11951,7 +11960,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := providerConfigFromDB.GenerateConfigHash("openai")
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for ProxyConfig\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for ProxyConfig\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -11987,7 +11996,7 @@ func TestGenerateProviderHash_RuntimeVsMigrationParity(t *testing.T) {
 		hashAfterLoad, _ := providerConfigFromDB.GenerateConfigHash("custom")
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for CustomProviderConfig\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for CustomProviderConfig\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -12048,7 +12057,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for Models\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for Models\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -12098,7 +12107,7 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for AzureKeyConfig\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for AzureKeyConfig\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -12199,7 +12208,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for PrometheusLabels\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for PrometheusLabels\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})
@@ -12247,7 +12256,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		}
 
 		if hashBeforeSave != hashAfterLoad {
-			t.Errorf("Hash mismatch for AllowedOrigins\nBefore save: %s\nAfter load:  %s", 
+			t.Errorf("Hash mismatch for AllowedOrigins\nBefore save: %s\nAfter load:  %s",
 				hashBeforeSave, hashAfterLoad)
 		}
 	})

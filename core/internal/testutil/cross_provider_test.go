@@ -101,11 +101,13 @@ func TestCrossProviderScenarios(t *testing.T) {
 	for _, scenario := range scenariosList {
 		// Test each scenario with both Chat Completions and Responses API
 		t.Run(scenario.Name+"_ChatCompletions", func(t *testing.T) {
-			RunCrossProviderScenarioTest(t, client, ctx, testConfig, scenario, false) // false = Chat Completions API
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			RunCrossProviderScenarioTest(t, client, bfCtx, testConfig, scenario, false) // false = Chat Completions API
 		})
 
 		t.Run(scenario.Name+"_ResponsesAPI", func(t *testing.T) {
-			RunCrossProviderScenarioTest(t, client, ctx, testConfig, scenario, true) // true = Responses API
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			RunCrossProviderScenarioTest(t, client, bfCtx, testConfig, scenario, true) // true = Responses API
 		})
 	}
 }
@@ -138,10 +140,12 @@ func TestCrossProviderConsistency(t *testing.T) {
 
 	// Test same prompt across different providers
 	t.Run("SamePrompt_DifferentProviders_ChatCompletions", func(t *testing.T) {
-		RunCrossProviderConsistencyTest(t, client, ctx, testConfig, false) // Chat Completions
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		RunCrossProviderConsistencyTest(t, client, bfCtx, testConfig, false) // Chat Completions
 	})
 
 	t.Run("SamePrompt_DifferentProviders_ResponsesAPI", func(t *testing.T) {
-		RunCrossProviderConsistencyTest(t, client, ctx, testConfig, true) // Responses API
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		RunCrossProviderConsistencyTest(t, client, bfCtx, testConfig, true) // Responses API
 	})
 }

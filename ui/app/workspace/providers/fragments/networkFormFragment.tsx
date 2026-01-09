@@ -147,6 +147,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
 											{...field}
 											value={field.value || ""}
+											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
 									<FormMessage />
@@ -164,14 +165,18 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											<Input
 												placeholder="30"
 												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
 												onChange={(e) => {
-													if (isNaN(Number(e.target.value))) {
-														if (e.target.value.trim() === "") {
-															field.onChange(0);
-														}
-														return;
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
 													}
-													field.onChange(Number(e.target.value));
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
 												}}
 											/>
 										</FormControl>
@@ -187,7 +192,23 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<FormItem className="flex-1">
 										<FormLabel>Max Retries</FormLabel>
 										<FormControl>
-											<Input placeholder="0" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+											<Input
+												placeholder="0"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+												}}
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -202,7 +223,23 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<FormItem className="flex-1">
 										<FormLabel>Initial Backoff (ms)</FormLabel>
 										<FormControl>
-											<Input placeholder="e.g 500" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+											<Input
+												placeholder="e.g 500"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+												}}
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -215,7 +252,23 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 									<FormItem className="flex-1">
 										<FormLabel>Max Backoff (ms)</FormLabel>
 										<FormControl>
-											<Input placeholder="e.g 10000" {...field} onChange={(e) => field.onChange(Number(e.target.value))} />
+											<Input
+												placeholder="e.g 10000"
+												{...field}
+												value={field.value === undefined || Number.isNaN(field.value) ? '' : field.value}
+												disabled={!hasUpdateProviderAccess}
+												onChange={(e) => {
+													const value = e.target.value
+													if (value === '') {
+														field.onChange(undefined)
+														return
+													}
+													const parsed = Number(value)
+													if (!Number.isNaN(parsed)) {
+														field.onChange(parsed)
+													}
+												}}
+											/>
 										</FormControl>
 										<FormMessage />
 									</FormItem>
@@ -234,6 +287,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											keyPlaceholder="Header name"
 											valuePlaceholder="Header value"
 											label="Extra Headers"
+											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
 									<FormMessage />

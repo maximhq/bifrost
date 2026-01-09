@@ -73,25 +73,25 @@ import (
 // Example Usage:
 //
 //	fastCtx := &fasthttp.RequestCtx{...}
-//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true)
+//	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true, nil)
 //	defer cancel() // Ensure cleanup
-//	// bifrostCtx now contains any prometheus and maxim header values
+//	// bifrostCtx now contains propagated header values including Prometheus metrics,
+//	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*context.Context, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
 	// Create cancellable context for all requests
 	// This enables proper cleanup when clients disconnect or requests are cancelled
-	baseCtx := context.Background()
-	bifrostCtx, cancel := context.WithCancel(baseCtx)
+	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 
 	// First, check if x-request-id header exists
 	requestID := string(ctx.Request.Header.Peek("x-request-id"))
 	if requestID == "" {
 		requestID = uuid.New().String()
 	}
-	bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyRequestID, requestID)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
-		bifrostCtx = context.WithValue(bifrostCtx, key, value)
+		bifrostCtx.SetValue(key, value)
 	})
 	// Initialize tags map for collecting maxim tags
 	maximTags := make(map[string]string)
@@ -159,24 +159,24 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 	ctx.Request.Header.All()(func(key, value []byte) bool {
 		keyStr := strings.ToLower(string(key))
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-prom-"); ok {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+			bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			return true
 		}
 		// Checking for maxim headers
 		if labelName, ok := strings.CutPrefix(keyStr, "x-bf-maxim-"); ok {
 			switch labelName {
 			case string(maxim.GenerationIDKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			case string(maxim.TraceIDKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			case string(maxim.SessionIDKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			case string(maxim.TraceNameKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			case string(maxim.GenerationNameKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			case string(maxim.LogRepoIDKey):
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(labelName), string(value))
+				bifrostCtx.SetValue(schemas.BifrostContextKey(labelName), string(value))
 			default:
 				// apart from these all headers starting with x-bf-maxim- are keys for tags
 				// collect them in the maximTags map
@@ -201,13 +201,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 						}
 					}
 				}
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
+				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
 			}
 		}
 		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, string(value))
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
 		if keyStr == "authorization" {
@@ -216,28 +216,28 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			if strings.HasPrefix(strings.ToLower(valueStr), "bearer ") {
 				authHeaderValue := strings.TrimSpace(valueStr[7:]) // Remove "Bearer " prefix
 				if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), governance.VirtualKeyPrefix) {
-					bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, authHeaderValue)
+					bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, authHeaderValue)
 					return true
 				}
 			}
 		}
 		if keyStr == "x-api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, string(value))
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
 		if keyStr == "x-goog-api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyVirtualKey, string(value))
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
 		if keyStr == "x-bf-api-key" {
 			if keyName := strings.TrimSpace(string(value)); keyName != "" {
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyAPIKeyName, keyName)
+				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, keyName)
 			}
 			return true
 		}
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
-			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheKey, string(value))
+			bifrostCtx.SetValue(semanticcache.CacheKey, string(value))
 			return true
 		}
 		// Handle cache TTL header (x-bf-cache-ttl)
@@ -256,7 +256,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			}
 
 			if err == nil {
-				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheTTLKey, ttlDuration)
+				bifrostCtx.SetValue(semanticcache.CacheTTLKey, ttlDuration)
 			}
 			// If both parsing attempts fail, we silently ignore the header and use default TTL
 			return true
@@ -271,20 +271,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				} else if threshold > 1.0 {
 					threshold = 1.0
 				}
-				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheThresholdKey, threshold)
+				bifrostCtx.SetValue(semanticcache.CacheThresholdKey, threshold)
 			}
 			// If parsing fails, silently ignore the header (no context value set)
 			return true
 		}
 		// Cache type header
 		if keyStr == "x-bf-cache-type" {
-			bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheTypeKey, semanticcache.CacheType(string(value)))
+			bifrostCtx.SetValue(semanticcache.CacheTypeKey, semanticcache.CacheType(string(value)))
 			return true
 		}
 		// Cache no store header
 		if keyStr == "x-bf-cache-no-store" {
 			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx = context.WithValue(bifrostCtx, semanticcache.CacheNoStoreKey, true)
+				bifrostCtx.SetValue(semanticcache.CacheNoStoreKey, true)
 			}
 			return true
 		}
@@ -339,7 +339,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
 			if valueStr := string(value); valueStr == "true" {
-				bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeySendBackRawResponse, true)
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 			}
 			return true
 		}
@@ -348,12 +348,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 
 	// Store the collected maxim tags in the context
 	if len(maximTags) > 0 {
-		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey(maxim.TagsKey), maximTags)
+		bifrostCtx.SetValue(schemas.BifrostContextKey(maxim.TagsKey), maximTags)
 	}
 
 	// Store collected extra headers in the context if any were found
 	if len(extraHeaders) > 0 {
-		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
 	if allowDirectKeys {
@@ -397,13 +397,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				Models: []string{}, // Empty models list - will be validated by provider
 				Weight: 1.0,        // Default weight
 			}
-			bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKeyDirectKey, key)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
 	// Adding fallback context
 	if ctx.UserValue(schemas.BifrostContextKey("x-litellm-fallback")) != nil {
-		bifrostCtx = context.WithValue(bifrostCtx, schemas.BifrostContextKey("x-litellm-fallback"), "true")
+		bifrostCtx.SetValue(schemas.BifrostContextKey("x-litellm-fallback"), "true")
 	}
 
-	return &bifrostCtx, cancel
+	return bifrostCtx, cancel
 }

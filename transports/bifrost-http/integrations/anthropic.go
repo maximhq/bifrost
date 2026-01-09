@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,7 +30,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
-		RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
 					TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
@@ -39,7 +38,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-		TextResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 			if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil
@@ -47,7 +46,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 			}
 			return anthropic.ToAnthropicTextCompletionResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 	}
@@ -67,15 +66,15 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(*ctx),
+						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				if isClaudeModel(resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment, string(resp.ExtraFields.Provider)) {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -83,11 +82,11 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				}
 				return anthropic.ToAnthropicResponsesResponse(resp), nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			StreamConfig: &StreamConfig{
-				ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					if shouldUsePassthrough(ctx, resp.ExtraFields.Provider, resp.ExtraFields.ModelRequested, resp.ExtraFields.ModelDeployment) {
 						if resp.ExtraFields.RawResponse != nil {
 							raw, ok := resp.ExtraFields.RawResponse.(string)
@@ -101,7 +100,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 						}
 						return "", nil, nil
 					}
-					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(*ctx, resp)
+					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(ctx, resp)
 					// Can happen for openai lifecycle events
 					if len(anthropicResponse) == 0 {
 						return "", nil, nil
@@ -123,7 +122,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 						}
 					}
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
 			},
@@ -149,7 +148,7 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 					return &schemas.BifrostRequest{
 						ListModelsRequest: listModelsReq,
@@ -157,10 +156,10 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ListModelsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+			ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 				return anthropic.ToAnthropicListModelsResponse(resp), nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 			PreCallback: extractAnthropicListModelsParams,
@@ -171,7 +170,7 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
-func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	var provider schemas.ModelProvider
 	var model string
 
@@ -204,30 +203,30 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *context.Con
 		if len(userAgent) > 0 {
 			// Check if it's claude code
 			if strings.Contains(userAgent[0], "claude-cli") {
-				*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUserAgent, "claude-cli")
+				bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli")
 			}
 		}
 	}
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
-		*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyUseRawRequestBody, true)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {
 			url := extractExactPath(ctx)
 			if !strings.HasPrefix(url, "/") {
 				url = "/" + url
 			}
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyExtraHeaders, headers)
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeyURLPath, url)
-			*bifrostCtx = context.WithValue(*bifrostCtx, schemas.BifrostContextKeySkipKeySelection, true)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, url)
+			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 		}
 	}
 	return nil
 }
 
-func shouldUsePassthrough(ctx *context.Context, provider schemas.ModelProvider, model string, deployment string) bool {
+func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, deployment string) bool {
 	isClaudeCode := false
-	if userAgent, ok := (*ctx).Value(schemas.BifrostContextKeyUserAgent).(string); ok {
+	if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
 		if strings.Contains(userAgent, "claude-cli") {
 			isClaudeCode = true
 		}
@@ -243,7 +242,7 @@ func isClaudeModel(model, deployment, provider string) bool {
 }
 
 // extractAnthropicListModelsParams extracts query parameters for list models request
-func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 		// Set provider to Anthropic
 		listModelsReq.Provider = schemas.Anthropic
@@ -286,18 +285,18 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
 					return &schemas.BifrostRequest{
-						CountTokensRequest: anthropicReq.ToBifrostResponsesRequest(*ctx),
+						CountTokensRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type for Anthropic count tokens")
 			},
-			CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
 				return anthropic.ToAnthropicCountTokensResponse(resp), nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
 		},
@@ -315,13 +314,13 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() any {
 			return &anthropic.AnthropicBatchCreateRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req any) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req any) (*BatchRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicBatchCreateRequest); ok {
 				// Convert Anthropic batch request items to Bifrost format
 				isNonAnthropicProvider := false
 				var provider schemas.ModelProvider
 				var ok bool
-				if provider, ok = (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider); ok && provider != schemas.Anthropic {
+				if provider, ok = ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider); ok && provider != schemas.Anthropic {
 					isNonAnthropicProvider = true
 				}
 				var model *string
@@ -370,13 +369,13 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid batch create request type")
 		},
-		BatchCreateResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+		BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Gemini {
 				resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
 			}
 			return anthropic.ToAnthropicBatchCreateResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicBatchCreateParams,
@@ -390,9 +389,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchListRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if listReq, ok := req.(*anthropic.AnthropicBatchListRequest); ok {
-				provider, ok := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider, ok := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if !ok {
 					return nil, errors.New("provider not found in context")
 				}
@@ -407,7 +406,7 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid batch list request type")
 		},
-		BatchListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+		BatchListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.Anthropic {
 				return resp.ExtraFields.RawResponse, nil
 			}
@@ -418,7 +417,7 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return anthropic.ToAnthropicBatchListResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicBatchListQueryParams,
@@ -432,9 +431,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchRetrieveRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if retrieveReq, ok := req.(*anthropic.AnthropicBatchRetrieveRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if provider == schemas.Gemini {
 					retrieveReq.BatchID = strings.Replace(retrieveReq.BatchID, "batches-", "batches/", 1)
 				}
@@ -448,13 +447,13 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid batch retrieve request type")
 		},
-		BatchRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+		BatchRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Gemini {
 				resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
 			}
 			return anthropic.ToAnthropicBatchRetrieveResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicBatchIDFromPath,
@@ -468,9 +467,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() any {
 			return &anthropic.AnthropicBatchCancelRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if cancelReq, ok := req.(*anthropic.AnthropicBatchCancelRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if provider == schemas.Gemini {
 					cancelReq.BatchID = strings.Replace(cancelReq.BatchID, "batches-", "batches/", 1)
 				}
@@ -484,13 +483,13 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid batch cancel request type")
 		},
-		BatchCancelResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
+		BatchCancelResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicBatchCancelResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicBatchIDFromPath,
@@ -504,9 +503,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchResultsRequest{}
 		},
-		BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 			if resultsReq, ok := req.(*anthropic.AnthropicBatchResultsRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if provider == schemas.Gemini {
 					resultsReq.BatchID = strings.Replace(resultsReq.BatchID, "batches-", "batches/", 1)
 				}
@@ -520,13 +519,13 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid batch results request type")
 		},
-		BatchResultsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchResultsResponse) (interface{}, error) {
+		BatchResultsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchResultsResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return resp, nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicBatchIDFromPath,
@@ -536,26 +535,26 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 }
 
 // extractAnthropicBatchCreateParams extracts provider from header for batch create requests
-func extractAnthropicBatchCreateParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicBatchCreateParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	// Extract provider from header, default to Anthropic
 	provider := string(ctx.Request.Header.Peek("x-model-provider"))
 	if provider == "" {
 		provider = string(schemas.Anthropic)
 	}
 	// Store provider in context for batch create converter to use
-	*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+	bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 	return nil
 }
 
 // extractAnthropicBatchListQueryParams extracts provider from header and query parameters for Anthropic batch list requests
-func extractAnthropicBatchListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicBatchListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listReq, ok := req.(*anthropic.AnthropicBatchListRequest); ok {
 		// Extract provider from header, default to Anthropic
 		provider := string(ctx.Request.Header.Peek("x-model-provider"))
 		if provider == "" {
 			provider = string(schemas.Anthropic)
 		}
-		*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+		bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 		// Printing all query parameters
 		// Extract limit from query parameters
 		if limitStr := string(ctx.QueryArgs().Peek("page_size")); limitStr != "" {
@@ -574,13 +573,13 @@ func extractAnthropicBatchListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *
 }
 
 // extractAnthropicBatchIDFromPath extracts provider from header and batch_id from path parameters
-func extractAnthropicBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	// Extract provider from header, default to Anthropic
 	provider := string(ctx.Request.Header.Peek("x-model-provider"))
 	if provider == "" {
 		provider = string(schemas.Anthropic)
 	}
-	*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+	bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 	batchID := ctx.UserValue("batch_id")
 	if batchID == nil {
 		return errors.New("batch_id is required")
@@ -601,17 +600,17 @@ func extractAnthropicBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *conte
 }
 
 // extractAnthropicFileUploadParams extracts provider from header for file upload requests
-func extractAnthropicFileUploadParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicFileUploadParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	provider := string(ctx.Request.Header.Peek("x-model-provider"))
 	if provider == "" {
 		provider = string(schemas.Anthropic)
 	}
-	*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+	bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 	return nil
 }
 
 // extractAnthropicFileListQueryParams extracts provider from header and query parameters for Anthropic file list requests
-func extractAnthropicFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listReq, ok := req.(*anthropic.AnthropicFileListRequest); ok {
 		// Extract provider from header, default to Anthropic
 		provider := string(ctx.Request.Header.Peek("x-model-provider"))
@@ -619,7 +618,7 @@ func extractAnthropicFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *c
 			provider = string(schemas.Anthropic)
 		}
 
-		*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+		bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 
 		// Extract limit from query parameters
 		if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
@@ -641,13 +640,13 @@ func extractAnthropicFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *c
 }
 
 // extractAnthropicFileIDFromPath extracts provider from header and file_id from path parameters
-func extractAnthropicFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func extractAnthropicFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	// Extract provider from header, default to Anthropic
 	provider := string(ctx.Request.Header.Peek("x-model-provider"))
 	if provider == "" {
 		provider = string(schemas.Anthropic)
 	}
-	*bifrostCtx = context.WithValue(*bifrostCtx, bifrostContextKeyProvider, schemas.ModelProvider(provider))
+	bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.ModelProvider(provider))
 	fileID := ctx.UserValue("file_id")
 	if fileID == nil {
 		return errors.New("file_id is required")
@@ -727,10 +726,10 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			uploadReq.Filename = fileHeader.Filename
 			return nil
 		},
-		FileRequestConverter: func(ctx *context.Context, req any) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req any) (*FileRequest, error) {
 			if uploadReq, ok := req.(*anthropic.AnthropicFileUploadRequest); ok {
 				// Here if provider is OpenAI and purpose is empty then we override it with "batch"
-				provider, ok := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider, ok := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if !ok {
 					return nil, errors.New("provider not found in context")
 				}
@@ -749,7 +748,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid file upload request type")
 		},
-		FileUploadResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
+		FileUploadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
@@ -759,7 +758,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return anthropic.ToAnthropicFileUploadResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicFileUploadParams,
@@ -773,9 +772,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileListRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if listReq, ok := req.(*anthropic.AnthropicFileListRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				return &FileRequest{
 					Type: schemas.FileListRequest,
 					ListRequest: &schemas.BifrostFileListRequest{
@@ -788,7 +787,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid file list request type")
 		},
-		FileListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error) {
+		FileListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
@@ -800,7 +799,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return anthropic.ToAnthropicFileListResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicFileListQueryParams,
@@ -814,9 +813,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if retrieveReq, ok := req.(*anthropic.AnthropicFileRetrieveRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				// Handle file id conversion for Gemini
 				if provider == schemas.Gemini {
 					retrieveReq.FileID = strings.Replace(retrieveReq.FileID, "files-", "files/", 1)
@@ -831,13 +830,13 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid file retrieve request type")
 		},
-		FileRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
+		FileRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicFileRetrieveResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicFileIDFromPath,
@@ -851,9 +850,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileDeleteRequest{}
 		},
-		FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if deleteReq, ok := req.(*anthropic.AnthropicFileDeleteRequest); ok {
-				provider := (*ctx).Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				provider := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
 				if provider == schemas.Gemini {
 					// Here we will convert fileId to replace files/ with files-
 					deleteReq.FileID = strings.Replace(deleteReq.FileID, "files-", "files/", 1)
@@ -868,13 +867,13 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 			}
 			return nil, errors.New("invalid file delete request type")
 		},
-		FileDeleteResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
+		FileDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
 			if resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return anthropic.ToAnthropicFileDeleteResponse(resp), nil
 		},
-		ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
 		PreCallback: extractAnthropicFileIDFromPath,

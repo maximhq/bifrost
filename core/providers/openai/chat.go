@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"strings"
+
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -40,6 +42,10 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 
 	switch bifrostReq.Provider {
 	case schemas.OpenAI:
+		return openaiReq
+	case schemas.XAI:
+		openaiReq.filterOpenAISpecificParameters()
+		openaiReq.applyXAICompatibility(bifrostReq.Model)
 		return openaiReq
 	case schemas.Gemini:
 		openaiReq.filterOpenAISpecificParameters()
@@ -115,5 +121,29 @@ func (request *OpenAIChatRequest) applyMistralCompatibility() {
 	if request.ToolChoice != nil && request.ToolChoice.ChatToolChoiceStruct != nil {
 		request.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
 		request.ToolChoice.ChatToolChoiceStruct = nil
+	}
+}
+
+// applyXAICompatibility applies xAI-specific transformations to the request
+func (request *OpenAIChatRequest) applyXAICompatibility(model string) {
+	// Only apply filters if this is a grok reasoning model
+	if !schemas.IsGrokReasoningModel(model) {
+		return
+	}
+
+	request.ChatParameters.PresencePenalty = nil
+
+	// Only non-mini grok-3 models support frequency_penalty and stop
+	// grok-3-mini only supports reasoning_effort in reasoning mode
+	if !strings.Contains(model, "grok-3") || strings.Contains(model, "grok-3-mini") {
+		request.ChatParameters.FrequencyPenalty = nil
+		request.ChatParameters.Stop = nil
+	}
+
+	// Only grok-3-mini supports reasoning_effort
+	if request.ChatParameters.Reasoning != nil &&
+		!strings.Contains(model, "grok-3-mini") {
+		// Clear reasoning_effort for non-grok-3-mini models
+		request.ChatParameters.Reasoning.Effort = nil
 	}
 }

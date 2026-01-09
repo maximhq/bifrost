@@ -166,6 +166,7 @@ export const baseApi = createApi({
 		"Resources",
 		"Operations",
 		"Permissions",
+		"APIKeys",
 	],
 	endpoints: () => ({}),
 });

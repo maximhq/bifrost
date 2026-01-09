@@ -568,7 +568,7 @@ func TestTranscriptionWithMockServer(t *testing.T) {
 			}
 
 			// Make request
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			resp, err := provider.Transcription(ctx, schemas.Key{Value: "test-api-key"}, request)
@@ -599,7 +599,7 @@ func TestTranscriptionNilInput(t *testing.T) {
 		},
 	}, &testLogger{})
 
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
 		name    string
@@ -762,12 +762,12 @@ func TestTranscriptionStreamWithMockServer(t *testing.T) {
 			}
 
 			// Create post hook runner (no-op for tests)
-			postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			postHookRunner := func(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				return response, err
 			}
 
 			// Make streaming request
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-api-key"}, request)
@@ -805,11 +805,11 @@ func TestTranscriptionStreamNilInput(t *testing.T) {
 	}, &testLogger{})
 
 	// Create post hook runner (no-op for tests)
-	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	postHookRunner := func(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return response, err
 	}
 
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
 		name    string
@@ -1243,11 +1243,11 @@ func TestTranscriptionStreamEdgeCases(t *testing.T) {
 			}
 
 			// Create post hook runner
-			postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			postHookRunner := func(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 				return response, err
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-key"}, request)
@@ -1311,12 +1311,12 @@ func TestTranscriptionStreamContextCancellation(t *testing.T) {
 		},
 	}
 
-	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	postHookRunner := func(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return response, err
 	}
 
 	// Create context with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: "test-key"}, request)
@@ -1495,7 +1495,7 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 	// Note: Mistral may reject this minimal WAV file - this tests error handling too
 	audioData := createMinimalAudioFile()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	request := &schemas.BifrostTranscriptionRequest{
@@ -1553,7 +1553,7 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 	// Create a minimal but valid audio file for testing
 	audioData := createMinimalAudioFile()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	request := &schemas.BifrostTranscriptionRequest{
@@ -1567,7 +1567,7 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 	}
 
 	// Create post hook runner (no-op for tests)
-	postHookRunner := func(ctx *context.Context, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	postHookRunner := func(ctx *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		return response, err
 	}
 

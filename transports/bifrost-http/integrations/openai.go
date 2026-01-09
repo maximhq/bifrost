@@ -1,7 +1,6 @@
 package integrations
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -36,8 +35,8 @@ type OpenAIRouter struct {
 	*GenericRouter
 }
 
-func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
 		deploymentID := ctx.UserValue("deployment-id")
@@ -114,7 +113,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAITextCompletionRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
 					return &schemas.BifrostRequest{
 						TextCompletionRequest: openaiReq.ToBifrostTextCompletionRequest(),
@@ -122,7 +121,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			TextResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -130,11 +129,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				TextStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
+				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
@@ -142,7 +141,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return "", resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},
@@ -163,7 +162,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 					return &schemas.BifrostRequest{
 						ChatRequest: openaiReq.ToBifrostChatRequest(),
@@ -171,7 +170,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ChatResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (interface{}, error) {
+			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -179,11 +178,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ChatStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
@@ -191,7 +190,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return "", resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},
@@ -212,7 +211,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
 					return &schemas.BifrostRequest{
 						ResponsesRequest: openaiReq.ToBifrostResponsesRequest(),
@@ -221,7 +220,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ResponsesResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
+			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -229,11 +228,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ResponsesStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
+				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
@@ -241,7 +240,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return string(resp.Type), resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},
@@ -262,7 +261,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
 					return &schemas.BifrostRequest{
 						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(),
@@ -270,7 +269,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid request type for input tokens")
 			},
-			CountTokensResponseConverter: func(ctx *context.Context, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -278,7 +277,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -298,7 +297,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIEmbeddingRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if embeddingReq, ok := req.(*openai.OpenAIEmbeddingRequest); ok {
 					return &schemas.BifrostRequest{
 						EmbeddingRequest: embeddingReq.ToBifrostEmbeddingRequest(),
@@ -306,7 +305,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid embedding request type")
 			},
-			EmbeddingResponseConverter: func(ctx *context.Context, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -314,7 +313,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -334,7 +333,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAISpeechRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if speechReq, ok := req.(*openai.OpenAISpeechRequest); ok {
 					return &schemas.BifrostRequest{
 						SpeechRequest: speechReq.ToBifrostSpeechRequest(),
@@ -342,11 +341,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid speech request type")
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				SpeechStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
@@ -354,7 +353,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return "", resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},
@@ -376,7 +375,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return &openai.OpenAITranscriptionRequest{}
 			},
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest); ok {
 					return &schemas.BifrostRequest{
 						TranscriptionRequest: transcriptionReq.ToBifrostTranscriptionRequest(),
@@ -384,7 +383,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return nil, errors.New("invalid transcription request type")
 			},
-			TranscriptionResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
+			TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -392,11 +391,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				TranscriptionStreamResponseConverter: func(ctx *context.Context, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error) {
+				TranscriptionStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
@@ -404,7 +403,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return "", resp, nil
 				},
-				ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
 			},
@@ -431,7 +430,7 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
-			RequestConverter: func(ctx *context.Context, req interface{}) (*schemas.BifrostRequest, error) {
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
 					return &schemas.BifrostRequest{
 						ListModelsRequest: listModelsReq,
@@ -439,10 +438,10 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 				}
 				return nil, errors.New("invalid request type")
 			},
-			ListModelsResponseConverter: func(ctx *context.Context, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+			ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 				return openai.ToOpenAIListModelsResponse(resp), nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: setQueryParamsAndAzureEndpointPreHook(handlerStore),
@@ -457,7 +456,7 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 func setQueryParamsAndAzureEndpointPreHook(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// First run the Azure endpoint pre-hook if needed
 		if azureHook != nil {
 			if err := azureHook(ctx, bifrostCtx, req); err != nil {
@@ -495,7 +494,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCreateRequest{}
 			},
-			BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 				if openaiReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					switch openaiReq.Provider {
 					case schemas.Gemini:
@@ -517,7 +516,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return nil, errors.New("invalid batch create request type")
 			},
-			BatchCreateResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+			BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
 				switch resp.ExtraFields.Provider {
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
@@ -528,10 +527,10 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				// Provider is parsed from JSON body (extra_body), default to OpenAI if not set
 				if createReq, ok := req.(*schemas.BifrostBatchCreateRequest); ok {
 					if createReq.Provider == "" {
@@ -604,7 +603,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchListRequest{}
 			},
-			BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 				if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
 					if listReq.Provider == "" {
 						listReq.Provider = schemas.OpenAI
@@ -616,7 +615,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return nil, errors.New("invalid batch list request type")
 			},
-			BatchListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+			BatchListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
 				switch resp.ExtraFields.Provider {
 				case schemas.Gemini:
 					for i, batch := range resp.Data {
@@ -631,7 +630,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractBatchListQueryParams(handlerStore),
@@ -650,7 +649,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchRetrieveRequest{}
 			},
-			BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 				if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
 					if retrieveReq.Provider == "" {
 						retrieveReq.Provider = schemas.OpenAI
@@ -671,7 +670,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return nil, errors.New("invalid batch retrieve request type")
 			},
-			BatchRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+			BatchRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
 				switch resp.ExtraFields.Provider {
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
@@ -682,7 +681,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractBatchIDFromPath(handlerStore),
@@ -701,7 +700,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCancelRequest{}
 			},
-			BatchRequestConverter: func(ctx *context.Context, req interface{}) (*BatchRequest, error) {
+			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
 				if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
 					if cancelReq.Provider == "" {
 						cancelReq.Provider = schemas.OpenAI
@@ -722,7 +721,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return nil, errors.New("invalid batch cancel request type")
 			},
-			BatchCancelResponseConverter: func(ctx *context.Context, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
+			BatchCancelResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
 				switch resp.ExtraFields.Provider {
 				case schemas.Gemini:
 					resp.ID = strings.Replace(resp.ID, "batches/", "batches-", 1)
@@ -731,7 +730,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractBatchIDFromPath(handlerStore),
@@ -757,7 +756,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return &schemas.BifrostFileUploadRequest{}
 			},
 			RequestParser: parseOpenAIFileUploadMultipartRequest,
-			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 				if uploadReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
 					return &FileRequest{
 						Type:          schemas.FileUploadRequest,
@@ -766,7 +765,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return nil, errors.New("invalid file upload request type")
 			},
-			FileUploadResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
+			FileUploadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
 				if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -780,10 +779,10 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				// Default to OpenAI if provider not set from extra_body
 				if bifrostReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
 					if bifrostReq.Provider == "" {
@@ -807,7 +806,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileListRequest{}
 			},
-			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 				if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
 					if listReq.Provider == "" {
 						listReq.Provider = schemas.OpenAI
@@ -819,7 +818,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return nil, errors.New("invalid file list request type")
 			},
-			FileListResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileListResponse) (interface{}, error) {
+			FileListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error) {
 				if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -835,7 +834,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractFileListQueryParams(handlerStore),
@@ -854,7 +853,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileRetrieveRequest{}
 			},
-			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 				if retrieveReq, ok := req.(*schemas.BifrostFileRetrieveRequest); ok {
 					if retrieveReq.Provider == "" {
 						retrieveReq.Provider = schemas.OpenAI
@@ -869,7 +868,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return nil, errors.New("invalid file content request type")
 			},
-			FileRetrieveResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
+			FileRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
 				// Raw response is invalid even for OpenAI
 				switch resp.ExtraFields.Provider {
 				case schemas.Gemini:
@@ -881,7 +880,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
@@ -900,7 +899,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileDeleteRequest{}
 			},
-			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 				if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
 					if deleteReq.Provider == "" {
 						deleteReq.Provider = schemas.OpenAI
@@ -915,7 +914,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return nil, errors.New("invalid file delete request type")
 			},
-			FileDeleteResponseConverter: func(ctx *context.Context, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
+			FileDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
 				if resp.ExtraFields.RawResponse != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					return resp.ExtraFields.RawResponse, nil
 				}
@@ -929,7 +928,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return resp, nil
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
@@ -948,7 +947,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileContentRequest{}
 			},
-			FileRequestConverter: func(ctx *context.Context, req interface{}) (*FileRequest, error) {
+			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 				if contentReq, ok := req.(*schemas.BifrostFileContentRequest); ok {
 					if contentReq.Provider == "" {
 						contentReq.Provider = schemas.OpenAI
@@ -964,7 +963,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				}
 				return nil, errors.New("invalid file content request type")
 			},
-			ErrorConverter: func(ctx *context.Context, err *schemas.BifrostError) interface{} {
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
@@ -978,7 +977,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if azureHook != nil {
 			if err := azureHook(ctx, bifrostCtx, req); err != nil {
 				return err
@@ -1017,7 +1016,7 @@ func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallba
 func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if azureHook != nil {
 			if err := azureHook(ctx, bifrostCtx, req); err != nil {
 				return err
@@ -1062,7 +1061,7 @@ func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if azureHook != nil {
 			if err := azureHook(ctx, bifrostCtx, req); err != nil {
 				return err
@@ -1141,7 +1140,7 @@ func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallbac
 func extractFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 	azureHook := AzureEndpointPreHook(handlerStore)
 
-	return func(ctx *fasthttp.RequestCtx, bifrostCtx *context.Context, req interface{}) error {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if azureHook != nil {
 			if err := azureHook(ctx, bifrostCtx, req); err != nil {
 				return err

@@ -348,6 +348,7 @@ func TestCacheConfiguration(t *testing.T) {
 			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
+				Dimension:      1536,
 				Threshold:      0.95, // Very high threshold
 				Keys: []schemas.Key{
 					{Value: os.Getenv("OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
@@ -360,6 +361,7 @@ func TestCacheConfiguration(t *testing.T) {
 			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
+				Dimension:      1536,
 				Threshold:      0.1, // Very low threshold
 				Keys: []schemas.Key{
 					{Value: os.Getenv("OPENAI_API_KEY"), Models: []string{}, Weight: 1.0},
@@ -372,6 +374,7 @@ func TestCacheConfiguration(t *testing.T) {
 			config: &Config{
 				Provider:       schemas.OpenAI,
 				EmbeddingModel: "text-embedding-3-small",
+				Dimension:      1536,
 				Threshold:      0.8,
 				TTL:            1 * time.Hour, // Custom TTL
 				Keys: []schemas.Key{

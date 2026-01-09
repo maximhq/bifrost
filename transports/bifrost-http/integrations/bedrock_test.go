@@ -517,7 +517,7 @@ func Test_extractBedrockBatchListQueryParams(t *testing.T) {
 			callback := extractBedrockBatchListQueryParams(handlerStore)
 
 			bifrostCtx := createTestBifrostContext()
-			err := callback(ctx, &bifrostCtx, req)
+			err := callback(ctx, bifrostCtx, req)
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.wantMaxResults, req.MaxResults)
@@ -591,7 +591,7 @@ func Test_extractBedrockJobArnFromPath(t *testing.T) {
 			callback := extractBedrockJobArnFromPath(handlerStore)
 
 			bifrostCtx := createTestBifrostContextWithProvider(tt.provider)
-			err := callback(ctx, &bifrostCtx, req)
+			err := callback(ctx, bifrostCtx, req)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -664,7 +664,7 @@ func Test_extractS3ListObjectsV2Params(t *testing.T) {
 			callback := extractS3ListObjectsV2Params(handlerStore)
 
 			bifrostCtx := createTestBifrostContext()
-			err := callback(ctx, &bifrostCtx, req)
+			err := callback(ctx, bifrostCtx, req)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -752,7 +752,7 @@ func Test_extractS3BucketKeyFromPath(t *testing.T) {
 				req = &bedrock.BedrockFileDeleteRequest{}
 			}
 
-			err := callback(ctx, &bifrostCtx, req)
+			err := callback(ctx, bifrostCtx, req)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -774,10 +774,14 @@ func Test_extractS3BucketKeyFromPath(t *testing.T) {
 
 // Helper functions for creating test contexts
 
-func createTestBifrostContext() context.Context {
-	return context.WithValue(context.Background(), bifrostContextKeyProvider, schemas.Bedrock)
+func createTestBifrostContext() *schemas.BifrostContext {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(bifrostContextKeyProvider, schemas.Bedrock)
+	return bifrostCtx
 }
 
-func createTestBifrostContextWithProvider(provider schemas.ModelProvider) context.Context {
-	return context.WithValue(context.Background(), bifrostContextKeyProvider, provider)
+func createTestBifrostContextWithProvider(provider schemas.ModelProvider) *schemas.BifrostContext {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(bifrostContextKeyProvider, provider)
+	return bifrostCtx
 }

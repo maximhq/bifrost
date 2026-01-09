@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
-
-	"github.com/bytedance/sonic"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -200,7 +198,7 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 	aux.Alias = (*Alias)(cp)
 
 	// Single unmarshal
-	if err := sonic.Unmarshal(data, &aux); err != nil {
+	if err := Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -288,11 +286,11 @@ type ToolFunctionParameters struct {
 func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a JSON string (xAI format)
 	var jsonStr string
-	if err := sonic.Unmarshal(data, &jsonStr); err == nil {
+	if err := Unmarshal(data, &jsonStr); err == nil {
 		// It's a string, so parse the string as JSON
 		type Alias ToolFunctionParameters
 		var temp Alias
-		if err := sonic.Unmarshal([]byte(jsonStr), &temp); err != nil {
+		if err := Unmarshal([]byte(jsonStr), &temp); err != nil {
 			return fmt.Errorf("failed to unmarshal parameters string: %w", err)
 		}
 		*t = ToolFunctionParameters(temp)
@@ -302,7 +300,7 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	// Otherwise, unmarshal as a normal JSON object
 	type Alias ToolFunctionParameters
 	var temp Alias
-	if err := sonic.Unmarshal(data, &temp); err != nil {
+	if err := Unmarshal(data, &temp); err != nil {
 		return err
 	}
 	*t = ToolFunctionParameters(temp)
@@ -370,7 +368,7 @@ func (om OrderedMap) MarshalJSON() ([]byte, error) {
 		}
 
 		// key
-		keyBytes, err := sonic.Marshal(k)
+		keyBytes, err := Marshal(k)
 		if err != nil {
 			return nil, err
 		}
@@ -378,7 +376,7 @@ func (om OrderedMap) MarshalJSON() ([]byte, error) {
 		buf.WriteByte(':')
 
 		// value
-		valBytes, err := sonic.Marshal(norm[k])
+		valBytes, err := Marshal(norm[k])
 		if err != nil {
 			return nil, err
 		}
@@ -443,13 +441,13 @@ func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
 	}
 
 	if ctc.ChatToolChoiceStr != nil {
-		return sonic.Marshal(ctc.ChatToolChoiceStr)
+		return Marshal(ctc.ChatToolChoiceStr)
 	}
 	if ctc.ChatToolChoiceStruct != nil {
-		return sonic.Marshal(ctc.ChatToolChoiceStruct)
+		return Marshal(ctc.ChatToolChoiceStruct)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -458,7 +456,7 @@ func (ctc ChatToolChoice) MarshalJSON() ([]byte, error) {
 func (ctc *ChatToolChoice) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct string
 	var toolChoiceStr string
-	if err := sonic.Unmarshal(data, &toolChoiceStr); err == nil {
+	if err := Unmarshal(data, &toolChoiceStr); err == nil {
 		ctc.ChatToolChoiceStr = &toolChoiceStr
 		ctc.ChatToolChoiceStruct = nil
 		return nil
@@ -466,7 +464,7 @@ func (ctc *ChatToolChoice) UnmarshalJSON(data []byte) error {
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var chatToolChoice ChatToolChoiceStruct
-	if err := sonic.Unmarshal(data, &chatToolChoice); err == nil {
+	if err := Unmarshal(data, &chatToolChoice); err == nil {
 		ctc.ChatToolChoiceStr = nil
 		ctc.ChatToolChoiceStruct = &chatToolChoice
 		return nil
@@ -523,7 +521,7 @@ type ChatMessage struct {
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessage.
 // This is needed because ChatAssistantMessage has a custom UnmarshalJSON method,
-// which interferes with sonic's handling of other fields in ChatMessage.
+// which interferes with the JSON library's handling of other fields in ChatMessage.
 func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Unmarshal the base fields directly
 	type baseFields struct {
@@ -532,7 +530,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		Content *ChatMessageContent `json:"content,omitempty"`
 	}
 	var base baseFields
-	if err := sonic.Unmarshal(data, &base); err != nil {
+	if err := Unmarshal(data, &base); err != nil {
 		return err
 	}
 	cm.Name = base.Name
@@ -542,7 +540,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Unmarshal ChatToolMessage fields
 	type toolMsgAlias ChatToolMessage
 	var toolMsg toolMsgAlias
-	if err := sonic.Unmarshal(data, &toolMsg); err != nil {
+	if err := Unmarshal(data, &toolMsg); err != nil {
 		return err
 	}
 	if toolMsg.ToolCallID != nil {
@@ -551,7 +549,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 
 	// Unmarshal ChatAssistantMessage (which has its own custom unmarshaller)
 	var assistantMsg ChatAssistantMessage
-	if err := sonic.Unmarshal(data, &assistantMsg); err != nil {
+	if err := Unmarshal(data, &assistantMsg); err != nil {
 		return err
 	}
 	// Only set if any field is populated
@@ -579,13 +577,13 @@ func (mc ChatMessageContent) MarshalJSON() ([]byte, error) {
 	}
 
 	if mc.ContentStr != nil {
-		return sonic.Marshal(*mc.ContentStr)
+		return Marshal(*mc.ContentStr)
 	}
 	if mc.ContentBlocks != nil {
-		return sonic.Marshal(mc.ContentBlocks)
+		return Marshal(mc.ContentBlocks)
 	}
 	// If both are nil, return null
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -601,7 +599,7 @@ func (mc *ChatMessageContent) UnmarshalJSON(data []byte) error {
 
 	// First, try to unmarshal as a direct string
 	var stringContent string
-	if err := sonic.Unmarshal(data, &stringContent); err == nil {
+	if err := Unmarshal(data, &stringContent); err == nil {
 		mc.ContentStr = &stringContent
 		mc.ContentBlocks = nil
 		return nil
@@ -609,7 +607,7 @@ func (mc *ChatMessageContent) UnmarshalJSON(data []byte) error {
 
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []ChatContentBlock
-	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
+	if err := Unmarshal(data, &arrayContent); err == nil {
 		mc.ContentBlocks = arrayContent
 		mc.ContentStr = nil
 		return nil
@@ -709,7 +707,7 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 		ReasoningContent *string `json:"reasoning_content,omitempty"` // xAI uses this field name
 	}
 
-	if err := sonic.Unmarshal(data, &aux); err != nil {
+	if err := Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -856,7 +854,7 @@ func (d *ChatStreamResponseChoiceDelta) UnmarshalJSON(data []byte) error {
 		ReasoningContent *string `json:"reasoning_content,omitempty"` // xAI uses this field name
 	}
 
-	if err := sonic.Unmarshal(data, &aux); err != nil {
+	if err := Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -945,7 +943,7 @@ type BifrostCost struct {
 func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	// First, try to unmarshal as a direct float
 	var costFloat float64
-	if err := sonic.Unmarshal(data, &costFloat); err == nil {
+	if err := Unmarshal(data, &costFloat); err == nil {
 		bc.TotalCost = costFloat
 		return nil
 	}
@@ -954,7 +952,7 @@ func (bc *BifrostCost) UnmarshalJSON(data []byte) error {
 	// Use a type alias to avoid infinite recursion
 	type Alias BifrostCost
 	var costStruct Alias
-	if err := sonic.Unmarshal(data, &costStruct); err == nil {
+	if err := Unmarshal(data, &costStruct); err == nil {
 		*bc = BifrostCost(costStruct)
 		return nil
 	}

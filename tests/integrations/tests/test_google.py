@@ -751,6 +751,84 @@ class TestGoogleIntegration:
 
         assert_valid_chat_response(response3)
 
+    
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("simple_chat"))
+    def test_11a_system_instruction(self, google_client, test_config, provider, model):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        """Test Case 11a: System instruction (cross-provider)"""
+        from google.genai import types
+        
+        # Test 1: System instruction with word count constraint
+        response = google_client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents="What is 2 + 2?",
+            config=types.GenerateContentConfig(
+                system_instruction="You are a helpful assistant that always responds in exactly 5 words or fewer.",
+                max_output_tokens=300,
+            ),
+        )
+        
+        assert_valid_chat_response(response)
+        assert response.text is not None
+        assert len(response.text) > 0
+        
+        # Verify response respects the constraint AND contains correct answer
+        word_count = len(response.text.split())
+        content_lower = response.text.lower()
+        
+        # Should be short (respecting the 5 word limit with small tolerance)
+        assert word_count <= 8, (
+            f"Expected ≤8 words (system instruction: ≤5 words), got {word_count} words: {response.text}"
+        )
+        
+        # Should contain the correct answer
+        has_answer = any(ans in content_lower for ans in ["4", "four", "quatre"])
+        assert has_answer, (
+            f"Response should contain the answer '4' or 'four'. Got: {response.text}"
+        )
+        
+        print(f"✓ Word limit test passed: {response.text} ({word_count} words)")
+        
+        # Test 2: System instruction for translation (English to French)
+        response2 = google_client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents="Hello, how are you?",
+            config=types.GenerateContentConfig(
+                system_instruction=[
+                    "You are a language translator.",
+                    "Your mission is to translate text from English to French.",
+                    "Only output the French translation, nothing else.",
+                ],
+                max_output_tokens=300,
+            ),
+        )
+        
+        assert_valid_chat_response(response2)
+        assert response2.text is not None
+        assert len(response2.text) > 0
+        
+        content_lower = response2.text.lower()
+        
+        # Check for French translation keywords
+        french_keywords = ["bonjour", "salut", "comment", "allez", "vous", "ça", "va"]
+        has_french = any(keyword in content_lower for keyword in french_keywords)
+        
+        # Check for common English words that shouldn't appear in pure French translation
+        english_words = ["hello", "how", "are", "you"]
+        has_english = any(word in content_lower for word in english_words)
+        
+        # Should have French keywords AND not have English words (pure translation)
+        assert has_french, (
+            f"Response should contain French keywords. Got: {response2.text}"
+        )
+        assert not has_english, (
+            f"Response should not contain English words (should be pure French translation). Got: {response2.text}"
+        )
+        
+        print(f"✓ Translation test passed: {response2.text}")
+        print(f"✓ System instruction test completed for provider {provider}")
+        
     @skip_if_no_api_key("google")
     def test_12_error_handling_invalid_roles(self, google_client, test_config):
         """Test Case 12: Error handling for invalid roles"""

@@ -1,7 +1,6 @@
 package testutil
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -389,7 +388,7 @@ func NewOpenAIJudge(client *bifrost.Bifrost, judgeModel string, t *testing.T) *O
 }
 
 // EvaluateResponse judges an LLM response
-func (judge *OpenAIJudge) EvaluateResponse(ctx context.Context, evaluation EvaluationRequest) (*EvaluationResult, error) {
+func (judge *OpenAIJudge) EvaluateResponse(ctx *schemas.BifrostContext, evaluation EvaluationRequest) (*EvaluationResult, error) {
 	prompt := fmt.Sprintf(`You are an expert AI system evaluator. Evaluate this LLM response.
 
 SCENARIO: %s
@@ -532,7 +531,7 @@ func NewOpenAIConversationDriver(client *bifrost.Bifrost, driverModel string, t 
 }
 
 // GenerateNextMessage creates a natural followup message
-func (driver *OpenAIConversationDriver) GenerateNextMessage(ctx context.Context, request NextMessageRequest) (*GeneratedFollowup, error) {
+func (driver *OpenAIConversationDriver) GenerateNextMessage(ctx *schemas.BifrostContext, request NextMessageRequest) (*GeneratedFollowup, error) {
 	conversationHistory := driver.formatConversationHistory(request.ConversationHistory)
 
 	prompt := fmt.Sprintf(`Generate the next realistic user message for a %s scenario.
@@ -646,7 +645,7 @@ func (driver *OpenAIConversationDriver) generateFallbackMessage(request NextMess
 // =============================================================================
 
 // RunCrossProviderScenarioTest executes a complete scenario
-func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, config CrossProviderTestConfig, scenario CrossProviderScenario, useResponsesAPI bool) {
+func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx *schemas.BifrostContext, config CrossProviderTestConfig, scenario CrossProviderScenario, useResponsesAPI bool) {
 	apiType := "Chat Completions"
 	if useResponsesAPI {
 		apiType = "Responses API"
@@ -778,7 +777,7 @@ func RunCrossProviderScenarioTest(t *testing.T, client *bifrost.Bifrost, ctx con
 // =============================================================================
 
 // RunCrossProviderConsistencyTest tests same prompt across providers
-func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, config CrossProviderTestConfig, useResponsesAPI bool) {
+func RunCrossProviderConsistencyTest(t *testing.T, client *bifrost.Bifrost, ctx *schemas.BifrostContext, config CrossProviderTestConfig, useResponsesAPI bool) {
 	apiType := "Chat Completions"
 	if useResponsesAPI {
 		apiType = "Responses API"
@@ -872,7 +871,7 @@ type ConsistencyResult struct {
 // HELPER FUNCTIONS
 // =============================================================================
 
-func executeStepWithProvider(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
+func executeStepWithProvider(t *testing.T, client *bifrost.Bifrost, ctx *schemas.BifrostContext,
 	provider ProviderConfig, history []schemas.ChatMessage, step ScenarioStep, useResponsesAPI bool) (*schemas.BifrostResponse, *schemas.BifrostError) {
 
 	// Prepare request parameters

@@ -72,7 +72,7 @@ func (p *AzureProvider) getOrCreateAuth(
 // 1. Service Principal (client ID/secret/tenant ID) - Bearer token
 // 2. Context token - Bearer token
 // 3. API key - api-key or x-api-key header
-func (provider *AzureProvider) getAzureAuthHeaders(ctx context.Context, key schemas.Key, isAnthropicModel bool) (map[string]string, *schemas.BifrostError) {
+func (provider *AzureProvider) getAzureAuthHeaders(ctx *schemas.BifrostContext, key schemas.Key, isAnthropicModel bool) (map[string]string, *schemas.BifrostError) {
 	authHeader := make(map[string]string)
 
 	// Service Principal authentication
@@ -148,7 +148,7 @@ func (provider *AzureProvider) GetProviderKey() schemas.ModelProvider {
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
 func (provider *AzureProvider) completeRequest(
-	ctx context.Context,
+	ctx *schemas.BifrostContext,
 	jsonData []byte,
 	path string,
 	key schemas.Key,
@@ -224,7 +224,7 @@ func (provider *AzureProvider) completeRequest(
 
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
-func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	// Validate Azure key configuration
 	if key.AzureKeyConfig == nil {
 		return nil, providerUtils.NewConfigurationError("azure key config not set", schemas.Azure)
@@ -313,7 +313,7 @@ func (provider *AzureProvider) listModelsByKey(ctx context.Context, key schemas.
 // ListModels performs a list models request to Azure's API.
 // It retrieves all models accessible by the Azure resource
 // Requests are made concurrently for improved performance.
-func (provider *AzureProvider) ListModels(ctx context.Context, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
@@ -326,7 +326,7 @@ func (provider *AzureProvider) ListModels(ctx context.Context, keys []schemas.Ke
 // TextCompletion performs a text completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -388,7 +388,7 @@ func (provider *AzureProvider) TextCompletion(ctx context.Context, key schemas.K
 // TextCompletionStream performs a streaming text completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -426,6 +426,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		postHookRunner,
 		customPostResponseConverter,
 		provider.logger,
@@ -435,7 +436,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx context.Context, postHoo
 // ChatCompletion performs a chat completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -529,7 +530,7 @@ func (provider *AzureProvider) ChatCompletion(ctx context.Context, key schemas.K
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -617,6 +618,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 			postHookRunner,
 			nil,
 			nil,
+			nil,
 			postResponseConverter,
 			provider.logger,
 		)
@@ -626,7 +628,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx context.Context, postHoo
 // Responses performs a responses request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
-func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -716,7 +718,7 @@ func (provider *AzureProvider) Responses(ctx context.Context, key schemas.Key, r
 }
 
 // ResponsesStream performs a streaming responses request to Azure's API.
-func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -789,6 +791,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			provider.GetProviderKey(),
 			postHookRunner,
+			nil,
 			postRequestConverter,
 			postResponseConverter,
 			provider.logger,
@@ -799,7 +802,7 @@ func (provider *AzureProvider) ResponsesStream(ctx context.Context, postHookRunn
 // Embedding generates embeddings for the given input text(s) using Azure.
 // The input can be either a single string or a slice of strings for batch embedding.
 // Returns a BifrostResponse containing the embedding(s) and any error that occurred.
-func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -860,7 +863,7 @@ func (provider *AzureProvider) Embedding(ctx context.Context, key schemas.Key, r
 }
 
 // Speech is not supported by the Azure provider.
-func (provider *AzureProvider) Speech(ctx context.Context, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -901,7 +904,7 @@ func (provider *AzureProvider) Speech(ctx context.Context, key schemas.Key, requ
 
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
-func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -1073,7 +1076,7 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 								ModelRequested: request.Model,
 								RequestType:    schemas.SpeechStreamRequest,
 							}
-							ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
 							return
 						}
@@ -1137,7 +1140,7 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 				providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
 			}
 
-			ctx = context.WithValue(ctx, schemas.BifrostContextKeyStreamEndIndicator, true)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil), responseChan)
 		}
 
@@ -1150,7 +1153,7 @@ func (provider *AzureProvider) SpeechStream(ctx context.Context, postHookRunner 
 }
 
 // Transcription is not supported by the Azure provider.
-func (provider *AzureProvider) Transcription(ctx context.Context, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -1190,7 +1193,7 @@ func (provider *AzureProvider) Transcription(ctx context.Context, key schemas.Ke
 }
 
 // TranscriptionStream is not supported by the Azure provider.
-func (provider *AzureProvider) TranscriptionStream(ctx context.Context, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -1239,7 +1242,7 @@ func (provider *AzureProvider) getModelDeployment(key schemas.Key, model string)
 }
 
 // FileUpload uploads a file to Azure OpenAI.
-func (provider *AzureProvider) FileUpload(ctx context.Context, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfigForFiles(key); err != nil {
 		return nil, err
 	}
@@ -1342,7 +1345,7 @@ func (provider *AzureProvider) FileUpload(ctx context.Context, key schemas.Key, 
 // FileList lists files from all provided Azure keys and aggregates results.
 // FileList lists files using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
-func (provider *AzureProvider) FileList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if len(keys) == 0 {
@@ -1478,7 +1481,7 @@ func (provider *AzureProvider) FileList(ctx context.Context, keys []schemas.Key,
 }
 
 // FileRetrieve retrieves file metadata from Azure OpenAI by trying each key until found.
-func (provider *AzureProvider) FileRetrieve(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -1570,7 +1573,7 @@ func (provider *AzureProvider) FileRetrieve(ctx context.Context, keys []schemas.
 }
 
 // FileDelete deletes a file from Azure OpenAI by trying each key until successful.
-func (provider *AzureProvider) FileDelete(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -1700,7 +1703,7 @@ func (provider *AzureProvider) FileDelete(ctx context.Context, keys []schemas.Ke
 }
 
 // FileContent downloads file content from Azure OpenAI by trying each key until found.
-func (provider *AzureProvider) FileContent(ctx context.Context, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if request.FileID == "" {
@@ -1801,7 +1804,7 @@ func (provider *AzureProvider) FileContent(ctx context.Context, keys []schemas.K
 
 // BatchCreate creates a new batch job on Azure OpenAI.
 // Azure Batch API uses the same format as OpenAI but with Azure-specific URL patterns.
-func (provider *AzureProvider) BatchCreate(ctx context.Context, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfigForFiles(key); err != nil {
 		return nil, err
 	}
@@ -1916,7 +1919,7 @@ func (provider *AzureProvider) BatchCreate(ctx context.Context, key schemas.Key,
 // BatchList lists batch jobs from all provided Azure keys and aggregates results.
 // BatchList lists batch jobs using serial pagination across keys.
 // Exhausts all pages from one key before moving to the next.
-func (provider *AzureProvider) BatchList(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -2040,7 +2043,7 @@ func (provider *AzureProvider) BatchList(ctx context.Context, keys []schemas.Key
 }
 
 // BatchRetrieve retrieves a specific batch job from Azure OpenAI by trying each key until found.
-func (provider *AzureProvider) BatchRetrieve(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if request.BatchID == "" {
@@ -2138,7 +2141,7 @@ func (provider *AzureProvider) BatchRetrieve(ctx context.Context, keys []schemas
 }
 
 // BatchCancel cancels a batch job on Azure OpenAI by trying each key until successful.
-func (provider *AzureProvider) BatchCancel(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	if request.BatchID == "" {
@@ -2264,7 +2267,7 @@ func (provider *AzureProvider) BatchCancel(ctx context.Context, keys []schemas.K
 
 // BatchResults retrieves batch results from Azure OpenAI by trying each key until successful.
 // For Azure (like OpenAI), batch results are obtained by downloading the output_file_id.
-func (provider *AzureProvider) BatchResults(ctx context.Context, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	// First, retrieve the batch to get the output_file_id (using all keys)
@@ -2320,6 +2323,6 @@ func (provider *AzureProvider) BatchResults(ctx context.Context, keys []schemas.
 }
 
 // CountTokens is not supported by the Azure provider.
-func (provider *AzureProvider) CountTokens(_ context.Context, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+func (provider *AzureProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }

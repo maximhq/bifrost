@@ -133,7 +133,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 											</label>
 											<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
 										</div>
-										<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} />
+										<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} disabled={!hasUpdateProviderAccess} />
 									</div>
 								</FormItem>
 							)}
@@ -142,7 +142,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 				</div>
 
 				{/* Allowed Requests Configuration */}
-				<AllowedRequestsFields control={form.control} providerType={form.watch("base_provider_type") as BaseProvider} />
+				<AllowedRequestsFields control={form.control} providerType={form.watch("base_provider_type") as BaseProvider} disabled={!hasUpdateProviderAccess} />
 
 				{/* Form Actions */}
 				<div className="flex justify-end space-x-2 py-2">

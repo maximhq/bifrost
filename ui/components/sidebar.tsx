@@ -19,6 +19,7 @@ import {
 	Layers,
 	LogOut,
 	Logs,
+	PanelLeftClose,
 	Puzzle,
 	ScrollText,
 	Settings,
@@ -29,7 +30,7 @@ import {
 	User,
 	UserRoundCheck,
 	Users,
-	Zap,
+	Zap
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -46,6 +47,7 @@ import {
 	SidebarMenuSub,
 	SidebarMenuSubButton,
 	SidebarMenuSubItem,
+	useSidebar,
 } from "@/components/ui/sidebar";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { IS_ENTERPRISE, TRIAL_EXPIRY } from "@/lib/constants/config";
@@ -160,6 +162,8 @@ const SidebarItemView = ({
 	onToggle,
 	pathname,
 	router,
+	isSidebarCollapsed,
+	expandSidebar,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -170,6 +174,8 @@ const SidebarItemView = ({
 	onToggle?: () => void;
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
+	isSidebarCollapsed: boolean;
+	expandSidebar: () => void;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -179,9 +185,18 @@ const SidebarItemView = ({
 		});
 
 	const handleClick = (e: React.MouseEvent) => {
-		if (hasSubItems && onToggle && item.hasAccess) {
+		if (hasSubItems && item.hasAccess) {
 			e.preventDefault();
-			onToggle();
+			// If sidebar is collapsed, expand it first then toggle the submenu
+			if (isSidebarCollapsed) {
+				expandSidebar();
+				// Small delay to allow sidebar to expand before toggling submenu
+				setTimeout(() => {
+					if (onToggle) onToggle();
+				}, 100);
+			} else if (onToggle) {
+				onToggle();
+			}
 		}
 	};
 
@@ -205,7 +220,8 @@ const SidebarItemView = ({
 	return (
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
-				className={`relative h-7.5 cursor-pointer rounded-md border px-3 transition-all duration-200 ${
+				tooltip={item.title}
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
 					isActive || isAnySubItemActive
 						? "bg-sidebar-accent text-primary border-primary/20"
 						: isAllowed && item.hasAccess
@@ -216,19 +232,27 @@ const SidebarItemView = ({
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
-						<item.icon className={`h-4 w-4 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-						<span className={`text-sm ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}>{item.title}</span>
+						<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+						<span
+							className={`text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
+						>
+							{item.title}
+						</span>
 						{item.tag && (
-							<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
+							<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs group-data-[collapsible=icon]:hidden">
 								{item.tag}
 							</Badge>
 						)}
 					</div>
-					{hasSubItems && <ChevronRight className={`h-4 w-4 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} />}
+					{hasSubItems && (
+						<ChevronRight
+							className={`h-4 w-4 transition-transform duration-200 group-data-[collapsible=icon]:hidden ${isExpanded ? "rotate-90" : ""}`}
+						/>
+					)}
 					{!hasSubItems && item.url === "/logs" && isWebSocketConnected && (
 						<div className="h-2 w-2 animate-pulse rounded-full bg-green-800 dark:bg-green-200" />
 					)}
-					{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4" size={16} />}
+					{isExternal && <ArrowUpRight className="text-muted-foreground h-4 w-4 group-data-[collapsible=icon]:hidden" size={16} />}
 				</div>
 			</SidebarMenuButton>
 			{hasSubItems && isExpanded && (
@@ -240,7 +264,7 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									className={`h-7 cursor-pointer rounded-md px-2 transition-all duration-200 ${
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
 										isSubItemActive
 											? "bg-sidebar-accent text-primary font-medium"
 											: subItem.hasAccess === false
@@ -316,7 +340,7 @@ export default function AppSidebar() {
 	const hasLogsAccess = useRbac(RbacResource.Logs, RbacOperation.View);
 	const hasObservabilityAccess = useRbac(RbacResource.Observability, RbacOperation.View);
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
-	const hasMCPToolsAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
+	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
@@ -369,11 +393,11 @@ export default function AppSidebar() {
 			hasAccess: hasModelProvidersAccess,
 		},
 		{
-			title: "MCP Tools",
-			url: "/workspace/mcp-clients",
+			title: "MCP Gateway",
+			url: "/workspace/mcp-gateway",
 			icon: MCPIcon,
 			description: "MCP configuration",
-			hasAccess: hasMCPToolsAccess,
+			hasAccess: hasMCPGatewayAccess,
 		},
 		{
 			title: "Plugins",
@@ -485,6 +509,13 @@ export default function AppSidebar() {
 					icon: Settings,
 					description: "Client configuration settings",
 					hasAccess: hasSettingsAccess,
+				},
+				{
+					title: "MCP Gateway",
+					url: "/workspace/config/mcp-gateway",
+					icon: MCPIcon,
+					description: "MCP gateway configuration",
+					hasAccess: hasMCPGatewayAccess,
 				},
 				{
 					title: "Pricing Config",
@@ -619,6 +650,7 @@ export default function AppSidebar() {
 
 	// Always render the light theme version for SSR to avoid hydration mismatch
 	const logoSrc = mounted && resolvedTheme === "dark" ? "/bifrost-logo-dark.png" : "/bifrost-logo.png";
+	const iconSrc = mounted && resolvedTheme === "dark" ? "/bifrost-icon-dark.png" : "/bifrost-icon.png";
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -702,13 +734,27 @@ export default function AppSidebar() {
 		return null;
 	}, []);
 
+	const { state: sidebarState, toggleSidebar } = useSidebar();
+
 	return (
-		<Sidebar className="overflow-y-clip border-none bg-transparent">
-			<SidebarHeader className="mt-1 ml-2 flex h-12 justify-between px-0">
-				<div className="flex h-full items-center gap-2 px-1.5">
-					<Link href="/" className="group flex items-center gap-2 pl-2">
+		<Sidebar collapsible="icon" className="overflow-y-clip border-none bg-transparent">
+			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
+				{/* Expanded state: horizontal layout */}
+				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
+					<Link href="/workspace/logs" className="group flex items-center gap-2 pl-2">
 						<Image className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
 					</Link>
+					<button
+						onClick={toggleSidebar}
+						className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex h-7 w-7 items-center justify-center rounded-md transition-colors"
+						aria-label="Collapse sidebar"
+					>
+						<PanelLeftClose className="h-4 w-4" />
+					</button>
+				</div>
+				{/* Collapsed state: vertical layout */}
+				<div className="hidden w-full flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex cursor-pointer" onClick={toggleSidebar}>
+					<Image className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
 				</div>
 			</SidebarHeader>
 			<SidebarContent className="overflow-hidden pb-4">
@@ -729,19 +775,21 @@ export default function AppSidebar() {
 										isExpanded={expandedItems.has(item.title)}
 										onToggle={() => toggleItem(item.title)}
 										pathname={pathname}
-										router={router}										
+										router={router}
+										isSidebarCollapsed={sidebarState === "collapsed"}
+										expandSidebar={() => toggleSidebar()}
 									/>
 								);
 							})}
 						</SidebarMenu>
 					</SidebarGroupContent>
 				</SidebarGroup>
-				<div className="flex flex-col gap-4 px-3">
-					<div className="mx-1">
+				<div className="flex flex-col gap-4 px-3 group-data-[collapsible=icon]:px-1">
+					<div className="mx-1 group-data-[collapsible=icon]:hidden">
 						<PromoCardStack cards={promoCards} onCardsEmpty={handleCardsEmpty} />
 					</div>
 					<div className="flex flex-row">
-						<div className="mx-auto flex flex-row gap-4">
+						<div className="mx-auto flex flex-row gap-4 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">
 							{externalLinks.map((item, index) => (
 								<a
 									key={index}
@@ -749,6 +797,7 @@ export default function AppSidebar() {
 									target="_blank"
 									rel="noopener noreferrer"
 									className="group flex w-full items-center justify-between"
+									title={item.title}
 								>
 									<div className="flex items-center space-x-3">
 										<item.icon
@@ -803,7 +852,7 @@ export default function AppSidebar() {
 							) : null}
 						</div>
 					</div>
-					<div className="mx-auto flex flex-col items-center gap-1">
+					<div className="mx-auto flex flex-col items-center gap-1 group-data-[collapsible=icon]:hidden">
 						<div className="font-mono text-xs">{version ?? ""}</div>
 						{trialDaysRemaining !== null && (
 							<div className={cn("text-xs", trialDaysRemaining < 3 ? "text-red-500" : "text-muted-foreground")}>

@@ -677,8 +677,8 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			actual, err := bedrock.ToBedrockChatCompletionRequest(&ctx, tt.input)
+			ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+			actual, err := bedrock.ToBedrockChatCompletionRequest(ctx, tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, actual)
@@ -705,7 +705,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
 
 	tests := []struct {
 		name     string
@@ -1194,9 +1194,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockReq *bedrock.BedrockConverseRequest
-				actual, err = bedrockReq.ToBifrostResponsesRequest(&ctx)
+				actual, err = bedrockReq.ToBifrostResponsesRequest(ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesRequest(&ctx)
+				actual, err = tt.input.ToBifrostResponsesRequest(ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1775,7 +1775,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	toolInput := map[string]interface{}{
 		"location": "NYC",
 	}
-	ctx := context.Background()
+	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
 
 	tests := []struct {
 		name     string
@@ -1919,9 +1919,9 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 			var err error
 			if tt.input == nil {
 				var bedrockResp *bedrock.BedrockConverseResponse
-				actual, err = bedrockResp.ToBifrostResponsesResponse(&ctx)
+				actual, err = bedrockResp.ToBifrostResponsesResponse(ctx)
 			} else {
-				actual, err = tt.input.ToBifrostResponsesResponse(&ctx)
+				actual, err = tt.input.ToBifrostResponsesResponse(ctx)
 			}
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -1986,8 +1986,8 @@ func TestToBedrockResponsesRequest_AdditionalFields(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
+	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 
@@ -2013,8 +2013,8 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 		},
 	}
 
-	ctx := context.Background()
-	bedrockReq, err := bedrock.ToBedrockResponsesRequest(&ctx, req)
+	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
 

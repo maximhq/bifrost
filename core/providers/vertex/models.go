@@ -5,7 +5,36 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
+
+// formatDeploymentName converts a deployment alias into a human-readable name.
+// It splits the alias by "-" or "_", capitalizes each word, and joins them with spaces.
+// Example: "gemini-pro" → "Gemini Pro", "claude_3_opus" → "Claude 3 Opus"
+func formatDeploymentName(alias string) string {
+	caser := cases.Title(language.English)
+
+	// Try splitting by hyphen first, then underscore
+	var parts []string
+	if strings.Contains(alias, "-") {
+		parts = strings.Split(alias, "-")
+	} else if strings.Contains(alias, "_") {
+		parts = strings.Split(alias, "_")
+	} else {
+		// No delimiter found, just capitalize the whole string
+		return caser.String(strings.ToLower(alias))
+	}
+
+	// Capitalize each part
+	for i, part := range parts {
+		if part != "" {
+			parts[i] = caser.String(strings.ToLower(part))
+		}
+	}
+
+	return strings.Join(parts, " ")
+}
 
 // findDeploymentMatch finds a matching deployment value in the deployments map.
 // Returns the deployment value and alias if found, empty strings otherwise.
@@ -23,6 +52,21 @@ func findDeploymentMatch(deployments map[string]string, customModelID string) (d
 	return "", ""
 }
 
+// ToBifrostListModelsResponse converts a Vertex AI list models response to Bifrost's format.
+// It processes both custom models (from the API response) and non-custom models (from deployments and allowedModels).
+//
+// Custom models are those with digit-only deployment values, extracted from the API response.
+// Non-custom models are those with non-digit characters in their deployment values or model names.
+//
+// The function performs three passes:
+// 1. First pass: Process all models from the Vertex AI API response (custom models)
+// 2. Second pass: Add non-custom models from deployments that aren't already in the list
+// 3. Third pass: Add non-custom models from allowedModels that aren't in deployments or already added
+//
+// Filtering logic:
+// - If allowedModels is empty, all models are allowed
+// - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
+// - Deployments map is used to match model IDs to aliases and filter accordingly
 func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
@@ -31,6 +75,11 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
+
+	// Track which model IDs have been added to avoid duplicates
+	addedModelIDs := make(map[string]bool)
+
+	// First pass: Process all models from the Vertex AI API response (custom models)
 	for _, model := range response.Models {
 		if len(model.DeployedModels) == 0 {
 			continue
@@ -92,8 +141,82 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 				modelEntry.Deployment = schemas.Ptr(deploymentValue)
 			}
 			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+			addedModelIDs[modelEntry.ID] = true
 		}
 	}
+
+	// Second pass: Add non-custom models from deployments
+	// Non-custom models are identified by having non-digit characters in their deployment values
+	for alias, deploymentValue := range deployments {
+		// Skip if deployment value contains only digits (custom model, already processed)
+		if schemas.IsAllDigitsASCII(deploymentValue) {
+			continue
+		}
+
+		// Check if this deployment alias is allowed
+		if len(allowedModels) > 0 {
+			// If allowedModels is non-empty, only include if alias is in the list
+			if !slices.Contains(allowedModels, alias) {
+				continue
+			}
+		}
+
+		// Check if model already exists in the list
+		modelID := string(schemas.Vertex) + "/" + alias
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		// Create model entry for non-custom model
+		modelName := formatDeploymentName(alias)
+		modelEntry := schemas.Model{
+			ID:          modelID,
+			Name:        schemas.Ptr(modelName),
+			Description: nil, // No description available for non-custom models
+			Created:     nil, // No creation time available for non-custom models
+			Deployment:  schemas.Ptr(deploymentValue),
+		}
+
+		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	// Third pass: Add non-custom models from allowedModels that aren't in deployments
+	// This handles cases where a model is specified in allowedModels but not explicitly mapped in deployments
+	if len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			// Skip if model is all digits (custom model ID)
+			if schemas.IsAllDigitsASCII(allowedModel) {
+				continue
+			}
+
+			// Skip if model is already in deployments (already processed in second pass)
+			if _, existsInDeployments := deployments[allowedModel]; existsInDeployments {
+				continue
+			}
+
+			// Check if model already exists in the list
+			modelID := string(schemas.Vertex) + "/" + allowedModel
+			if addedModelIDs[modelID] {
+				continue
+			}
+
+			// Create model entry for allowed model
+			// Use the model name itself as the deployment value
+			modelName := formatDeploymentName(allowedModel)
+			modelEntry := schemas.Model{
+				ID:          modelID,
+				Name:        schemas.Ptr(modelName),
+				Description: nil, // No description available for models from allowedModels
+				Created:     nil, // No creation time available for models from allowedModels
+				Deployment:  schemas.Ptr(allowedModel),
+			}
+
+			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+			addedModelIDs[modelID] = true
+		}
+	}
+
 	bifrostResponse.NextPageToken = response.NextPageToken
 
 	return bifrostResponse

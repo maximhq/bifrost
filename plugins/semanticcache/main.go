@@ -206,7 +206,7 @@ func (pa *PluginAccount) GetConfiguredProviders() ([]schemas.ModelProvider, erro
 	return []schemas.ModelProvider{pa.provider}, nil
 }
 
-func (pa *PluginAccount) GetKeysForProvider(ctx *context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
+func (pa *PluginAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return pa.keys, nil
 }
 
@@ -335,9 +335,9 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
-// TransportInterceptor is not used for this plugin
-func (plugin *Plugin) TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error) {
-	return headers, body, nil
+// HTTPTransportIntercept is not used for this plugin
+func (plugin *Plugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return nil, nil
 }
 
 // PreHook is called before a request is processed by Bifrost.
@@ -354,12 +354,11 @@ func (plugin *Plugin) TransportInterceptor(ctx *schemas.BifrostContext, url stri
 //   - error: Any error that occurred during cache lookup
 func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	provider, model, _ := req.GetRequestFields()
-
 	// Get the cache key from the context
 	var cacheKey string
 	var ok bool
 
-	cacheKey, ok = (*ctx).Value(CacheKey).(string)
+	cacheKey, ok = ctx.Value(CacheKey).(string)
 	if !ok || cacheKey == "" {
 		plugin.logger.Debug(PluginLoggerPrefix + " No cache key found in context, continuing without caching")
 		return req, nil, nil
@@ -377,10 +376,10 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	ctx.SetValue(requestIDKey, requestID)
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
-	
+
 	performDirectSearch, performSemanticSearch := true, true
-	if (*ctx).Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := (*ctx).Value(CacheTypeKey).(CacheType)
+	if ctx.Value(CacheTypeKey) != nil {
+		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
 		if !ok {
 			plugin.logger.Warn(PluginLoggerPrefix + " Cache type is not a CacheType, using all available cache types")
 		} else {
@@ -450,7 +449,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 		return res, bifrostErr, nil
 	}
 
-	isCacheHit := (*ctx).Value(isCacheHitKey)
+	isCacheHit := ctx.Value(isCacheHitKey)
 	if isCacheHit != nil {
 		isCacheHitValue, ok := isCacheHit.(bool)
 		if ok && isCacheHitValue {
@@ -459,7 +458,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	}
 
 	// Check if caching is explicitly disabled
-	noStore := (*ctx).Value(CacheNoStoreKey)
+	noStore := ctx.Value(CacheNoStoreKey)
 	if noStore != nil {
 		noStoreValue, ok := noStore.(bool)
 		if ok && noStoreValue {
@@ -469,13 +468,13 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	}
 
 	// Get the cache key from context
-	cacheKey, ok := (*ctx).Value(CacheKey).(string)
+	cacheKey, ok := ctx.Value(CacheKey).(string)
 	if !ok {
 		return res, nil, nil
 	}
 
 	// Get the request ID from context
-	requestID, ok := (*ctx).Value(requestIDKey).(string)
+	requestID, ok := ctx.Value(requestIDKey).(string)
 	if !ok {
 		return res, nil, nil
 	}
@@ -485,8 +484,8 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	var shouldStoreEmbeddings = true
 	var shouldStoreHash = true
 
-	if (*ctx).Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := (*ctx).Value(CacheTypeKey).(CacheType)
+	if ctx.Value(CacheTypeKey) != nil {
+		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
 		if ok {
 			if cacheTypeVal == CacheTypeDirect {
 				// For direct-only caching, skip embedding operations entirely
@@ -501,7 +500,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 
 	if shouldStoreHash {
 		// Get the hash from context
-		hash, ok = (*ctx).Value(requestHashKey).(string)
+		hash, ok = ctx.Value(requestHashKey).(string)
 		if !ok {
 			plugin.logger.Warn(PluginLoggerPrefix + " Hash is not a string. Continuing without caching")
 			return res, nil, nil
@@ -513,7 +512,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 
 	// Get embedding from context if available and needed
 	if shouldStoreEmbeddings && requestType != schemas.EmbeddingRequest && requestType != schemas.TranscriptionRequest {
-		embeddingValue := (*ctx).Value(requestEmbeddingKey)
+		embeddingValue := ctx.Value(requestEmbeddingKey)
 		if embeddingValue != nil {
 			embedding, ok = embeddingValue.([]float32)
 			if !ok {
@@ -526,14 +525,14 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	}
 
 	// Get the provider from context
-	provider, ok := (*ctx).Value(requestProviderKey).(schemas.ModelProvider)
+	provider, ok := ctx.Value(requestProviderKey).(schemas.ModelProvider)
 	if !ok {
 		plugin.logger.Warn(PluginLoggerPrefix + " Provider is not a schemas.ModelProvider, continuing without caching")
 		return res, nil, nil
 	}
 
 	// Get the model from context
-	model, ok := (*ctx).Value(requestModelKey).(string)
+	model, ok := ctx.Value(requestModelKey).(string)
 	if !ok {
 		plugin.logger.Warn(PluginLoggerPrefix + " Model is not a string, continuing without caching")
 		return res, nil, nil
@@ -542,7 +541,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	// Get the input tokens from context (can be nil if not set)
-	inputTokens, ok := (*ctx).Value(requestEmbeddingTokensKey).(int)
+	inputTokens, ok := ctx.Value(requestEmbeddingTokensKey).(int)
 	if ok {
 		isStreamRequest := bifrost.IsStreamRequestType(requestType)
 
@@ -559,7 +558,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 
 	cacheTTL := plugin.config.TTL
 
-	ttlValue := (*ctx).Value(CacheTTLKey)
+	ttlValue := ctx.Value(CacheTTLKey)
 	if ttlValue != nil {
 		// Get the request TTL from the context
 		ttl, ok := ttlValue.(time.Duration)
@@ -579,7 +578,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 		defer cancel()
 
 		// Get metadata from context
-		paramsHash, _ := (*ctx).Value(requestParamsHashKey).(string)
+		paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
 
 		// Build unified metadata with provider, model, and all params
 		unifiedMetadata := plugin.buildUnifiedMetadata(provider, model, paramsHash, hash, cacheKey, cacheTTL)

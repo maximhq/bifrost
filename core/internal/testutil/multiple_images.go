@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -101,7 +100,8 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		}...) // Failure to process multiple images indicators
 
 		response, bifrostError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "MultipleImages", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			return client.ChatCompletionRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ChatCompletionRequest(bfCtx, request)
 		})
 
 		// Validation now happens inside WithTestRetry - no need to check again

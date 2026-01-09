@@ -66,7 +66,8 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		}
 
 		response, bifrostErr := WithTextCompletionTestRetry(t, textCompletionRetryConfig, retryContext, expectations, "TextCompletion", func() (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-			return client.TextCompletionRequest(ctx, request)
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.TextCompletionRequest(bfCtx, request)
 		})
 
 		if bifrostErr != nil {

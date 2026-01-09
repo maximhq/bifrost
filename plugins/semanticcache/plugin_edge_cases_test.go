@@ -14,7 +14,6 @@ func TestParameterVariations(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("param-variations-test")
 	basePrompt := "What is the capital of France?"
 
 	tests := []struct {
@@ -45,6 +44,9 @@ func TestParameterVariations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create a fresh context for each subtest to avoid context pollution
+			ctx := CreateContextWithCacheKey("param-variations-test")
+
 			// Clear cache for this subtest
 			clearTestKeysWithStore(t, setup.Store)
 
@@ -221,8 +223,6 @@ func TestContentVariations(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := CreateContextWithCacheKey("content-variations-test")
-
 	tests := []struct {
 		name    string
 		request *schemas.BifrostChatRequest
@@ -349,6 +349,9 @@ func TestContentVariations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Logf("Testing content variation: %s", tt.name)
 
+			// Create a fresh context for each subtest to avoid context pollution
+			ctx := CreateContextWithCacheKey("content-variations-test")
+
 			// Make first request
 			_, err1 := setup.Client.ChatCompletionRequest(ctx, tt.request)
 			if err1 != nil {
@@ -375,8 +378,6 @@ func TestContentVariations(t *testing.T) {
 func TestBoundaryParameterValues(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
-
-	ctx := CreateContextWithCacheKey("boundary-params-test")
 
 	tests := []struct {
 		name    string
@@ -453,6 +454,9 @@ func TestBoundaryParameterValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Logf("Testing boundary parameters: %s", tt.name)
 
+			// Create a fresh context for each subtest to avoid context pollution
+			ctx := CreateContextWithCacheKey("boundary-params-test")
+
 			_, err := setup.Client.ChatCompletionRequest(ctx, tt.request)
 			if err != nil {
 				t.Logf("⚠️  %s request failed (may be expected): %v", tt.name, err)
@@ -469,8 +473,6 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 	defer setup.Cleanup()
 
 	setup.Config.Threshold = 0.9
-
-	ctx := CreateContextWithCacheKey("semantic-edge-test")
 
 	// Test case: Similar questions with different wording
 	similarTests := []struct {
@@ -507,6 +509,9 @@ func TestSemanticSimilarityEdgeCases(t *testing.T) {
 
 	for i, test := range similarTests {
 		t.Run(test.description, func(t *testing.T) {
+			// Create a fresh context for each subtest to avoid context pollution
+			ctx := CreateContextWithCacheKey("semantic-edge-test")
+
 			// Clear cache for this subtest
 			clearTestKeysWithStore(t, setup.Store)
 
@@ -575,7 +580,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 
 	// Test without cache key (should not crash and bypass cache)
 	t.Run("Request without cache key", func(t *testing.T) {
-		ctxNoKey := context.Background() // No cache key
+		ctxNoKey := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 		response, err := setup.Client.ChatCompletionRequest(ctxNoKey, testRequest)
 		if err != nil {
@@ -600,7 +605,7 @@ func TestErrorHandlingEdgeCases(t *testing.T) {
 		WaitForCache()
 
 		// Now test with invalid key type - should bypass cache
-		ctxInvalidKey := context.WithValue(context.Background(), CacheKey, 12345) // Wrong type (int instead of string)
+		ctxInvalidKey := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline).WithValue(CacheKey, 12345)
 
 		response, err := setup.Client.ChatCompletionRequest(ctxInvalidKey, testRequest)
 		if err != nil {

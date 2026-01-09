@@ -12,7 +12,7 @@ import (
 )
 
 // ToBedrockChatCompletionRequest converts a Bifrost request to Bedrock Converse API format
-func ToBedrockChatCompletionRequest(ctx *context.Context, bifrostReq *schemas.BifrostChatRequest) (*BedrockConverseRequest, error) {
+func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*BedrockConverseRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}

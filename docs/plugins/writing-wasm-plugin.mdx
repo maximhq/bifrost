@@ -751,6 +751,20 @@ Output: `build/plugin.wasm`
 
 ### http_intercept
 
+<Warning>
+**Header and Query Parameter Lookups**: All header and query parameter keys in the `request.headers` and `request.query` objects are **automatically normalized to lowercase** by Bifrost. When accessing or setting these fields, always use lowercase keys:
+
+```json
+// ✅ Correct - use lowercase
+"headers": { "content-type": "application/json", "x-custom-header": "value" }
+
+// ❌ Wrong - uppercase won't work consistently
+"headers": { "Content-Type": "application/json" }
+```
+
+This ensures consistent, case-insensitive lookups regardless of how the client sent the headers.
+</Warning>
+
 **Input:**
 ```json
 {
@@ -760,7 +774,7 @@ Output: `build/plugin.wasm`
   "request": {
     "method": "POST",
     "path": "/v1/chat/completions",
-    "headers": { "Content-Type": "application/json" },
+    "headers": { "content-type": "application/json" },
     "query": {},
     "body": "<base64-encoded>"
   }

@@ -27,23 +27,25 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest() *schemas.Bif
 
 	params := request.convertGenerationConfigToResponsesParameters()
 
-	// Convert Contents to Input messages
-	if len(request.Contents) > 0 {
-		bifrostReq.Input = convertGeminiContentsToResponsesMessages(request.Contents)
+	// Convert SystemInstruction to system messages first
+	var inputMessages []schemas.ResponsesMessage
+	if request.SystemInstruction != nil && len(request.SystemInstruction.Parts) > 0 {
+		systemMsg := convertGeminiSystemInstructionToResponsesMessage(request.SystemInstruction)
+		if systemMsg != nil {
+			inputMessages = append(inputMessages, *systemMsg)
+		}
 	}
 
-	if request.SystemInstruction != nil {
-		var systemInstructionText string
-		if len(request.SystemInstruction.Parts) > 0 {
-			for _, part := range request.SystemInstruction.Parts {
-				if part.Text != "" {
-					systemInstructionText += part.Text
-				}
-			}
+	// Convert Contents to Input messages
+	if len(request.Contents) > 0 {
+		contentsMessages := convertGeminiContentsToResponsesMessages(request.Contents)
+		if len(contentsMessages) > 0 {
+			inputMessages = append(inputMessages, contentsMessages...)
 		}
-		if systemInstructionText != "" {
-			params.Instructions = &systemInstructionText
-		}
+	}
+
+	if len(inputMessages) > 0 {
+		bifrostReq.Input = inputMessages
 	}
 
 	if len(request.Tools) > 0 {
@@ -106,14 +108,27 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 		}
 	}
 
-	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
-		if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
-			if settings, ok := safetySettings.([]SafetySetting); ok {
-				geminiReq.SafetySettings = settings
+	if bifrostReq.Params != nil {
+		if bifrostReq.Params.Instructions != nil {
+			// check if system instruction is already set
+			if geminiReq.SystemInstruction == nil {
+				geminiReq.SystemInstruction = &Content{
+					Parts: []*Part{
+						{Text: *bifrostReq.Params.Instructions},
+					},
+				}
 			}
 		}
-		if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
-			geminiReq.CachedContent = cachedContent
+
+		if bifrostReq.Params.ExtraParams != nil {
+			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
+				if settings, ok := safetySettings.([]SafetySetting); ok {
+					geminiReq.SafetySettings = settings
+				}
+			}
+			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
+				geminiReq.CachedContent = cachedContent
+			}
 		}
 	}
 
@@ -1360,6 +1375,48 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, usage *GenerateCont
 // FinalizeGeminiResponsesStream finalizes the stream by closing any open items and emitting completed event
 func FinalizeGeminiResponsesStream(state *GeminiResponsesStreamState, usage *GenerateContentResponseUsageMetadata, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
 	return closeGeminiOpenItems(state, usage, sequenceNumber)
+}
+
+// convertGeminiSystemInstructionToResponsesMessage converts Gemini SystemInstruction to a system role message
+func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content) *schemas.ResponsesMessage {
+	if systemInstruction == nil || len(systemInstruction.Parts) == 0 {
+		return nil
+	}
+
+	var contentBlocks []schemas.ResponsesMessageContentBlock
+	var hasTextContent bool
+
+	for _, part := range systemInstruction.Parts {
+		if part.Text != "" {
+			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText,
+				Text: &part.Text,
+			})
+			hasTextContent = true
+		}
+	}
+
+	if !hasTextContent {
+		return nil
+	}
+
+	// If single text block, use ContentStr
+	if len(contentBlocks) == 1 {
+		return &schemas.ResponsesMessage{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: contentBlocks[0].Text,
+			},
+		}
+	}
+
+	// Multiple blocks, use ContentBlocks
+	return &schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: contentBlocks,
+		},
+	}
 }
 
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
