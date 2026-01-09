@@ -217,9 +217,11 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 			TotalTokens:      response.Usage.TotalTokens,
 		}
 		// Handle cached tokens if present
-		if response.Usage.CacheReadInputTokens > 0 {
+		if response.Usage.CacheReadInputTokens > 0 || response.Usage.CacheWriteInputTokens > 0 {
 			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+				CachedTokens:        response.Usage.CacheReadInputTokens,
+				CacheReadTokens:     response.Usage.CacheReadInputTokens,
+				CacheCreationTokens: response.Usage.CacheWriteInputTokens,
 			}
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {

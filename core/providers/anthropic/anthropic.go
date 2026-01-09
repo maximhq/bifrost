@@ -588,15 +588,33 @@ func HandleAnthropicChatCompletionStreaming(
 					usage.TotalTokens = calculatedTotal
 				}
 				// Handle cached tokens if present
-				if usageToProcess.CacheReadInputTokens > 0 {
+				if usageToProcess.CacheReadInputTokens > 0 || usageToProcess.CacheCreationInputTokens > 0 {
 					if usage.PromptTokensDetails == nil {
 						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 					}
 					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
 						usage.PromptTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
 					}
+					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CacheReadTokens {
+						usage.PromptTokensDetails.CacheReadTokens = usageToProcess.CacheReadInputTokens
+					}
+					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CacheCreationTokens {
+						usage.PromptTokensDetails.CacheCreationTokens = usageToProcess.CacheCreationInputTokens
+					}
+					// Map ephemeral TTL tokens
+					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+						if usage.PromptTokensDetails.CacheCreation == nil {
+							usage.PromptTokensDetails.CacheCreation = &schemas.CacheCreationTokens{}
+						}
+						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.PromptTokensDetails.CacheCreation.Ephemeral5mInputTokens {
+							usage.PromptTokensDetails.CacheCreation.Ephemeral5mInputTokens = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+						}
+						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.PromptTokensDetails.CacheCreation.Ephemeral1hInputTokens {
+							usage.PromptTokensDetails.CacheCreation.Ephemeral1hInputTokens = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+						}
+					}
 				}
-				// Handle cached tokens if present
+				// Handle cache creation tokens in completion details (for backward compat)
 				if usageToProcess.CacheCreationInputTokens > 0 {
 					if usage.CompletionTokensDetails == nil {
 						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
@@ -943,15 +961,33 @@ func HandleAnthropicResponsesStream(
 					usage.TotalTokens = calculatedTotal
 				}
 				// Handle cached tokens if present
-				if usageToProcess.CacheReadInputTokens > 0 {
+				if usageToProcess.CacheReadInputTokens > 0 || usageToProcess.CacheCreationInputTokens > 0 {
 					if usage.InputTokensDetails == nil {
 						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 					}
 					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
 						usage.InputTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
 					}
+					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CacheReadTokens {
+						usage.InputTokensDetails.CacheReadTokens = usageToProcess.CacheReadInputTokens
+					}
+					if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CacheCreationTokens {
+						usage.InputTokensDetails.CacheCreationTokens = usageToProcess.CacheCreationInputTokens
+					}
+					// Map ephemeral TTL tokens
+					if usageToProcess.CacheCreation.Ephemeral5mInputTokens > 0 || usageToProcess.CacheCreation.Ephemeral1hInputTokens > 0 {
+						if usage.InputTokensDetails.CacheCreation == nil {
+							usage.InputTokensDetails.CacheCreation = &schemas.CacheCreationTokens{}
+						}
+						if usageToProcess.CacheCreation.Ephemeral5mInputTokens > usage.InputTokensDetails.CacheCreation.Ephemeral5mInputTokens {
+							usage.InputTokensDetails.CacheCreation.Ephemeral5mInputTokens = usageToProcess.CacheCreation.Ephemeral5mInputTokens
+						}
+						if usageToProcess.CacheCreation.Ephemeral1hInputTokens > usage.InputTokensDetails.CacheCreation.Ephemeral1hInputTokens {
+							usage.InputTokensDetails.CacheCreation.Ephemeral1hInputTokens = usageToProcess.CacheCreation.Ephemeral1hInputTokens
+						}
+					}
 				}
-				// Handle cached tokens if present
+				// Handle cache creation tokens in output details (for backward compat)
 				if usageToProcess.CacheCreationInputTokens > 0 {
 					if usage.OutputTokensDetails == nil {
 						usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}

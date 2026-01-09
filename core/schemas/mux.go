@@ -651,10 +651,13 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
-			TextTokens:   cu.PromptTokensDetails.TextTokens,
-			AudioTokens:  cu.PromptTokensDetails.AudioTokens,
-			ImageTokens:  cu.PromptTokensDetails.ImageTokens,
-			CachedTokens: cu.PromptTokensDetails.CachedTokens,
+			TextTokens:          cu.PromptTokensDetails.TextTokens,
+			AudioTokens:         cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:         cu.PromptTokensDetails.ImageTokens,
+			CachedTokens:        cu.PromptTokensDetails.CachedTokens,
+			CacheReadTokens:     cu.PromptTokensDetails.CacheReadTokens,
+			CacheCreationTokens: cu.PromptTokensDetails.CacheCreationTokens,
+			CacheCreation:       cu.PromptTokensDetails.CacheCreation,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -687,10 +690,13 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:   ru.InputTokensDetails.TextTokens,
-			AudioTokens:  ru.InputTokensDetails.AudioTokens,
-			ImageTokens:  ru.InputTokensDetails.ImageTokens,
-			CachedTokens: ru.InputTokensDetails.CachedTokens,
+			TextTokens:          ru.InputTokensDetails.TextTokens,
+			AudioTokens:         ru.InputTokensDetails.AudioTokens,
+			ImageTokens:         ru.InputTokensDetails.ImageTokens,
+			CachedTokens:        ru.InputTokensDetails.CachedTokens,
+			CacheReadTokens:     ru.InputTokensDetails.CacheReadTokens,
+			CacheCreationTokens: ru.InputTokensDetails.CacheCreationTokens,
+			CacheCreation:       ru.InputTokensDetails.CacheCreation,
 		}
 	}
 	if ru.OutputTokensDetails != nil {

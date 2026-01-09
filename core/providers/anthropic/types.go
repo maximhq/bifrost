@@ -13,8 +13,32 @@ import (
 const (
 	AnthropicDefaultMaxTokens = 4096
 	MinimumReasoningMaxTokens = 1024
-	// AnthropicFilesAPIBetaHeader is the required beta header for the Files API.
-	AnthropicFilesAPIBetaHeader = "files-api-2025-04-14"
+)
+
+// Anthropic Beta Headers - use with "anthropic-beta" header
+const (
+	AnthropicBetaMessageBatches20240924      = "message-batches-2024-09-24"
+	AnthropicBetaPromptCaching20240731       = "prompt-caching-2024-07-31"
+	AnthropicBetaComputerUse20241022         = "computer-use-2024-10-22"
+	AnthropicBetaComputerUse20250124         = "computer-use-2025-01-24"
+	AnthropicBetaPDFs20240925                = "pdfs-2024-09-25"
+	AnthropicBetaTokenCounting20241101       = "token-counting-2024-11-01"
+	AnthropicBetaTokenEfficientTools20250219 = "token-efficient-tools-2025-02-19"
+	AnthropicBetaOutput128k20250219          = "output-128k-2025-02-19"
+	AnthropicBetaFilesAPI20250414            = "files-api-2025-04-14"
+	AnthropicBetaMCPClient20250404           = "mcp-client-2025-04-04"
+	AnthropicBetaMCPClient20251120           = "mcp-client-2025-11-20"
+	AnthropicBetaDevFullThinking20250514     = "dev-full-thinking-2025-05-14"
+	AnthropicBetaInterleavedThinking20250514 = "interleaved-thinking-2025-05-14"
+	AnthropicBetaCodeExecution20250522       = "code-execution-2025-05-22"
+	AnthropicBetaExtendedCacheTTL20250411    = "extended-cache-ttl-2025-04-11"
+	AnthropicBetaContext1m20250807           = "context-1m-2025-08-07"
+	AnthropicBetaContextManagement20250627   = "context-management-2025-06-27"
+	AnthropicBetaModelContextWindow20250826  = "model-context-window-exceeded-2025-08-26"
+	AnthropicBetaSkills20251002              = "skills-2025-10-02"
+
+	// Deprecated: Use AnthropicBetaFilesAPI20250414 instead
+	AnthropicFilesAPIBetaHeader = AnthropicBetaFilesAPI20250414
 )
 
 // ==================== REQUEST TYPES ====================
@@ -56,6 +80,7 @@ type AnthropicMessageRequest struct {
 	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
 	OutputFormat  interface{}          `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
+	ServiceTier   *string              `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 
 	// Extra params for advanced use cases
 	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
@@ -218,10 +243,12 @@ const (
 type AnthropicContentBlock struct {
 	Type         AnthropicContentBlockType `json:"type"`                    // "text", "image", "document", "tool_use", "tool_result", "thinking"
 	Text         *string                   `json:"text,omitempty"`          // For text content
+	Citations    interface{}               `json:"citations,omitempty"`     // For text: []AnthropicTextCitation (response), for document: *AnthropicCitationsConfig (request)
 	Thinking     *string                   `json:"thinking,omitempty"`      // For thinking content
 	Signature    *string                   `json:"signature,omitempty"`     // For signature content
 	Data         *string                   `json:"data,omitempty"`          // For data content (encrypted data for redacted thinking, signature does not come with this)
 	ToolUseID    *string                   `json:"tool_use_id,omitempty"`   // For tool_result content
+	IsError      *bool                     `json:"is_error,omitempty"`      // For tool_result content - indicates if tool execution failed
 	ID           *string                   `json:"id,omitempty"`            // For tool_use content
 	Name         *string                   `json:"name,omitempty"`          // For tool_use content
 	Input        any                       `json:"input,omitempty"`         // For tool_use content
@@ -229,7 +256,6 @@ type AnthropicContentBlock struct {
 	Content      *AnthropicContent         `json:"content,omitempty"`       // For tool_result content
 	Source       *AnthropicSource          `json:"source,omitempty"`        // For image/document content
 	CacheControl *schemas.CacheControl     `json:"cache_control,omitempty"` // For cache control content
-	Citations    *AnthropicCitationsConfig `json:"citations,omitempty"`     // For document content
 	Context      *string                   `json:"context,omitempty"`       // For document content
 	Title        *string                   `json:"title,omitempty"`         // For document content
 }
@@ -242,9 +268,42 @@ type AnthropicSource struct {
 	URL       *string `json:"url,omitempty"`        // URL (for url type)
 }
 
-// AnthropicCitationsConfig represents citations configuration for documents
+// AnthropicCitationsConfig represents citations configuration for documents (request)
 type AnthropicCitationsConfig struct {
 	Enabled bool `json:"enabled"`
+}
+
+// AnthropicTextCitation represents a citation in text content (response)
+// Type determines which location fields are populated
+type AnthropicTextCitation struct {
+	Type string `json:"type"` // "char_location", "page_location", "content_block_location", "web_search_result_location", "search_result_location"
+
+	// Common fields
+	CitedText     string `json:"cited_text,omitempty"`
+	DocumentIndex *int   `json:"document_index,omitempty"`
+	DocumentTitle string `json:"document_title,omitempty"`
+	FileID        string `json:"file_id,omitempty"`
+
+	// For char_location
+	StartCharIndex *int `json:"start_char_index,omitempty"`
+	EndCharIndex   *int `json:"end_char_index,omitempty"`
+
+	// For page_location
+	StartPageNumber *int `json:"start_page_number,omitempty"`
+	EndPageNumber   *int `json:"end_page_number,omitempty"`
+
+	// For content_block_location
+	StartBlockIndex *int `json:"start_block_index,omitempty"`
+	EndBlockIndex   *int `json:"end_block_index,omitempty"`
+
+	// For web_search_result_location
+	EncryptedIndex string `json:"encrypted_index,omitempty"`
+	URL            string `json:"url,omitempty"`
+	Title          string `json:"title,omitempty"`
+
+	// For search_result_location
+	SearchResultIndex *int   `json:"search_result_index,omitempty"`
+	Source            string `json:"source,omitempty"`
 }
 
 // AnthropicImageContent represents image content in Anthropic format
@@ -287,6 +346,7 @@ type AnthropicToolComputerUse struct {
 type AnthropicToolWebSearchUserLocation struct {
 	Type     *string `json:"type,omitempty"` // "approximate"
 	City     *string `json:"city,omitempty"`
+	Region   *string `json:"region,omitempty"`
 	Country  *string `json:"country,omitempty"`
 	Timezone *string `json:"timezone,omitempty"`
 }
@@ -300,11 +360,15 @@ type AnthropicToolWebSearch struct {
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name         string                          `json:"name"`
-	Type         *AnthropicToolType              `json:"type,omitempty"`
-	Description  *string                         `json:"description,omitempty"`
-	InputSchema  *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
-	CacheControl *schemas.CacheControl           `json:"cache_control,omitempty"`
+	Name           string                          `json:"name"`
+	Type           *AnthropicToolType              `json:"type,omitempty"`
+	Description    *string                         `json:"description,omitempty"`
+	InputSchema    *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
+	CacheControl   *schemas.CacheControl           `json:"cache_control,omitempty"`
+	DeferLoading   *bool                           `json:"defer_loading,omitempty"`   // Beta: If true, tool not included in initial system prompt
+	Strict         *bool                           `json:"strict,omitempty"`          // Beta: Enable strict schema validation
+	AllowedCallers []string                        `json:"allowed_callers,omitempty"` // Beta: "direct", "code_execution_20250825"
+	InputExamples  []map[string]interface{}        `json:"input_examples,omitempty"`  // Beta: Example inputs for the tool
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch
@@ -312,7 +376,7 @@ type AnthropicTool struct {
 
 // AnthropicToolChoice represents tool choice in Anthropic format
 type AnthropicToolChoice struct {
-	Type                   string `json:"type"`                                // "auto", "any", "tool"
+	Type                   string `json:"type"`                                // "auto", "any", "tool", "none"
 	Name                   string `json:"name,omitempty"`                      // For type "tool"
 	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"` // Whether to disable parallel tool use
 }
@@ -384,6 +448,12 @@ type AnthropicUsage struct {
 	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
 	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
 	OutputTokens             int                         `json:"output_tokens"`
+	ServerToolUse            *AnthropicServerToolUsage   `json:"server_tool_use,omitempty"`
+	ServiceTier              string                      `json:"service_tier,omitempty"`
+}
+
+type AnthropicServerToolUsage struct {
+	WebSearchRequests int `json:"web_search_requests"`
 }
 
 type AnthropicUsageCacheCreation struct {
