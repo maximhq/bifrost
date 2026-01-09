@@ -751,19 +751,11 @@ Output: `build/plugin.wasm`
 
 ### http_intercept
 
-<Warning>
-**Header and Query Parameter Lookups**: All header and query parameter keys in the `request.headers` and `request.query` objects are **automatically normalized to lowercase** by Bifrost. When accessing or setting these fields, always use lowercase keys:
+<Note>
+**Header and Query Parameter Handling**: Headers and query parameters in `request.headers` and `request.query` preserve the original casing sent by the client. When looking up headers/query params, you should perform case-insensitive comparisons in your WASM plugin code to handle various casing (e.g., `Content-Type`, `content-type`, `CONTENT-TYPE`).
 
-```json
-// ✅ Correct - use lowercase
-"headers": { "content-type": "application/json", "x-custom-header": "value" }
-
-// ❌ Wrong - uppercase won't work consistently
-"headers": { "Content-Type": "application/json" }
-```
-
-This ensures consistent, case-insensitive lookups regardless of how the client sent the headers.
-</Warning>
+For Go native plugins, use the built-in `CaseInsensitiveHeaderLookup()` and `CaseInsensitiveQueryLookup()` helper methods.
+</Note>
 
 **Input:**
 ```json

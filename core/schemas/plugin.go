@@ -3,6 +3,7 @@ package schemas
 
 import (
 	"context"
+	"strings"
 	"sync"
 )
 
@@ -30,9 +31,43 @@ type PluginStatus struct {
 type HTTPRequest struct {
 	Method  string            `json:"method"`
 	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"` // keys are lowercase
-	Query   map[string]string `json:"query"`   // keys are lowercase
+	Headers map[string]string `json:"headers"`
+	Query   map[string]string `json:"query"`
 	Body    []byte            `json:"body"`
+}
+
+// CaseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
+func (req *HTTPRequest) CaseInsensitiveHeaderLookup(key string) string {
+	return caseInsensitiveLookup(req.Headers, key)
+}
+
+// CaseInsensitiveQueryLookup looks up a query key in a case-insensitive manner
+func (req *HTTPRequest) CaseInsensitiveQueryLookup(key string) string {
+	return caseInsensitiveLookup(req.Query, key)
+}
+
+// caseInsensitiveLookup looks up a key in a case-insensitive manner for a map of strings
+// Returns the value if found, otherwise an empty string
+func caseInsensitiveLookup(data map[string]string, key string) string {
+	if data == nil || key == "" {
+		return ""
+	}
+	// exact match
+	if v, ok := data[key]; ok {
+		return v
+	}
+	// lower key checks
+	lowerKey := strings.ToLower(key)
+	if v, ok := data[lowerKey]; ok {
+		return v
+	}
+	// case-insensitive iteration
+	for k, v := range data {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
 }
 
 // HTTPResponse is a serializable representation of an HTTP response.
