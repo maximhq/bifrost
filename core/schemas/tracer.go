@@ -13,22 +13,23 @@ type SpanHandle interface{}
 // StreamAccumulatorResult contains the accumulated data from streaming chunks.
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
-	RequestID           string                        // Request ID
-	Model               string                        // Model used
-	Provider            ModelProvider                 // Provider used
-	Status              string                        // Status of the stream
-	Latency             int64                         // Latency in milliseconds
-	TimeToFirstToken    int64                         // Time to first token in milliseconds
-	OutputMessage       *ChatMessage                  // Accumulated output message
-	OutputMessages      []ResponsesMessage            // For responses API
-	TokenUsage          *BifrostLLMUsage              // Token usage
-	Cost                *float64                      // Cost in dollars
-	ErrorDetails        *BifrostError                 // Error details if any
-	AudioOutput         *BifrostSpeechResponse        // For speech streaming
-	TranscriptionOutput *BifrostTranscriptionResponse // For transcription streaming
-	FinishReason        *string                       // Finish reason
-	RawResponse         *string                       // Raw response
-	RawRequest          interface{}                   // Raw request
+	RequestID             string                          // Request ID
+	Model                 string                          // Model used
+	Provider              ModelProvider                   // Provider used
+	Status                string                          // Status of the stream
+	Latency               int64                           // Latency in milliseconds
+	TimeToFirstToken      int64                           // Time to first token in milliseconds
+	OutputMessage         *ChatMessage                    // Accumulated output message
+	OutputMessages        []ResponsesMessage              // For responses API
+	TokenUsage            *BifrostLLMUsage                // Token usage
+	Cost                  *float64                        // Cost in dollars
+	ErrorDetails          *BifrostError                   // Error details if any
+	AudioOutput           *BifrostSpeechResponse          // For speech streaming
+	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
+	ImageGenerationOutput *BifrostImageGenerationResponse // For image generation streaming
+	FinishReason          *string                         // Finish reason
+	RawResponse           *string                         // Raw response
+	RawRequest            interface{}                     // Raw request
 }
 
 // Tracer defines the interface for distributed tracing in Bifrost.

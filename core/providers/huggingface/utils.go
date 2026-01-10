@@ -159,6 +159,8 @@ func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx context.Co
 			pipeline = "feature-extraction"
 		case schemas.SpeechRequest:
 			pipeline = "text-to-speech"
+		case schemas.ImageGenerationRequest:
+			return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), provider.customProviderConfig, requestType), nil
 		case schemas.TranscriptionRequest:
 			return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), provider.customProviderConfig, requestType), nil
 		default:
@@ -168,11 +170,19 @@ func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx context.Co
 	case nebius:
 		if requestType == schemas.EmbeddingRequest {
 			defaultPath = "/nebius/v1/embeddings"
+		} else if requestType == schemas.ImageGenerationRequest {
+			defaultPath = "/nebius/v1/images/generations"
 		} else {
-			return "", fmt.Errorf("nebius provider only supports embedding requests")
+			return "", fmt.Errorf("nebius provider only supports embedding and image generation requests")
 		}
 	case replicate:
 		defaultPath = "/replicate/v1/prediction"
+	case together:
+		if requestType == schemas.ImageGenerationRequest {
+			defaultPath = "/together/v1/images/generations"
+		} else {
+			return "", fmt.Errorf("together provider only supports image generation requests")
+		}
 	case sambanova:
 		if requestType == schemas.EmbeddingRequest {
 			defaultPath = "/sambanova/v1/embeddings"

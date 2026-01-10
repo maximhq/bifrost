@@ -44,6 +44,8 @@ type TestScenarios struct {
 	Reasoning             bool // Reasoning/thinking functionality via Responses API
 	PromptCaching         bool // Prompt caching functionality
 	ListModels            bool // List available models functionality
+	ImageGeneration       bool // Image generation functionality
+	ImageGenerationStream bool // Streaming image generation functionality
 	BatchCreate           bool // Batch API create functionality
 	BatchList             bool // Batch API list functionality
 	BatchRetrieve         bool // Batch API retrieve functionality
@@ -79,6 +81,8 @@ type ComprehensiveTestConfig struct {
 	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
 	SkipReason               string                 // Reason to skip certain tests
+	ImageGenerationModel     string                 // Model for image generation
+	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
@@ -669,6 +673,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		PromptCachingModel:   "gpt-4.1",
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
+		ImageGenerationModel: "dall-e-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported

@@ -246,27 +246,30 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 		streamType = streaming.StreamTypeAudio
 	case schemas.TranscriptionStreamRequest:
 		streamType = streaming.StreamTypeTranscription
+	case schemas.ImageGenerationStreamRequest:
+		streamType = streaming.StreamTypeImage
 	default:
 		streamType = streaming.StreamTypeChat
 	}
 
 	// Build accumulated data
 	data := &streaming.AccumulatedData{
-		RequestID:           result.RequestID,
-		Model:               result.Model,
-		Status:              result.Status,
-		Stream:              true,
-		Latency:             result.Latency,
-		TimeToFirstToken:    result.TimeToFirstToken,
-		OutputMessage:       result.OutputMessage,
-		OutputMessages:      result.OutputMessages,
-		ErrorDetails:        result.ErrorDetails,
-		TokenUsage:          result.TokenUsage,
-		Cost:                result.Cost,
-		AudioOutput:         result.AudioOutput,
-		TranscriptionOutput: result.TranscriptionOutput,
-		FinishReason:        result.FinishReason,
-		RawResponse:         result.RawResponse,
+		RequestID:             result.RequestID,
+		Model:                 result.Model,
+		Status:                result.Status,
+		Stream:                true,
+		Latency:               result.Latency,
+		TimeToFirstToken:      result.TimeToFirstToken,
+		OutputMessage:         result.OutputMessage,
+		OutputMessages:        result.OutputMessages,
+		ErrorDetails:          result.ErrorDetails,
+		TokenUsage:            result.TokenUsage,
+		Cost:                  result.Cost,
+		AudioOutput:           result.AudioOutput,
+		TranscriptionOutput:   result.TranscriptionOutput,
+		ImageGenerationOutput: result.ImageGenerationOutput,
+		FinishReason:          result.FinishReason,
+		RawResponse:           result.RawResponse,
 	}
 
 	// Handle tool calls if present

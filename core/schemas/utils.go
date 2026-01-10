@@ -1180,6 +1180,9 @@ func IsGrokReasoningModel(model string) bool {
 		}
 	}
 	return false
+  
+func IsImagenModel(model string) bool {
+	return strings.Contains(model, "imagen")
 }
 
 // Precompiled regexes for different kinds of version suffixes.
