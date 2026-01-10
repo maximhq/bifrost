@@ -2541,7 +2541,9 @@ func HandleOpenAIImageGenerationStreaming(
 		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
 		imageChunkIndices := make(map[int]int) // image index -> chunk index
-		lastSeenImageIndex := 0                // Track the last seen image index from partial chunks
+		// Track images that have started (via partial chunks) but not yet completed
+		// This allows us to correctly match completed events to images even if chunks are interleaved
+		incompleteImages := make(map[int]bool)
 
 		for scanner.Scan() {
 			select {
@@ -2598,7 +2600,10 @@ func HandleOpenAIImageGenerationStreaming(
 				bifrostErr := &schemas.BifrostError{
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
-						Message: "Image generation error received in stream",
+						Message: response.Error.Message,
+						Code:    response.Error.Code,
+						Param:   response.Error.Param,
+						Type:    response.Error.Type,
 					},
 					ExtraFields: schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
@@ -2623,17 +2628,34 @@ func HandleOpenAIImageGenerationStreaming(
 			// Determine if this is the final chunk
 			isCompleted := response.Type == ImageGenerationCompleted
 
-			// Determine image index
-			// For partial chunks, use PartialImageIndex from response and track it
-			// For completed chunks, use the last seen image index (since completed chunks don't have PartialImageIndex)
+			// Determine image index with robust tracking for interleaved chunks
 			var imageIndex int
 			if isCompleted {
-				// For completed chunks, use the last seen image index from partial chunks
-				imageIndex = lastSeenImageIndex
+				// For completed chunks, match to the oldest incomplete image
+				// This handles interleaved chunks correctly
+				if len(incompleteImages) == 0 {
+					// Fallback: if no incomplete images tracked, this shouldn't happen in normal flow
+					// but we'll default to 0 to prevent panics
+					imageIndex = 0
+					logger.Warn("Received completed event but no incomplete images tracked, defaulting to index 0")
+				} else {
+					// Find the minimum (oldest) incomplete image index
+					// Completed events should match the oldest image that was started
+					minIndex := -1
+					for idx := range incompleteImages {
+						if minIndex == -1 || idx < minIndex {
+							minIndex = idx
+						}
+					}
+					imageIndex = minIndex
+					// Mark this image as completed
+					delete(incompleteImages, imageIndex)
+				}
 			} else {
-				// For partial chunks, use PartialImageIndex from response and update lastSeenImageIndex
+				// For partial chunks, use PartialImageIndex from response
 				imageIndex = response.PartialImageIndex
-				lastSeenImageIndex = imageIndex
+				// Mark this image as started (incomplete)
+				incompleteImages[imageIndex] = true
 			}
 
 			// Increment chunk index for this image

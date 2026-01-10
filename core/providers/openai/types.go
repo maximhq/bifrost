@@ -525,10 +525,6 @@ func (r *OpenAITranscriptionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
-func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
-	return r.Stream != nil && *r.Stream
-}
-
 // MODEL TYPES
 type OpenAIModel struct {
 	ID      string `json:"id"`
@@ -559,6 +555,11 @@ type OpenAIImageGenerationRequest struct {
 	Fallbacks []string `json:"fallbacks,omitempty"`
 }
 
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
+}
+
 // OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.
 type OpenAIImageGenerationResponse struct {
 	Created int64               `json:"created"`
@@ -582,4 +583,11 @@ type OpenAIImageStreamResponse struct {
 	OutputFormat      string                   `json:"output_format,omitempty"`
 	RawSSE            string                   `json:"-"` // For internal use
 	Usage             *schemas.ImageUsage      `json:"usage,omitempty"`
+	// Error fields for error events
+	Error *struct {
+		Code    *string `json:"code,omitempty"`
+		Message string  `json:"message,omitempty"`
+		Param   *string `json:"param,omitempty"`
+		Type    *string `json:"type,omitempty"`
+	} `json:"error,omitempty"`
 }

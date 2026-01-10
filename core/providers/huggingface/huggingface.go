@@ -1237,19 +1237,20 @@ func HandleHuggingFaceImageGenerationStreaming(
 				logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
-			// Build chunk
-			chunk := &schemas.BifrostImageGenerationStreamResponse{
-				Type: "image_generation.partial_image",
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType:    schemas.ImageGenerationStreamRequest,
-					Provider:       providerName,
-					ModelRequested: request.Model,
-					ChunkIndex:     chunkIndex,
-					Latency:        time.Since(lastChunkTime).Milliseconds(),
-				},
-			}
 			// Process each image in the response
 			for i, img := range response.Images {
+				// Create a fresh chunk for each image to avoid data race
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type: "image_generation.partial_image",
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
+
 				if img.URL != "" {
 					chunk.URL = img.URL
 				} else if img.B64JSON != "" {

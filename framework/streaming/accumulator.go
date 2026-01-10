@@ -146,6 +146,7 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 		ResponsesChunksSeen:        make(map[int]struct{}),
 		TranscriptionChunksSeen:    make(map[int]struct{}),
 		AudioChunksSeen:            make(map[int]struct{}),
+		ImageChunksSeen:            make(map[string]struct{}),
 		MaxChatChunkIndex:          -1,
 		MaxResponsesChunkIndex:     -1,
 		MaxTranscriptionChunkIndex: -1,
@@ -288,6 +289,11 @@ func (a *Accumulator) addResponsesStreamChunk(requestID string, chunk *Responses
 	return nil
 }
 
+// imageChunkKey creates a composite key for image chunk de-duplication
+func imageChunkKey(imageIndex, chunkIndex int) string {
+	return fmt.Sprintf("%d:%d", imageIndex, chunkIndex)
+}
+
 // addImageStreamChunk adds an image stream chunk to the stream accumulator
 func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamChunk, isFinalChunk bool) error {
 	acc := a.getOrCreateStreamAccumulator(requestID)
@@ -297,11 +303,18 @@ func (a *Accumulator) addImageStreamChunk(requestID string, chunk *ImageStreamCh
 	if acc.StartTimestamp.IsZero() {
 		acc.StartTimestamp = chunk.Timestamp
 	}
+	if acc.FirstChunkTimestamp.IsZero() {
+		acc.FirstChunkTimestamp = chunk.Timestamp
+	}
 
-	// Only put final chunk into the accumulator, final chunk will always have full image data (no need to accumulate and create a complete image)
-	if isFinalChunk {
+	// De-dup check - only add if not seen (handles out-of-order arrival and multiple plugins)
+	chunkKey := imageChunkKey(chunk.ImageIndex, chunk.ChunkIndex)
+	if _, seen := acc.ImageChunksSeen[chunkKey]; !seen {
+		acc.ImageChunksSeen[chunkKey] = struct{}{}
 		acc.ImageStreamChunks = append(acc.ImageStreamChunks, chunk)
+		if isFinalChunk {
 		acc.FinalTimestamp = chunk.Timestamp
+		}
 	}
 	return nil
 }

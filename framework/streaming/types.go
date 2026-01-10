@@ -125,7 +125,7 @@ type StreamAccumulator struct {
 	ResponsesChunksSeen     map[int]struct{}
 	TranscriptionChunksSeen map[int]struct{}
 	AudioChunksSeen         map[int]struct{}
-	ImageChunksSeen         map[int]struct{}
+	ImageChunksSeen         map[string]struct{} // Composite key: "imageIndex:chunkIndex" to scope de-dup per image
 
 	// Track highest ChunkIndex for metadata extraction (TokenUsage, Cost, FinishReason)
 	MaxChatChunkIndex          int

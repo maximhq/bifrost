@@ -156,8 +156,10 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 					imageData = append(imageData, schemas.ImageData{
 						B64JSON: string(part.InlineData.Data),
 					})
+					// Convert MIME type to file extension for OutputFormat
+					outputFormat := convertMimeTypeToExtension(part.InlineData.MIMEType)
 					imageMetadata = append(imageMetadata, schemas.ImageGenerationResponseParameters{
-						OutputFormat: part.InlineData.MIMEType,
+						OutputFormat: outputFormat,
 					})
 
 				}
@@ -221,20 +223,29 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		Model: bifrostReq.Model,
 	}
 
+	// Set response modalities to indicate this is an image generation request
+	geminiReq.GenerationConfig.ResponseModalities = []Modality{ModalityImage}
+
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
-			// Safety settings
-			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
+			// Safety settings - support both camelCase (canonical) and snake_case (legacy) keys
+			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safetySettings"); ok {
+				if settings, ok := safetySettings.([]SafetySetting); ok {
+					geminiReq.SafetySettings = settings
+				}
+			} else if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
 				if settings, ok := safetySettings.([]SafetySetting); ok {
 					geminiReq.SafetySettings = settings
 				}
 			}
 
-			// Cached content
-			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
+			// Cached content - support both camelCase (canonical) and snake_case (legacy) keys
+			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cachedContent"]); ok {
+				geminiReq.CachedContent = cachedContent
+			} else if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
 				geminiReq.CachedContent = cachedContent
 			}
 
@@ -359,14 +370,42 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 				req.Parameters.EnhancePrompt = enhancePrompt
 			}
 
-			// Map safetySettings from ExtraParams
+			// Map safetySettings from ExtraParams - support both camelCase (canonical) and snake_case (legacy) keys
 			if safetySettings, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["safetySetting"]); ok {
+				req.Parameters.SafetySettings = &safetySettings
+			} else if safetySettings, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["safety_settings"]); ok {
 				req.Parameters.SafetySettings = &safetySettings
 			}
 		}
 	}
 
 	return req
+}
+
+// convertMimeTypeToExtension converts MIME type to file extension
+// Maps "image/png" -> "png", "image/jpeg" -> "jpeg", "image/webp" -> "webp"
+// For unknown MIME types, extracts the subtype after '/' as fallback
+func convertMimeTypeToExtension(mimeType string) string {
+	if mimeType == "" {
+		return ""
+	}
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch mimeType {
+	case "image/png":
+		return "png"
+	case "image/jpeg", "image/jpg":
+		return "jpeg"
+	case "image/webp":
+		return "webp"
+	case "image/gif":
+		return "gif"
+	default:
+		// Extract subtype after '/' if present, otherwise return empty string
+		if idx := strings.Index(mimeType, "/"); idx != -1 && idx+1 < len(mimeType) {
+			return mimeType[idx+1:]
+		}
+		return ""
+	}
 }
 
 // convertOutputFormatToMimeType converts Bifrost output_format to Imagen mimeType
@@ -452,9 +491,10 @@ func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schema
 
 		// Set output format from MIME type if available
 		if prediction.MimeType != "" && i == 0 {
-			// Store the first image's MIME type in params
+			// Convert MIME type to file extension for OutputFormat
+			outputFormat := convertMimeTypeToExtension(prediction.MimeType)
 			bifrostResp.Params = &schemas.ImageGenerationResponseParameters{
-				OutputFormat: prediction.MimeType,
+				OutputFormat: outputFormat,
 			}
 		}
 	}
@@ -477,10 +517,14 @@ func ToGeminiImageGenerationResponse(bifrostResp *schemas.BifrostImageGeneration
 	if len(bifrostResp.Data) > 0 {
 		parts := make([]*Part, 0, len(bifrostResp.Data))
 		for _, imageData := range bifrostResp.Data {
-			// Determine MIME type
+			// Determine MIME type - convert file extension back to MIME type
 			mimeType := "image/png" // default
 			if bifrostResp.Params != nil && bifrostResp.Params.OutputFormat != "" {
-				mimeType = bifrostResp.Params.OutputFormat
+				mimeType = convertOutputFormatToMimeType(bifrostResp.Params.OutputFormat)
+				if mimeType == "" {
+					// Fallback: if conversion fails, assume PNG
+					mimeType = "image/png"
+				}
 			}
 
 			part := &Part{

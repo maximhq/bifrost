@@ -231,34 +231,6 @@ func ToHuggingFaceImageStreamRequest(bifrostReq *schemas.BifrostImageGenerationR
 	return req, nil
 }
 
-// extractBase64FromDataURI extracts base64 data from a data URI format
-// Input: "data:image/jpeg;base64,<b64_data>\n\n"
-// Returns: base64 data, content type, error
-func extractBase64FromDataURI(dataURI string) (string, string, error) {
-	// Strip trailing newlines
-	dataURI = strings.TrimSuffix(dataURI, "\n\n")
-	dataURI = strings.TrimSpace(dataURI)
-
-	// Check for data URI prefix
-	if !strings.HasPrefix(dataURI, "data:") {
-		return "", "", fmt.Errorf("invalid data URI: missing 'data:' prefix")
-	}
-
-	// Remove "data:" prefix
-	dataURI = strings.TrimPrefix(dataURI, "data:")
-
-	// Split by ";base64,"
-	parts := strings.SplitN(dataURI, ";base64,", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid data URI: missing ';base64,' separator")
-	}
-
-	contentType := parts[0]
-	b64Data := parts[1]
-
-	return b64Data, contentType, nil
-}
-
 // UnmarshalHuggingFaceImageGenerationResponse unmarshals HuggingFace image generation response to Bifrost format
 func UnmarshalHuggingFaceImageGenerationResponse(data []byte, model string) (*schemas.BifrostImageGenerationResponse, error) {
 	if data == nil {

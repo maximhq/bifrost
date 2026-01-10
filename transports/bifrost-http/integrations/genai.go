@@ -510,7 +510,7 @@ func isAudioMimeType(mimeType string) bool {
 // isImageGenerationRequest checks if the request is for image generation
 // Image generation is detected by:
 // 1. responseModalities containing "IMAGE"
-// 2. Model name containing "imagen" or "image"
+// 2. Model name containing "imagen"
 func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Check if responseModalities contains IMAGE
 	for _, modality := range req.GenerationConfig.ResponseModalities {
@@ -519,9 +519,8 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 		}
 	}
 
-	// Check if model name indicates image generation
-	modelLower := strings.ToLower(req.Model)
-	if strings.Contains(modelLower, "image") {
+	// Fallback: Check if model name is an Imagen model (for forward-compatibility)
+	if isImagenModel(req.Model) {
 		return true
 	}
 

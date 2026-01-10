@@ -75,10 +75,6 @@ func TestImageGenerationCacheBasicFunctionality(t *testing.T) {
 	if duration2 < duration1 {
 		speedup := float64(duration1) / float64(duration2)
 		t.Logf("Cache speedup: %.2fx faster", speedup)
-		// Only fail if cache is significantly slower (10x+), indicating a real problem
-		if speedup < 0.1 {
-			t.Errorf("Cache is significantly slower than expected: speedup=%.2fx (cache may not be working)", speedup)
-		}
 	} else {
 		speedup := float64(duration1) / float64(duration2)
 		t.Logf("Cache was slower than original: speedup=%.2fx (this can happen due to system load)", speedup)
@@ -200,16 +196,12 @@ func TestImageGenerationSemanticSearch(t *testing.T) {
 	if duration2 < duration1 {
 		speedup := float64(duration1) / float64(duration2)
 		t.Logf("Semantic cache speedup: %.2fx faster", speedup)
-		// Only fail if cache is significantly slower (10x+), indicating a real problem
-		if speedup < 0.1 {
-			t.Errorf("Semantic cache is significantly slower than expected: speedup=%.2fx (cache may not be working)", speedup)
-		}
 	} else {
-		speedup := float64(duration1) / float64(duration2)
-		t.Logf("Semantic cache was slower than original: speedup=%.2fx (this can happen due to system load)", speedup)
+		slowdown := float64(duration2) / float64(duration1)
+		t.Logf("Semantic cache was slower than original: %.2fx slower (this can happen due to system load)", slowdown)
 		// Only fail if cache is extremely slow (10x+ slower), indicating a real problem
-		if duration2 > duration1*10 {
-			t.Errorf("Semantic cache is extremely slow compared to original: cache=%v, original=%v (cache may not be working)", duration2, duration1)
+		if slowdown > 10 {
+			t.Errorf("Semantic cache is extremely slow compared to original: slowdown=%.2fx, cache=%v, original=%v (cache may not be working)", slowdown, duration2, duration1)
 		}
 	}
 

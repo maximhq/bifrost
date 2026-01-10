@@ -192,13 +192,15 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			},
 			Fallbacks: testConfig.ImageGenerationFallbacks,
 		}
+		streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
 
 		validationResult := WithImageGenerationStreamRetry(
 			t,
 			retryConfig,
 			retryContext,
 			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ImageGenerationStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
+				return client.ImageGenerationStreamRequest(schemas.NewBifrostContext(streamCtx, schemas.NoDeadline), request)
 			},
 			func(responseChannel chan *schemas.BifrostStream) ImageGenerationStreamValidationResult {
 				// Validate stream content
@@ -206,9 +208,6 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 				var streamErrors []string
 				var validationErrors []string
 				hasCompleted := false
-
-				streamCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-				defer cancel()
 
 				for {
 					select {
@@ -237,6 +236,20 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						}
 					case <-streamCtx.Done():
 						validationErrors = append(validationErrors, "Stream validation timed out")
+						drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						go func() {
+							defer drainCancel()
+							for {
+								select {
+								case _, ok := <-responseChannel:
+									if !ok {
+										return
+									}
+								case <-drainCtx.Done():
+									return
+								}
+							}
+						}()
 						goto streamComplete
 					}
 				}

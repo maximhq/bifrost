@@ -1188,7 +1188,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		}
 
 		shouldSendDoneMarker := true
-		if config.Type == RouteConfigTypeAnthropic || strings.Contains(config.Path, "/responses") {
+		if config.Type == RouteConfigTypeAnthropic || strings.Contains(config.Path, "/responses") || strings.Contains(config.Path, "/images/generations") {
 			shouldSendDoneMarker = false
 		}
 
