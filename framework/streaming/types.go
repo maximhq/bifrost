@@ -353,6 +353,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		imageResp := p.Data.ImageGenerationOutput
 		if imageResp == nil {
 			imageResp = &schemas.BifrostImageGenerationResponse{}
+			if p.RequestID != "" {
+				imageResp.ID = p.RequestID
+			}
+			if p.Model != "" {
+				imageResp.Model = p.Model
+			}
 		}
 		resp.ImageGenerationResponse = imageResp
 		resp.ImageGenerationResponse.ExtraFields = schemas.BifrostResponseExtraFields{

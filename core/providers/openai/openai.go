@@ -2599,17 +2599,25 @@ func HandleOpenAIImageGenerationStreaming(
 			if response.Type == "error" {
 				bifrostErr := &schemas.BifrostError{
 					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: response.Error.Message,
-						Code:    response.Error.Code,
-						Param:   response.Error.Param,
-						Type:    response.Error.Type,
-					},
+					Error:          &schemas.ErrorField{},
 					ExtraFields: schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.ImageGenerationStreamRequest,
 					},
+				}
+				// Guard access to response.Error fields
+				if response.Error != nil {
+					bifrostErr.Error.Message = response.Error.Message
+					if response.Error.Code != nil {
+						bifrostErr.Error.Code = response.Error.Code
+					}
+					if response.Error.Param != nil {
+						bifrostErr.Error.Param = response.Error.Param
+					}
+					if response.Error.Type != nil {
+						bifrostErr.Error.Type = response.Error.Type
+					}
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
@@ -2669,6 +2677,7 @@ func HandleOpenAIImageGenerationStreaming(
 			chunk := &schemas.BifrostImageGenerationStreamResponse{
 				Type:           string(response.Type),
 				Index:          imageIndex, // Which image (0-N)
+				ChunkIndex:     chunkIndex, // Chunk order within this image (top-level)
 				SequenceNumber: response.SequenceNumber,
 				CreatedAt:      response.CreatedAt,
 				Size:           response.Size,

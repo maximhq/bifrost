@@ -210,6 +210,9 @@ ImageGenerationStreamResponse:
     partial_image_index:
       type: integer
       description: Index of the partial image chunk
+    sequence_number:
+      type: integer
+      description: Sequence number for event ordering within the stream
     b64_json:
       type: string
       description: Base64-encoded chunk of image data
