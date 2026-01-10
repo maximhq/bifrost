@@ -789,7 +789,7 @@ class TestAnthropicIntegration:
         # Stream with thinking enabled - use thinking-capable model
         stream = anthropic_client.messages.create(
             model=format_provider_model(provider, model),
-            max_tokens=4000, # Reduced to prevent token limit errors for smaller context window models
+            max_tokens=3000,
             thinking={
                 "type": "enabled",
                 "budget_tokens": 2000, # Reduced to prevent token limit errors
@@ -836,7 +836,8 @@ class TestAnthropicIntegration:
                                 text_parts.append(str(event.delta.text))
 
             # Safety check
-            if chunk_count > 1000:
+            print("chunk_count", chunk_count)
+            if chunk_count > 5000:
                 break
 
         # Combine collected content

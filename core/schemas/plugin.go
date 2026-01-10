@@ -30,8 +30,8 @@ type PluginStatus struct {
 type HTTPRequest struct {
 	Method  string            `json:"method"`
 	Path    string            `json:"path"`
-	Headers map[string]string `json:"headers"`
-	Query   map[string]string `json:"query"`
+	Headers map[string]string `json:"headers"` // keys are lowercase
+	Query   map[string]string `json:"query"`   // keys are lowercase
 	Body    []byte            `json:"body"`
 }
 

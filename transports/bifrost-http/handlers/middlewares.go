@@ -101,15 +101,13 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	req.Path = string(ctx.Path())
 
 	// Copy headers
-	for key, values := range ctx.Request.Header.All() {
-		req.Headers[string(key)] = string(values)
+	for key, value := range ctx.Request.Header.All() {
+		req.Headers[string(key)] = string(value)
 	}
 
 	// Copy query params
-	for key, values := range ctx.Request.URI().QueryArgs().All() {
-		for _, value := range values {
-			req.Query[string(key)] = string(value)
-		}
+	for key, value := range ctx.Request.URI().QueryArgs().All() {
+		req.Query[string(key)] = string(value)
 	}
 
 	// Copy body

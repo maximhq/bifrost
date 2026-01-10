@@ -18,7 +18,7 @@ func GetName() string {
 func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	fmt.Println("HTTPTransportIntercept called")
 	// Modify request in-place
-	req.Headers["X-Hello-World-Plugin"] = "transport-interceptor-value"
+	req.Headers["x-hello-world-plugin"] = "transport-interceptor-value"
 	// Store value in context for PreHook/PostHook
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-interceptor"), "transport-interceptor-value")
 	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit

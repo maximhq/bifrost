@@ -91,7 +91,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 							render={({ field }) => (
 								<FormItem>
 									<FormLabel>Proxy Type</FormLabel>
-									<Select onValueChange={field.onChange} value={field.value === "none" ? "" : field.value}>
+									<Select onValueChange={field.onChange} value={field.value === "none" ? "" : field.value} disabled={!hasUpdateProviderAccess}>
 										<FormControl>
 											<SelectTrigger className="w-48">
 												<SelectValue placeholder="Select type" />
@@ -122,7 +122,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 										<FormItem>
 											<FormLabel>Proxy URL</FormLabel>
 											<FormControl>
-												<Input placeholder="http://proxy.example.com" {...field} value={field.value || ""} />
+												<Input placeholder="http://proxy.example.com" {...field} value={field.value || ""} disabled={!hasUpdateProviderAccess} />
 											</FormControl>
 											<FormMessage />
 										</FormItem>
@@ -136,7 +136,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 											<FormItem>
 												<FormLabel>Username</FormLabel>
 												<FormControl>
-													<Input placeholder="Proxy username" {...field} value={field.value || ""} />
+													<Input placeholder="Proxy username" {...field} value={field.value || ""} disabled={!hasUpdateProviderAccess} />
 												</FormControl>
 												<FormMessage />
 											</FormItem>
@@ -149,7 +149,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 											<FormItem>
 												<FormLabel>Password</FormLabel>
 												<FormControl>
-													<Input type="password" placeholder="Proxy password" {...field} value={field.value || ""} />
+													<Input type="password" placeholder="Proxy password" {...field} value={field.value || ""} disabled={!hasUpdateProviderAccess} />
 												</FormControl>
 												<FormMessage />
 											</FormItem>
@@ -169,6 +169,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 													rows={6}
 													{...field}
 													value={field.value || ""}
+													disabled={!hasUpdateProviderAccess}
 												/>
 											</FormControl>
 											<FormDescription>

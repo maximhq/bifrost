@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { otelFormSchema, type OtelFormSchema } from "@/lib/types/schemas";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
@@ -26,6 +27,7 @@ interface OtelFormFragmentProps {
 }
 
 export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoading = false }: OtelFormFragmentProps) {
+	const hasOtelAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [isSaving, setIsSaving] = useState(false);
 	const form = useForm<OtelFormSchema, any, OtelFormSchema>({
 		resolver: zodResolver(otelFormSchema) as Resolver<OtelFormSchema, any, OtelFormSchema>,
@@ -92,7 +94,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 									<FormLabel>Service Name</FormLabel>
 									<FormDescription>If kept empty, the service name will be set to "bifrost"</FormDescription>
 									<FormControl>
-										<Input placeholder="bifrost" {...field} />
+										<Input placeholder="bifrost" disabled={!hasOtelAccess} {...field} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -114,6 +116,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 													? "https://otel-collector.example.com:4318/v1/traces"
 													: "otel-collector.example.com:4317"
 											}
+											disabled={!hasOtelAccess}
 											{...field}
 										/>
 									</FormControl>
@@ -127,7 +130,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 							render={({ field }) => (
 								<FormItem className="w-full">
 									<FormControl>
-										<HeadersTable value={field.value || {}} onChange={field.onChange} />
+										<HeadersTable value={field.value || {}} onChange={field.onChange} disabled={!hasOtelAccess} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -140,7 +143,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								render={({ field }) => (
 									<FormItem className="flex-1">
 										<FormLabel>Format</FormLabel>
-										<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value}>
+										<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 											<FormControl>
 												<SelectTrigger className="w-full">
 													<SelectValue placeholder="Select trace type" />
@@ -170,7 +173,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 								render={({ field }) => (
 									<FormItem className="flex-1">
 										<FormLabel>Protocol</FormLabel>
-										<Select onValueChange={field.onChange} value={field.value}>
+										<Select onValueChange={field.onChange} value={field.value} disabled={!hasOtelAccess}>
 											<FormControl>
 												<SelectTrigger className="w-full">
 													<SelectValue placeholder="Select protocol" />
@@ -205,7 +208,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center gap-2">
 								<FormLabel>Enabled</FormLabel>
-								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={isLoading || !form.formState.isValid} />
+								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={!hasOtelAccess || isLoading || !form.formState.isValid} />
 							</FormItem>
 						)}
 					/>
@@ -219,14 +222,14 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 									otel_config: undefined,
 								});
 							}}
-							disabled={isLoading || !form.formState.isDirty}
+							disabled={!hasOtelAccess || isLoading || !form.formState.isDirty}
 						>
 							Reset
 						</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button type="submit" disabled={!form.formState.isDirty || !form.formState.isValid} isLoading={isSaving}>
+									<Button type="submit" disabled={!hasOtelAccess || !form.formState.isDirty || !form.formState.isValid} isLoading={isSaving}>
 										Save OTEL Configuration
 									</Button>
 								</TooltipTrigger>

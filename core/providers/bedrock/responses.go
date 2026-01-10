@@ -1452,6 +1452,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
 			bedrockReq.System = systemMessages
+		} else {
+			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil {
+				// if no system messages, check if instructions are present
+				bedrockReq.System = []BedrockSystemMessage{
+					{
+						Text: bifrostReq.Params.Instructions,
+					},
+				}
+			}
 		}
 	}
 

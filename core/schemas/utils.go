@@ -1156,6 +1156,31 @@ func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }
 
+// List of grok reasoning models
+var grokReasoningModels = []string{
+	"grok-3",
+	"grok-3-mini",
+	"grok-4",
+	"grok-4-fast-reasoning",
+	"grok-4-fast-non-reasoning",
+	"grok-4-1-fast-reasoning",
+	"grok-code-fast-1",
+}
+
+// IsGrokReasoningModel checks if the given model is a grok reasoning model
+func IsGrokReasoningModel(model string) bool {
+	// Check if the model matches any of the reasoning models
+	for _, reasoningModel := range grokReasoningModels {
+		if strings.Contains(model, reasoningModel) {
+			// Make sure it's not a non-reasoning variant like "grok-4-fast-non-reasoning"
+			if strings.Contains(model, "non-reasoning") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+  
 func IsImagenModel(model string) bool {
 	return strings.Contains(model, "imagen")
 }

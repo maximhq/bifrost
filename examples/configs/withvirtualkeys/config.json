@@ -64,7 +64,7 @@
                         "weight": 0.5
                     }
                 ],
-                "value": "sk-bf-vk-prod-assistant-us-01"
+                "value": "env.BIFROST_VK_PROD_ASSISTANT_US_01"
             },
             {
                 "id": "sk-bf-vk-prod-assistant-eu-01",

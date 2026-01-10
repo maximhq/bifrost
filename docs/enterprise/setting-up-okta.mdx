@@ -164,11 +164,13 @@ If you named your custom attribute differently, update the Value expression acco
 
 ---
 
-## Step 6: Configure Groups for Team Synchronization
+## Step 6: Configure Groups for Team and Role Synchronization
 
-Bifrost can automatically sync Okta groups as teams. Users assigned to groups will have their team memberships updated automatically.
+Bifrost can automatically sync Okta groups for two purposes:
+- **Team synchronization** — Groups are synced as Bifrost teams
+- **Role mapping** — Groups can be mapped to Bifrost roles (Admin, Developer, Viewer) using Group-to-Role Mappings in the Bifrost UI
 
-### Create Groups
+### Create Groups in Okta
 
 1. Navigate to **Directory** → **Groups**
 
@@ -177,16 +179,47 @@ Bifrost can automatically sync Okta groups as teams. Users assigned to groups wi
 </Frame>
 
 2. Click **Add group**
-3. Create groups that correspond to your teams (e.g., `bifrost-admin`, `bifrost-developer`, `ENG`, `AI`)
+3. Create groups that correspond to your teams or roles (e.g., `bifrost-staging-admins`, `bifrost-staging-viewers`)
 
 <Frame>
-  <img src="/media/user-provisioning/okta-groups-created.png" alt="Groups created in Okta" />
+  <img src="/media/user-provisioning/okta-create-groups.png" alt="Groups created in Okta" />
 </Frame>
+
+<Note>
+Use a consistent naming convention for your groups. This makes it easier to configure group filters and role mappings later.
+</Note>
 
 ### Add Groups Claim to Tokens
 
-1. Go back to **Security** → **API** → **Authorization Servers**
-2. Select your authorization server
+You have two options for configuring the groups claim. Choose the one that best fits your Okta plan and requirements.
+
+#### Option A: Using App-Level Groups Claim (All Okta Plans)
+
+This approach configures the groups claim directly in your application's settings and works with all Okta plans, including free tiers.
+
+1. Navigate to your application's **Sign On** tab
+2. Scroll down to the **OpenID Connect ID Token** section
+3. Click **Edit** to modify the settings
+4. Configure the **Groups claim filter**:
+   - **Groups claim type**: Filter
+   - **Groups claim filter**: Set a claim name (e.g., `groups`) and filter condition (e.g., "Starts with" `bifrost-staging`)
+
+<Frame>
+  <img src="/media/user-provisioning/okta-app-group-claim-setup.png" alt="Application Groups claim configuration" />
+</Frame>
+
+5. Click **Save**
+
+<Note>
+The filter ensures only relevant groups are included in the token. Adjust the filter condition based on your group naming convention.
+</Note>
+
+#### Option B: Using Authorization Server Groups Claim
+
+This approach adds the groups claim through your authorization server, providing more flexibility for complex configurations.
+
+1. Navigate to **Security** → **API** → **Authorization Servers**
+2. Select your authorization server (e.g., **default**)
 3. Go to the **Claims** tab
 4. Click **Add Claim**
 
@@ -197,10 +230,12 @@ Configure the groups claim:
 | **Name** | `groups` |
 | **Include in token type** | ID Token, Always |
 | **Value type** | Groups |
-| **Filter** | Matches regex: `.*` (or specify a prefix like `bifrost-*`) |
+| **Filter** | Matches regex: `.*` (or specify a prefix like `bifrost-.*`) |
 | **Include in** | Any scope |
 
-### Configure Groups in Application
+5. Click **Create**
+
+You can also configure an additional groups claim in the application's Sign On settings:
 
 1. Navigate to your application's **Sign On** tab
 
@@ -261,6 +296,31 @@ Now configure Bifrost to use Okta as the identity provider.
 
 4. Toggle **Enabled** to activate the provider
 5. Click **Save Configuration**
+
+### Group-to-Role Mappings (Optional)
+
+If you configured groups in Okta (Step 6), you can map Okta group names directly to Bifrost roles. This is an alternative to using custom role claims (Steps 4-5) and works with all Okta plans.
+
+1. In the User Provisioning configuration, scroll down to **Group-to-Role Mappings**
+2. Click **Add Mapping**
+3. Enter the **Group Claim Name** exactly as it appears in your Okta groups (e.g., `bifrost-staging-admins`)
+4. Select the corresponding **Role** (Admin, Developer, or Viewer)
+5. Repeat for each group you want to map
+
+<Frame>
+  <img src="/media/user-provisioning/okta-group-claim-mapping.png" alt="Group-to-Role Mappings configuration in Bifrost" />
+</Frame>
+
+| Group Claim Name | Role |
+|------------------|------|
+| `bifrost-staging-admins` | Admin |
+| `bifrost-staging-viewers` | Viewer |
+
+<Note>
+If a user belongs to multiple groups with different role mappings, the highest privilege role is assigned. If no mapping matches, the first user to sign in receives the **Admin** role, and subsequent users receive the **Viewer** role.
+</Note>
+
+6. Click **Save Configuration**
 
 <Warning>
 After saving, you'll need to restart your Bifrost server for the changes to take effect.

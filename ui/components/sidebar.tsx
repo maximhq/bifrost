@@ -741,7 +741,7 @@ export default function AppSidebar() {
 			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-10 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
-					<Link href="/" className="group flex items-center gap-2 pl-2">
+					<Link href="/workspace/logs" className="group flex items-center gap-2 pl-2">
 						<Image className="h-[22px] w-auto" src={logoSrc} alt="Bifrost" width={70} height={70} />
 					</Link>
 					<button

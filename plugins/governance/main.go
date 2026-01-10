@@ -229,13 +229,36 @@ func (p *GovernancePlugin) GetName() string {
 	return PluginName
 }
 
+// caseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
+func caseInsensitiveLookup(data map[string]string, key string) string {
+	if data == nil || key == "" {
+		return ""
+	}
+	// exact match
+	if v, ok := data[key]; ok {
+		return v
+	}
+	// lower key checks
+	lowerKey := strings.ToLower(key)
+	if v, ok := data[lowerKey]; ok {
+		return v
+	}
+	// case-insensitive iteration
+	for k, v := range data {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
 func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
 	var virtualKeyValue string
-	vkHeader := req.Headers["x-bf-vk"]
+	vkHeader := caseInsensitiveLookup(req.Headers, "x-bf-vk")
 	if vkHeader != "" {
 		return bifrost.Ptr(vkHeader)
 	}
-	authHeader := req.Headers["Authorization"]
+	authHeader := caseInsensitiveLookup(req.Headers, "authorization")
 	if authHeader != "" {
 		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
@@ -247,12 +270,12 @@ func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
 	if virtualKeyValue != "" {
 		return bifrost.Ptr(virtualKeyValue)
 	}
-	xAPIKey := req.Headers["x-api-key"]
+	xAPIKey := caseInsensitiveLookup(req.Headers, "x-api-key")
 	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(xAPIKey)
 	}
 	// Checking x-goog-api-key header
-	xGoogleAPIKey := req.Headers["x-goog-api-key"]
+	xGoogleAPIKey := caseInsensitiveLookup(req.Headers, "x-goog-api-key")
 	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
 		return bifrost.Ptr(xGoogleAPIKey)
 	}

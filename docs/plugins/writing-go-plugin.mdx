@@ -92,7 +92,7 @@ func GetName() string {
 func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	fmt.Println("HTTPTransportIntercept called")
 	// Modify request in-place (headers, body, query params)
-	req.Headers["X-Custom-Header"] = "custom-value"
+	req.Headers["x-custom-header"] = "custom-value"
 	// Return nil to continue, or return &schemas.HTTPResponse{} to short-circuit
 	return nil, nil
 }
@@ -222,6 +222,21 @@ Key points:
 - Return `(nil, nil)` to continue to next plugin/handler
 - Return `(*HTTPResponse, nil)` to short-circuit with response
 - Return `(nil, error)` to short-circuit with error
+
+<Warning>
+**Header and Query Parameter Lookups**: All header and query parameter keys in `req.Headers` and `req.Query` are **automatically normalized to lowercase** by Bifrost. When accessing or modifying these maps, always use lowercase keys:
+
+```go
+// ✅ Correct - use lowercase
+value := req.Headers["content-type"]
+req.Headers["x-custom-header"] = "value"
+
+// ❌ Wrong - uppercase won't match
+value := req.Headers["Content-Type"]  // Won't find the header
+```
+
+This ensures consistent, case-insensitive lookups regardless of how the client sent the headers.
+</Warning>
 
 <Warning>
 This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.

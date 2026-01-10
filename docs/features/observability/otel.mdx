@@ -541,6 +541,66 @@ export HONEYCOMB_API_KEY="your-api-key"
 ```
 
 </Tab>
+<Tab title="Langfuse">
+
+[Langfuse](https://langfuse.com) is an open-source LLM observability platform that accepts OpenTelemetry traces via its OTLP endpoint.
+
+<Tabs>
+<Tab title="UI">
+
+Configure the OTel plugin with the following settings:
+
+| Field | Value |
+|-------|-------|
+| **Collector URL** | `https://cloud.langfuse.com/api/public/otel` (EU) or `https://us.cloud.langfuse.com/api/public/otel` (US) |
+| **Trace Type** | `genai_extension` |
+| **Protocol** | `http` (required - Langfuse does not support gRPC) |
+| **Headers** | `Authorization`: `env.LANGFUSE_AUTH` |
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "https://cloud.langfuse.com/api/public/otel",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "headers": {
+          "Authorization": "env.LANGFUSE_AUTH"
+        }
+      }
+    }
+  ]
+}
+```
+
+For US region, use `https://us.cloud.langfuse.com/api/public/otel` instead.
+
+</Tab>
+</Tabs>
+
+Set up the environment variable with your Langfuse API keys:
+
+```bash
+# Generate base64 auth string from your Langfuse API keys
+export LANGFUSE_AUTH="Basic $(echo -n 'pk-lf-xxx:sk-lf-xxx' | base64)"
+```
+
+Replace `pk-lf-xxx` and `sk-lf-xxx` with your Langfuse public and secret keys from your project settings.
+
+<Note>
+Langfuse only supports HTTP protocol. Do not use gRPC.
+</Note>
+
+See the [Langfuse OpenTelemetry documentation](https://langfuse.com/integrations/native/opentelemetry) for more details.
+
+</Tab>
 <Tab title="Self-Hosted">
 
 Use the included Docker Compose stack or point to your own collector:

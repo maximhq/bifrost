@@ -75,7 +75,7 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Nil(t, resp, "HTTPTransportIntercept should return nil response to continue")
 
 		// Verify headers were modified (hello-world plugin adds a header)
-		assert.Equal(t, "transport-interceptor-value", req.Headers["X-Hello-World-Plugin"], "Plugin should have added custom header")
+		assert.Equal(t, "transport-interceptor-value", req.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
 	})
 
 	// Test PreHook

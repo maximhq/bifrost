@@ -13,8 +13,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
@@ -31,6 +31,7 @@ interface Props {
 
 export default function ModelProviderKeysTableView({ provider, className }: Props) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
+	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const [showAddNewKeyDialog, setShowAddNewKeyDialog] = useState<{ show: boolean; keyIndex: number } | undefined>(undefined);
 	const [showDeleteKeyDialog, setShowDeleteKeyDialog] = useState<{ show: boolean; keyIndex: number } | undefined>(undefined);
@@ -53,7 +54,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 								Cancel
 							</AlertDialogCancel>
 							<AlertDialogAction
-								disabled={isUpdatingProvider}
+								disabled={isUpdatingProvider || !hasDeleteProviderAccess}
 								onClick={() => {
 									updateProvider({
 										...provider,
@@ -168,15 +169,16 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 													>
 														<PencilIcon className="mr-1 h-4 w-4" />
 														Edit
-													</DropdownMenuItem>
-													<DropdownMenuItem
-														onClick={() => {
-															setShowDeleteKeyDialog({ show: true, keyIndex: index });
-														}}
-													>
-														<TrashIcon className="mr-1 h-4 w-4" />
-														Delete
-													</DropdownMenuItem>
+												</DropdownMenuItem>
+												<DropdownMenuItem
+													onClick={() => {
+														setShowDeleteKeyDialog({ show: true, keyIndex: index });
+													}}
+													disabled={!hasDeleteProviderAccess}
+												>
+													<TrashIcon className="mr-1 h-4 w-4" />
+													Delete
+												</DropdownMenuItem>
 												</DropdownMenuContent>
 											</DropdownMenu>
 										</div>

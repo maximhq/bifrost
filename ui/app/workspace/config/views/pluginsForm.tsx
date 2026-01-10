@@ -238,8 +238,18 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											id="ttl"
 											type="number"
 											min="1"
-											value={cacheConfig.ttl_seconds}
-											onChange={(e) => updateCacheConfigLocal({ ttl_seconds: parseInt(e.target.value) || 300 })}
+											value={cacheConfig.ttl_seconds === undefined || Number.isNaN(cacheConfig.ttl_seconds) ? '' : cacheConfig.ttl_seconds}
+											onChange={(e) => {
+												const value = e.target.value
+												if (value === '') {
+													updateCacheConfigLocal({ ttl_seconds: undefined })
+													return
+												}
+												const parsed = parseInt(value)
+												if (!Number.isNaN(parsed)) {
+													updateCacheConfigLocal({ ttl_seconds: parsed })
+												}
+											}}
 										/>
 									</div>
 									<div className="space-y-2">
@@ -250,8 +260,18 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											min="0"
 											max="1"
 											step="0.01"
-											value={cacheConfig.threshold}
-											onChange={(e) => updateCacheConfigLocal({ threshold: parseFloat(e.target.value) || 0.8 })}
+											value={cacheConfig.threshold === undefined || Number.isNaN(cacheConfig.threshold) ? '' : cacheConfig.threshold}
+											onChange={(e) => {
+												const value = e.target.value
+												if (value === '') {
+													updateCacheConfigLocal({ threshold: undefined })
+													return
+												}
+												const parsed = parseFloat(value)
+												if (!Number.isNaN(parsed)) {
+													updateCacheConfigLocal({ threshold: parsed })
+												}
+											}}
 										/>
 									</div>
 									<div className="space-y-2">
@@ -260,8 +280,18 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 											id="dimension"
 											type="number"
 											min="0"
-											value={cacheConfig.dimension}
-											onChange={(e) => updateCacheConfigLocal({ dimension: parseInt(e.target.value) || 0 })}
+											value={cacheConfig.dimension === undefined || Number.isNaN(cacheConfig.dimension) ? '' : cacheConfig.dimension}
+											onChange={(e) => {
+												const value = e.target.value
+												if (value === '') {
+													updateCacheConfigLocal({ dimension: undefined })
+													return
+												}
+												const parsed = parseInt(value)
+												if (!Number.isNaN(parsed)) {
+													updateCacheConfigLocal({ dimension: parsed })
+												}
+											}}
 										/>
 									</div>
 								</div>

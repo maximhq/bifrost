@@ -63,6 +63,7 @@ type PrometheusPlugin struct {
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
+	Registry     *prometheus.Registry
 }
 
 // Init creates a new PrometheusPlugin with initialized metrics.
@@ -75,7 +76,11 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		logger.Warn("telemetry plugin requires model catalog to calculate cost, all cost calculations will be skipped.")
 	}
 
-	registry := prometheus.NewRegistry()
+	registry := config.Registry
+	// If config has no registry, create a new one
+	if registry == nil {
+		registry = prometheus.NewRegistry()
+	}
 
 	// Create collectors and store references for cleanup
 	goCollector := collectors.NewGoCollector()

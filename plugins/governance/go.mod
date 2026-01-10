@@ -6,8 +6,8 @@ require gorm.io/gorm v1.31.1
 
 require (
 	github.com/bytedance/sonic v1.14.2
-	github.com/maximhq/bifrost/core v1.3.5
-	github.com/maximhq/bifrost/framework v1.2.5
+	github.com/maximhq/bifrost/core v1.3.7
+	github.com/maximhq/bifrost/framework v1.2.7
 	github.com/stretchr/testify v1.11.1
 )
 

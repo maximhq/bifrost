@@ -12,12 +12,12 @@ import (
 // mockLogger is a mock implementation of schemas.Logger for testing
 type mockLogger struct{}
 
-func (m *mockLogger) Debug(format string, args ...any)              {}
-func (m *mockLogger) Info(format string, args ...any)               {}
-func (m *mockLogger) Warn(format string, args ...any)               {}
-func (m *mockLogger) Error(format string, args ...any)              {}
-func (m *mockLogger) Fatal(format string, args ...any)              {}
-func (m *mockLogger) SetLevel(level schemas.LogLevel)               {}
+func (m *mockLogger) Debug(format string, args ...any)                  {}
+func (m *mockLogger) Info(format string, args ...any)                   {}
+func (m *mockLogger) Warn(format string, args ...any)                   {}
+func (m *mockLogger) Error(format string, args ...any)                  {}
+func (m *mockLogger) Fatal(format string, args ...any)                  {}
+func (m *mockLogger) SetLevel(level schemas.LogLevel)                   {}
 func (m *mockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 
 // TestCorsMiddleware_LocalhostOrigins tests that localhost origins are always allowed
@@ -742,5 +742,88 @@ func TestAuthMiddleware_UpdateAuthConfig_EnabledToDisabled(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("Second request should pass after auth is disabled")
+	}
+}
+
+// TestFasthttpToHTTPRequest tests the conversion from fasthttp context to HTTPRequest
+func TestFasthttpToHTTPRequest(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+
+	// Set up test data
+	ctx.Request.Header.SetMethod("POST")
+	// Query params include: integers, floats, booleans, timestamps, and strings with special chars
+	ctx.Request.SetRequestURI("/api/v1/test?limit=100&offset=50&min_cost=12.50&max_latency=1500.75&missing_cost_only=true&start_time=2023-01-15T10:30:00Z&content_search=test+query&special=%2B%26%3D%3F")
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("Authorization", "Bearer token123")
+	ctx.Request.Header.Set("X-Request-Id", "12345")
+	ctx.Request.Header.Set("X-Custom-Header", "value-with-dashes")
+	ctx.Request.SetBodyString(`{"key": "value", "number": 42, "nested": {"bool": true}}`)
+
+	// Acquire HTTPRequest from pool
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+
+	// Call the function
+	fasthttpToHTTPRequest(ctx, req)
+
+	// Verify Method
+	if req.Method != "POST" {
+		t.Errorf("Expected Method to be 'POST', got '%s'", req.Method)
+	}
+
+	// Verify Path (without query params)
+	if req.Path != "/api/v1/test" {
+		t.Errorf("Expected Path to be '/api/v1/test', got '%s'", req.Path)
+	}
+
+	// Verify Headers
+	expectedHeaders := map[string]string{
+		"Content-Type":    "application/json",
+		"Authorization":   "Bearer token123",
+		"X-Request-Id":    "12345",
+		"X-Custom-Header": "value-with-dashes",
+	}
+	for key, expectedValue := range expectedHeaders {
+		if actualValue, exists := req.Headers[key]; !exists {
+			t.Errorf("Expected header '%s' to exist", key)
+		} else if actualValue != expectedValue {
+			t.Errorf("Expected header '%s' to be '%s', got '%s'", key, expectedValue, actualValue)
+		}
+	}
+
+	// Verify Query params
+	expectedQuery := map[string]string{
+		"limit":             "100",                  // integer
+		"offset":            "50",                   // integer
+		"min_cost":          "12.50",                // float
+		"max_latency":       "1500.75",              // float
+		"missing_cost_only": "true",                 // boolean
+		"start_time":        "2023-01-15T10:30:00Z", // timestamp
+		"content_search":    "test query",           // string with space (decoded)
+		"special":           "+&=?",                 // special characters (decoded)
+	}
+	for key, expectedValue := range expectedQuery {
+		if actualValue, exists := req.Query[key]; !exists {
+			t.Errorf("Expected query param '%s' to exist", key)
+		} else if actualValue != expectedValue {
+			t.Errorf("Expected query param '%s' to be '%s', got '%s'", key, expectedValue, actualValue)
+		}
+	}
+
+	// Verify Body (JSON with various types)
+	expectedBody := `{"key": "value", "number": 42, "nested": {"bool": true}}`
+	if string(req.Body) != expectedBody {
+		t.Errorf("Expected Body to be '%s', got '%s'", expectedBody, string(req.Body))
+	}
+
+	// Verify body is a copy, not a reference
+	originalBody := ctx.Request.Body()
+	if len(req.Body) > 0 && len(originalBody) > 0 {
+		// Modify the HTTPRequest body
+		req.Body[0] = 'X'
+		// Original should remain unchanged
+		if originalBody[0] == 'X' {
+			t.Error("Body should be a copy, not a reference to the original")
+		}
 	}
 }

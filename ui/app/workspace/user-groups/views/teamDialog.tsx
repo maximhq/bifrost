@@ -208,7 +208,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 							label="Maximum Spend (USD)"
 							value={formData.budgetMaxLimit?.toString() || ""}
 							selectValue={formData.budgetResetDuration}
-							onChangeNumber={(value) => updateField("budgetMaxLimit", parseFloat(value) || 0)}
+							onChangeNumber={(value) => updateField("budgetMaxLimit", value === '' ? undefined : parseFloat(value))}
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
 						/>

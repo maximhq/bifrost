@@ -1165,9 +1165,24 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", newVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
+					processedValue, envVar, err := config.processEnvValue(configData.Governance.VirtualKeys[i].Value)
+					if err != nil {
+						logger.Warn("failed to process env var for virtual key %s: %v", configData.Governance.VirtualKeys[i].ID, err)
+						continue
+					}
+					configData.Governance.VirtualKeys[i].Value = processedValue
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
-				} else {
+					if envVar != "" {
+						config.EnvKeys[envVar] = append(config.EnvKeys[envVar], configstore.EnvKeyInfo{
+							EnvVar:     envVar,
+							Provider:   "",
+							KeyType:    "virtual_key",
+							ConfigPath: fmt.Sprintf("governance.virtual_keys[%s].value", configData.Governance.VirtualKeys[i].ID),
+							KeyID:      "",
+						})
+					}
+				} else {				
 					logger.Debug("config hash matches for virtual key %s, keeping DB config", newVirtualKey.ID)
 				}
 				break

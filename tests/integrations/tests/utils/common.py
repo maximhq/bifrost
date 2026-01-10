@@ -1813,6 +1813,7 @@ def get_api_key(integration: str) -> str:
         "bedrock": "AWS_ACCESS_KEY_ID",  # Bedrock uses AWS credentials
         "cohere": "COHERE_API_KEY",
         "vertex": "VERTEX_API_KEY",
+        "xai": "XAI_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())

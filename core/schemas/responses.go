@@ -54,7 +54,7 @@ type BifrostResponsesResponse struct {
 	MaxToolCalls       *int                                `json:"max_tool_calls,omitempty"`
 	Metadata           *map[string]any                     `json:"metadata,omitempty"`
 	Model              string                              `json:"model"`
-	Output             []ResponsesMessage                  `json:"output,omitempty"`
+	Output             []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
 	PreviousResponseID *string                             `json:"previous_response_id,omitempty"`
 	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"`            // Reference to a prompt template and variables

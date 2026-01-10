@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { maximFormSchema, type MaximFormSchema } from "@/lib/types/schemas";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,6 +23,7 @@ interface MaximFormFragmentProps {
 }
 
 export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: MaximFormFragmentProps) {
+	const hasMaximAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
 
@@ -67,13 +69,14 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 									<FormLabel>API Key</FormLabel>
 									<FormControl>
 										<div className="relative">
-											<Input type={showApiKey ? "text" : "password"} placeholder="Enter your Maxim API key" {...field} className="pr-10" />
+											<Input type={showApiKey ? "text" : "password"} placeholder="Enter your Maxim API key" disabled={!hasMaximAccess} {...field} className="pr-10" />
 											<Button
 												type="button"
 												variant="ghost"
 												size="sm"
 												className="absolute top-0 right-0 h-full px-3 py-2 hover:bg-transparent"
 												onClick={() => setShowApiKey(!showApiKey)}
+												disabled={!hasMaximAccess}
 											>
 												{showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
 											</Button>
@@ -91,7 +94,7 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 								<FormItem>
 									<FormLabel>Log Repository ID (Optional)</FormLabel>
 									<FormControl>
-										<Input placeholder="Enter log repository ID" {...field} value={field.value ?? ""} />
+										<Input placeholder="Enter log repository ID" disabled={!hasMaximAccess} {...field} value={field.value ?? ""} />
 									</FormControl>
 									<FormMessage />
 								</FormItem>
@@ -108,7 +111,7 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 						render={({ field }) => (
 							<FormItem className="flex flex-row items-center gap-2">
 								<FormLabel>Enabled</FormLabel>
-								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={isLoading || !form.formState.isValid} />
+								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={!hasMaximAccess || isLoading || !form.formState.isValid} />
 							</FormItem>
 						)}
 					/>
@@ -125,14 +128,14 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 									},
 								});
 							}}
-							disabled={isLoading || !form.formState.isDirty}
+							disabled={!hasMaximAccess || isLoading || !form.formState.isDirty}
 						>
 							Reset
 						</Button>
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<Button type="submit" disabled={!form.formState.isDirty || !form.formState.isValid} isLoading={isSaving}>
+									<Button type="submit" disabled={!hasMaximAccess || !form.formState.isDirty || !form.formState.isValid} isLoading={isSaving}>
 										Save Maxim Configuration
 									</Button>
 								</TooltipTrigger>
