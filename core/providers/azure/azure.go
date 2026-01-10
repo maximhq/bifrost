@@ -1248,6 +1248,9 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 
 	// Convert OpenAI response to Bifrost format
 	response := openai.ToBifrostImageResponse(openaiResponse, request.Model, latency)
+	if response == nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to convert image generation response", nil, provider.GetProviderKey())
+	}
 
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model

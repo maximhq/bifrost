@@ -17,7 +17,6 @@ ImageGenerationRequest:
           type: integer
           minimum: 1
           maximum: 10
-          default: 1
           description: Number of images to generate
         size:
           type: string
@@ -29,7 +28,6 @@ ImageGenerationRequest:
             - "1024x1792"
             - "1536x1024"
             - "1024x1536"
-            - "auto"
           description: Size of the generated image
         quality:
           type: string
@@ -96,7 +94,7 @@ ImageGenerationRequest:
         fallbacks:
           type: array
           items:
-            $ref: '../common.yaml#/Fallback'
+            $ref: './common.yaml#/Fallback'
           description: Fallback models to try if primary model fails
     - if:
         properties:
@@ -133,7 +131,7 @@ ImageGenerationResponse:
     usage:
       $ref: '#/ImageUsage'
     extra_fields:
-      $ref: '../common.yaml#/BifrostResponseExtraFields'
+      $ref: './common.yaml#/BifrostResponseExtraFields'
 
 ImageData:
   type: object
@@ -239,7 +237,7 @@ ImageGenerationStreamResponse:
       $ref: '#/ImageUsage'
       description: Token usage
     error:
-      $ref: '../common.yaml#/BifrostError'
+      $ref: './common.yaml#/BifrostError'
       description: Error information if generation failed
     extra_fields:
-      $ref: '../common.yaml#/BifrostResponseExtraFields'
+      $ref: './common.yaml#/BifrostResponseExtraFields'
