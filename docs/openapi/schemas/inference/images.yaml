@@ -7,97 +7,97 @@ ImageGenerationRequest:
         - model
         - prompt
       properties:
-      model:
-        type: string
-        description: Model identifier in format `provider/model`
-      prompt:
-        type: string
-        description: Text prompt to generate image
-      n:
-        type: integer
-        minimum: 1
-        maximum: 10
-        default: 1
-        description: Number of images to generate
-      size:
-        type: string
-        enum:
-          - "256x256"
-          - "512x512"
-          - "1024x1024"
-          - "1792x1024"
-          - "1024x1792"
-          - "1536x1024"
-          - "1024x1536"
-          - "auto"
-        description: Size of the generated image
-      quality:
-        type: string
-        enum:
-          - "auto"
-          - "high"
-          - "medium"
-          - "low"
-          - "hd"
-          - "standard"
-        description: Quality of the generated image
-      style:
-        type: string
-        enum:
-          - "natural"
-          - "vivid"
-        description: Style of the generated image
-      response_format:
-        type: string
-        enum:
-          - "url"
-          - "b64_json"
-        default: "url"
-        description: |
-          Format of the response. When `stream` is `true`, this parameter is ignored and images are always returned as base64 chunks via Server-Sent Events (SSE). Only applies to non-streaming requests.
-      background:
-        type: string
-        enum:
-          - "transparent"
-          - "opaque"
-          - "auto"
-        description: Background type for the image
-      moderation:
-        type: string
-        enum:
-          - "low"
-          - "auto"
-        description: Content moderation level
-      partial_images:
-        type: integer
-        minimum: 0
-        maximum: 3
-        description: Number of partial images to generate
-      output_compression:
-        type: integer
-        minimum: 0
-        maximum: 100
-        description: Compression level (0-100%)
-      output_format:
-        type: string
-        enum:
-          - "png"
-          - "webp"
-          - "jpeg"
-        description: Output image format
-      user:
-        type: string
-        description: User identifier for tracking
-      stream:
-        type: boolean
-        default: false
-        description: |
-          Whether to stream the response. When true, images are sent as base64 chunks via SSE.
-      fallbacks:
-        type: array
-        items:
-          $ref: '../common.yaml#/Fallback'
-        description: Fallback models to try if primary model fails
+        model:
+          type: string
+          description: Model identifier in format `provider/model`
+        prompt:
+          type: string
+          description: Text prompt to generate image
+        n:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+          description: Number of images to generate
+        size:
+          type: string
+          enum:
+            - "256x256"
+            - "512x512"
+            - "1024x1024"
+            - "1792x1024"
+            - "1024x1792"
+            - "1536x1024"
+            - "1024x1536"
+            - "auto"
+          description: Size of the generated image
+        quality:
+          type: string
+          enum:
+            - "auto"
+            - "high"
+            - "medium"
+            - "low"
+            - "hd"
+            - "standard"
+          description: Quality of the generated image
+        style:
+          type: string
+          enum:
+            - "natural"
+            - "vivid"
+          description: Style of the generated image
+        response_format:
+          type: string
+          enum:
+            - "url"
+            - "b64_json"
+          default: "url"
+          description: |
+            Format of the response. When `stream` is `true`, this parameter is ignored and images are always returned as base64 chunks via Server-Sent Events (SSE). Only applies to non-streaming requests.
+        background:
+          type: string
+          enum:
+            - "transparent"
+            - "opaque"
+            - "auto"
+          description: Background type for the image
+        moderation:
+          type: string
+          enum:
+            - "low"
+            - "auto"
+          description: Content moderation level
+        partial_images:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Number of partial images to generate
+        output_compression:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Compression level (0-100%)
+        output_format:
+          type: string
+          enum:
+            - "png"
+            - "webp"
+            - "jpeg"
+          description: Output image format
+        user:
+          type: string
+          description: User identifier for tracking
+        stream:
+          type: boolean
+          default: false
+          description: |
+            Whether to stream the response. When true, images are sent as base64 chunks via SSE.
+        fallbacks:
+          type: array
+          items:
+            $ref: '../common.yaml#/Fallback'
+          description: Fallback models to try if primary model fails
     - if:
         properties:
           stream:
