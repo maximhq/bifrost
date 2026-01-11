@@ -517,7 +517,13 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	resp *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
 	return ExecuteAgentForChatRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
@@ -525,7 +531,7 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }
@@ -548,7 +554,13 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	resp *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
 	return ExecuteAgentForResponsesRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
@@ -556,7 +568,7 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }

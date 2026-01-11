@@ -197,6 +197,40 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 	h.BroadcastMarshaledMessage(data)
 }
 
+// BroadcastMCPLogUpdate sends an MCP tool log update to all connected WebSocket clients
+func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) {
+	// Add panic recovery to prevent server crashes
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("panic in BroadcastMCPLogUpdate: %v", r)
+		}
+	}()
+
+	// Determine operation type based on log status and timestamp
+	operationType := "update"
+	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
+		operationType = "create"
+	}
+
+	message := struct {
+		Type      string               `json:"type"`
+		Operation string               `json:"operation"` // "create" or "update"
+		Payload   *logstore.MCPToolLog `json:"payload"`
+	}{
+		Type:      "mcp_log",
+		Operation: operationType,
+		Payload:   logEntry,
+	}
+
+	data, err := json.Marshal(message)
+	if err != nil {
+		logger.Error("failed to marshal MCP log entry: %v", err)
+		return
+	}
+
+	h.BroadcastMarshaledMessage(data)
+}
+
 // BroadcastMarshaledMessage sends an adaptive routing update to all connected WebSocket clients
 func (h *WebSocketHandler) BroadcastMarshaledMessage(data []byte) {
 	// Get a snapshot of clients to avoid holding the lock during writes
