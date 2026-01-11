@@ -19,7 +19,7 @@ import type {
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, CheckCircle, Clock, Hash } from "lucide-react";
+import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
 import {
 	parseAsArrayOf,
 	parseAsBoolean,
@@ -267,6 +267,11 @@ export default function MCPLogsPage() {
 							newStats.average_latency = (totalLatency + log.latency) / completed_executions;
 						}
 
+						// Update total cost
+						if (log.cost) {
+							newStats.total_cost += log.cost;
+						}
+
 						return newStats;
 					});
 				}
@@ -380,6 +385,11 @@ export default function MCPLogsPage() {
 				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `${stats.average_latency.toFixed(2)}ms` : "-",
 				icon: <Clock className="size-4" />,
 			},
+			{
+				title: "Total Cost",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : "-",
+				icon: <DollarSign className="size-4" />,
+			},
 		],
 		[stats, fetchingStats]
 	);
@@ -396,7 +406,7 @@ export default function MCPLogsPage() {
 				<div className="mx-auto max-w-7xl space-y-6">
 					<div className="space-y-6">
 						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">

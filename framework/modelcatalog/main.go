@@ -84,7 +84,7 @@ type PricingEntry struct {
 // syncPricing function will be called if this function returns true
 type ShouldSyncPricingFunc func(ctx context.Context) bool
 
-// Init initializes the pricing manager
+// Init initializes the model catalog
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, shouldSyncPricingFunc ShouldSyncPricingFunc, logger schemas.Logger) (*ModelCatalog, error) {
 	// Initialize pricing URL and sync interval
 	pricingURL := DefaultPricingURL
@@ -107,7 +107,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		shouldSyncPricingFunc: shouldSyncPricingFunc,
 	}
 
-	logger.Info("initializing pricing manager...")
+	logger.Info("initializing model catalog...")
 	if configStore != nil {
 		// Load initial pricing data
 		if err := mc.loadPricingFromDatabase(ctx); err != nil {
@@ -137,7 +137,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	return mc, nil
 }
 
-// ReloadPricing reloads the pricing manager from config
+// ReloadPricing reloads the model catalog from config
 func (mc *ModelCatalog) ReloadPricing(ctx context.Context, config *Config) error {
 	// Acquire pricing mutex to update configuration atomically
 	mc.pricingMu.Lock()

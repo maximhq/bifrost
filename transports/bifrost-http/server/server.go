@@ -23,7 +23,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -66,20 +66,20 @@ type ServerCallbacks interface {
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
-	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
-	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
+	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
+	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
-	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
+	ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
-	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
+	ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error)
 	RemoveCustomer(ctx context.Context, id string) error
-	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
+	ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
 	GetGovernanceData() *governance.GovernanceData
 	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
-	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
+	EditMCPClient(ctx context.Context, id string, updatedConfig configstoreTables.TableMCPClient) error
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -245,7 +245,7 @@ func LoadPlugin(ctx context.Context, name string, path *string, pluginConfig any
 	case telemetry.PluginName:
 		plugin, err := telemetry.Init(&telemetry.Config{
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
-		}, bifrostConfig.PricingManager, logger)
+		}, bifrostConfig.ModelCatalog, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -255,7 +255,7 @@ func LoadPlugin(ctx context.Context, name string, path *string, pluginConfig any
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal logging plugin config: %v", err)
 		}
-		plugin, err := logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore, bifrostConfig.PricingManager)
+		plugin, err := logging.Init(ctx, loggingConfig, logger, bifrostConfig.LogsStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 		if err != nil {
 			return nil, err
 		}
@@ -268,7 +268,7 @@ func LoadPlugin(ctx context.Context, name string, path *string, pluginConfig any
 		inMemoryStore := &GovernanceInMemoryStore{
 			Config: bifrostConfig,
 		}
-		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.PricingManager, inMemoryStore)
+		plugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog, inMemoryStore)
 		if err != nil {
 			return nil, err
 		}
@@ -299,7 +299,7 @@ func LoadPlugin(ctx context.Context, name string, path *string, pluginConfig any
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal otel plugin config: %v", err)
 		}
-		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.PricingManager, handlers.GetVersion())
+		plugin, err := otel.Init(ctx, otelConfig, logger, bifrostConfig.ModelCatalog, handlers.GetVersion())
 		if err != nil {
 			return nil, err
 		}
@@ -495,7 +495,7 @@ func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig schem
 }
 
 // EditMCPClient edits an MCP client in the in-memory store
-func (s *BifrostHTTPServer) EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error {
+func (s *BifrostHTTPServer) EditMCPClient(ctx context.Context, id string, updatedConfig configstoreTables.TableMCPClient) error {
 	if err := s.Config.EditMCPClient(ctx, id, updatedConfig); err != nil {
 		return err
 	}
@@ -553,7 +553,7 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 }
 
 // ReloadVirtualKey reloads a virtual key from the in-memory store
-func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
+func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
 	// Load relationships for response
 	preloadedVk, err := s.Config.ConfigStore.RetryOnNotFound(ctx, func(ctx context.Context) (any, error) {
 		preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
@@ -571,7 +571,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 		return nil, fmt.Errorf("virtual key not found")
 	}
 	// Type assertion (should never happen)
-	virtualKey, ok := preloadedVk.(*tables.TableVirtualKey)
+	virtualKey, ok := preloadedVk.(*configstoreTables.TableVirtualKey)
 	if !ok {
 		logger.Error("virtual key type assertion failed")
 		return nil, fmt.Errorf("virtual key type assertion failed")
@@ -608,7 +608,7 @@ func (s *BifrostHTTPServer) RemoveVirtualKey(ctx context.Context, id string) err
 }
 
 // ReloadTeam reloads a team from the in-memory store
-func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
+func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*configstoreTables.TableTeam, error) {
 	// Load relationships for response
 	preloadedTeam, err := s.Config.ConfigStore.GetTeam(ctx, id)
 	if err != nil {
@@ -646,7 +646,7 @@ func (s *BifrostHTTPServer) RemoveTeam(ctx context.Context, id string) error {
 }
 
 // ReloadCustomer reloads a customer from the in-memory store
-func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
+func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error) {
 	preloadedCustomer, err := s.Config.ConfigStore.GetCustomer(ctx, id)
 	if err != nil {
 		return nil, err
@@ -709,13 +709,17 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	// Reloading config in bifrost client
 	if s.Client != nil {
 		account := lib.NewBaseAccount(s.Config)
+		var mcpConfig *schemas.MCPConfig
+		if s.Config.MCPConfig != nil {
+			mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig)
+		}
 		s.Client.ReloadConfig(schemas.BifrostConfig{
 			Account:            account,
 			InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 			LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
 			MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
-			MCPConfig:          s.Config.MCPConfig,
+			MCPConfig:          mcpConfig,
 			Logger:             logger,
 		})
 	}
@@ -901,13 +905,17 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, configName str
 
 	// Reload the Bifrost config with updated plugins
 	account := lib.NewBaseAccount(s.Config)
+	var mcpConfig *schemas.MCPConfig
+	if s.Config.MCPConfig != nil {
+		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig)
+	}
 	if err := s.Client.ReloadConfig(schemas.BifrostConfig{
 		Account:            account,
 		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
 		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 		LLMPlugins:         llmPluginsCopy,
 		MCPPlugins:         mcpPluginsCopy,
-		MCPConfig:          s.Config.MCPConfig,
+		MCPConfig:          mcpConfig,
 		Logger:             logger,
 	}); err != nil {
 		s.UpdatePluginStatus(configName, schemas.PluginStatusError, []string{fmt.Sprintf("error reloading plugin %s: %v", configName, err)})
@@ -970,25 +978,25 @@ func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
 
 // ReloadPricingManager reloads the pricing manager
 func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
 		return fmt.Errorf("framework config not found")
 	}
-	return s.Config.PricingManager.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
+	return s.Config.ModelCatalog.ReloadPricing(ctx, s.Config.FrameworkConfig.Pricing)
 }
 
 // ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
 func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	return s.Config.PricingManager.ForceReloadPricing(ctx)
+	return s.Config.ModelCatalog.ForceReloadPricing(ctx)
 }
 
 // ReloadProxyConfig reloads the proxy configuration
-func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
+func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error {
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
@@ -999,7 +1007,7 @@ func (s *BifrostHTTPServer) ReloadProxyConfig(ctx context.Context, config *table
 }
 
 // ReloadHeaderFilterConfig reloads the header filter configuration
-func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error {
+func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error {
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
@@ -1017,7 +1025,7 @@ func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config
 
 // RefetchModelsForProvider deletes existing models for a provider and re-fetches them from the provider
 func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
 	if s.Client == nil {
@@ -1031,27 +1039,27 @@ func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provid
 	if err != nil {
 		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
 	}
-	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-	s.Config.PricingManager.AddModelDataToPool(allModels)
+	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
+	s.Config.ModelCatalog.AddModelDataToPool(allModels)
 	return nil
 }
 
 // DeleteModelsForProvider deletes all models for a specific provider from the model catalog
 func (s *BifrostHTTPServer) DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return fmt.Errorf("pricing manager not found")
 	}
-	s.Config.PricingManager.DeleteModelDataForProvider(provider)
+	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
 	return nil
 }
 
 // GetModelsForProvider returns all models for a specific provider from the model catalog
 func (s *BifrostHTTPServer) GetModelsForProvider(provider schemas.ModelProvider) []string {
-	if s.Config == nil || s.Config.PricingManager == nil {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return []string{}
 	}
 
-	return s.Config.PricingManager.GetModelsForProvider(provider)
+	return s.Config.ModelCatalog.GetModelsForProvider(provider)
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -1268,7 +1276,7 @@ func (s *BifrostHTTPServer) GetAllRedactedKeys(ctx context.Context, ids []string
 }
 
 // GetAllRedactedVirtualKeys gets all redacted virtual keys from the config store
-func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey {
+func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []configstoreTables.TableVirtualKey {
 	if s.Config == nil || s.Config.ConfigStore == nil {
 		return nil
 	}
@@ -1383,10 +1391,26 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 
-	mcpConfig := s.Config.MCPConfig
-	if mcpConfig != nil {
-		mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
-			return uuid.New().String()
+	// Add loaded plugins to config so they can be tracked in HTTPTransportPlugins cache
+	for _, plugin := range s.LLMPlugins {
+		if err := s.Config.AddLoadedPlugin(plugin, schemas.PluginTypeLLM); err != nil {
+			logger.Warn("failed to add LLM plugin %s to config: %v", plugin.GetName(), err)
+		}
+	}
+	for _, plugin := range s.MCPPlugins {
+		if err := s.Config.AddLoadedPlugin(plugin, schemas.PluginTypeMCP); err != nil {
+			logger.Warn("failed to add MCP plugin %s to config: %v", plugin.GetName(), err)
+		}
+	}
+
+	tableMCPConfig := s.Config.MCPConfig
+	var mcpConfig *schemas.MCPConfig
+	if tableMCPConfig != nil {
+		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(tableMCPConfig)
+		if mcpConfig != nil {
+			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
+				return uuid.New().String()
+			}
 		}
 	}
 	// Initialize bifrost client
@@ -1415,8 +1439,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		} else {
 			logger.Error("failed to list all models: %v", listModelsErr)
 		}
-	} else if s.Config.PricingManager != nil {
-		s.Config.PricingManager.AddModelDataToPool(modelData)
+	} else if s.Config.ModelCatalog != nil {
+		s.Config.ModelCatalog.AddModelDataToPool(modelData)
 	}
 	// Add pricing data to the client
 	logger.Info("models added to catalog")
@@ -1465,7 +1489,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// This enables the central streaming accumulator for both use cases
 	// Initializing tracer with embedded streaming accumulator
 	traceStore := tracing.NewTraceStore(60*time.Minute, logger)
-	tracer := tracing.NewTracer(traceStore, s.Config.PricingManager, logger)
+	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
 	s.Client.SetTracer(tracer)
 	// Always add tracing middleware when tracer is enabled - it creates traces and sets traceID in context
 	// The observability plugins are optional (can be empty if only logging is enabled)
@@ -1538,8 +1562,8 @@ func (s *BifrostHTTPServer) Start() error {
 			logger.Info("bifrost client shutdown completed")
 			logger.Info("cleaning up storage engines...")
 			// Cleaning up storage engines
-			if s.Config != nil && s.Config.PricingManager != nil {
-				s.Config.PricingManager.Cleanup()
+			if s.Config != nil && s.Config.ModelCatalog != nil {
+				s.Config.ModelCatalog.Cleanup()
 			}
 			if s.Config != nil && s.Config.ConfigStore != nil {
 				s.Config.ConfigStore.Close(shutdownCtx)

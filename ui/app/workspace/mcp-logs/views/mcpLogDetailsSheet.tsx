@@ -13,12 +13,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
@@ -35,15 +30,7 @@ interface MCPLogDetailSheetProps {
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>;
 }
 
-const LogEntryDetailsView = ({
-	label,
-	value,
-	className,
-}: {
-	label: string;
-	value: React.ReactNode;
-	className?: string;
-}) => (
+const LogEntryDetailsView = ({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) => (
 	<div className={className}>
 		<div className="text-muted-foreground text-xs">{label}</div>
 		<div className="text-sm font-medium">{value}</div>
@@ -140,11 +127,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 									.add(log.latency || 0, "ms")
 									.format("YYYY-MM-DD HH:mm:ss A")}
 							/>
-							<LogEntryDetailsView
-								className="w-full"
-								label="Latency"
-								value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"}
-							/>
+							<LogEntryDetailsView className="w-full" label="Latency" value={log.latency ? `${log.latency.toFixed(2)}ms` : "NA"} />
 						</div>
 					</div>
 					<DottedSeparator />
@@ -152,11 +135,9 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 						<BlockHeader title="Request Details" icon={<FileText className="h-5 w-5 text-gray-600" />} />
 						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 							<LogEntryDetailsView
-								className="w-full col-span-2"
+								className="col-span-2 w-full"
 								label="Tool Name"
-								value={
-									<span className="font-mono text-sm">{log.tool_name}</span>
-								}
+								value={<span className="font-mono text-sm">{log.tool_name}</span>}
 							/>
 							<LogEntryDetailsView
 								className="w-full"
@@ -173,11 +154,9 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							/>
 							{log.llm_request_id && (
 								<LogEntryDetailsView
-									className="w-full col-span-3"
+									className="col-span-3 w-full"
 									label="LLM Request ID"
-									value={
-										<span className="font-mono text-xs">{log.llm_request_id}</span>
-									}
+									value={<span className="font-mono text-xs">{log.llm_request_id}</span>}
 								/>
 							)}
 						</div>
@@ -193,7 +172,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 							shouldAdjustInitialHeight={true}
 							maxHeight={250}
 							wrap={true}
-							code={typeof log.arguments === "string" ? log.arguments : JSON.stringify(log.arguments, null, 2)}
+							code={typeof log.arguments === "string" ? log.arguments : JSON.stringify(log.arguments as Record<string, unknown>, null, 2)}
 							lang="json"
 							readonly={true}
 							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
@@ -219,19 +198,20 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 				)}
 
 				{/* Error Details */}
-				{log.error_details && (
-					<div className="w-full rounded-sm border border-destructive/50">
-						<div className="border-b border-destructive/50 px-6 py-2 text-sm font-medium text-destructive">Error Details</div>
-						<CodeEditor
-							className="z-0 w-full"
-							shouldAdjustInitialHeight={true}
-							maxHeight={250}
-							wrap={true}
-							code={JSON.stringify(log.error_details, null, 2)}
-							lang="json"
-							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
-						/>
+				{log.error_details?.error?.message && (
+					<div className="w-full rounded-sm border">
+						<div className="border-b px-6 py-2 text-sm font-medium">Error</div>
+						<div className="px-6 py-2 font-mono text-xs">{log.error_details.error.message}</div>
+					</div>
+				)}
+				{log.error_details?.error?.error && (
+					<div className="w-full rounded-sm border">
+						<div className="border-b px-6 py-2 text-sm font-medium">Error Details</div>
+						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+							{typeof log.error_details?.error.error === "string"
+								? log.error_details.error.error
+								: JSON.stringify(log.error_details?.error.error, null, 2)}
+						</div>
 					</div>
 				)}
 			</SheetContent>

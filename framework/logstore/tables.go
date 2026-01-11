@@ -415,6 +415,7 @@ type MCPToolLog struct {
 	Result          string    `gorm:"type:text" json:"-"`                                                              // JSON serialized tool result
 	ErrorDetails    string    `gorm:"type:text" json:"-"`                                                              // JSON serialized *schemas.BifrostError
 	Latency         *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`                             // Execution time in milliseconds
+	Cost            *float64  `gorm:"index" json:"cost,omitempty"`                                                     // Cost in dollars (per execution cost)
 	Status          string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"`               // "processing", "success", or "error"
 	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
 
@@ -531,6 +532,7 @@ type MCPToolLogStats struct {
 	TotalExecutions int64   `json:"total_executions"`
 	SuccessRate     float64 `json:"success_rate"`
 	AverageLatency  float64 `json:"average_latency"`
+	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
 }
 
 // BuildContentSummary creates a searchable text summary

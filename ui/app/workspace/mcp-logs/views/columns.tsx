@@ -20,7 +20,7 @@ const getValidatedStatus = (status: string): Status => {
 
 export const createMCPColumns = (
 	handleDelete: (log: MCPToolLogEntry) => Promise<void>,
-	hasDeleteAccess: boolean
+	hasDeleteAccess: boolean,
 ): ColumnDef<MCPToolLogEntry>[] => [
 	{
 		accessorKey: "status",
@@ -52,11 +52,7 @@ export const createMCPColumns = (
 		size: 300,
 		cell: ({ row }) => {
 			const toolName = row.getValue("tool_name") as string;
-			return (
-				<span className="font-mono text-sm max-w-full truncate block">
-					{toolName}
-				</span>
-			);
+			return <span className="block max-w-full truncate font-mono text-sm">{toolName}</span>;
 		},
 	},
 	{
@@ -88,6 +84,15 @@ export const createMCPColumns = (
 			return (
 				<div className="pl-4 font-mono text-sm">{latency === undefined || latency === null ? "N/A" : `${latency.toLocaleString()}ms`}</div>
 			);
+		},
+	},
+	{
+		accessorKey: "cost",
+		header: "Cost",
+		size: 120,
+		cell: ({ row }) => {
+			const cost = row.original.cost;
+			return <div className="font-mono text-sm">{cost === undefined || cost === null ? "N/A" : `${cost.toFixed(4)}`}</div>;
 		},
 	},
 	{

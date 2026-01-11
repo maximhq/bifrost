@@ -75,7 +75,7 @@ func NewBudgetResolver(store GovernanceStore, logger schemas.Logger) *BudgetReso
 }
 
 // EvaluateRequest evaluates a request against the new hierarchical governance system
-func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) *EvaluationResult {
+func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
 	vk, exists := r.store.GetVirtualKey(evaluationRequest.VirtualKey)
 	if !exists {
@@ -109,7 +109,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 	}
 
 	// 2. Check provider filtering
-	if !r.isProviderAllowed(vk, evaluationRequest.Provider) {
+	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, evaluationRequest.Provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
 			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", evaluationRequest.Provider),
@@ -118,7 +118,7 @@ func (r *BudgetResolver) EvaluateRequest(ctx *schemas.BifrostContext, evaluation
 	}
 
 	// 3. Check model filtering
-	if !r.isModelAllowed(vk, evaluationRequest.Provider, evaluationRequest.Model) {
+	if requestType != schemas.MCPToolExecutionRequest && !r.isModelAllowed(vk, evaluationRequest.Provider, evaluationRequest.Model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", evaluationRequest.Model),
