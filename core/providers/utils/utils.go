@@ -980,6 +980,113 @@ func ProcessAndSendBifrostError(
 	}
 }
 
+// SetupStreamCancellation spawns a goroutine that closes the body stream when
+// the context is cancelled or deadline exceeded, unblocking any blocked Read/Scan operations.
+// Returns a cleanup function that MUST be called when streaming is done to
+// prevent the goroutine from closing the stream during normal operation.
+// Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
+func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
+	done := make(chan struct{})
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			// Context cancelled or deadline exceeded - close the body stream to unblock reads
+			if closer, ok := bodyStream.(io.Closer); ok {
+				if err := closer.Close(); err != nil && logger != nil {
+					logger.Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+				}
+			}
+		case <-done:
+			// Normal completion - do nothing
+		}
+	}()
+
+	return func() { close(done) }
+}
+
+// HandleStreamCancellation should be called when a streaming goroutine exits
+// due to context cancellation. It ensures proper cleanup by:
+// 1. Checking if StreamEndIndicator was already set (to avoid duplicate handling)
+// 2. Setting StreamEndIndicator to true
+// 3. Sending a cancellation error through PostHook chain
+//
+// This is critical for the logging plugin to update log status from "processing" to "error"
+// when a client disconnects mid-stream.
+func HandleStreamCancellation(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStream,
+	provider schemas.ModelProvider,
+	model string,
+	requestType schemas.RequestType,
+	logger schemas.Logger,
+) {
+	// Check if already handled (StreamEndIndicator already set)
+	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
+		if set, ok := indicator.(bool); ok && set {
+			return // Already handled
+		}
+	}
+	// Create cancellation error
+	cancelErr := &schemas.BifrostError{
+		StatusCode: schemas.Ptr(499), // Client Closed Request
+		Error: &schemas.ErrorField{
+			Message: "Request cancelled: client disconnected",
+			Type:    schemas.Ptr(schemas.RequestCancelled),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:       provider,
+			ModelRequested: model,
+			RequestType:    requestType,
+		},
+	}
+
+	// Send through PostHook chain - this updates the log to "error" status
+	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger)
+}
+
+// HandleStreamTimeout should be called when a streaming goroutine exits
+// due to context deadline exceeded. It ensures proper cleanup by:
+// 1. Checking if StreamEndIndicator was already set (to avoid duplicate handling)
+// 2. Setting StreamEndIndicator to true
+// 3. Sending a timeout error through PostHook chain
+//
+// This is critical for the logging plugin to update log status from "processing" to "error"
+// when a request times out mid-stream.
+func HandleStreamTimeout(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	responseChan chan *schemas.BifrostStream,
+	provider schemas.ModelProvider,
+	model string,
+	requestType schemas.RequestType,
+	logger schemas.Logger,
+) {
+	// Check if already handled (StreamEndIndicator already set)
+	if indicator := ctx.GetAndSetValue(schemas.BifrostContextKeyStreamEndIndicator, true); indicator != nil {
+		if set, ok := indicator.(bool); ok && set {
+			return // Already handled
+		}
+	}
+	// Create timeout error
+	timeoutErr := &schemas.BifrostError{
+		StatusCode: schemas.Ptr(504), // Gateway Timeout
+		Error: &schemas.ErrorField{
+			Message: "Request timed out: deadline exceeded",
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider:       provider,
+			ModelRequested: model,
+			RequestType:    requestType,
+		},
+	}
+
+	// Send through PostHook chain - this updates the log to "error" status
+	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger)
+}
+
 // ProcessAndSendError handles post-hook processing and sends the error to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -1148,6 +1255,7 @@ func ReleaseStreamingResponse(resp *fasthttp.Response) {
 	// Drain any remaining data from the body stream before releasing
 	// This prevents "whitespace in header" errors when the response is reused
 	if resp.BodyStream() != nil {
+		// Drain the body stream
 		io.Copy(io.Discard, resp.BodyStream())
 	}
 	fasthttp.ReleaseResponse(resp)

@@ -72,7 +72,7 @@ export default function LogsPage() {
 			content_search: parseAsString.withDefault(""),
 			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
 			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
-			limit: parseAsInteger.withDefault(50),
+			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault("timestamp"),
 			order: parseAsString.withDefault("desc"),

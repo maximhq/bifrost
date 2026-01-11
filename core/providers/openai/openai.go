@@ -446,8 +446,18 @@ func HandleOpenAITextCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TextCompletionStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TextCompletionStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -462,13 +472,10 @@ func HandleOpenAITextCompletionStreaming(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
-
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -597,21 +604,31 @@ func HandleOpenAITextCompletionStreaming(
 
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
-		} else {
-			response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
-			if postResponseConverter != nil {
-				response = postResponseConverter(response)
-			}
-			// Set raw request if enabled
-			if sendBackRawRequest {
-				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-			}
-			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
+			return
 		}
+
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, providerName, request.Model)
+		if postResponseConverter != nil {
+			response = postResponseConverter(response)
+			if response == nil {
+				logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
+				return
+			}
+		}
+		// Set raw request if enabled
+		if sendBackRawRequest {
+			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+		}
+		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -880,10 +897,26 @@ func HandleOpenAIChatCompletionStreaming(
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
 
+	// Determine request type for cleanup
+	streamRequestType := schemas.ChatCompletionStreamRequest
+	if isResponsesToChatCompletionsFallback {
+		streamRequestType = schemas.ResponsesStreamRequest
+	}
+
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, streamRequestType, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, streamRequestType, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -899,13 +932,10 @@ func HandleOpenAIChatCompletionStreaming(
 		var messageID string
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
-
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -940,7 +970,7 @@ func HandleOpenAIChatCompletionStreaming(
 					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
 						ModelRequested: request.Model,
-						RequestType:    schemas.ChatCompletionStreamRequest,
+						RequestType:    streamRequestType,
 					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
@@ -964,7 +994,7 @@ func HandleOpenAIChatCompletionStreaming(
 							IsBifrostError: false,
 							Error:          &schemas.ErrorField{},
 							ExtraFields: schemas.BifrostErrorExtraFields{
-								RequestType:    schemas.ResponsesStreamRequest,
+								RequestType:    streamRequestType,
 								Provider:       providerName,
 								ModelRequested: request.Model,
 							},
@@ -985,7 +1015,7 @@ func HandleOpenAIChatCompletionStreaming(
 						return
 					}
 
-					response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+					response.ExtraFields.RequestType = streamRequestType
 					response.ExtraFields.Provider = providerName
 					response.ExtraFields.ModelRequested = request.Model
 					response.ExtraFields.ChunkIndex = response.SequenceNumber
@@ -1097,10 +1127,18 @@ func HandleOpenAIChatCompletionStreaming(
 
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, logger)
-		} else if !isResponsesToChatCompletionsFallback {
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, streamRequestType, providerName, request.Model, logger)
+			return
+		}
+
+		if !isResponsesToChatCompletionsFallback {
+			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, streamRequestType, providerName, request.Model)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
@@ -1359,8 +1397,18 @@ func HandleOpenAIResponsesStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1370,13 +1418,10 @@ func HandleOpenAIResponsesStreaming(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
-
 			line := scanner.Text()
 
 			// Skip empty lines, comments, and event lines
@@ -1476,6 +1521,11 @@ func HandleOpenAIResponsesStreaming(
 		}
 		// Handle scanner errors first
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, logger)
 		}
@@ -1827,8 +1877,18 @@ func HandleOpenAISpeechStreamRequest(
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.SpeechStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.SpeechStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -1837,11 +1897,9 @@ func HandleOpenAISpeechStreamRequest(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
 
 			line := scanner.Text()
@@ -1931,6 +1989,11 @@ func HandleOpenAISpeechStreamRequest(
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, logger)
 		}
@@ -2196,8 +2259,18 @@ func HandleOpenAITranscriptionStreamRequest(
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.TranscriptionStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -2206,13 +2279,11 @@ func HandleOpenAITranscriptionStreamRequest(
 		lastChunkTime := startTime
 
 		for scanner.Scan() {
-			// Check if context is done before processing
-			select {
-			case <-ctx.Done():
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
 				return
-			default:
 			}
-
+			
 			line := scanner.Text()
 
 			// Skip empty lines and comments
@@ -2295,6 +2366,11 @@ func HandleOpenAITranscriptionStreamRequest(
 
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
 		}

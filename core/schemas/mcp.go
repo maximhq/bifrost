@@ -66,6 +66,7 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
+	ConfigHash string `json:"-"` // Config hash for reconciliation (not serialized)
 }
 
 // MCPConnectionType defines the communication protocol for MCP connections

@@ -1,0 +1,1 @@
+- fix: adds timeout and connection disconnect handling for streaming responses

@@ -496,8 +496,22 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
-		defer close(responseChan)
+		defer func() {
+			model := "unknown"
+			if meta != nil {
+				model = meta.Model
+			}
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, model, schemas.ChatCompletionStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, model, schemas.ChatCompletionStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -531,13 +545,15 @@ func HandleAnthropicChatCompletionStreaming(
 		var eventData string
 
 		for scanner.Scan() {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
 			line := scanner.Text()
-
 			// Skip empty lines and comments
 			if line == "" || strings.HasPrefix(line, ":") {
 				continue
 			}
-
 			// Parse SSE event - track event type and data separately
 			if after, ok := strings.CutPrefix(line, "event: "); ok {
 				eventType = after
@@ -547,22 +563,18 @@ func HandleAnthropicChatCompletionStreaming(
 			} else {
 				continue
 			}
-
 			// Skip if we don't have both event type and data
 			if eventType == "" || eventData == "" {
 				continue
 			}
-
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
 				continue
 			}
-
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
 				messageID = event.Message.ID
 			}
-
 			// Check for usage in both top-level event.Usage and nested event.Message.Usage
 			// message_start events have usage nested in message.usage, while message_delta has it at top level
 			var usageToProcess *AnthropicUsage
@@ -571,7 +583,6 @@ func HandleAnthropicChatCompletionStreaming(
 			} else if event.Message != nil && event.Message.Usage != nil {
 				usageToProcess = event.Message.Usage
 			}
-
 			if usageToProcess != nil {
 				// Collect usage information and send at the end of the stream
 				// Here in some cases usage comes before final message
@@ -606,7 +617,6 @@ func HandleAnthropicChatCompletionStreaming(
 					}
 				}
 			}
-
 			if event.Delta != nil && event.Delta.StopReason != nil {
 				mappedReason := ConvertAnthropicFinishReasonToBifrost(*event.Delta.StopReason)
 				finishReason = &mappedReason
@@ -615,7 +625,6 @@ func HandleAnthropicChatCompletionStreaming(
 				// Handle different event types
 				modelName = event.Message.Model
 			}
-
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream()
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -652,36 +661,38 @@ func HandleAnthropicChatCompletionStreaming(
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 			}
-
 			if isLastChunk {
 				break
 			}
-
 			// Reset for next event
 			eventType = ""
 			eventData = ""
 		}
-
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, modelName, logger)
-		} else {
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, modelName)
-			if postResponseConverter != nil {
-				response = postResponseConverter(response)
-				if response == nil {
-					logger.Warn("postResponseConverter returned nil; skipping chunk")
-					return
-				}
-			}
-			// Set raw request if enabled
-			if sendBackRawRequest {
-				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
-			}
-			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+			return
 		}
+		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, modelName)
+		if postResponseConverter != nil {
+			response = postResponseConverter(response)
+			if response == nil {
+				logger.Warn("postResponseConverter returned nil; skipping chunk")
+				return
+			}
+		}
+		// Set raw request if enabled
+		if sendBackRawRequest {
+			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+		}
+		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -850,9 +861,23 @@ func HandleAnthropicResponsesStream(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			model := "<unknown>"
+			if meta != nil {
+				model = meta.Model
+			}
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, model, schemas.ResponsesStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, model, schemas.ResponsesStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		defer close(responseChan)
-
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
+		// If body stream is nil, return an error
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
@@ -883,13 +908,15 @@ func HandleAnthropicResponsesStream(
 		var modelName string
 
 		for scanner.Scan() {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
 			line := scanner.Text()
-
 			// Skip empty lines and comments
 			if line == "" || strings.HasPrefix(line, ":") {
 				continue
 			}
-
 			// Parse SSE event - track event type and data separately
 			if after, ok := strings.CutPrefix(line, "event: "); ok {
 				eventType = after
@@ -899,22 +926,18 @@ func HandleAnthropicResponsesStream(
 			} else {
 				continue
 			}
-
 			// Skip if we don't have both event type and data
 			if eventType == "" || eventData == "" {
 				continue
 			}
-
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
 				continue
 			}
-
 			if event.Message != nil && modelName == "" {
 				modelName = event.Message.Model
 			}
-
 			// Note: response.created and response.in_progress are now emitted by ToBifrostResponsesStream
 			// from the message_start event, so we don't need to call them manually here
 
@@ -969,6 +992,10 @@ func HandleAnthropicResponsesStream(
 					Provider:       providerName,
 					ModelRequested: modelName,
 				}
+				// If context was cancelled/timed out, let defer handle it
+				if ctx.Err() != nil {
+					return
+				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				break
@@ -1020,8 +1047,12 @@ func HandleAnthropicResponsesStream(
 			eventType = ""
 			eventData = ""
 		}
-
 		if err := scanner.Err(); err != nil {
+			// If context was cancelled/timed out, let defer handle it
+			if ctx.Err() != nil {
+				return
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, modelName, logger)
 		}
@@ -1566,13 +1597,6 @@ func (provider *AnthropicProvider) Transcription(ctx *schemas.BifrostContext, ke
 // TranscriptionStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
-}
-
-// parseStreamAnthropicError parses Anthropic streaming error responses.
-func parseStreamAnthropicError(resp *fasthttp.Response, providerType schemas.ModelProvider) *schemas.BifrostError {
-	statusCode := resp.StatusCode()
-	body := resp.Body()
-	return providerUtils.NewProviderAPIError(string(body), nil, statusCode, providerType, nil, nil)
 }
 
 // FileUpload uploads a file to Anthropic's Files API.

@@ -54,6 +54,33 @@ export interface PprofData {
   history: HistoryPoint[]
 }
 
+// Goroutine group representing goroutines with same stack trace
+export interface GoroutineGroup {
+  count: number
+  state: string
+  wait_reason?: string
+  wait_minutes?: number
+  top_func: string
+  stack: string[]
+  category: 'background' | 'per-request' | 'unknown'
+}
+
+// Goroutine health summary
+export interface GoroutineSummary {
+  background: number
+  per_request: number
+  long_waiting: number
+  potentially_stuck: number
+}
+
+// Goroutine profile response
+export interface GoroutineProfile {
+  timestamp: string
+  total_goroutines: number
+  groups: GoroutineGroup[]
+  summary: GoroutineSummary
+}
+
 export const devApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     // Get dev pprof data - polls every 10 seconds
@@ -62,11 +89,19 @@ export const devApi = baseApi.injectEndpoints({
         url: '/dev/pprof',
       }),
     }),
+    // Get goroutine profile for leak detection
+    getDevGoroutines: builder.query<GoroutineProfile, void>({
+      query: () => ({
+        url: '/dev/pprof/goroutines',
+      }),
+    }),
   }),
 })
 
 export const {
   useGetDevPprofQuery,
   useLazyGetDevPprofQuery,
+  useGetDevGoroutinesQuery,
+  useLazyGetDevGoroutinesQuery,
 } = devApi
 
