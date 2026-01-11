@@ -1,0 +1,21 @@
+{
+  "name": "@bifrost/e2e-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright E2E tests for Bifrost UI",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:providers": "playwright test features/providers",
+    "test:virtual-keys": "playwright test features/virtual-keys",
+    "report": "playwright show-report",
+    "codegen": "playwright codegen http://localhost:3000"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
