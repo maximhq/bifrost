@@ -72,9 +72,9 @@ func TestJsonParserPluginEndToEnd(t *testing.T) {
 
 	// Initialize Bifrost with the plugin
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -171,9 +171,9 @@ func TestJsonParserPluginPerRequest(t *testing.T) {
 
 	// Initialize Bifrost with the plugin
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelDebug),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)

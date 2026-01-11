@@ -17,6 +17,6 @@ func SetLogger(l schemas.Logger) {
 
 type EnterpriseOverrides interface {
 	GetGovernancePluginName() string
-	LoadGovernancePlugin(ctx context.Context, config *Config) (schemas.Plugin, error)
+	LoadGovernancePlugin(ctx context.Context, config *Config) (schemas.LLMPlugin, error)
 	LoadPricingManager(ctx context.Context, pricingConfig *modelcatalog.Config, configStore configstore.ConfigStore) (*modelcatalog.ModelCatalog, error)
 }
