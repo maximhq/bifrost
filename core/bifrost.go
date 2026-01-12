@@ -2774,6 +2774,15 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 	return bifrost.mcpManager.RemoveClient(id)
 }
 
+// SetMCPManager sets the MCP manager for this Bifrost instance.
+// This is primarily used for testing purposes to inject a custom MCP manager.
+//
+// Parameters:
+//   - manager: The MCP manager to set
+func (bifrost *Bifrost) SetMCPManager(manager *mcp.MCPManager) {
+	bifrost.mcpManager = manager
+}
+
 // EditMCPClient edits the tools of an MCP client.
 // This allows for dynamic MCP client tool management at runtime.
 //

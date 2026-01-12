@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,13 +16,13 @@ func TestXAI(t *testing.T) {
 		t.Skip("Skipping XAI tests because XAI_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.XAI,
 		ChatModel:            "grok-4-0709",
 		ReasoningModel:       "grok-3-mini",
@@ -30,7 +30,7 @@ func TestXAI(t *testing.T) {
 		VisionModel:          "grok-2-vision-1212",
 		EmbeddingModel:       "", // XAI doesn't support embedding
 		ImageGenerationModel: "grok-2-image",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -55,7 +55,7 @@ func TestXAI(t *testing.T) {
 	}
 
 	t.Run("XAITests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

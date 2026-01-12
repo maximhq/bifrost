@@ -379,13 +379,17 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 	bindings := make(map[string]map[string]toolBinding)
 	serverKeys := make([]string, 0, len(availableToolsPerClient))
 
+	logger.Debug(fmt.Sprintf("%s GetToolPerClient returned %d clients", CodeModeLogPrefix, len(availableToolsPerClient)))
+
 	for clientName, tools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
 			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
+		logger.Debug(fmt.Sprintf("%s [%s] Client found. IsCodeModeClient: %v, ToolCount: %d", CodeModeLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient, len(tools)))
 		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+			logger.Debug(fmt.Sprintf("%s [%s] Skipped: IsCodeModeClient=%v, HasTools=%v", CodeModeLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient, len(tools) > 0))
 			continue
 		}
 		serverKeys = append(serverKeys, clientName)
@@ -405,6 +409,8 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 			// Parse tool name for property name compatibility (used as property name in the runtime)
 			parsedToolName := parseToolName(unprefixedToolName)
 
+			logger.Debug(fmt.Sprintf("%s [%s] Bound tool: %s -> %s -> %s", CodeModeLogPrefix, clientName, originalToolName, unprefixedToolName, parsedToolName))
+
 			// Store tool binding
 			toolFunctions[parsedToolName] = toolBinding{
 				toolName:   originalToolName,
@@ -413,10 +419,13 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 		}
 
 		bindings[clientName] = toolFunctions
+		logger.Debug(fmt.Sprintf("%s [%s] Added to bindings with %d functions", CodeModeLogPrefix, clientName, len(toolFunctions)))
 	}
 
 	if len(serverKeys) > 0 {
-		logger.Debug(fmt.Sprintf("%s Bound %d servers with tools", CodeModeLogPrefix, len(serverKeys)))
+		logger.Debug(fmt.Sprintf("%s Bound %d servers with tools: %v", CodeModeLogPrefix, len(serverKeys), serverKeys))
+	} else {
+		logger.Debug(fmt.Sprintf("%s No servers available for code mode execution", CodeModeLogPrefix))
 	}
 
 	// Step 7: Wrap transpiled code to execute the async function and return its result
@@ -457,12 +466,16 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 	vm.Set("console", consoleObj)
 
 	// Step 11: Set up server bindings
+	logger.Debug(fmt.Sprintf("%s Setting up %d server bindings in VM", CodeModeLogPrefix, len(bindings)))
 	for serverKey, tools := range bindings {
+		logger.Debug(fmt.Sprintf("%s [%s] Setting up server object with %d tools", CodeModeLogPrefix, serverKey, len(tools)))
 		serverObj := vm.NewObject()
 		for toolName, binding := range tools {
 			// Capture variables for closure
 			toolNameFinal := binding.toolName
 			clientNameFinal := binding.clientName
+
+			logger.Debug(fmt.Sprintf("%s [%s] Binding tool function: %s -> %s", CodeModeLogPrefix, serverKey, toolName, toolNameFinal))
 
 			serverObj.Set(toolName, func(call goja.FunctionCall) goja.Value {
 				args := call.Argument(0).Export()
@@ -565,6 +578,7 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 			})
 		}
 		vm.Set(serverKey, serverObj)
+		logger.Debug(fmt.Sprintf("%s [%s] Server object set in VM", CodeModeLogPrefix, serverKey))
 	}
 
 	// Step 12: Set up environment info

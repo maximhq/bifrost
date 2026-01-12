@@ -89,6 +89,7 @@ func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
 
 	// Create placeholder entry
 	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
 		ExecutionConfig: config,
 		ToolMap:         make(map[string]schemas.ChatTool),
 	}
@@ -189,12 +190,24 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
+	if updatedConfig.ConnectionType != "" && updatedConfig.ConnectionType != client.ExecutionConfig.ConnectionType {
+		return fmt.Errorf("connection type cannot be updated for client %s", id)
+	}
+	if updatedConfig.ConnectionString != nil && !updatedConfig.ConnectionString.Equals(client.ExecutionConfig.ConnectionString) {
+		return fmt.Errorf("connection string cannot be updated for client %s", id)
+	}
+	if updatedConfig.StdioConfig != nil && !stdioConfigEqual(updatedConfig.StdioConfig, client.ExecutionConfig.StdioConfig) {
+		return fmt.Errorf("stdio config cannot be updated for client %s", id)
+	}
+	if updatedConfig.InProcessServer != nil && updatedConfig.InProcessServer != client.ExecutionConfig.InProcessServer {
+		return fmt.Errorf("in-process server cannot be updated for client %s", id)
+	}
+
 	oldName := client.ExecutionConfig.Name
 
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
 	config.Name = updatedConfig.Name
-	config.IsCodeModeClient = updatedConfig.IsCodeModeClient
 	config.Headers = updatedConfig.Headers
 	config.ToolsToExecute = updatedConfig.ToolsToExecute
 	config.ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
@@ -237,6 +250,29 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	}
 
 	return nil
+}
+
+func stdioConfigEqual(a, b *schemas.MCPStdioConfig) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Command != b.Command {
+		return false
+	}
+	if len(a.Args) != len(b.Args) || len(a.Envs) != len(b.Envs) {
+		return false
+	}
+	for i, arg := range a.Args {
+		if b.Args[i] != arg {
+			return false
+		}
+	}
+	for i, env := range a.Envs {
+		if b.Envs[i] != env {
+			return false
+		}
+	}
+	return true
 }
 
 // RegisterTool registers a typed tool handler with the local MCP server.
@@ -294,11 +330,16 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 		return fmt.Errorf("bifrost client not found")
 	}
 
+	// Create prefixed tool name for consistency with external tools
+	// Format: bifrostInternal-toolName
+	prefixedToolName := fmt.Sprintf("%s-%s", BifrostMCPClientKey, name)
+
 	// Check if tool name already exists to prevent silent overwrites
-	if _, exists := internalClient.ToolMap[name]; exists {
+	if _, exists := internalClient.ToolMap[prefixedToolName]; exists {
 		return fmt.Errorf("tool '%s' is already registered", name)
 	}
 
+	logger.Debug(fmt.Sprintf("%s Registering typed tool: %s -> prefixed as %s (client: %s)", MCPLogPrefix, name, prefixedToolName, BifrostMCPClientKey))
 	logger.Info(fmt.Sprintf("%s Registering typed tool: %s", MCPLogPrefix, name))
 
 	// Create MCP handler wrapper that converts between typed and MCP interfaces
@@ -312,14 +353,16 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 		return mcp.NewToolResultText(result), nil
 	}
 
-	// Register the tool with the local MCP server using AddTool
+	// Register the tool with the local MCP server using AddTool (unprefixed)
 	if m.server != nil {
 		tool := mcp.NewTool(name, mcp.WithDescription(description))
 		m.server.AddTool(tool, mcpHandler)
 	}
 
-	// Store tool definition for Bifrost integration
-	internalClient.ToolMap[name] = toolSchema
+	// Store tool definition with prefixed name for consistency with external tools
+	// Update the tool schema to use the prefixed name
+	toolSchema.Function.Name = prefixedToolName
+	internalClient.ToolMap[prefixedToolName] = toolSchema
 
 	return nil
 }
@@ -349,6 +392,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 	// Create new client entry with configuration
 	m.clientMap[config.ID] = &schemas.MCPClientState{
+		Name:            config.Name,
 		ExecutionConfig: config,
 		ToolMap:         make(map[string]schemas.ChatTool),
 		ConnectionInfo: schemas.MCPClientConnectionInfo{
@@ -399,7 +443,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		ctx = longLivedCtx
 		cancel = longLivedCancel
 	} else {
-		// Other connection types can use timeout context
+		// Other connection types (HTTP) can use timeout context
 		ctx, cancel = context.WithTimeout(m.ctx, MCPClientConnectionEstablishTimeout)
 		defer cancel()
 	}
@@ -407,8 +451,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	// Start the transport first (required for STDIO and SSE clients)
 	logger.Debug(fmt.Sprintf("%s [%s] Starting transport...", MCPLogPrefix, config.Name))
 	if err := externalClient.Start(ctx); err != nil {
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE {
-			cancel() // Cancel SSE context only on error
+		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+			cancel() // Cancel long-lived context on error
 		}
 		return fmt.Errorf("failed to start MCP client transport %s: %v", config.Name, err)
 	}
@@ -443,8 +487,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 	_, err = externalClient.Initialize(initCtx, extInitRequest)
 	if err != nil {
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE {
-			cancel() // Cancel SSE context only on error
+		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+			cancel() // Cancel long-lived context on error
 		}
 		return fmt.Errorf("failed to initialize MCP client %s: %v", config.Name, err)
 	}
@@ -471,8 +515,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		client.ConnectionInfo = connectionInfo
 		client.State = schemas.MCPConnectionStateConnected
 
-		// Store cancel function for SSE connections to enable proper cleanup
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE {
+		// Store cancel function for SSE and STDIO connections to enable proper cleanup
+		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
 			client.CancelFunc = cancel
 		}
 
@@ -481,11 +525,12 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 			client.ToolMap[toolName] = tool
 		}
 
+		logger.Debug(fmt.Sprintf("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient))
 		logger.Info(fmt.Sprintf("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name))
 	} else {
 		// Clean up resources before returning error: client was removed during connection setup
-		// Cancel SSE context if it was created
-		if config.ConnectionType == schemas.MCPConnectionTypeSSE && cancel != nil {
+		// Cancel long-lived context if it was created
+		if (config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO) && cancel != nil {
 			cancel()
 		}
 		// Close external client connection to prevent transport/goroutine leaks
@@ -698,8 +743,8 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 	return &schemas.MCPClientState{
 		ExecutionConfig: schemas.MCPClientConfig{
 			ID:             BifrostMCPClientKey,
-			Name:           BifrostMCPClientName,
-			ToolsToExecute: []string{"*"}, // Allow all tools for internal client
+			Name:           BifrostMCPClientKey, // Use same value as ID for consistent prefixing
+			ToolsToExecute: []string{"*"},        // Allow all tools for internal client
 		},
 		ToolMap: make(map[string]schemas.ChatTool),
 		ConnectionInfo: schemas.MCPClientConnectionInfo{

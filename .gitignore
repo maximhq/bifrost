@@ -22,11 +22,14 @@ transports/bifrost-http/logs/
 transports/bifrost-http/tmp/
 node_modules
 /dist
+**/dist
 **/tmp/
 temp*/
+!examples/mcps/temperature/
 tmp/
 tmp-*
 private
+**/bin
 
 # Go workspaces (local only)
 go.work

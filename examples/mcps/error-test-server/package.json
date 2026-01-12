@@ -1,0 +1,21 @@
+{
+  "name": "error-test-server",
+  "version": "1.0.0",
+  "description": "MCP STDIO server optimized for testing error scenarios and edge cases",
+  "type": "module",
+  "bin": {
+    "error-test-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}

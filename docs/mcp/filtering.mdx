@@ -141,6 +141,11 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-mcp-include-tools: filesystem-*,web_search-search" \
   -d '...'
+
+# Include internal tools registered via RegisterTool()
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-tools: bifrostInternal-echo,bifrostInternal-calculator" \
+  -d '...'
 ```
 
 ### Go SDK Context Values
@@ -161,6 +166,11 @@ ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
     []string{"filesystem-*", "web_search-search"})
 
+// Include all internal tools (registered via RegisterTool)
+ctx = context.WithValue(ctx,
+    schemas.BifrostContextKey("mcp-include-tools"),
+    []string{"bifrostInternal-*"})
+
 response, err := client.ChatCompletionRequest(ctx, request)
 ```
 
@@ -171,6 +181,20 @@ response, err := client.ChatCompletionRequest(ctx, request)
 | `*` (in include-clients) | Include all clients |
 | `clientName-*` (in include-tools) | Include all tools from that client |
 | `clientName-toolName` | Include specific tool |
+
+### Tool Naming Convention
+
+**Important:** All MCP tools follow a consistent naming convention using the **prefixed format** `clientName-toolName`:
+
+- **External MCP Clients** (HTTP, SSE, STDIO): Tools use the format `clientName-toolName`
+  - Example: `filesystem-read_file`, `web_search-search`
+  - The `clientName` is the name configured for the MCP client
+
+- **Internal (In-Process) Tools**: Tools registered via `RegisterTool()` use the prefix `bifrostInternal-`
+  - Example: `bifrostInternal-echo`, `bifrostInternal-my_custom_tool`
+  - These tools are registered via `RegisterTool()` in the SDK
+
+This consistent naming convention ensures clear separation between tools from different clients and prevents naming conflicts across all MCP client types.
 
 ---
 

@@ -389,7 +389,7 @@ export default function ClientSettingsView() {
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
-											"border-destructive focus:border-destructive focus-visible:border-destructive focus-visible:ring-destructive/50",
+										"border-destructive focus:border-destructive focus-visible:border-destructive focus-visible:ring-destructive/50",
 									)}
 									value={header}
 									onChange={(e) => handleAllowlistChange(index, e.target.value)}
@@ -432,7 +432,7 @@ export default function ClientSettingsView() {
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
-											"border-destructive focus:border-destructive focus-visible:border-destructive focus-visible:ring-destructive/50",
+										"border-destructive focus:border-destructive focus-visible:border-destructive focus-visible:ring-destructive/50",
 									)}
 									value={header}
 									onChange={(e) => handleDenylistChange(index, e.target.value)}

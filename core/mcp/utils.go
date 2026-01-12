@@ -24,9 +24,10 @@ func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	defer m.mu.RUnlock()
 
 	for _, client := range m.clientMap {
+		// All tools (both internal and external) are now stored with prefix "clientName-toolName"
+		// This ensures consistent behavior across all MCP clients
 		if _, exists := client.ToolMap[toolName]; exists {
 			// Return a copy to prevent TOCTOU race conditions
-			// The caller receives a snapshot of the client state at this point in time
 			clientCopy := *client
 			return &clientCopy
 		}
@@ -53,25 +54,36 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		includeClients = existingIncludeClients
 	}
 
+	logger.Debug(fmt.Sprintf("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients))
+
 	tools := make(map[string][]schemas.ChatTool)
 	for _, client := range m.clientMap {
 		// Use client name as the key (not ID)
 		clientName := client.ExecutionConfig.Name
+		clientID := client.ExecutionConfig.ID
 
-		// Apply client filtering logic
+		logger.Debug(fmt.Sprintf("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID))
+
+		// Apply client filtering logic - check both ID and Name for compatibility
 		if !shouldIncludeClient(clientName, includeClients) {
 			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName))
 			continue
 		}
 
 		// Add all tools from this client
+		// FILTERING HIERARCHY (restrictive, not permissive):
+		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
+		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
+		// Context filtering CANNOT override client configuration - it can only be more restrictive.
 		for toolName, tool := range client.ToolMap {
-			// Check if tool should be skipped based on client configuration
+			// First check: Client configuration is the global allow-list
+			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
 				continue
 			}
 
-			// Check if tool should be skipped based on request context
+			// Second check: Request context can further narrow the allowed tools
+			// Context can only restrict, not expand beyond client configuration
 			if shouldSkipToolForRequest(ctx, clientName, toolName) {
 				continue
 			}
@@ -95,14 +107,18 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	logger.Debug(fmt.Sprintf("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap)))
 	for _, client := range m.clientMap {
+		logger.Debug(fmt.Sprintf("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID))
 		if client.ExecutionConfig.Name == clientName {
 			// Return a copy to prevent TOCTOU race conditions
 			// The caller receives a snapshot of the client state at this point in time
+			logger.Debug(fmt.Sprintf("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient))
 			clientCopy := *client
 			return &clientCopy
 		}
 	}
+	logger.Debug(fmt.Sprintf("%s Client '%s' not found", MCPLogPrefix, clientName))
 	return nil
 }
 
@@ -159,19 +175,24 @@ func shouldIncludeClient(clientName string, includeClients []string) bool {
 	if includeClients != nil {
 		// Handle empty array [] - means no clients are included
 		if len(includeClients) == 0 {
+			logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - BLOCKED (empty include list)", MCPLogPrefix, clientName))
 			return false // No clients allowed
 		}
 
 		// Handle wildcard "*" - if present, all clients are included
 		if slices.Contains(includeClients, "*") {
+			logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - ALLOWED (wildcard filter)", MCPLogPrefix, clientName))
 			return true // All clients allowed
 		}
 
 		// Check if specific client is in the list
-		return slices.Contains(includeClients, clientName)
+		included := slices.Contains(includeClients, clientName)
+		logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients))
+		return included
 	}
 
 	// Default: include all clients when no filtering specified (nil case)
+	logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - ALLOWED (no filter)", MCPLogPrefix, clientName))
 	return true
 }
 
@@ -234,6 +255,9 @@ func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
+// shouldSkipToolForRequest determines if a tool should be skipped based on request context filtering.
+// Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
+// This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
 	includeTools := ctx.Value(MCPContextKeyIncludeTools)
 
@@ -275,6 +299,12 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.ChatTool {
 		FixArraySchemas(orderedProps)
 
 		properties = &orderedProps
+	} else {
+		// For tools with no parameters, initialize an empty properties map
+		// This is required by some providers (e.g., OpenAI) which expect
+		// object schemas to always have a properties field, even if empty
+		emptyProps := make(schemas.OrderedMap)
+		properties = &emptyProps
 	}
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
@@ -368,11 +398,7 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
 		}
 	case schemas.MCPConnectionTypeInProcess:
-		// InProcess requires a server instance to be provided programmatically
-		// This cannot be validated from JSON config - the server must be set when using the Go package
-		if config.InProcessServer == nil {
-			return fmt.Errorf("InProcessServer is required for InProcess connection type in client '%s' (Go package only)", config.Name)
-		}
+		// InProcess can be provided programmatically or created automatically.
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
 	}

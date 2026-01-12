@@ -1,10 +1,10 @@
 package handlers
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -48,7 +48,7 @@ func (h *MCPInferenceHandler) executeTool(ctx *fasthttp.RequestCtx) {
 // executeChatMCPTool handles POST /v1/mcp/tool/execute?format=chat - Execute MCP tool
 func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 	var req schemas.ChatAssistantMessageToolCall
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
@@ -81,7 +81,7 @@ func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 // executeResponsesMCPTool handles POST /v1/mcp/tool/execute?format=responses - Execute MCP tool
 func (h *MCPInferenceHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) {
 	var req schemas.ResponsesToolMessage
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}

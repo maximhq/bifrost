@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -92,7 +92,7 @@ func TestBedrock(t *testing.T) {
 		t.Skip("Skipping Bedrock tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestBedrock(t *testing.T) {
 		}
 	}
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
 		ChatModel:   "claude-4-sonnet",
 		VisionModel: "claude-4-sonnet",
@@ -131,7 +131,7 @@ func TestBedrock(t *testing.T) {
 		PromptCachingModel: "claude-4.5-sonnet",
 		BatchExtraParams:   batchExtraParams,
 		FileExtraParams:    fileExtraParams,
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -168,7 +168,7 @@ func TestBedrock(t *testing.T) {
 	}
 
 	t.Run("BedrockTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }
