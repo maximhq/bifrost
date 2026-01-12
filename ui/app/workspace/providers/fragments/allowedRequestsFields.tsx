@@ -33,6 +33,8 @@ const PROVIDER_ENDPOINTS: Partial<Record<BaseProvider, Partial<Record<RequestTyp
 		speech_stream: "/v1/audio/speech",
 		transcription: "/v1/audio/transcriptions",
 		transcription_stream: "/v1/audio/transcriptions",
+		image_generation: "/v1/images/generations",
+		image_generation_stream: "/v1/images/generations",
 		count_tokens: "/v1/responses/tokens",
 	},
 	anthropic: {
@@ -71,6 +73,8 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "speech_stream", label: "Speech Stream" },
 	{ key: "transcription", label: "Transcription" },
 	{ key: "transcription_stream", label: "Transcription Stream" },
+	{ key: "image_generation", label: "Image Generation" },
+	{ key: "image_generation_stream", label: "Image Generation Stream" },
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
 

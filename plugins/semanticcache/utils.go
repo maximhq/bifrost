@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -110,6 +111,8 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		hashInput.Params = req.EmbeddingRequest.Params
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		hashInput.Params = req.TranscriptionRequest.Params
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		hashInput.Params = req.ImageGenerationRequest.Params
 	}
 
 	// Marshal to JSON for consistent hashing
@@ -164,6 +167,10 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
+			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
 	}
 
@@ -322,6 +329,16 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		// Skip semantic caching for transcription requests
 		return "", "", fmt.Errorf("transcription requests are not supported for semantic caching")
 
+	case req.ImageGenerationRequest != nil:
+		if req.ImageGenerationRequest.Input == nil || req.ImageGenerationRequest.Input.Prompt == "" {
+			return "", "", fmt.Errorf("no prompt found in image generation request")
+		}
+		metadataHash, err := getMetadataHash(metadata)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to marshal metadata for metadata hash: %w", err)
+		}
+		return normalizeText(req.ImageGenerationRequest.Input.Prompt), metadataHash, nil
+
 	default:
 		return "", "", fmt.Errorf("unsupported input type for semantic caching")
 	}
@@ -362,7 +379,7 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 // addSingleResponse stores a single (non-streaming) response in unified VectorEntry format
 func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	// Marshal response as string
-	responseData, err := json.Marshal(res)
+	responseData, err := sonic.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("failed to marshal response: %w", err)
 	}
@@ -370,6 +387,29 @@ func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, 
 	// Add response field to metadata
 	metadata["response"] = string(responseData)
 	metadata["stream_chunks"] = []string{}
+
+	// image specific metadata
+	if res.ImageGenerationResponse != nil {
+		var imageURLs []string
+		var imageB64 []string
+		var revisedPrompts []string
+
+		for _, img := range res.ImageGenerationResponse.Data {
+			if img.URL != "" {
+				imageURLs = append(imageURLs, img.URL)
+			}
+			if img.B64JSON != "" {
+				imageB64 = append(imageB64, img.B64JSON)
+			}
+			if img.RevisedPrompt != "" {
+				revisedPrompts = append(revisedPrompts, img.RevisedPrompt)
+			}
+		}
+
+		metadata["image_urls"] = imageURLs
+		metadata["image_b64"] = imageB64
+		metadata["revised_prompts"] = revisedPrompts
+	}
 
 	// Store unified entry using new VectorStore interface
 	if err := plugin.store.Add(ctx, plugin.config.VectorStoreNamespace, responseID, embedding, metadata); err != nil {
@@ -469,6 +509,8 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 		return req.EmbeddingRequest.Input
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		return req.ImageGenerationRequest.Input
 	default:
 		return nil
 	}
@@ -605,6 +647,13 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 		return copiedInput
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Input != nil {
+			return &schemas.ImageGenerationInput{
+				Prompt: normalizeText(req.ImageGenerationRequest.Input.Prompt),
+			}
+		}
+		return nil
 	default:
 		return nil
 	}
@@ -899,6 +948,60 @@ func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.T
 	if params.Format != nil {
 		metadata["file_format"] = *params.Format
 	}
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
+	}
+}
+
+// extractImageGenerationParametersToMetadata extracts Image Generation parameters into metadata map
+func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas.ImageGenerationParameters, metadata map[string]interface{}) {
+	if params == nil {
+		return
+	}
+
+	if params.N != nil {
+		metadata["n"] = *params.N
+	}
+	if params.Background != nil {
+		metadata["background"] = *params.Background
+	}
+	if params.Moderation != nil {
+		metadata["moderation"] = *params.Moderation
+	}
+	if params.PartialImages != nil {
+		metadata["partial_images"] = *params.PartialImages
+	}
+	if params.Size != nil {
+		metadata["size"] = *params.Size
+	}
+	if params.Quality != nil {
+		metadata["quality"] = *params.Quality
+	}
+	if params.OutputCompression != nil {
+		metadata["output_compression"] = *params.OutputCompression
+	}
+	if params.OutputFormat != nil {
+		metadata["output_format"] = *params.OutputFormat
+	}
+	if params.Style != nil {
+		metadata["style"] = *params.Style
+	}
+	if params.ResponseFormat != nil {
+		metadata["response_format"] = *params.ResponseFormat
+	}
+	if params.Seed != nil {
+		metadata["seed"] = *params.Seed
+	}
+	if params.NegativePrompt != nil {
+		metadata["negative_prompt"] = *params.NegativePrompt
+	}
+	if params.NumInferenceSteps != nil {
+		metadata["num_inference_steps"] = *params.NumInferenceSteps
+	}
+	if params.User != nil {
+		metadata["user"] = *params.User
+	}
+
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

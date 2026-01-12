@@ -53,7 +53,6 @@ type PricingEntry struct {
 	Provider           string  `json:"provider"`
 	Mode               string  `json:"mode"`
 	// Additional pricing for media
-	InputCostPerImage          *float64 `json:"input_cost_per_image,omitempty"`
 	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
 	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
 	// Character-based pricing
@@ -76,6 +75,12 @@ type PricingEntry struct {
 	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
 	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
 	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
+	// Image generation pricing
+	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
+	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
+	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced

@@ -42,5 +42,8 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.TranscriptionOutput = nil
 	data.EmbeddingOutput = nil
 	data.Cost = nil
+	data.ImageGenerationOutput = nil
+	data.RawRequest = nil
+	data.RawResponse = nil
 	p.updateDataPool.Put(data)
 }

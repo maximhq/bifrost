@@ -73,11 +73,11 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 
 	accumulator := accumulatorInterface.(*StreamAccumulator)
 	accumulator.mu.Lock()
-	
+
 	// Ensure unlock happens after cleanup
 	defer accumulator.mu.Unlock()
 	// Ensure cleanup happens
-	defer plugin.cleanupStreamAccumulator(requestID)	
+	defer plugin.cleanupStreamAccumulator(requestID)
 
 	// STEP 1: Check if any chunk in the entire stream had an error
 	if accumulator.HasError {
@@ -117,6 +117,13 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 		}
 		if accumulator.Chunks[i].Response.TranscriptionStreamResponse != nil {
 			return accumulator.Chunks[i].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex < accumulator.Chunks[j].Response.TranscriptionStreamResponse.ExtraFields.ChunkIndex
+		}
+		if accumulator.Chunks[i].Response.ImageGenerationStreamResponse != nil {
+			// For image generation, sort by Index first, then ChunkIndex
+			if accumulator.Chunks[i].Response.ImageGenerationStreamResponse.Index != accumulator.Chunks[j].Response.ImageGenerationStreamResponse.Index {
+				return accumulator.Chunks[i].Response.ImageGenerationStreamResponse.Index < accumulator.Chunks[j].Response.ImageGenerationStreamResponse.Index
+			}
+			return accumulator.Chunks[i].Response.ImageGenerationStreamResponse.ChunkIndex < accumulator.Chunks[j].Response.ImageGenerationStreamResponse.ChunkIndex
 		}
 		return false
 	})

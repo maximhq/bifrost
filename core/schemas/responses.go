@@ -553,7 +553,7 @@ func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
 	if output.ResponsesComputerToolCallOutput != nil {
 		return Marshal(output.ResponsesComputerToolCallOutput)
 	}
-	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data")
+	return nil, fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
 func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error {
 	var str string
@@ -571,7 +571,7 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
 		return nil
 	}
-	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data")
+	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")
 }
 
 // =============================================================================

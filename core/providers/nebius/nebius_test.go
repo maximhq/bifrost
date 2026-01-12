@@ -28,7 +28,8 @@ func TestNebius(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Nebius, Model: "meta-llama/Meta-Llama-3.1-8B-Instruct-fast"},
 		},
-		EmbeddingModel: "BAAI/bge-en-icl",
+		EmbeddingModel:       "BAAI/bge-en-icl",
+		ImageGenerationModel: "black-forest-labs/flux-schnell",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
@@ -43,7 +44,9 @@ func TestNebius(t *testing.T) {
 			ImageURL:              true,
 			ImageBase64:           true,
 			MultipleImages:        true,
+			ImageGeneration:       true,
 			CompleteEnd2End:       true,
+			ImageGenerationStream: false,
 			Embedding:             true, // Nebius supports embeddings
 			ListModels:            true,
 		},

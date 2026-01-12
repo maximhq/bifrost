@@ -509,7 +509,7 @@ func HandleAnthropicChatCompletionStreaming(
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		
+
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
@@ -660,7 +660,7 @@ func HandleAnthropicChatCompletionStreaming(
 					response.ExtraFields.RawResponse = eventData
 				}
 
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 			}
 			if isLastChunk {
 				break
@@ -685,7 +685,7 @@ func HandleAnthropicChatCompletionStreaming(
 			if response == nil {
 				logger.Warn("postResponseConverter returned nil; skipping chunk")
 				// Setting error on the context to signal to the defer that we need to close the stream
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)								
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				return
 			}
 		}
@@ -695,7 +695,7 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil), responseChan)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -1039,10 +1039,10 @@ func HandleAnthropicResponsesStream(
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 						return
 					}
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil), responseChan)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 				}
 			}
 
@@ -1600,6 +1600,16 @@ func (provider *AnthropicProvider) Transcription(ctx *schemas.BifrostContext, ke
 // TranscriptionStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
+}
+
+// ImageGeneration is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+}
+
+// ImageGenerationStream is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
 // FileUpload uploads a file to Anthropic's Files API.

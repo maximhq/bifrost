@@ -149,9 +149,17 @@ type HuggingFaceHubError struct {
 }
 
 type HuggingFaceResponseError struct {
-	Error   string `json:"error"`
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Error   string                   `json:"error"`
+	Type    string                   `json:"type"`
+	Message string                   `json:"message"`
+	Detail  []HuggingFaceErrorDetail `json:"detail,omitempty"` // FastAPI validation errors
+}
+
+type HuggingFaceErrorDetail struct {
+	Loc  []interface{}          `json:"loc"`
+	Msg  string                 `json:"msg"`
+	Type string                 `json:"type"`
+	Ctx  map[string]interface{} `json:"ctx,omitempty"`
 }
 
 // # EMBEDDING TYPES
@@ -340,3 +348,120 @@ type HuggingFaceTranscriptionResponseChunk struct {
 
 type HuggingFaceGenerationParameters = HuggingFaceTranscriptionGenerationParameters
 type HuggingFaceEarlyStoppingUnion = HuggingFaceTranscriptionEarlyStopping
+
+// # IMAGE GENERATION TYPES
+
+// HuggingFaceHFInferenceImageGenerationRequest for hf-inference image generation
+type HuggingFaceHFInferenceImageGenerationRequest struct {
+	Inputs string `json:"inputs"`
+}
+
+// HuggingFaceFalAIImageGenerationRequest for fal-ai image generation
+type HuggingFaceFalAIImageGenerationRequest struct {
+	Prompt                string                `json:"prompt"`
+	NumImages             *int                  `json:"num_images,omitempty"`
+	ResponseFormat        *string               `json:"response_format,omitempty"`
+	ImageSize             *HuggingFaceFalAISize `json:"image_size,omitempty"`
+	NegativePrompt        *string               `json:"negative_prompt,omitempty"`
+	GuidanceScale         *float64              `json:"guidance_scale,omitempty"`
+	NumInferenceSteps     *int                  `json:"num_inference_steps,omitempty"`
+	Seed                  *int                  `json:"seed,omitempty"`
+	OutputFormat          *string               `json:"output_format,omitempty"`
+	SyncMode              *bool                 `json:"sync_mode,omitempty"`
+	EnableSafetyChecker   *bool                 `json:"enable_safety_checker,omitempty"`
+	Acceleration          *string               `json:"acceleration,omitempty"`
+	EnablePromptExpansion *bool                 `json:"enable_prompt_expansion,omitempty"`
+}
+
+type HuggingFaceFalAISize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// HuggingFaceFalAIImageGenerationResponse for fal-ai image generation
+// Matches the API envelope structure with top-level metadata and data array
+type HuggingFaceFalAIImageGenerationResponse struct {
+	RequestID string          `json:"request_id,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	CreatedAt *int64          `json:"created_at,omitempty"`
+	Data      *FalAIImageData `json:"data,omitempty"`
+	// Legacy flattened fields for backward compatibility
+	Images          []FalAIImage  `json:"images,omitempty"`
+	Timings         *FalAITimings `json:"timings,omitempty"`
+	Seed            *int64        `json:"seed,omitempty"`
+	HasNSFWConcepts []bool        `json:"has_nsfw_concepts,omitempty"`
+	Prompt          string        `json:"prompt,omitempty"`
+}
+
+// FalAIImageData wraps the image data in the API envelope
+type FalAIImageData struct {
+	Images          []FalAIImage  `json:"images,omitempty"`
+	Timings         *FalAITimings `json:"timings,omitempty"`
+	Seed            *int64        `json:"seed,omitempty"`
+	HasNSFWConcepts []bool        `json:"has_nsfw_concepts,omitempty"`
+	Prompt          string        `json:"prompt,omitempty"`
+}
+
+type FalAIImage struct {
+	URL         string `json:"url,omitempty"`
+	B64JSON     string `json:"b64_json,omitempty"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+}
+
+type FalAITimings struct {
+	Inference float64 `json:"inference"`
+}
+
+// HuggingFaceTogetherImageGenerationRequest for together image generation
+type HuggingFaceTogetherImageGenerationRequest struct {
+	Prompt         string  `json:"prompt"`
+	Model          string  `json:"model"`
+	ResponseFormat *string `json:"response_format,omitempty"`
+	Size           *string `json:"size,omitempty"`
+	Width          *int    `json:"width,omitempty"`
+	Height         *int    `json:"height,omitempty"`
+	N              *int    `json:"n,omitempty"`
+	Steps          *int    `json:"steps,omitempty"`
+}
+
+// HuggingFaceTogetherImageGenerationResponse for together image generation
+type HuggingFaceTogetherImageGenerationResponse struct {
+	ID     string                         `json:"id"`
+	Model  string                         `json:"model"`
+	Object string                         `json:"object"`
+	Data   []HuggingFaceTogetherImageData `json:"data"`
+}
+
+type HuggingFaceTogetherImageData struct {
+	B64JSON string                      `json:"b64_json,omitempty"`
+	URL     string                      `json:"url,omitempty"`
+	Index   int                         `json:"index"`
+	Timings *HuggingFaceTogetherTimings `json:"timings,omitempty"`
+}
+
+type HuggingFaceTogetherTimings struct {
+	Inference float64 `json:"inference"`
+}
+
+// HuggingFaceFalAIImageStreamRequest for fal-ai image generation streaming
+type HuggingFaceFalAIImageStreamRequest struct {
+	Prompt                string                `json:"prompt"`
+	ResponseFormat        *string               `json:"response_format,omitempty"`
+	NumImages             *int                  `json:"num_images,omitempty"`
+	ImageSize             *HuggingFaceFalAISize `json:"image_size,omitempty"`
+	GuidanceScale         *float64              `json:"guidance_scale,omitempty"`
+	Seed                  *int                  `json:"seed,omitempty"`
+	NumInferenceSteps     *int                  `json:"num_inference_steps,omitempty"`
+	Acceleration          *string               `json:"acceleration,omitempty"`
+	EnablePromptExpansion *bool                 `json:"enable_prompt_expansion,omitempty"`
+	SyncMode              *bool                 `json:"sync_mode,omitempty"`
+	EnableSafetyChecker   *bool                 `json:"enable_safety_checker,omitempty"`
+	OutputFormat          *string               `json:"output_format,omitempty"`
+}
+
+// HuggingFaceFalAIImageStreamResponse for fal-ai SSE events
+type HuggingFaceFalAIImageStreamResponse struct {
+	Images []FalAIImage `json:"images"`
+}

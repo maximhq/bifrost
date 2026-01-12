@@ -22,13 +22,14 @@ Mistral is an **OpenAI-compatible provider** with custom compatibility handling 
 | Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | List Models | ✅ | - | `/v1/models` |
+| Image Generation | ❌ | ❌ | - |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech (TTS), Files, and Batch are not supported by the upstream Mistral API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Speech (TTS), Files, and Batch are not supported by the upstream Mistral API. Image Generation is not currently supported by Bifrost's Mistral integration (Mistral API supports image generation, but Bifrost has not yet implemented this feature). These return `UnsupportedOperationError`.
 </Note>
 
 ---
@@ -238,6 +239,7 @@ Lists available Mistral models with context length and capabilities.
 | Feature | Reason |
 |---------|--------|
 | Text Completions | Not offered by Mistral API |
+| Image Generation | Not yet implemented in Bifrost integration (Mistral API supports this) |
 | Speech/TTS | Not offered by Mistral API |
 | File Management | Not offered by Mistral API |
 | Batch Operations | Not offered by Mistral API |

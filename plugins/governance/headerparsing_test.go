@@ -3,6 +3,7 @@ package governance
 import (
 	"testing"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -147,7 +148,7 @@ func TestCaseInsensitiveLookup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := caseInsensitiveLookup(tt.data, tt.key)
+			result := schemas.CaseInsensitiveLookup(tt.data, tt.key)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

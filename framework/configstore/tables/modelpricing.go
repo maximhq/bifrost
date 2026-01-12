@@ -10,7 +10,6 @@ type TableModelPricing struct {
 	Mode               string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"mode"`
 
 	// Additional pricing for media
-	InputCostPerImage          *float64 `gorm:"default:null" json:"input_cost_per_image,omitempty"`
 	InputCostPerVideoPerSecond *float64 `gorm:"default:null" json:"input_cost_per_video_per_second,omitempty"`
 	InputCostPerAudioPerSecond *float64 `gorm:"default:null" json:"input_cost_per_audio_per_second,omitempty"`
 
@@ -38,6 +37,13 @@ type TableModelPricing struct {
 	CacheCreationInputTokenCost *float64 `gorm:"default:null;column:cache_creation_input_token_cost" json:"cache_creation_input_token_cost,omitempty"`
 	InputCostPerTokenBatches    *float64 `gorm:"default:null;column:input_cost_per_token_batches" json:"input_cost_per_token_batches,omitempty"`
 	OutputCostPerTokenBatches   *float64 `gorm:"default:null;column:output_cost_per_token_batches" json:"output_cost_per_token_batches,omitempty"`
+
+	// Image generation pricing
+	InputCostPerImageToken       *float64 `gorm:"default:null;column:input_cost_per_image_token" json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken      *float64 `gorm:"default:null;column:output_cost_per_image_token" json:"output_cost_per_image_token,omitempty"`
+	InputCostPerImage            *float64 `gorm:"default:null;column:input_cost_per_image" json:"input_cost_per_image,omitempty"`
+	OutputCostPerImage           *float64 `gorm:"default:null;column:output_cost_per_image" json:"output_cost_per_image,omitempty"`
+	CacheReadInputImageTokenCost *float64 `gorm:"default:null;column:cache_read_input_image_token_cost" json:"cache_read_input_image_token_cost,omitempty"`
 }
 
 // TableName sets the table name for each model

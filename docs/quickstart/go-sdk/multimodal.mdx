@@ -1,6 +1,6 @@
 ---
 title: "Multimodal Support"
-description: "Process multiple types of content including images, audio, and text with AI models. Bifrost supports vision analysis, speech synthesis, and audio transcription across various providers."
+description: "Process multiple types of content including images, audio, and text with AI models. Bifrost supports vision analysis, image generation, speech synthesis, and audio transcription across various providers."
 icon: "images"
 ---
 
@@ -39,6 +39,55 @@ if err != nil {
 }
 
 fmt.Println("Response:", *response.Choices[0].Message.Content.ContentStr)
+```
+
+## Image Generation: Generating Images with AI
+
+Generate images from text prompts using OpenAI-compatible image generation models via the Go SDK.
+
+```go
+response, err := client.ImageGenerationRequest(context.Background(), &schemas.BifrostImageGenerationRequest{
+	Provider: schemas.OpenAI,
+	Model:    "dall-e-3",
+	Input: &schemas.ImageGenerationInput{
+		Prompt: "A futuristic city skyline at sunset with flying cars",
+	},
+	Params: &schemas.ImageGenerationParameters{
+		Size:           schemas.Ptr("1024x1024"),
+		ResponseFormat: schemas.Ptr("url"),
+	},
+})
+
+if err != nil {
+	panic(err)
+}
+
+// Handle image generation response
+if len(response.Data) > 0 {
+	imageData := response.Data[0]
+	
+	// Handle URL response (when response_format is "url")
+	if imageData.URL != "" {
+		fmt.Printf("Generated image URL: %s\n", imageData.URL)
+	}
+	
+	// Handle base64-encoded response (when response_format is "b64_json")
+	if imageData.B64JSON != "" {
+		fmt.Printf("Generated base64 image (length: %d)\n", len(imageData.B64JSON))
+	}
+	
+	// Handle revised prompt if present
+	if imageData.RevisedPrompt != "" {
+		fmt.Printf("Revised prompt: %s\n", imageData.RevisedPrompt)
+	}
+}
+
+// Handle usage metrics
+// Note: For image generation endpoints, response.Usage and Usage.TotalTokens may be empty/not populated
+// as token-based usage metrics are not provided by some image-generation providers
+if response.Usage != nil {
+	fmt.Printf("Usage: %d tokens\n", response.Usage.TotalTokens)
+}
 ```
 
 ## Audio Understanding: Analyzing Audio with AI

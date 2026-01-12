@@ -48,6 +48,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		baseType = "audio_transcription"
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		baseType = "image_generation"
 	}
 
 	// TODO: Check for batch processing indicators
@@ -79,7 +81,6 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		Mode:               entry.Mode,
 
 		// Additional pricing for media
-		InputCostPerImage:          entry.InputCostPerImage,
 		InputCostPerVideoPerSecond: entry.InputCostPerVideoPerSecond,
 		InputCostPerAudioPerSecond: entry.InputCostPerAudioPerSecond,
 
@@ -106,6 +107,13 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		CacheReadInputTokenCost:   entry.CacheReadInputTokenCost,
 		InputCostPerTokenBatches:  entry.InputCostPerTokenBatches,
 		OutputCostPerTokenBatches: entry.OutputCostPerTokenBatches,
+
+		// Image generation pricing
+		InputCostPerImageToken:       entry.InputCostPerImageToken,
+		OutputCostPerImageToken:      entry.OutputCostPerImageToken,
+		InputCostPerImage:            entry.InputCostPerImage,
+		OutputCostPerImage:           entry.OutputCostPerImage,
+		CacheReadInputImageTokenCost: entry.CacheReadInputImageTokenCost,
 	}
 
 	return pricing
@@ -118,7 +126,6 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		Mode:                                       pricing.Mode,
 		InputCostPerToken:                          pricing.InputCostPerToken,
 		OutputCostPerToken:                         pricing.OutputCostPerToken,
-		InputCostPerImage:                          pricing.InputCostPerImage,
 		InputCostPerVideoPerSecond:                 pricing.InputCostPerVideoPerSecond,
 		InputCostPerAudioPerSecond:                 pricing.InputCostPerAudioPerSecond,
 		InputCostPerCharacter:                      pricing.InputCostPerCharacter,
@@ -137,6 +144,11 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CacheReadInputTokenCost:                    pricing.CacheReadInputTokenCost,
 		InputCostPerTokenBatches:                   pricing.InputCostPerTokenBatches,
 		OutputCostPerTokenBatches:                  pricing.OutputCostPerTokenBatches,
+		InputCostPerImageToken:                     pricing.InputCostPerImageToken,
+		OutputCostPerImageToken:                    pricing.OutputCostPerImageToken,
+		InputCostPerImage:                          pricing.InputCostPerImage,
+		OutputCostPerImage:                         pricing.OutputCostPerImage,
+		CacheReadInputImageTokenCost:               pricing.CacheReadInputImageTokenCost,
 	}
 }
 

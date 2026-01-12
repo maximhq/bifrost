@@ -22,13 +22,14 @@ Cohere has a different API structure from OpenAI's format. Bifrost performs conv
 | Embeddings | ✅ | - | `/v2/embed` |
 | List Models | ✅ | - | `/v1/models` |
 | Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cohere API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cohere API. These return `UnsupportedOperationError`.
 </Note>
 
 ---

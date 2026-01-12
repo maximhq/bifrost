@@ -38,17 +38,17 @@ type HTTPRequest struct {
 
 // CaseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
 func (req *HTTPRequest) CaseInsensitiveHeaderLookup(key string) string {
-	return caseInsensitiveLookup(req.Headers, key)
+	return CaseInsensitiveLookup(req.Headers, key)
 }
 
 // CaseInsensitiveQueryLookup looks up a query key in a case-insensitive manner
 func (req *HTTPRequest) CaseInsensitiveQueryLookup(key string) string {
-	return caseInsensitiveLookup(req.Query, key)
+	return CaseInsensitiveLookup(req.Query, key)
 }
 
-// caseInsensitiveLookup looks up a key in a case-insensitive manner for a map of strings
+// CaseInsensitiveLookup looks up a key in a case-insensitive manner for a map of strings
 // Returns the value if found, otherwise an empty string
-func caseInsensitiveLookup(data map[string]string, key string) string {
+func CaseInsensitiveLookup(data map[string]string, key string) string {
 	if data == nil || key == "" {
 		return ""
 	}

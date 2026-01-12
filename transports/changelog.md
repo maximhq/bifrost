@@ -1,0 +1,1 @@
+feat: added http handlers for image generation endpoints

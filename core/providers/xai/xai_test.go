@@ -23,12 +23,13 @@ func TestXAI(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.XAI,
-		ChatModel:      "grok-4-0709",
-		ReasoningModel: "grok-3-mini",
-		TextModel:      "grok-3",
-		VisionModel:    "grok-2-vision-1212",
-		EmbeddingModel: "", // XAI doesn't support embedding
+		Provider:             schemas.XAI,
+		ChatModel:            "grok-4-0709",
+		ReasoningModel:       "grok-3-mini",
+		TextModel:            "grok-3",
+		VisionModel:          "grok-2-vision-1212",
+		EmbeddingModel:       "", // XAI doesn't support embedding
+		ImageGenerationModel: "grok-2-image",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
@@ -41,6 +42,8 @@ func TestXAI(t *testing.T) {
 			AutomaticFunctionCall: true,
 			ImageURL:              true,
 			ImageBase64:           true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
 			FileBase64:            false,
 			FileURL:               false,
 			MultipleImages:        true,

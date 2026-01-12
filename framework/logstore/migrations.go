@@ -43,6 +43,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddImageGenerationOutputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddImageGenerationInputColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -671,6 +677,72 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding raw request column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_generation_output_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_generation_output") {
+				if err := migrator.AddColumn(&Log{}, "image_generation_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_generation_output") {
+				if err := migrator.DropColumn(&Log{}, "image_generation_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image generation output column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_image_generation_input_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "image_generation_input") {
+				if err := migrator.AddColumn(&Log{}, "image_generation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "image_generation_input") {
+				if err := migrator.DropColumn(&Log{}, "image_generation_input"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding image generation input column: %s", err.Error())
 	}
 	return nil
 }

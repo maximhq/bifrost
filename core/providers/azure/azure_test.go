@@ -36,6 +36,8 @@ func TestAzure(t *testing.T) {
 		ReasoningModel:       "claude-opus-4-5",
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		TranscriptionModel:   "whisper",
+		ImageGenerationModel: "gpt-image-1",
+
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -59,6 +61,8 @@ func TestAzure(t *testing.T) {
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
+			ImageGeneration:       true,
+			ImageGenerationStream: true,
 		},
 	}
 

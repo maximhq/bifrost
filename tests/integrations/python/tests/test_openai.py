@@ -60,6 +60,10 @@ Tests all core scenarios using OpenAI SDK directly:
 49. Batch API - batch cancel
 50. Batch API - end-to-end with Files API
 51. Count tokens (Cross-Provider)
+52. Image Generation - simple prompt
+53. Image Generation - multiple images
+54. Image Generation - quality parameter
+55. Image Generation - different sizes
 
 Batch API uses OpenAI SDK with x-model-provider header to route to different providers.
 """
@@ -84,6 +88,9 @@ from .utils.common import (
     FILE_DATA_BASE64,
     IMAGE_BASE64_MESSAGES,
     IMAGE_URL_MESSAGES,
+    IMAGE_GENERATION_DETAILED_PROMPT,
+    # Image Generation utilities
+    IMAGE_GENERATION_SIMPLE_PROMPT,
     INPUT_TOKENS_LONG_TEXT,
     # Input Tokens utilities
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -122,6 +129,7 @@ from .utils.common import (
     assert_valid_file_delete_response,
     assert_valid_file_list_response,
     assert_valid_file_response,
+    assert_valid_image_generation_response,
     assert_valid_image_response,
     assert_valid_input_tokens_response,
     assert_valid_responses_response,
@@ -1154,6 +1162,99 @@ class TestOpenAIIntegration:
         assert (
             0.5 * texts_ratio <= token_ratio <= 2.0 * texts_ratio
         ), f"Token usage ratio ({token_ratio:.2f}) should be roughly proportional to text count ({texts_ratio})"
+
+    # =========================================================================
+    # IMAGE GENERATION TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_generation")
+    )
+    def test_52a_image_generation_simple(self, test_config, provider, model, vk_enabled):
+        """Test Case 52a: Simple image generation with basic prompt"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        response = client.images.generate(
+            model=format_provider_model(provider, model),
+            prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024",
+        )
+
+        # Validate response structure
+        assert_valid_image_generation_response(response, "openai")
+        
+        # Verify we got exactly 1 image
+        assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_generation")
+    )
+    def test_52b_image_generation_multiple(self, test_config, provider, model, vk_enabled):
+        """Test Case 52b: Generate multiple images at once"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        if model == "gemini-2.5-flash-image":
+            pytest.skip("Gemini 2.5 flash image does not support multiple images")
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        response = client.images.generate(
+            model=format_provider_model(provider, model),
+            prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
+            n=2,
+            size="1024x1024",
+        )
+
+        # Validate response structure
+        assert_valid_image_generation_response(response, "openai")
+        
+        # Verify we got exactly 2 images
+        assert len(response.data) == 2, f"Expected 2 images, got {len(response.data)}"
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_generation")
+    )
+    def test_52c_image_generation_quality(self, test_config, provider, model, vk_enabled):
+        """Test Case 52c: Image generation with quality parameter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        response = client.images.generate(
+            model=format_provider_model(provider, model),
+            prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024",
+            quality="low",  # gpt-image-1 supports quality parameter
+        )
+
+        # Validate response structure
+        assert_valid_image_generation_response(response, "openai")
+        
+        # Verify we got an image
+        assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_generation")
+    )
+    def test_52d_image_generation_different_sizes(self, test_config, provider, model, vk_enabled):
+        """Test Case 52d: Image generation with different sizes"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        # Test with a portrait size (gpt-image-1 supports: 1024x1024, 1024x1536, 1536x1024, auto)
+        response = client.images.generate(
+            model=format_provider_model(provider, model),
+            prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1536",  # Portrait orientation
+        )
+
+        # Validate response structure
+        assert_valid_image_generation_response(response, "openai")
 
     @skip_if_no_api_key("openai")
     def test_31_list_models(self, openai_client, test_config):

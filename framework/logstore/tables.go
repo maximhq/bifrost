@@ -95,8 +95,10 @@ type Log struct {
 	ToolCalls             string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
 	SpeechInput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
 	TranscriptionInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	ImageGenerationInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
 	SpeechOutput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
 	TranscriptionOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
 	CacheDebug            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
 	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
@@ -116,21 +118,23 @@ type Log struct {
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
-	InputHistoryParsed          []schemas.ChatMessage                  `gorm:"-" json:"input_history,omitempty"`
-	ResponsesInputHistoryParsed []schemas.ResponsesMessage             `gorm:"-" json:"responses_input_history,omitempty"`
-	OutputMessageParsed         *schemas.ChatMessage                   `gorm:"-" json:"output_message,omitempty"`
-	ResponsesOutputParsed       []schemas.ResponsesMessage             `gorm:"-" json:"responses_output,omitempty"`
-	EmbeddingOutputParsed       []schemas.EmbeddingData                `gorm:"-" json:"embedding_output,omitempty"`
-	ParamsParsed                interface{}                            `gorm:"-" json:"params,omitempty"`
-	ToolsParsed                 []schemas.ChatTool                     `gorm:"-" json:"tools,omitempty"`
-	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
-	TokenUsageParsed            *schemas.BifrostLLMUsage               `gorm:"-" json:"token_usage,omitempty"`
-	ErrorDetailsParsed          *schemas.BifrostError                  `gorm:"-" json:"error_details,omitempty"`
-	SpeechInputParsed           *schemas.SpeechInput                   `gorm:"-" json:"speech_input,omitempty"`
-	TranscriptionInputParsed    *schemas.TranscriptionInput            `gorm:"-" json:"transcription_input,omitempty"`
-	SpeechOutputParsed          *schemas.BifrostSpeechResponse         `gorm:"-" json:"speech_output,omitempty"`
-	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse  `gorm:"-" json:"transcription_output,omitempty"`
-	CacheDebugParsed            *schemas.BifrostCacheDebug             `gorm:"-" json:"cache_debug,omitempty"`
+	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
+	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
+	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
+	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
+	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
+	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
+	TokenUsageParsed            *schemas.BifrostLLMUsage                `gorm:"-" json:"token_usage,omitempty"`
+	ErrorDetailsParsed          *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
+	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
+	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
+	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
+	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
@@ -218,6 +222,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.ImageGenerationInputParsed != nil {
+		if data, err := json.Marshal(l.ImageGenerationInputParsed); err != nil {
+			return err
+		} else {
+			l.ImageGenerationInput = string(data)
+		}
+	}
+
 	if l.SpeechOutputParsed != nil {
 		if data, err := json.Marshal(l.SpeechOutputParsed); err != nil {
 			return err
@@ -231,6 +243,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.TranscriptionOutput = string(data)
+		}
+	}
+
+	if l.ImageGenerationOutputParsed != nil {
+		if data, err := json.Marshal(l.ImageGenerationOutputParsed); err != nil {
+			return err
+		} else {
+			l.ImageGenerationOutput = string(data)
 		}
 	}
 
@@ -379,6 +399,13 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.ImageGenerationInput != "" {
+		if err := json.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.ImageGenerationInputParsed = nil
+		}
+	}
+
 	if l.SpeechOutput != "" {
 		if err := json.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
@@ -390,6 +417,13 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionOutputParsed = nil
+		}
+	}
+
+	if l.ImageGenerationOutput != "" {
+		if err := json.Unmarshal([]byte(l.ImageGenerationOutput), &l.ImageGenerationOutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.ImageGenerationOutputParsed = nil
 		}
 	}
 
@@ -498,6 +532,11 @@ func (l *Log) BuildContentSummary() string {
 	// Add transcription output content
 	if l.TranscriptionOutputParsed != nil && l.TranscriptionOutputParsed.Text != "" {
 		parts = append(parts, l.TranscriptionOutputParsed.Text)
+	}
+
+	// Add image generation input prompt
+	if l.ImageGenerationInputParsed != nil && l.ImageGenerationInputParsed.Prompt != "" {
+		parts = append(parts, l.ImageGenerationInputParsed.Prompt)
 	}
 
 	// Add error details

@@ -715,6 +715,11 @@ func (p *MockerPlugin) extractMessageContentFast(req *schemas.BifrostRequest) st
 			}
 			return builder.String()
 		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		// Handle image generation input - extract prompt
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Input != nil {
+			return req.ImageGenerationRequest.Input.Prompt
+		}
 	default:
 		return ""
 	}

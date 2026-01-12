@@ -1,1 +1,1 @@
-- chore: added case-insensitive helper methods for header and query parameter lookups in HTTPRequest
+feat: added image generation request and response support

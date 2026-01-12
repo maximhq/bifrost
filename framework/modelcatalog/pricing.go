@@ -16,6 +16,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	var usage *schemas.BifrostLLMUsage
 	var audioSeconds *int
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
+	var imageUsage *schemas.ImageUsage
 
 	//TODO: Detect batch operations
 	isBatch := false
@@ -97,14 +98,25 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		if result.TranscriptionStreamResponse.Usage.Seconds != nil {
 			audioSeconds = result.TranscriptionStreamResponse.Usage.Seconds
 		}
+	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+		imageUsage = result.ImageGenerationResponse.Usage
+	case result.ImageGenerationStreamResponse != nil && result.ImageGenerationStreamResponse.Usage != nil:
+		imageUsage = result.ImageGenerationStreamResponse.Usage
 	default:
 		return 0
 	}
 
 	cost := 0.0
-	if usage != nil || audioSeconds != nil || audioTokenDetails != nil {
+	if usage != nil || audioSeconds != nil || audioTokenDetails != nil || imageUsage != nil {
 		extraFields := result.GetExtraFields()
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, extraFields.RequestType, isBatch, audioSeconds, audioTokenDetails)
+		requestType := extraFields.RequestType
+		// Normalize stream request types to their base request type for pricing
+		// CalculateCostFromUsage treats ImageGenerationRequest as image pricing, so normalize stream requests
+		// This ensures ImageGenerationStreamResponse is correctly priced as image generation
+		if imageUsage != nil && requestType == schemas.ImageGenerationStreamRequest {
+			requestType = schemas.ImageGenerationRequest
+		}
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage)
 	}
 
 	return cost
@@ -125,7 +137,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil)
 			}
 
 			// Don't over-bill cache hits if fields are missing.
@@ -138,7 +150,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil)
 			}
 
 			return baseCost + semanticCacheCost
@@ -149,13 +161,13 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails) float64 {
-	// Allow audio-only flows by only returning early if we have no usage data at all
-	if usage == nil && audioSeconds == nil && audioTokenDetails == nil {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage) float64 {
+	// Allow audio-only and image-only flows by only returning early if we have no usage data at all
+	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil {
 		return 0.0
 	}
 
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if usage != nil && usage.Cost != nil && usage.Cost.TotalCost > 0 {
 		return usage.Cost.TotalCost
 	}
 
@@ -257,6 +269,158 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		// Calculate costs using token-based pricing with audio/text breakdown
 		inputCost = audioTokens*inputTokenRate + textTokens*inputTokenRate
 		outputCost = float64(completionTokens) * outputTokenRate
+
+		return inputCost + outputCost
+	}
+
+	// Handle image generation if available (for token-based image generation pricing)
+	if imageUsage != nil && requestType == schemas.ImageGenerationRequest {
+		// Use imageUsage.TotalTokens for tier determination
+		imageTotalTokens := imageUsage.TotalTokens
+
+		// Check if tokens are zero/nil - if so, use per-image pricing
+		if imageTotalTokens == 0 && imageUsage.InputTokens == 0 && imageUsage.OutputTokens == 0 {
+			// Use per-image pricing when tokens are nil/zero
+			// Extract number of images from ImageTokenDetails if available
+			numImages := 1
+			if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
+				numImages = imageUsage.OutputTokensDetails.NImages
+			} else if imageUsage.InputTokensDetails != nil && imageUsage.InputTokensDetails.NImages > 0 {
+				numImages = imageUsage.InputTokensDetails.NImages
+			}
+
+			isAbove128k := imageTotalTokens > TokenTierAbove128K
+
+			var inputPerImageRate, outputPerImageRate *float64
+			if isAbove128k {
+				inputPerImageRate = pricing.InputCostPerImageAbove128kTokens
+				// Note: OutputCostPerImageAbove128kTokens may not exist in TableModelPricing
+				// For now, use regular OutputCostPerImage even above 128k
+			} else {
+				inputPerImageRate = pricing.InputCostPerImage
+			}
+			// Use OutputCostPerImage if available
+			outputPerImageRate = pricing.OutputCostPerImage
+
+			// Calculate costs
+			if inputPerImageRate != nil {
+				inputCost = float64(numImages) * *inputPerImageRate
+			}
+			if outputPerImageRate != nil {
+				outputCost = float64(numImages) * *outputPerImageRate
+			} else {
+				outputCost = 0.0
+			}
+
+			if inputPerImageRate != nil || outputPerImageRate != nil {
+				return inputCost + outputCost
+			}
+			// Fall through to token-based pricing if per-image pricing is not available
+		}
+
+		// Use token-based pricing when tokens are present
+		isAbove200k := imageTotalTokens > TokenTierAbove200K
+		isAbove128k := imageTotalTokens > TokenTierAbove128K
+
+		// Extract token counts with breakdown if available
+		var inputImageTokens, inputTextTokens, outputImageTokens, outputTextTokens int
+
+		if imageUsage.InputTokensDetails != nil {
+			inputImageTokens = imageUsage.InputTokensDetails.ImageTokens
+			inputTextTokens = imageUsage.InputTokensDetails.TextTokens
+		} else {
+			// If no details, InputTokens is text tokens (per comment in ImageUsage)
+			inputTextTokens = imageUsage.InputTokens
+		}
+
+		if imageUsage.OutputTokensDetails != nil {
+			outputImageTokens = imageUsage.OutputTokensDetails.ImageTokens
+			outputTextTokens = imageUsage.OutputTokensDetails.TextTokens
+		} else {
+			// If no details, OutputTokens is image tokens (per comment in ImageUsage)
+			outputImageTokens = imageUsage.OutputTokens
+		}
+
+		// Determine the appropriate token pricing rates
+		// Prefer image-specific token rates when available, fall back to generic token rates
+		var inputTokenRate, outputTokenRate float64
+		var inputImageTokenRate, outputImageTokenRate float64
+
+		// Determine generic token rates (for text tokens)
+		if isAbove200k {
+			if pricing.InputCostPerTokenAbove200kTokens != nil {
+				inputTokenRate = *pricing.InputCostPerTokenAbove200kTokens
+			} else {
+				inputTokenRate = pricing.InputCostPerToken
+			}
+			if pricing.OutputCostPerTokenAbove200kTokens != nil {
+				outputTokenRate = *pricing.OutputCostPerTokenAbove200kTokens
+			} else {
+				outputTokenRate = pricing.OutputCostPerToken
+			}
+		} else if isAbove128k {
+			if pricing.InputCostPerTokenAbove128kTokens != nil {
+				inputTokenRate = *pricing.InputCostPerTokenAbove128kTokens
+			} else {
+				inputTokenRate = pricing.InputCostPerToken
+			}
+			if pricing.OutputCostPerTokenAbove128kTokens != nil {
+				outputTokenRate = *pricing.OutputCostPerTokenAbove128kTokens
+			} else {
+				outputTokenRate = pricing.OutputCostPerToken
+			}
+		} else {
+			inputTokenRate = pricing.InputCostPerToken
+			outputTokenRate = pricing.OutputCostPerToken
+		}
+
+		// Determine image-specific token rates, with tiered pricing support
+		// Check for image token pricing fields and fall back to generic rates if not available
+		if isAbove200k {
+			// Prefer tiered image token pricing above 200k, fall back to base image token rate, then generic rate
+			// Note: InputCostPerImageTokenAbove200kTokens and OutputCostPerImageTokenAbove200kTokens
+			// may not exist in TableModelPricing yet, so we check base image token rate as fallback
+			if pricing.InputCostPerImageToken != nil {
+				inputImageTokenRate = *pricing.InputCostPerImageToken
+			} else {
+				inputImageTokenRate = inputTokenRate
+			}
+			if pricing.OutputCostPerImageToken != nil {
+				outputImageTokenRate = *pricing.OutputCostPerImageToken
+			} else {
+				outputImageTokenRate = outputTokenRate
+			}
+		} else if isAbove128k {
+			// Prefer tiered image token pricing above 128k, fall back to base image token rate, then generic rate
+			// Note: InputCostPerImageTokenAbove128kTokens and OutputCostPerImageTokenAbove128kTokens
+			// may not exist in TableModelPricing yet, so we check base image token rate as fallback
+			if pricing.InputCostPerImageToken != nil {
+				inputImageTokenRate = *pricing.InputCostPerImageToken
+			} else {
+				inputImageTokenRate = inputTokenRate
+			}
+			if pricing.OutputCostPerImageToken != nil {
+				outputImageTokenRate = *pricing.OutputCostPerImageToken
+			} else {
+				outputImageTokenRate = outputTokenRate
+			}
+		} else {
+			// Use base image token rates if available, otherwise fall back to generic rates
+			if pricing.InputCostPerImageToken != nil {
+				inputImageTokenRate = *pricing.InputCostPerImageToken
+			} else {
+				inputImageTokenRate = inputTokenRate
+			}
+			if pricing.OutputCostPerImageToken != nil {
+				outputImageTokenRate = *pricing.OutputCostPerImageToken
+			} else {
+				outputImageTokenRate = outputTokenRate
+			}
+		}
+
+		// Calculate costs: separate text tokens and image tokens with their respective rates
+		inputCost = float64(inputTextTokens)*inputTokenRate + float64(inputImageTokens)*inputImageTokenRate
+		outputCost = float64(outputTextTokens)*outputTokenRate + float64(outputImageTokens)*outputImageTokenRate
 
 		return inputCost + outputCost
 	}

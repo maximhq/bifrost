@@ -51,6 +51,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return &schemas.BifrostRequest{
 						TranscriptionRequest: geminiReq.ToBifrostTranscriptionRequest(),
 					}, nil
+				} else if geminiReq.IsImageGeneration {
+					return &schemas.BifrostRequest{
+						ImageGenerationRequest: geminiReq.ToBifrostImageGenerationRequest(),
+					}, nil
 				} else {
 					return &schemas.BifrostRequest{
 						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(),
@@ -73,6 +77,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
 			return gemini.ToGeminiCountTokensResponse(resp), nil
+		},
+		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+			return gemini.ToGeminiImageGenerationResponse(ctx, resp)
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -108,7 +115,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-			ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+		ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 			return gemini.ToGeminiListModelsResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
@@ -349,7 +356,6 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logg
 var embeddingPaths = []string{
 	":embedContent",
 	":batchEmbedContents",
-	":predict",
 }
 
 // extractAndSetModelFromURL extracts model from URL and sets it in the request
@@ -360,6 +366,9 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	}
 
 	modelStr := model.(string)
+
+	// Check if this is a :predict endpoint (can be embedding or image generation)
+	isPredict := strings.HasSuffix(modelStr, ":predict")
 
 	// Check if this is an embedding request
 	isEmbedding := false
@@ -393,6 +402,14 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		modelStr = modelStr[:len(modelStr)-1]
 	}
 
+	// Determine if :predict is for image generation (Imagen) or embedding
+	// Imagen models use :predict for image generation
+	isImagenPredict := isPredict && schemas.IsImagenModel(modelStr)
+	if isPredict && !isImagenPredict {
+		// :predict for non-Imagen models is embedding
+		isEmbedding = true
+	}
+
 	// Set the model and flags in the request
 	switch r := req.(type) {
 	case *gemini.GeminiGenerationRequest:
@@ -405,6 +422,10 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 		// Speech detection takes priority over transcription
 		r.IsSpeech = isSpeechRequest(r)
 		r.IsTranscription = isTranscriptionRequest(r)
+
+		// Detect if this is an image generation request
+		// isImagenPredict takes precedence for :predict endpoints
+		r.IsImageGeneration = isImagenPredict || isImageGenerationRequest(r)
 
 		return nil
 	}
@@ -474,6 +495,26 @@ func isAudioMimeType(mimeType string) bool {
 
 	// Check if it starts with "audio/"
 	if strings.HasPrefix(mimeType, "audio/") {
+		return true
+	}
+
+	return false
+}
+
+// isImageGenerationRequest checks if the request is for image generation
+// Image generation is detected by:
+// 1. responseModalities containing "IMAGE"
+// 2. Model name containing "imagen"
+func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
+	// Check if responseModalities contains IMAGE
+	for _, modality := range req.GenerationConfig.ResponseModalities {
+		if modality == gemini.ModalityImage {
+			return true
+		}
+	}
+
+	// Fallback: Check if model name is an Imagen model (for forward-compatibility)
+	if schemas.IsImagenModel(req.Model) {
 		return true
 	}
 

@@ -114,6 +114,8 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 		streamType = streaming.StreamTypeTranscription
 	} else if len(accResult.OutputMessages) > 0 {
 		streamType = streaming.StreamTypeResponses
+	} else if accResult.ImageGenerationOutput != nil {
+		streamType = streaming.StreamTypeImage
 	}
 	return &streaming.ProcessedStreamResponse{
 		RequestID:  accResult.RequestID,
