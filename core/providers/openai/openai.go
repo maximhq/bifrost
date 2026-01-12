@@ -2691,7 +2691,9 @@ func HandleOpenAIImageGenerationStreaming(
 				}
 			} else {
 				// For partial chunks, use PartialImageIndex from response
-				imageIndex = response.PartialImageIndex
+				if response.PartialImageIndex != nil {
+					imageIndex = *response.PartialImageIndex
+				}
 				// Mark this image as started (incomplete)
 				incompleteImages[imageIndex] = true
 			}
@@ -2708,7 +2710,7 @@ func HandleOpenAIImageGenerationStreaming(
 				Type:           string(response.Type),
 				Index:          imageIndex, // Which image (0-N)
 				ChunkIndex:     chunkIndex, // Chunk order within this image (top-level)
-				SequenceNumber: response.SequenceNumber,
+				SequenceNumber: *response.SequenceNumber,
 				CreatedAt:      response.CreatedAt,
 				Size:           response.Size,
 				Quality:        response.Quality,
@@ -2724,7 +2726,11 @@ func HandleOpenAIImageGenerationStreaming(
 			}
 			// Only set PartialImageIndex for partial images, not for completed events
 			if !isCompleted {
-				chunk.PartialImageIndex = &response.PartialImageIndex
+				chunk.PartialImageIndex = response.PartialImageIndex
+			}
+			// Set SequenceNumber if present
+			if response.SequenceNumber != nil {
+				chunk.SequenceNumber = *response.SequenceNumber
 			}
 			lastChunkTime = time.Now()
 

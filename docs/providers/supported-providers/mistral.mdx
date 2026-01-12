@@ -29,7 +29,7 @@ Mistral is an **OpenAI-compatible provider** with custom compatibility handling 
 | Batch | ❌ | ❌ | - |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech (TTS), Files, and Batch are not supported by the upstream Mistral API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Image Generation, Speech (TTS), Files, and Batch are not supported by the upstream Mistral API. These return `UnsupportedOperationError`.
 </Note>
 
 ---
@@ -239,6 +239,7 @@ Lists available Mistral models with context length and capabilities.
 | Feature | Reason |
 |---------|--------|
 | Text Completions | Not offered by Mistral API |
+| Image Generation | Not offered by Mistral API |
 | Speech/TTS | Not offered by Mistral API |
 | File Management | Not offered by Mistral API |
 | Batch Operations | Not offered by Mistral API |

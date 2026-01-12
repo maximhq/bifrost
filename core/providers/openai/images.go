@@ -7,6 +7,7 @@ import (
 const (
 	ImageGenerationPartial   ImageGenerationEventType = "image_generation.partial_image"
 	ImageGenerationCompleted ImageGenerationEventType = "image_generation.completed"
+	ImageGenerationError     ImageGenerationEventType = "error"
 )
 
 // ToOpenAIImageGenerationRequest converts a Bifrost Image Request to OpenAI format

@@ -42,7 +42,11 @@ func parseNebiusImageError(resp *fasthttp.Response, meta *providerUtils.RequestM
 			}
 			if len(locations) > 0 {
 				locationStr := strings.Join(locations, ", ")
-				message = message + " [" + locationStr + "]"
+				if message == "" {
+					message = "[" + locationStr + "]"
+				} else {
+					message = message + " [" + locationStr + "]"
+				}
 			}
 		}
 	}

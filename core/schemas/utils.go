@@ -1156,6 +1156,11 @@ func IsGeminiModel(model string) bool {
 	return strings.Contains(model, "gemini")
 }
 
+// IsImagenModel checks if the model is an Imagen model.
+func IsImagenModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "imagen")
+}
+
 // List of grok reasoning models
 var grokReasoningModels = []string{
 	"grok-3",
@@ -1199,10 +1204,6 @@ var (
 		`^(?:v\d+(?:\.\d+){0,2}|rc\d+|alpha|beta|preview|canary|experimental)$`,
 	)
 )
-
-func IsImagenModel(model string) bool {
-	return strings.Contains(model, "imagen")
-}
 
 // SplitModelAndVersion splits a model id into (base, versionSuffix).
 // If no known version suffix is found, versionSuffix will be empty and

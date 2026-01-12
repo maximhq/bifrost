@@ -563,9 +563,9 @@ func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
 // OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
 type OpenAIImageStreamResponse struct {
 	Type              ImageGenerationEventType `json:"type,omitempty"`
-	SequenceNumber    int                      `json:"sequence_number,omitempty"`
+	SequenceNumber    *int                     `json:"sequence_number,omitempty"`
 	B64JSON           *string                  `json:"b64_json,omitempty"`
-	PartialImageIndex int                      `json:"partial_image_index,omitempty"`
+	PartialImageIndex *int                     `json:"partial_image_index,omitempty"`
 	CreatedAt         int64                    `json:"created_at,omitempty"`
 	Size              string                   `json:"size,omitempty"`
 	Quality           string                   `json:"quality,omitempty"`

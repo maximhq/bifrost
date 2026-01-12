@@ -989,6 +989,15 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if params.ResponseFormat != nil {
 		metadata["response_format"] = *params.ResponseFormat
 	}
+	if params.Seed != nil {
+		metadata["seed"] = *params.Seed
+	}
+	if params.NegativePrompt != nil {
+		metadata["negative_prompt"] = *params.NegativePrompt
+	}
+	if params.NumInferenceSteps != nil {
+		metadata["num_inference_steps"] = *params.NumInferenceSteps
+	}
 	if params.User != nil {
 		metadata["user"] = *params.User
 	}

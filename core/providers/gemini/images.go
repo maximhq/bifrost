@@ -245,7 +245,7 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		},
 	}
 
-	if bifrostReq.Params.N != nil {
+	if bifrostReq.Params != nil && bifrostReq.Params.N != nil {
 		geminiReq.GenerationConfig.CandidateCount = int32(*bifrostReq.Params.N)
 	}
 
@@ -375,7 +375,7 @@ func convertMimeTypeToExtension(mimeType string) string {
 }
 
 // convertOutputFormatToMimeType converts Bifrost output_format to Imagen mimeType
-// Maps "png" -> "image/png", "jpg"/"jpeg" -> "image/jpeg"
+// Maps "png" -> "image/png", "jpg"/"jpeg" -> "image/jpeg", "webp" -> "image/webp"
 // Returns empty string for unsupported formats
 func convertOutputFormatToMimeType(outputFormat string) string {
 	format := strings.ToLower(strings.TrimSpace(outputFormat))
@@ -384,6 +384,8 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 		return "image/png"
 	case "jpg", "jpeg":
 		return "image/jpeg"
+	case "webp":
+		return "image/webp"
 	default:
 		return ""
 	}
@@ -486,7 +488,7 @@ func ToGeminiImageGenerationResponse(bifrostResp *schemas.BifrostImageGeneration
 			// Determine MIME type - convert file extension back to MIME type
 			mimeType := "image/png" // default
 			if bifrostResp.ImageGenerationResponseParameters != nil && bifrostResp.ImageGenerationResponseParameters.OutputFormat != "" {
-				mimeType = convertOutputFormatToMimeType(bifrostResp.OutputFormat)
+				mimeType = convertOutputFormatToMimeType(bifrostResp.ImageGenerationResponseParameters.OutputFormat)
 				if mimeType == "" {
 					// Fallback: if conversion fails, assume PNG
 					mimeType = "image/png"
