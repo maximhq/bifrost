@@ -59,7 +59,17 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 
 			// Handle nebius inconsistency
 			if req.ResponseExtension != nil && *req.ResponseExtension == "jpeg" {
-				*req.ResponseExtension = "jpg"
+				req.ResponseExtension = schemas.Ptr("jpg")
+			}
+
+			// Map seed from direct field
+			if bifrostReq.Params.Seed != nil {
+				req.Seed = bifrostReq.Params.Seed
+			}
+
+			// Map negative_prompt from direct field
+			if bifrostReq.Params.NegativePrompt != nil {
+				req.NegativePrompt = bifrostReq.Params.NegativePrompt
 			}
 
 			// Handle extra params for nebius
@@ -69,19 +79,9 @@ func ToHuggingFaceImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerat
 					req.NumInferenceSteps = v
 				}
 
-				// Map seed
-				if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
-					req.Seed = v
-				}
-
 				// Map guidance_scale
 				if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
 					req.GuidanceScale = v
-				}
-
-				// Map negative_prompt
-				if v, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["negative_prompt"]); ok {
-					req.NegativePrompt = &v
 				}
 			}
 		}
@@ -177,10 +177,8 @@ func ToHuggingFaceImageStreamRequest(bifrostReq *schemas.BifrostImageGenerationR
 		// Pass through output_format
 		// Convert "jpg" to "jpeg" for fal-ai (fal-ai only accepts "jpeg", "png", "webp")
 		if bifrostReq.Params.OutputFormat != nil {
-			outputFormat := *bifrostReq.Params.OutputFormat
-			if strings.ToLower(outputFormat) == "jpg" {
-				jpeg := "jpeg"
-				req.OutputFormat = &jpeg
+			if strings.ToLower(*bifrostReq.Params.OutputFormat) == "jpg" {
+				req.OutputFormat = schemas.Ptr("jpeg")
 			} else {
 				req.OutputFormat = bifrostReq.Params.OutputFormat
 			}
@@ -202,16 +200,17 @@ func ToHuggingFaceImageStreamRequest(bifrostReq *schemas.BifrostImageGenerationR
 				}
 			}
 		}
+		if bifrostReq.Params.Seed != nil {
+			req.Seed = bifrostReq.Params.Seed
+		}
+		if bifrostReq.Params.NumInferenceSteps != nil {
+			req.NumInferenceSteps = bifrostReq.Params.NumInferenceSteps
+		}
+
 		// Parse fal-ai specific params from ExtraParams
 		if bifrostReq.Params.ExtraParams != nil {
 			if v, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
 				req.GuidanceScale = v
-			}
-			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
-				req.Seed = v
-			}
-			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_inference_steps"]); ok {
-				req.NumInferenceSteps = v
 			}
 			if v, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["acceleration"]); ok {
 				req.Acceleration = v

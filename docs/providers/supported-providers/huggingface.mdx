@@ -18,26 +18,26 @@ The Hugging Face provider implements custom logic for:
 
 The Hugging Face provider supports routing to 20+ inference backends. Below is the current list of supported providers and their capabilities (as of December 2025):
 
-| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) |
-|----------|------|-----------|--------------|---------------------|
-| `hf-inference` | ✅ | ✅ | ❌ | ✅ |
-| `cerebras` | ✅ | ❌ | ❌ | ❌ |
-| `cohere` | ✅ | ❌  | ❌ | ❌ |
-| `fal-ai` | ❌ | ❌ | ✅ | ✅ |
-| `featherless-ai` | ✅ | ❌ | ❌ | ❌ |
-| `fireworks` | ✅ | ❌ | ❌ | ❌ |
-| `groq` | ✅ | ❌ | ❌ | ❌ |
-| `hyperbolic` | ✅ | ❌ | ❌ | ❌ |
-| `nebius` | ✅ | ✅ | ❌  | ❌ |
-| `novita` | ✅ | ❌ | ❌ | ❌ |
-| `nscale` | ✅ | ❌ | ❌ | ❌ |
-| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ |
-| `public-ai` | ✅ | ❌ | ❌ | ❌ |
-| `replicate` | ❌ | ❌ | ✅ | ✅ |
-| `sambanova` | ✅ | ✅ | ❌ | ❌ |
-| `scaleway` | ✅ | ✅ | ❌ | ❌ |
-| `together` | ✅ | ❌ | ❌ | ❌ |
-| `z-ai` | ✅ | ❌ | ❌ | ❌ |
+| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) | Image Generation | Image Generation (stream) |
+|----------|------|-----------|--------------|---------------------|------------------|---------------------------|
+| `hf-inference` | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| `cerebras` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `cohere` | ✅ | ❌  | ❌ | ❌ | ❌ | ❌ |
+| `fal-ai` | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| `featherless-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `fireworks` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `groq` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `hyperbolic` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `nebius` | ✅ | ✅ | ❌  | ❌ | ✅ | ❌ |
+| `novita` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `nscale` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `public-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `replicate` | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ |
+| `sambanova` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `scaleway` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `together` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `z-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 <Note>Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself.</Note>
 

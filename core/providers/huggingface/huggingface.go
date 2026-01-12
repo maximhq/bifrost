@@ -249,49 +249,7 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-
-		var errorResp HuggingFaceResponseError
-
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		if strings.TrimSpace(errorResp.Type) != "" {
-			typeCopy := errorResp.Type
-			bifrostErr.Type = &typeCopy
-		}
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-
-		// Handle FastAPI validation errors
-		if len(errorResp.Detail) > 0 {
-			var errorMessages []string
-			for _, detail := range errorResp.Detail {
-				msg := detail.Msg
-				if len(detail.Loc) > 0 {
-					// Build location string from loc array
-					var locParts []string
-					for _, locPart := range detail.Loc {
-						if locStr, ok := locPart.(string); ok {
-							locParts = append(locParts, locStr)
-						} else if locNum, ok := locPart.(float64); ok {
-							locParts = append(locParts, fmt.Sprintf("%.0f", locNum))
-						}
-					}
-					if len(locParts) > 0 {
-						msg = fmt.Sprintf("%s at %s", msg, strings.Join(locParts, "."))
-					}
-				}
-				errorMessages = append(errorMessages, msg)
-			}
-			if len(errorMessages) > 0 {
-				bifrostErr.Error.Message = strings.Join(errorMessages, "; ")
-			}
-		} else if strings.TrimSpace(errorResp.Message) != "" {
-			bifrostErr.Error.Message = errorResp.Message
-		} else if strings.TrimSpace(errorResp.Error) != "" {
-			bifrostErr.Error.Message = errorResp.Error
-		}
-
-		return nil, latency, bifrostErr
+		return nil, latency, parseHuggingFaceImageError(resp, nil)
 	}
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -1147,19 +1105,11 @@ func HandleHuggingFaceImageGenerationStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		var errorResp HuggingFaceResponseError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		if strings.TrimSpace(errorResp.Type) != "" {
-			typeCopy := errorResp.Type
-			bifrostErr.Type = &typeCopy
-		}
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		if strings.TrimSpace(errorResp.Message) != "" {
-			bifrostErr.Error.Message = errorResp.Message
-		}
-		return nil, bifrostErr
+		return nil, parseHuggingFaceImageError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ImageGenerationStreamRequest,
+		})
 	}
 
 	// Create response channel
@@ -1242,7 +1192,6 @@ func HandleHuggingFaceImageGenerationStreaming(
 			for i, img := range response.Images {
 				// Create a fresh chunk for each image to avoid data race
 				chunk := &schemas.BifrostImageGenerationStreamResponse{
-					Type: "image_generation.partial_image",
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ImageGenerationStreamRequest,
 						Provider:       providerName,
@@ -1259,10 +1208,7 @@ func HandleHuggingFaceImageGenerationStreaming(
 				}
 				chunk.Index = i
 
-				// Set raw request/response if enabled
-				if sendBackRawRequest {
-					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
-				}
+				// Set raw response if enabled
 				if sendBackRawResponse {
 					chunk.ExtraFields.RawResponse = jsonData
 				}
@@ -1285,7 +1231,6 @@ func HandleHuggingFaceImageGenerationStreaming(
 		// Stream closed - send completion chunk
 		if chunkIndex > 0 {
 			finalChunk := &schemas.BifrostImageGenerationStreamResponse{
-				Type:  "image_generation.completed",
 				Index: lastIndex,
 				ExtraFields: schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.ImageGenerationStreamRequest,

@@ -560,16 +560,6 @@ func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
 
-// OpenAIImageGenerationResponse is the struct for Image Generation responses by OpenAI.
-type OpenAIImageGenerationResponse struct {
-	Created int64               `json:"created"`
-	Data    []schemas.ImageData `json:"data"`
-
-	schemas.ImageGenerationResponseParameters
-
-	Usage *schemas.ImageUsage `json:"usage"`
-}
-
 // OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
 type OpenAIImageStreamResponse struct {
 	Type              ImageGenerationEventType `json:"type,omitempty"`

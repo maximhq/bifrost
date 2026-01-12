@@ -47,30 +47,23 @@ func (provider *NebiusProvider) ToNebiusImageGenerationRequest(bifrostReq *schem
 		if bifrostReq.Params.OutputFormat != nil {
 			req.ResponseExtension = bifrostReq.Params.OutputFormat
 		}
-
-		// Handle nebius inconsistency
 		if req.ResponseExtension != nil && *req.ResponseExtension == "jpeg" {
-			*req.ResponseExtension = "jpg"
+			req.ResponseExtension = schemas.Ptr("jpg")
 		}
+		if bifrostReq.Params.Seed != nil {
+			req.Seed = bifrostReq.Params.Seed
+		}
+		if bifrostReq.Params.NegativePrompt != nil {
+			req.NegativePrompt = bifrostReq.Params.NegativePrompt
+		}
+		if bifrostReq.Params.NumInferenceSteps != nil {
+			req.NumInferenceSteps = bifrostReq.Params.NumInferenceSteps
+		}
+		// Handle extra params
 		if bifrostReq.Params.ExtraParams != nil {
-			// Map num_inference_steps
-			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_inference_steps"]); ok {
-				req.NumInferenceSteps = v
-			}
-
-			// Map seed
-			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
-				req.Seed = v
-			}
-
 			// Map guidance_scale
 			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
 				req.GuidanceScale = v
-			}
-
-			// Map negative_prompt
-			if v, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["negative_prompt"]); ok {
-				req.NegativePrompt = &v
 			}
 		}
 	}

@@ -1212,63 +1212,31 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
 	}
 
-	// Use centralized OpenAI image converter (Azure is OpenAI-compatible)
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (any, error) { return openai.ToOpenAIImageGenerationRequest(request), nil },
-		provider.GetProviderKey())
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil {
+		apiVersion = schemas.Ptr(AzureAPIVersionDefault)
 	}
 
-	responseBody, deployment, latency, err := provider.completeRequest(
+	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
-		jsonData,
-		fmt.Sprintf("openai/deployments/%s/images/generations", deployment),
+		provider.client,
+		fmt.Sprintf("%s/openai/deployments/%s/images/generations?api-version=%s", key.AzureKeyConfig.Endpoint, deployment, *apiVersion),
+		request,
 		key,
-		deployment,
-		request.Model,
-		schemas.ImageGenerationRequest,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Unmarshal OpenAI response format and convert to Bifrost format
-	openaiResponse := &openai.OpenAIImageGenerationResponse{}
-
-	var rawRequest interface{}
-	var rawResponse interface{}
-
-	rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, openaiResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Convert OpenAI response to Bifrost format
-	response := openai.ToBifrostImageResponse(openaiResponse, request.Model, latency)
-	if response == nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to convert image generation response", nil, provider.GetProviderKey())
-	}
-
-	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.ModelDeployment = deployment
-	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
-	response.ExtraFields.Latency = latency.Milliseconds()
 
-	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		response.ExtraFields.RawRequest = rawRequest
-	}
-
-	// Set raw response if enabled
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	return response, nil
+	return response, err
 }
 
 // ImageGenerationStream performs a streaming image generation request to Azure's API.

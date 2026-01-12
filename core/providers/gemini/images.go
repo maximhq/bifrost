@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -21,16 +20,8 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schem
 		Params:   &schemas.ImageGenerationParameters{},
 	}
 
-	// Convert string fallbacks to Fallback structs
-	if len(request.Fallbacks) > 0 {
-		bifrostReq.Fallbacks = make([]schemas.Fallback, len(request.Fallbacks))
-		for i, fallback := range request.Fallbacks {
-			bifrostReq.Fallbacks[i] = schemas.Fallback{
-				Provider: schemas.Gemini,
-				Model:    fallback,
-			}
-		}
-	}
+	fallbacks := schemas.ParseFallbacks(request.Fallbacks)
+	bifrostReq.Fallbacks = fallbacks
 
 	// First, try to extract prompt from Imagen format (instances)
 	if len(request.Instances) > 0 && request.Instances[0].Prompt != "" {
@@ -60,10 +51,10 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schem
 				bifrostReq.Params.ExtraParams["personGeneration"] = *request.Parameters.PersonGeneration
 			}
 			if request.Parameters.Seed != nil {
-				bifrostReq.Params.ExtraParams["seed"] = *request.Parameters.Seed
+				bifrostReq.Params.Seed = request.Parameters.Seed
 			}
 			if request.Parameters.NegativePrompt != nil {
-				bifrostReq.Params.ExtraParams["negativePrompt"] = *request.Parameters.NegativePrompt
+				bifrostReq.Params.NegativePrompt = request.Parameters.NegativePrompt
 			}
 			if request.Parameters.Language != nil {
 				bifrostReq.Params.ExtraParams["language"] = *request.Parameters.Language
@@ -174,39 +165,17 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 			if len(imageData) > 0 {
 				bifrostResp.Data = imageData
 				if len(imageMetadata) > 0 {
-					bifrostResp.Params = &imageMetadata[0]
-				}
-			} else if textContent != "" {
-				var errorCode *string
-				var errorMessage string
-
-				// Even if finishReason is STOP, if there's no image and there's text, it's a refusal
-				code := "image_generation_refused"
-				errorCode = &code
-				errorMessage = fmt.Sprintf("Image generation was refused: %s", textContent)
-
-				return nil, &schemas.BifrostError{
-					Type:           schemas.Ptr("gemini_image_generation_error"),
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: errorMessage,
-						Code:    errorCode,
-					},
+					bifrostResp.ImageGenerationResponseParameters = &imageMetadata[0]
 				}
 			}
-		}
-	}
-
-	// Check if we have no data at all
-	if len(bifrostResp.Data) == 0 {
-		code := "no_image_data"
-		return nil, &schemas.BifrostError{
-			Type:           schemas.Ptr("gemini_image_generation_error"),
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "No image data was returned from Gemini",
-				Code:    &code,
-			},
+		} else {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: candidate.FinishMessage,
+					Code:    schemas.Ptr(string(candidate.FinishReason)),
+				},
+			}
 		}
 	}
 
@@ -336,6 +305,13 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 			}
 		}
 
+		if bifrostReq.Params.Seed != nil {
+			req.Parameters.Seed = bifrostReq.Params.Seed
+		}
+		if bifrostReq.Params.NegativePrompt != nil {
+			req.Parameters.NegativePrompt = bifrostReq.Params.NegativePrompt
+		}
+
 		// Handle extra parameters for Imagen-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
 			if imageSize, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["imageSize"]); ok {
@@ -348,16 +324,6 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 			if personGeneration, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["personGeneration"]); ok {
 				req.Parameters.PersonGeneration = &personGeneration
-			}
-
-			// Map seed from ExtraParams
-			if seed, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
-				req.Parameters.Seed = seed
-			}
-
-			// Map negativePrompt from ExtraParams
-			if negativePrompt, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["negativePrompt"]); ok {
-				req.Parameters.NegativePrompt = &negativePrompt
 			}
 
 			// Map language from ExtraParams
@@ -493,7 +459,7 @@ func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schema
 		if prediction.MimeType != "" && i == 0 {
 			// Convert MIME type to file extension for OutputFormat
 			outputFormat := convertMimeTypeToExtension(prediction.MimeType)
-			bifrostResp.Params = &schemas.ImageGenerationResponseParameters{
+			bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
 				OutputFormat: outputFormat,
 			}
 		}
@@ -519,8 +485,8 @@ func ToGeminiImageGenerationResponse(bifrostResp *schemas.BifrostImageGeneration
 		for _, imageData := range bifrostResp.Data {
 			// Determine MIME type - convert file extension back to MIME type
 			mimeType := "image/png" // default
-			if bifrostResp.Params != nil && bifrostResp.Params.OutputFormat != "" {
-				mimeType = convertOutputFormatToMimeType(bifrostResp.Params.OutputFormat)
+			if bifrostResp.ImageGenerationResponseParameters != nil && bifrostResp.ImageGenerationResponseParameters.OutputFormat != "" {
+				mimeType = convertOutputFormatToMimeType(bifrostResp.OutputFormat)
 				if mimeType == "" {
 					// Fallback: if conversion fails, assume PNG
 					mimeType = "image/png"

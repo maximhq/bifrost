@@ -1180,9 +1180,6 @@ func IsGrokReasoningModel(model string) bool {
 		}
 	}
 	return false
-  
-func IsImagenModel(model string) bool {
-	return strings.Contains(model, "imagen")
 }
 
 // Precompiled regexes for different kinds of version suffixes.
@@ -1202,6 +1199,10 @@ var (
 		`^(?:v\d+(?:\.\d+){0,2}|rc\d+|alpha|beta|preview|canary|experimental)$`,
 	)
 )
+
+func IsImagenModel(model string) bool {
+	return strings.Contains(model, "imagen")
+}
 
 // SplitModelAndVersion splits a model id into (base, versionSuffix).
 // If no known version suffix is found, versionSuffix will be empty and

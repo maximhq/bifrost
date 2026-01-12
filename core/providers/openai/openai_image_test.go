@@ -3,7 +3,6 @@ package openai_test
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -141,92 +140,6 @@ func TestOpenAIRequestJSONOutput(t *testing.T) {
 // =============================================================================
 // 3. RESPONSE TRANSFORMATION (OpenAI → Bifrost)
 // =============================================================================
-
-// TestToBifrostImageResponse tests OpenAI to Bifrost response conversion
-func TestToBifrostImageResponse(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		openai   *openai.OpenAIImageGenerationResponse
-		model    string
-		latency  time.Duration
-		validate func(t *testing.T, resp *schemas.BifrostImageGenerationResponse)
-	}{
-		{
-			name: "full response converts correctly",
-			openai: &openai.OpenAIImageGenerationResponse{
-				Created: 1699999999,
-				Data: []schemas.ImageData{
-					{URL: "https://example.com/1.png", RevisedPrompt: "revised prompt 1"},
-					{B64JSON: "base64data", RevisedPrompt: "revised prompt 2"},
-				},
-				Usage: &schemas.ImageUsage{
-					InputTokens: 10,
-					TotalTokens: 50,
-				},
-			},
-			model:   "dall-e-3",
-			latency: 500 * time.Millisecond,
-			validate: func(t *testing.T, resp *schemas.BifrostImageGenerationResponse) {
-				if resp.Created != 1699999999 {
-					t.Errorf("Created mismatch")
-				}
-				if len(resp.Data) != 2 {
-					t.Errorf("Expected 2 images, got %d", len(resp.Data))
-				}
-				if resp.Data[0].URL != "https://example.com/1.png" {
-					t.Errorf("URL mismatch")
-				}
-				if resp.Data[0].Index != 0 {
-					t.Errorf("First image index should be 0")
-				}
-				if resp.Data[1].B64JSON != "base64data" {
-					t.Errorf("B64JSON mismatch")
-				}
-				if resp.Data[1].Index != 1 {
-					t.Errorf("Second image index should be 1")
-				}
-				if resp.Usage.InputTokens != 10 {
-					t.Errorf("PromptTokens should be mapped from InputTokens")
-				}
-			},
-		},
-		{
-			name:   "nil response returns nil",
-			openai: nil,
-			validate: func(t *testing.T, resp *schemas.BifrostImageGenerationResponse) {
-				if resp != nil {
-					t.Errorf("Expected nil response")
-				}
-			},
-		},
-		{
-			name: "nil usage is preserved",
-			openai: &openai.OpenAIImageGenerationResponse{
-				Created: 123,
-				Data: []schemas.ImageData{
-					{URL: "https://example.com/1.png", RevisedPrompt: "revised prompt 1"},
-					{B64JSON: "base64data", RevisedPrompt: "revised prompt 2"},
-				},
-				Usage: nil,
-			},
-			validate: func(t *testing.T, resp *schemas.BifrostImageGenerationResponse) {
-				if resp.Usage != nil {
-					t.Errorf("Usage should be nil")
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			resp := openai.ToBifrostImageResponse(tt.openai, tt.model, tt.latency)
-			tt.validate(t, resp)
-		})
-	}
-}
 
 // TestToBifrostImageGenerationRequest tests OpenAI to Bifrost request conversion
 func TestToBifrostImageGenerationRequest(t *testing.T) {

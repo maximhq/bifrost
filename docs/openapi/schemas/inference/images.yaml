@@ -52,7 +52,7 @@ ImageGenerationRequest:
             - "b64_json"
           default: "url"
           description: |
-            Format of the response. When `stream` is `true`, this parameter is ignored and images are always returned as base64 chunks via Server-Sent Events (SSE). Only applies to non-streaming requests.
+            Format of the response.
         background:
           type: string
           enum:
@@ -96,17 +96,6 @@ ImageGenerationRequest:
           items:
             $ref: './common.yaml#/Fallback'
           description: Fallback models to try if primary model fails
-    - if:
-        properties:
-          stream:
-            const: true
-      then:
-        properties:
-          response_format:
-            enum:
-              - "b64_json"
-            description: |
-              When `stream` is `true`, this parameter must be `b64_json` (or is ignored if provided). Images are always returned as base64 chunks via Server-Sent Events (SSE).
 
 ImageGenerationResponse:
   type: object
@@ -142,7 +131,7 @@ ImageData:
       description: URL of the generated image
     b64_json:
       type: string
-      description: Base64-encoded image data 
+      description: Base64-encoded image data
     revised_prompt:
       type: string
       description: Revised prompt used for generation

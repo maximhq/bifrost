@@ -7,12 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -196,19 +194,6 @@ var VectorStoreProperties = map[string]vectorstore.VectorStoreProperties{
 	"from_bifrost_semantic_cache_plugin": {
 		DataType:    vectorstore.VectorStorePropertyTypeBoolean,
 		Description: "Whether the cache entry was created by the BifrostSemanticCachePlugin",
-	},
-	// image specific fields
-	"image_urls": {
-		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
-		Description: "Cached image URLs from image generation responses",
-	},
-	"image_b64": {
-		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
-		Description: "Cached base64 image data from image generation responses",
-	},
-	"revised_prompts": {
-		DataType:    vectorstore.VectorStorePropertyTypeStringArray,
-		Description: "Revised prompts from image generation responses",
 	},
 }
 
@@ -743,64 +728,4 @@ func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 	plugin.logger.Debug(fmt.Sprintf("%s Deleted cache entry for key %s", PluginLoggerPrefix, requestID))
 
 	return nil
-}
-
-// getImageCacheKey generates an image-specific cache key using xxhash.
-// Hash components: prompt + all image-affecting parameters (size, quality, style, n, background, moderation, output_format, output_compression, response_format, and ExtraParams)
-// Returns a prefixed hash string in format "img_<hash>"
-func (plugin *Plugin) getImageCacheKey(req *schemas.BifrostImageGenerationRequest) string {
-	if req == nil || req.Input == nil {
-		return ""
-	}
-
-	h := xxhash.New()
-	h.WriteString(req.Input.Prompt)
-
-	if req.Params != nil {
-		// Include all typed fields that affect image generation
-		if req.Params.Size != nil {
-			h.WriteString("size:" + *req.Params.Size)
-		}
-		if req.Params.Quality != nil {
-			h.WriteString("quality:" + *req.Params.Quality)
-		}
-		if req.Params.Style != nil {
-			h.WriteString("style:" + *req.Params.Style)
-		}
-		if req.Params.N != nil {
-			h.WriteString(fmt.Sprintf("n:%d", *req.Params.N))
-		}
-		if req.Params.Background != nil {
-			h.WriteString("background:" + *req.Params.Background)
-		}
-		if req.Params.Moderation != nil {
-			h.WriteString("moderation:" + *req.Params.Moderation)
-		}
-		if req.Params.OutputFormat != nil {
-			h.WriteString("output_format:" + *req.Params.OutputFormat)
-		}
-		if req.Params.OutputCompression != nil {
-			h.WriteString(fmt.Sprintf("output_compression:%d", *req.Params.OutputCompression))
-		}
-		if req.Params.ResponseFormat != nil {
-			h.WriteString("response_format:" + *req.Params.ResponseFormat)
-		}
-		if req.Params.User != nil {
-			h.WriteString("user:" + *req.Params.User)
-		}
-
-		// Include ExtraParams in sorted order for deterministic hashing
-		if len(req.Params.ExtraParams) > 0 {
-			keys := make([]string, 0, len(req.Params.ExtraParams))
-			for k := range req.Params.ExtraParams {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys) // Sort keys for stable ordering
-			for _, k := range keys {
-				h.WriteString(fmt.Sprintf("extra:%s:%v", k, req.Params.ExtraParams[k]))
-			}
-		}
-	}
-
-	return fmt.Sprintf("img_%x", h.Sum64())
 }

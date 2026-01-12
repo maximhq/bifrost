@@ -295,54 +295,13 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		var nebiusErr NebiusError
-		bifrostErr := providerUtils.HandleProviderAPIError(resp, &nebiusErr)
-
-		// Extract error message
-		var message string
-		if nebiusErr.Detail != nil {
-			if nebiusErr.Detail.Message != nil {
-				message = *nebiusErr.Detail.Message
-			}
-
-			if len(nebiusErr.Detail.ValidationErrors) > 0 {
-				var messages []string
-				var locations []string
-
-				for _, detail := range nebiusErr.Detail.ValidationErrors {
-					if detail.Msg != "" {
-						messages = append(messages, detail.Msg)
-					}
-					if len(detail.Loc) > 0 {
-						locations = append(locations, strings.Join(detail.Loc, "."))
-					}
-				}
-
-				if len(messages) > 0 {
-					message = strings.Join(messages, "; ")
-				}
-				if len(locations) > 0 {
-					locationStr := strings.Join(locations, ", ")
-					message = message + " [" + locationStr + "]"
-				}
-			}
-		}
-
-		// Use the extracted message if available
-		if message != "" {
-			if bifrostErr.Error == nil {
-				bifrostErr.Error = &schemas.ErrorField{}
-			}
-			bifrostErr.Error.Message = message
-		}
-
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			RequestType:    schemas.ImageGenerationRequest,
-		}
-		return nil, bifrostErr
+		return nil, parseNebiusImageError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       request.Model,
+			RequestType: schemas.ImageGenerationRequest,
+		})
 	}
+
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)

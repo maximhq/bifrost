@@ -541,17 +541,9 @@ type ResponsesToolMessageOutputStruct struct {
 	ResponsesToolCallOutputStr            *string // Common output string for tool calls and outputs (used by function, custom and local shell tool calls)
 	ResponsesFunctionToolCallOutputBlocks []ResponsesMessageContentBlock
 	ResponsesComputerToolCallOutput       *ResponsesComputerToolCallOutputData
-	ResponsesImageGenerationCallOutput    *ResponsesImageGenerationCallOutput
-}
-
-type ResponsesImageGenerationCallOutput struct {
-	Result string `json:"result"` // JSON string with image data
 }
 
 func (output ResponsesToolMessageOutputStruct) MarshalJSON() ([]byte, error) {
-	if output.ResponsesImageGenerationCallOutput != nil {
-		return Marshal(output.ResponsesImageGenerationCallOutput)
-	}
 	if output.ResponsesToolCallOutputStr != nil {
 		return Marshal(*output.ResponsesToolCallOutputStr)
 	}
@@ -574,19 +566,6 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
-
-	// Peek at the object to distinguish image-generation vs computer tool outputs.
-	var raw map[string]interface{}
-	if err := Unmarshal(data, &raw); err == nil {
-		if _, hasResult := raw["result"]; hasResult {
-			var imageGenerationCallOutput ResponsesImageGenerationCallOutput
-			if err := Unmarshal(data, &imageGenerationCallOutput); err == nil {
-				output.ResponsesImageGenerationCallOutput = &imageGenerationCallOutput
-				return nil
-			}
-		}
-	}
-
 	var computerToolCallOutput ResponsesComputerToolCallOutputData
 	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
 		output.ResponsesComputerToolCallOutput = &computerToolCallOutput

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -85,13 +86,6 @@ func (plugin *Plugin) generateEmbedding(ctx *schemas.BifrostContext, text string
 //   - string: Hexadecimal representation of the xxhash
 //   - error: Any error that occurred during request normalization or hashing
 func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, error) {
-	// Special handling for image generation (hash = prompt + size + quality + style + n)
-	if req.RequestType == schemas.ImageGenerationRequest || req.RequestType == schemas.ImageGenerationStreamRequest {
-		if req.ImageGenerationRequest != nil {
-			return plugin.getImageCacheKey(req.ImageGenerationRequest), nil
-		}
-		return "", fmt.Errorf("image generation request is nil")
-	}
 	// Create a hash input structure that includes both input and parameters
 	hashInput := struct {
 		Input  interface{} `json:"input"`
@@ -117,6 +111,8 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		hashInput.Params = req.EmbeddingRequest.Params
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		hashInput.Params = req.TranscriptionRequest.Params
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		hashInput.Params = req.ImageGenerationRequest.Params
 	}
 
 	// Marshal to JSON for consistent hashing
@@ -383,7 +379,7 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 // addSingleResponse stores a single (non-streaming) response in unified VectorEntry format
 func (plugin *Plugin) addSingleResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	// Marshal response as string
-	responseData, err := json.Marshal(res)
+	responseData, err := sonic.Marshal(res)
 	if err != nil {
 		return fmt.Errorf("failed to marshal response: %w", err)
 	}
@@ -963,14 +959,6 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 		return
 	}
 
-	// Merge ExtraParams
-	if len(params.ExtraParams) > 0 {
-		for k, v := range params.ExtraParams {
-			metadata[k] = v
-		}
-	}
-
-	// Set typed fields
 	if params.N != nil {
 		metadata["n"] = *params.N
 	}
@@ -1003,6 +991,10 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	}
 	if params.User != nil {
 		metadata["user"] = *params.User
+	}
+
+	if len(params.ExtraParams) > 0 {
+		maps.Copy(metadata, params.ExtraParams)
 	}
 }
 
