@@ -63,11 +63,9 @@ func parseGeminiError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 		// Set Message to trimmed concatenated message
 		bifrostErr.Error.Message = message
 		if meta != nil {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       meta.Provider,
-				ModelRequested: meta.Model,
-				RequestType:    meta.RequestType,
-			}
+			bifrostErr.ExtraFields.Provider = meta.Provider
+			bifrostErr.ExtraFields.ModelRequested = meta.Model
+			bifrostErr.ExtraFields.RequestType = meta.RequestType
 		}
 		return bifrostErr
 	}
@@ -83,11 +81,9 @@ func parseGeminiError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 		bifrostErr.Error.Message = errorResp.Error.Message
 	}
 	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
+		bifrostErr.ExtraFields.Provider = meta.Provider
+		bifrostErr.ExtraFields.ModelRequested = meta.Model
+		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

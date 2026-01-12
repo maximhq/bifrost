@@ -393,10 +393,22 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 		if result == nil && bifrostErr != nil {
 			// Note: Stream accumulator cleanup is handled by the tracing middleware
 			logMsg.Operation = LogOperationUpdate
-			logMsg.UpdateData = &UpdateLogData{
+			updateData := &UpdateLogData{
 				Status:       "error",
 				ErrorDetails: bifrostErr,
 			}
+
+			// Extract raw request from error's ExtraFields
+			if p.disableContentLogging == nil || !*p.disableContentLogging {
+				if bifrostErr.ExtraFields.RawRequest != nil {
+					updateData.RawRequest = bifrostErr.ExtraFields.RawRequest
+				}
+				if bifrostErr.ExtraFields.RawResponse != nil {
+					updateData.RawResponse = bifrostErr.ExtraFields.RawResponse
+				}
+			}
+
+			logMsg.UpdateData = updateData
 			processingErr := retryOnNotFound(p.ctx, func() error {
 				return p.updateLogEntry(
 					p.ctx,

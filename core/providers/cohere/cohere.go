@@ -302,7 +302,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		RequestType: schemas.ChatCompletionRequest,
 	})
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Create response object from pool
@@ -311,7 +311,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	bifrostResponse := response.ToBifrostChatResponse(request.Model)
@@ -361,6 +361,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, bifrostErr
 	}
 
+	sendBackRawRequest := provider.sendBackRawRequest
+	sendBackRawResponse := provider.sendBackRawResponse
+
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -387,29 +390,29 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseCohereError(resp, &providerUtils.RequestMetadata{
+		return nil, providerUtils.EnrichError(ctx, parseCohereError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
 			Model:       request.Model,
 			RequestType: schemas.ChatCompletionStreamRequest,
-		})
+		}), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -553,7 +556,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 		RequestType: schemas.ResponsesRequest,
 	})
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Create response object from pool
@@ -562,7 +565,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	bifrostResponse := response.ToBifrostResponsesResponse()
@@ -615,6 +618,9 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return nil, bifrostErr
 	}
 
+	sendBackRawRequest := provider.sendBackRawRequest
+	sendBackRawResponse := provider.sendBackRawResponse
+
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -639,29 +645,29 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}
+			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, parseCohereError(resp, &providerUtils.RequestMetadata{
+		return nil, providerUtils.EnrichError(ctx, parseCohereError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
 			Model:       request.Model,
 			RequestType: schemas.ResponsesStreamRequest,
-		})
+		}), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -826,7 +832,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		RequestType: schemas.EmbeddingRequest,
 	})
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Create response object from pool
@@ -835,7 +841,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	bifrostResponse := response.ToBifrostEmbeddingResponse()
@@ -959,7 +965,7 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		},
 	)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	cohereResponse := &CohereCountTokensResponse{}
@@ -972,7 +978,7 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	bifrostResponse := cohereResponse.ToBifrostCountTokensResponse(request.Model)

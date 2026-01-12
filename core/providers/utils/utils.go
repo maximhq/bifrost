@@ -367,13 +367,36 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	// Decode body
 	decodedBody, err := CheckAndDecodeBody(resp)
 	if err != nil {
+		// Decode failed - still capture raw body for RawResponse
+		rawBody := resp.Body()
+		var rawErrorResponse interface{}
+		if len(rawBody) > 0 {
+			// Try to unmarshal, but if that fails, store as string
+			if unmarshalErr := sonic.Unmarshal(rawBody, &rawErrorResponse); unmarshalErr != nil {
+				rawErrorResponse = string(rawBody)
+			}
+		}
+
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
 				Message: err.Error(),
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: rawErrorResponse,
+			},
 		}
+	}
+
+	// Try to unmarshal decoded body for RawResponse
+	var rawErrorResponse interface{}
+	if err := sonic.Unmarshal(decodedBody, &rawErrorResponse); err != nil {
+		if logger != nil {
+			logger.Warn(fmt.Sprintf("Failed to parse raw error response: %v", err))
+		}
+		// If unmarshal fails (e.g., for HTML or plain text), store as string so RawResponse is never nil
+		rawErrorResponse = string(decodedBody)
 	}
 
 	// Check for empty response
@@ -385,6 +408,9 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderResponseEmpty,
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: rawErrorResponse,
+			},
 		}
 	}
 
@@ -395,6 +421,9 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error:          &schemas.ErrorField{},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: rawErrorResponse,
+			},
 		}
 	}
 
@@ -407,6 +436,9 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				Message: schemas.ErrProviderResponseHTML,
 				Error:   errors.New(string(decodedBody)),
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: rawErrorResponse,
+			},
 		}
 	}
 
@@ -418,7 +450,52 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 		Error: &schemas.ErrorField{
 			Message: message,
 		},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RawResponse: rawErrorResponse,
+		},
 	}
+}
+
+// EnrichError attaches the raw request and response to a BifrostError.
+// Returns the request and response from provider embedded in BifrostError.ExtraFields.
+func EnrichError(
+	ctx *schemas.BifrostContext,
+	bifrostErr *schemas.BifrostError,
+	requestBody []byte,
+	responseBody []byte,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+) *schemas.BifrostError {
+	if bifrostErr == nil {
+		return bifrostErr
+	}
+
+	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
+		var rawRequest interface{}
+		if err := sonic.Unmarshal(requestBody, &rawRequest); err != nil {
+			logger.Warn(fmt.Sprintf("Failed to parse raw request for error: %v", err))
+			return bifrostErr
+		}
+		bifrostErr.ExtraFields.RawRequest = rawRequest
+	} else {
+		bifrostErr.ExtraFields.RawRequest = nil
+	}
+
+	if ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
+		if len(responseBody) > 0 {
+			// We have a responseBody to set
+			var rawResponse interface{}
+			if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+				logger.Warn(fmt.Sprintf("Failed to parse raw response for error: %v", err))
+				return bifrostErr
+			}
+			bifrostErr.ExtraFields.RawResponse = rawResponse
+		}
+	} else {
+		bifrostErr.ExtraFields.RawResponse = nil
+	}
+
+	return bifrostErr
 }
 
 // HandleProviderResponse handles common response parsing logic for provider responses.

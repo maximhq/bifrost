@@ -466,16 +466,16 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, requestURL, key.Value, false)
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	bifrostResponse := &schemas.BifrostChatResponse{}
 
 	var rawResponse interface{}
 	var rawRequest interface{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bifrostResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bifrostResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Ensure model is set correctly
@@ -638,7 +638,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 		schemas.EmbeddingRequest,
 	)
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Handle raw request/response for tracking
@@ -658,7 +658,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 	// Unmarshal directly to BifrostEmbeddingResponse with custom logic
 	bifrostResponse, convErr := UnmarshalHuggingFaceEmbeddingResponse(responseBody, request.Model)
 	if convErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr, provider.GetProviderKey())
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr, provider.GetProviderKey()), jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Set ExtraFields
@@ -721,7 +721,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 		schemas.SpeechRequest,
 	)
 	if err != nil {
-		return nil, err
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	response := acquireHuggingFaceSpeechResponse()
@@ -729,9 +729,9 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 
 	var rawResponse interface{}
 	var rawRequest interface{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Download the audio file from the URL
@@ -819,6 +819,10 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 		schemas.TranscriptionRequest,
 	)
 	if err != nil {
+		// Don't wrap raw audio bytes (when isHFInferenceAudioRequest is true)
+		if !isHFInferenceAudioRequest {
+			return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
 		return nil, err
 	}
 
@@ -827,8 +831,16 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 
 	var rawResponse interface{}
 	var rawRequest interface{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	// Only pass jsonData if it's not raw audio bytes
+	var requestBodyForHandling []byte
+	if !isHFInferenceAudioRequest {
+		requestBodyForHandling = jsonData
+	}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, requestBodyForHandling, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
+		if !isHFInferenceAudioRequest {
+			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
 		return nil, bifrostErr
 	}
 

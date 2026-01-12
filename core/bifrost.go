@@ -2390,6 +2390,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				RequestType:    req.RequestType,
 				Provider:       provider,
 				ModelRequested: model,
+				RawRequest:     primaryErr.ExtraFields.RawRequest,
+				RawResponse:    primaryErr.ExtraFields.RawResponse,
 			}
 		}
 		return primaryResult, primaryErr
@@ -2437,6 +2439,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,
 				ModelRequested: fallback.Model,
+				RawRequest:     fallbackErr.ExtraFields.RawRequest,
+				RawResponse:    fallbackErr.ExtraFields.RawResponse,
 			}
 			return nil, fallbackErr
 		}
@@ -2447,6 +2451,8 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     primaryErr.ExtraFields.RawRequest,
+			RawResponse:    primaryErr.ExtraFields.RawResponse,
 		}
 	}
 
@@ -2495,6 +2501,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				RequestType:    req.RequestType,
 				Provider:       provider,
 				ModelRequested: model,
+				RawRequest:     primaryErr.ExtraFields.RawRequest,
+				RawResponse:    primaryErr.ExtraFields.RawResponse,
 			}
 		}
 		return primaryResult, primaryErr
@@ -2540,6 +2548,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				RequestType:    req.RequestType,
 				Provider:       fallback.Provider,
 				ModelRequested: fallback.Model,
+				RawRequest:     fallbackErr.ExtraFields.RawRequest,
+				RawResponse:    fallbackErr.ExtraFields.RawResponse,
 			}
 			return nil, fallbackErr
 		}
@@ -2550,6 +2560,8 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			RequestType:    req.RequestType,
 			Provider:       provider,
 			ModelRequested: model,
+			RawRequest:     primaryErr.ExtraFields.RawRequest,
+			RawResponse:    primaryErr.ExtraFields.RawResponse,
 		}
 	}
 
@@ -3154,6 +3166,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				Provider:       provider.GetProviderKey(),
 				ModelRequested: model,
 				RequestType:    req.RequestType,
+				RawRequest:     bifrostError.ExtraFields.RawRequest,
+				RawResponse:    bifrostError.ExtraFields.RawResponse,
 			}
 
 			// Send error with context awareness to prevent deadlock

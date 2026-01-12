@@ -559,4 +559,6 @@ type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider"`
 	ModelRequested string        `json:"model_requested"`
 	RequestType    RequestType   `json:"request_type"`
+	RawRequest     interface{}   `json:"raw_request,omitempty"`
+	RawResponse    interface{}   `json:"raw_response,omitempty"`
 }

@@ -65,11 +65,9 @@ func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMe
 					},
 				}
 				if meta != nil {
-					result.ExtraFields = schemas.BifrostErrorExtraFields{
-						Provider:       meta.Provider,
-						ModelRequested: meta.Model,
-						RequestType:    meta.RequestType,
-					}
+					bifrostErr.ExtraFields.Provider = meta.Provider
+					bifrostErr.ExtraFields.ModelRequested = meta.Model
+					bifrostErr.ExtraFields.RequestType = meta.RequestType
 				}
 				return result
 			}
@@ -94,11 +92,9 @@ func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMe
 		}
 	}
 	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
+		bifrostErr.ExtraFields.Provider = meta.Provider
+		bifrostErr.ExtraFields.ModelRequested = meta.Model
+		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

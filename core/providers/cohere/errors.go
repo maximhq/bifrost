@@ -18,11 +18,9 @@ func parseCohereError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 		bifrostErr.Error.Code = errorResp.Code
 	}
 	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
+		bifrostErr.ExtraFields.Provider = meta.Provider
+		bifrostErr.ExtraFields.ModelRequested = meta.Model
+		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 	return bifrostErr
 }

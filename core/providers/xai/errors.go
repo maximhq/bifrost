@@ -1,7 +1,6 @@
 package xai
 
 import (
-	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -17,55 +16,31 @@ type XAIErrorResponse struct {
 // xAI returns errors in format: {"code": "...", "error": "..."}
 // Unlike OpenAI which uses: {"error": {"message": "...", "type": "...", "code": "..."}}
 func ParseXAIError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
-	statusCode := resp.StatusCode()
-
-	// Decode body
-	decodedBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: err.Error(),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: model,
-				RequestType:    requestType,
-			},
-		}
-	}
-
 	// Try to parse xAI error format
 	var xaiErr XAIErrorResponse
-	if err := sonic.Unmarshal(decodedBody, &xaiErr); err == nil && xaiErr.Error != "" {
-		code := xaiErr.Code
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Code:    &code,
-				Message: xaiErr.Error,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: model,
-				RequestType:    requestType,
-			},
+	bifrostErr := providerUtils.HandleProviderAPIError(resp, &xaiErr)
+
+	if bifrostErr == nil {
+		return nil
+	}
+
+	// If we successfully parsed xAI format, extract the fields
+	if xaiErr.Error != "" {
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		bifrostErr.Error.Message = xaiErr.Error
+		if xaiErr.Code != "" {
+			bifrostErr.Error.Code = schemas.Ptr(xaiErr.Code)
 		}
 	}
 
-	// Fallback: couldn't parse as xAI format, return raw body
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     &statusCode,
-		Error: &schemas.ErrorField{
-			Message: string(decodedBody),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		},
+	// Set ExtraFields individually to preserve RawResponse from HandleProviderAPIError
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Provider = providerName
+		bifrostErr.ExtraFields.ModelRequested = model
+		bifrostErr.ExtraFields.RequestType = requestType
 	}
+
+	return bifrostErr
 }

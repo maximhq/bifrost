@@ -34,11 +34,9 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 
 	// Set ExtraFields unconditionally so provider/model/request metadata is always attached
 	if bifrostErr != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: model,
-			RequestType:    requestType,
-		}
+		bifrostErr.ExtraFields.Provider = providerName
+		bifrostErr.ExtraFields.ModelRequested = model
+		bifrostErr.ExtraFields.RequestType = requestType
 	}
 
 	return bifrostErr
