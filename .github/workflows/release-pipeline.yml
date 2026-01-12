@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main", "v1.4.0"]
+    branches: ["main"]
 
 # Prevent concurrent runs
 concurrency:
