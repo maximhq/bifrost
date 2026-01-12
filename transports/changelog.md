@@ -7,3 +7,6 @@
 - fix: improve thought signature handling in gemini for function calls
 - fix: enhance citations structure to support multiple citation types
 - fix: anthropic streaming events through integration
+- feat: adds env variable indicators on UI
+- feat: introduces new EnvVar for env backed config fields
+- fix: missing request type in error response for anthropic SDK integration

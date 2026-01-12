@@ -1,1 +1,2 @@
 - feat: Improved model matching to support provider-prefixed model names (e.g., "openai/gpt-4")
+- feat: Adds rdb backed distributed locks
