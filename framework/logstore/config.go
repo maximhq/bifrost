@@ -4,9 +4,6 @@ package logstore
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-
-	"github.com/maximhq/bifrost/framework/envutils"
 )
 
 // Config represents the configuration for the logs store.
@@ -57,44 +54,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		var err error
 		if err = json.Unmarshal(temp.Config, &postgresConfig); err != nil {
 			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
-		}
-		// Checking if any of the values start with env. If so, we need to process them.
-		if postgresConfig.DBName != "" && strings.HasPrefix(postgresConfig.DBName, "env.") {
-			postgresConfig.DBName, err = envutils.ProcessEnvValue(postgresConfig.DBName)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for db name: %w", err)
-			}
-		}
-		if postgresConfig.Password != "" && strings.HasPrefix(postgresConfig.Password, "env.") {
-			postgresConfig.Password, err = envutils.ProcessEnvValue(postgresConfig.Password)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for password: %w", err)
-			}
-		}
-		if postgresConfig.User != "" && strings.HasPrefix(postgresConfig.User, "env.") {
-			postgresConfig.User, err = envutils.ProcessEnvValue(postgresConfig.User)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for user: %w", err)
-			}
-		}
-		if postgresConfig.Host != "" && strings.HasPrefix(postgresConfig.Host, "env.") {
-			postgresConfig.Host, err = envutils.ProcessEnvValue(postgresConfig.Host)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for host: %w", err)
-			}
-		}
-		if postgresConfig.Port != "" && strings.HasPrefix(postgresConfig.Port, "env.") {
-			postgresConfig.Port, err = envutils.ProcessEnvValue(postgresConfig.Port)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for port: %w", err)
-			}
-		}
-		if postgresConfig.SSLMode != "" && strings.HasPrefix(postgresConfig.SSLMode, "env.") {
-			postgresConfig.SSLMode, err = envutils.ProcessEnvValue(postgresConfig.SSLMode)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for ssl mode: %w", err)
-			}
-		}
+		}		
 		c.Config = &postgresConfig
 	default:
 		return fmt.Errorf("unknown log store type: %s", temp.Type)

@@ -204,7 +204,7 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
-	ConfigHash               string                            `json:"-"`
+	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 }
 
 // GenerateConfigHash generates a SHA256 hash of the provider configuration.
@@ -270,13 +270,14 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 // Skips: ID (dynamic UUID), timestamps
 func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
-
 	// Hash Name
 	hash.Write([]byte(key.Name))
-
 	// Hash Value
-	hash.Write([]byte(key.Value))
-
+	if key.Value.IsFromEnv() {
+		hash.Write([]byte(key.Value.EnvVar))
+	} else {
+		hash.Write([]byte(key.Value.GetValue()))
+	}
 	// Hash Models (key-level model restrictions)
 	if len(key.Models) > 0 {
 		sortedModels := make([]string, len(key.Models))
@@ -288,14 +289,12 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-
 	// Hash Weight
 	data, err := sonic.Marshal(key.Weight)
 	if err != nil {
 		return "", err
 	}
 	hash.Write(data)
-
 	// Hash AzureKeyConfig
 	if key.AzureKeyConfig != nil {
 		data, err := sonic.Marshal(key.AzureKeyConfig)
@@ -304,7 +303,6 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-
 	// Hash VertexKeyConfig
 	if key.VertexKeyConfig != nil {
 		data, err := sonic.Marshal(key.VertexKeyConfig)
@@ -313,7 +311,6 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-
 	// Hash BedrockKeyConfig
 	if key.BedrockKeyConfig != nil {
 		data, err := sonic.Marshal(key.BedrockKeyConfig)
@@ -322,17 +319,41 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-
+	// Hash Enabled (nil = default true, explicit false should be detected)
+	if key.Enabled != nil {
+		if *key.Enabled {
+			hash.Write([]byte("enabled:true"))
+		} else {
+			hash.Write([]byte("enabled:false"))
+		}
+	}
+	// Hash UseForBatchAPI (nil = default false for new keys)
+	// Hash Enabled (nil = default true, explicit false should be detected)
+	enabled := true
+	if key.Enabled != nil {
+		enabled = *key.Enabled
+	}
+	if !enabled {
+		hash.Write([]byte("enabled:false"))
+	}
+	// Hash UseForBatchAPI (nil = default false for new keys)
+	useForBatchAPI := false
+	if key.UseForBatchAPI != nil {
+		useForBatchAPI = *key.UseForBatchAPI
+	}
+	if useForBatchAPI {
+		hash.Write([]byte("useForBatchAPI:true"))
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // VirtualKeyHashInput represents the fields used for virtual key hash generation.
 // This struct is used to create a consistent hash from TableVirtualKey,
-// excluding dynamic fields like ID, timestamps, and relationship objects.
+// excluding dynamic fields like ID, timestamps, relationship objects, and Value.
+// Note: Value is intentionally excluded as it's a generated secret that shouldn't affect config sync.
 type VirtualKeyHashInput struct {
 	Name        string
 	Description string
-	Value       string
 	IsActive    bool
 	TeamID      *string
 	CustomerID  *string
@@ -364,43 +385,33 @@ type VirtualKeyMCPConfigHashInput struct {
 // Skips: ID (primary key), CreatedAt, UpdatedAt, and relationship objects (Team, Customer, Budget, RateLimit)
 func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash := sha256.New()
-
 	// Hash Name
 	hash.Write([]byte(vk.Name))
-
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-
-	// Hash Value
-	hash.Write([]byte(vk.Value))
-
+	// Note: Value is intentionally NOT hashed - it's a generated secret that shouldn't affect config sync
 	// Hash IsActive
 	if vk.IsActive {
 		hash.Write([]byte("isActive:true"))
 	} else {
 		hash.Write([]byte("isActive:false"))
 	}
-
 	// Hash TeamID
 	if vk.TeamID != nil {
 		hash.Write([]byte("teamID:" + *vk.TeamID))
 	}
-
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
 	}
-
 	// Hash BudgetID
 	if vk.BudgetID != nil {
 		hash.Write([]byte("budgetID:" + *vk.BudgetID))
 	}
-
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
 		hash.Write([]byte("rateLimitID:" + *vk.RateLimitID))
 	}
-
 	// Hash ProviderConfigs
 	if len(vk.ProviderConfigs) > 0 {
 		// Copy and sort provider configs for deterministic hashing
@@ -432,7 +443,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			}
 			return getWeight(sortedProviderConfigs[i].Weight) < getWeight(sortedProviderConfigs[j].Weight)
 		})
-
+		// Filter out provider configs that are not available
 		providerConfigsForHash := make([]VirtualKeyProviderConfigHashInput, len(sortedProviderConfigs))
 		for i, pc := range sortedProviderConfigs {
 			// Sort key IDs for deterministic hashing
@@ -446,7 +457,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sortedAllowedModels := make([]string, len(pc.AllowedModels))
 			copy(sortedAllowedModels, pc.AllowedModels)
 			sort.Strings(sortedAllowedModels)
-
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
 				Provider:      pc.Provider,
 				Weight:        getWeight(pc.Weight),
@@ -462,7 +472,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write(data)
 	}
-
 	// Hash MCPConfigs
 	if len(vk.MCPConfigs) > 0 {
 		// Copy and sort MCP configs for deterministic hashing
@@ -490,7 +499,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		}
 		hash.Write(data)
 	}
-
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -655,7 +663,11 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 
 	// Hash ConnectionString
 	if m.ConnectionString != nil {
-		hash.Write([]byte(*m.ConnectionString))
+		if m.ConnectionString.IsFromEnv() {
+			hash.Write([]byte(m.ConnectionString.EnvVar))
+		} else {
+			hash.Write([]byte(m.ConnectionString.Val))
+		}
 	}
 
 	// Hash StdioConfig
@@ -687,10 +699,14 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			hash.Write([]byte(k + ":" + m.Headers[k]))
+			val := m.Headers[k]
+			if val.FromEnv {
+				hash.Write([]byte(k + ":env:" + val.EnvVar))
+			} else {
+				hash.Write([]byte(k + ":val:" + val.Val))
+			}
 		}
 	}
-
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

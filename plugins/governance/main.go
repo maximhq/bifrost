@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -717,4 +718,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 // GetGovernanceStore returns the governance store
 func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 	return p.store
+}
+
+// GenerateVirtualKey is a helper function
+func GenerateVirtualKey() string {
+	return VirtualKeyPrefix + uuid.NewString()
 }

@@ -128,7 +128,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.OpenAI:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("OPENAI_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -137,7 +137,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case ProviderOpenAICustom:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
+				Value:          *schemas.NewEnvVar("env.OPENAI_API_KEY"), // Use GROQ API key for OpenAI-compatible endpoint
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -146,7 +146,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Anthropic:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("ANTHROPIC_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -158,11 +158,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
-					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
-					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
-					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
-					ARN:          bifrost.Ptr(os.Getenv("AWS_ARN")),
+					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					ARN:          schemas.NewEnvVar("env.AWS_ARN"),
 					Deployments: map[string]string{
 						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
 						"claude-4-sonnet":   "global.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -175,11 +175,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
-					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
-					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
-					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
-					ARN:          bifrost.Ptr(os.Getenv("AWS_BEDROCK_ARN")),
+					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					ARN:          schemas.NewEnvVar("env.AWS_BEDROCK_ARN"),
 					Deployments: map[string]string{
 						"claude-3.5-sonnet": "anthropic.claude-3-5-sonnet-20240620-v1:0",
 						"claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
@@ -194,17 +194,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{"cohere.embed-v4:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),
-					SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"),
-					SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")),
-					Region:       bifrost.Ptr(getEnvWithDefault("AWS_REGION", "us-east-1")),
+					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
+					SecretKey:    *schemas.NewEnvVar("env.AWS_SECRET_ACCESS_KEY"),
+					SessionToken: schemas.NewEnvVar("env.AWS_SESSION_TOKEN"),
+					Region:       schemas.NewEnvVar(getEnvWithDefault("AWS_REGION", "us-east-1")),
 				},
 			},
 		}, nil
 	case schemas.Cohere:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("COHERE_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.COHERE_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -213,11 +213,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Azure:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("AZURE_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: os.Getenv("AZURE_ENDPOINT"),
+					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 					Deployments: map[string]string{
 						"gpt-4o":                 "gpt-4o",
 						"gpt-4o-backup":          "gpt-4o-3",
@@ -225,19 +225,19 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 						"o1":                     "o1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
 					},
-					ClientID:     bifrost.Ptr(os.Getenv("AZURE_CLIENT_ID")),
-					ClientSecret: bifrost.Ptr(os.Getenv("AZURE_CLIENT_SECRET")),
-					TenantID:     bifrost.Ptr(os.Getenv("AZURE_TENANT_ID")),
+					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
+					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
+					TenantID:     schemas.NewEnvVar("env.AZURE_TENANT_ID"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  os.Getenv("AZURE_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint:   os.Getenv("AZURE_ENDPOINT"),
-					APIVersion: bifrost.Ptr("2025-01-01-preview"),
+					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
+					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					Deployments: map[string]string{
 						"whisper":                   "whisper",
 						"gpt-4o-mini-tts":           "gpt-4o-mini-tts",
@@ -249,24 +249,24 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Vertex:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("VERTEX_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
 				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
-					Region:          getEnvWithDefault("VERTEX_REGION", "us-central1"),
-					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Value:  os.Getenv("VERTEX_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
 				Models: []string{"claude-sonnet-4-5", "claude-4.5-haiku", "claude-opus-4-5"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
-					ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),
-					Region:          getEnvWithDefault("VERTEX_REGION_ANTHROPIC", "us-east5"),
-					AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),
+					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION_ANTHROPIC", "us-east5")),
+					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -274,7 +274,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Mistral:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("MISTRAL_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.MISTRAL_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -283,7 +283,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Groq:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("GROQ_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.GROQ_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -292,7 +292,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Parasail:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("PARASAIL_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.PARASAIL_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -301,7 +301,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Elevenlabs:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("ELEVENLABS_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.ELEVENLABS_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -310,7 +310,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Perplexity:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("PERPLEXITY_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.PERPLEXITY_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -319,7 +319,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Cerebras:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("CEREBRAS_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.CEREBRAS_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -328,7 +328,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Gemini:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("GEMINI_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.GEMINI_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -337,7 +337,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.OpenRouter:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("OPENROUTER_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.OPENROUTER_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -346,7 +346,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.HuggingFace:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("HUGGING_FACE_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.HUGGING_FACE_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -355,7 +355,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Nebius:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("NEBIUS_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.NEBIUS_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -364,7 +364,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.XAI:
 		return []schemas.Key{
 			{
-				Value:          os.Getenv("XAI_API_KEY"),
+				Value:          *schemas.NewEnvVar("env.XAI_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),

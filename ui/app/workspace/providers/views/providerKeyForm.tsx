@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form } from "@/components/ui/form";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
@@ -24,19 +25,21 @@ const providerKeyFormSchema = z.object({
 	key: modelProviderKeySchema,
 });
 
+type ProviderKeyFormValues = z.infer<typeof modelProviderKeySchema>;
+
 export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }: Props) {
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
 	const isEditing = provider?.keys?.[keyIndex] !== undefined;
+	const currentKey = provider?.keys?.[keyIndex];
 
 	const form = useForm({
 		resolver: zodResolver(providerKeyFormSchema),
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			key: provider?.keys?.[keyIndex] ?? {
+			key: (provider?.keys?.[keyIndex] as ProviderKeyFormValues) ?? {
 				id: uuid(),
 				name: "",
-				value: "",
 				models: [],
 				weight: 1.0,
 			},
@@ -82,6 +85,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 		<Form {...form}>
 			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
 				<ApiKeyFormFragment control={form.control} providerName={provider.name} form={form} />
+				{isEditing && currentKey?.config_hash && <ConfigSyncAlert className="mt-4" />}
 				<div className="dark:bg-card bg-white pt-6">
 					<div className="flex justify-end space-x-3">
 						<Button type="button" variant="outline" onClick={onCancel}>

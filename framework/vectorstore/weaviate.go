@@ -25,11 +25,11 @@ const (
 type WeaviateConfig struct {
 	// Connection settings
 	Scheme     string              `json:"scheme"`                // "http" or "https" - REQUIRED
-	Host       string              `json:"host"`                  // "localhost:8080" - REQUIRED
+	Host       *schemas.EnvVar      `json:"host"`                  // "localhost:8080" - REQUIRED
 	GrpcConfig *WeaviateGrpcConfig `json:"grpc_config,omitempty"` // grpc config for weaviate (optional)
 
 	// Authentication settings (optional)
-	APIKey  string            `json:"api_key,omitempty"` // API key for authentication
+	APIKey  *schemas.EnvVar    `json:"api_key,omitempty"` // API key for authentication
 	Headers map[string]string `json:"headers,omitempty"` // Additional headers
 
 	// Connection settings
@@ -39,7 +39,7 @@ type WeaviateConfig struct {
 type WeaviateGrpcConfig struct {
 	// Host is the host of the weaviate server (host:port).
 	// If host is without a port number then the 80 port for insecured and 443 port for secured connections will be used.
-	Host string `json:"host"`
+	Host *schemas.EnvVar `json:"host"`
 	// Secured is a boolean flag indicating if the connection is secured
 	Secured bool `json:"secured"`
 }
@@ -409,25 +409,31 @@ func (s *WeaviateStore) Close(ctx context.Context, className string) error {
 // newWeaviateStore creates a new Weaviate vector store.
 func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schemas.Logger) (*WeaviateStore, error) {
 	// Validate required config
-	if config.Scheme == "" || config.Host == "" {
+	if config.Scheme == "" || config.Host.GetValue() == "" {
 		return nil, fmt.Errorf("weaviate scheme and host are required")
+	}
+	if config.Host == nil || config.Host.GetValue() == "" {
+		return nil, fmt.Errorf("weaviate host is required")
 	}
 
 	// Build client configuration
 	cfg := weaviate.Config{
 		Scheme: config.Scheme,
-		Host:   config.Host,
+		Host:   config.Host.GetValue(),
 	}
 
 	// Add authentication if provided
-	if config.APIKey != "" {
-		cfg.AuthConfig = auth.ApiKey{Value: config.APIKey}
+	if config.APIKey != nil && config.APIKey.GetValue() != "" {
+		cfg.AuthConfig = auth.ApiKey{Value: config.APIKey.GetValue()}
 	}
 
 	// Add grpc config if provided
 	if config.GrpcConfig != nil {
+		if config.GrpcConfig.Host == nil || config.GrpcConfig.Host.GetValue() == "" {
+			return nil, fmt.Errorf("weaviate grpc host is required")
+		}		
 		cfg.GrpcConfig = &grpc.Config{
-			Host:    config.GrpcConfig.Host,
+			Host:    config.GrpcConfig.Host.GetValue(),
 			Secured: config.GrpcConfig.Secured,
 		}
 	}

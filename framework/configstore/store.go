@@ -29,16 +29,16 @@ type ConfigStore interface {
 
 	// Provider config CRUD
 	UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]ProviderConfig, tx ...*gorm.DB) error
-	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
-	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, envKeys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
+	AddProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
+	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
-	CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig, envKeys map[string][]EnvKeyInfo) error
-	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig, envKeys map[string][]EnvKeyInfo) error
+	CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error
+	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// Vector store config CRUD
@@ -48,10 +48,6 @@ type ConfigStore interface {
 	// Logs store config CRUD
 	UpdateLogsStoreConfig(ctx context.Context, config *logstore.Config) error
 	GetLogsStoreConfig(ctx context.Context) (*logstore.Config, error)
-
-	// ENV keys CRUD
-	UpdateEnvKeys(ctx context.Context, keys map[string][]EnvKeyInfo, tx ...*gorm.DB) error
-	GetEnvKeys(ctx context.Context) (map[string][]EnvKeyInfo, error)
 
 	// Config CRUD
 	GetConfig(ctx context.Context, key string) (*tables.TableGovernanceConfig, error)

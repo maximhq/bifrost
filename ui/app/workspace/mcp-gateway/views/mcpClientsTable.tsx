@@ -91,7 +91,12 @@ export default function MCPClientsTable({ mcpClients }: MCPClientsTableProps) {
 		if (client.config.connection_type === "stdio") {
 			return `${client.config.stdio_config?.command} ${client.config.stdio_config?.args.join(" ")}` || "STDIO";
 		}
-		return client.config.connection_string || `${client.config.connection_type.toUpperCase()}`;
+		// connection_string is now an EnvVar, display the value or env_var reference
+		const connStr = client.config.connection_string;
+		if (connStr) {
+			return connStr.from_env ? connStr.env_var : connStr.value || `${client.config.connection_type.toUpperCase()}`;
+		}
+		return `${client.config.connection_type.toUpperCase()}`;
 	};
 
 	const getConnectionTypeDisplay = (type: string) => {

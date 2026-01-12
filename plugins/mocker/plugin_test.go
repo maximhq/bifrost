@@ -24,7 +24,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
-			Value:  "dummy-api-key-for-testing", // Dummy key
+			Value:  *schemas.NewEnvVar("dummy-api-key-for-testing"), // Dummy key
 			Models: []string{"gpt-4", "gpt-4-turbo", "claude-3"},
 			Weight: 1.0,
 		},

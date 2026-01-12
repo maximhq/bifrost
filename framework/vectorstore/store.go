@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/envutils"
 )
 
 type VectorStoreType string
@@ -125,14 +123,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(temp.Config, &weaviateConfig); err != nil {
 			return fmt.Errorf("failed to unmarshal weaviate config: %w", err)
 		}
-		// Process env. values for sensitive fields
-		if weaviateConfig.APIKey != "" && strings.HasPrefix(weaviateConfig.APIKey, "env.") {
-			apiKey, err := envutils.ProcessEnvValue(weaviateConfig.APIKey)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for weaviate api_key: %w", err)
-			}
-			weaviateConfig.APIKey = apiKey
-		}
 		c.Config = weaviateConfig
 	case VectorStoreTypeRedis:
 		var redisConfig RedisConfig
@@ -140,33 +130,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("failed to unmarshal redis config: %w", err)
 		}
 		// Process env. values for sensitive fields
-		if redisConfig.Username != "" && strings.HasPrefix(redisConfig.Username, "env.") {
-			username, err := envutils.ProcessEnvValue(redisConfig.Username)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for redis username: %w", err)
-			}
-			redisConfig.Username = username
-		}
-		if redisConfig.Password != "" && strings.HasPrefix(redisConfig.Password, "env.") {
-			password, err := envutils.ProcessEnvValue(redisConfig.Password)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for redis password: %w", err)
-			}
-			redisConfig.Password = password
-		}
 		c.Config = redisConfig
 	case VectorStoreTypeQdrant:
 		var qdrantConfig QdrantConfig
 		if err := json.Unmarshal(temp.Config, &qdrantConfig); err != nil {
 			return fmt.Errorf("failed to unmarshal qdrant config: %w", err)
-		}
-		// Process env. values for sensitive fields
-		if qdrantConfig.APIKey != "" && strings.HasPrefix(qdrantConfig.APIKey, "env.") {
-			apiKey, err := envutils.ProcessEnvValue(qdrantConfig.APIKey)
-			if err != nil {
-				return fmt.Errorf("failed to process env value for qdrant api_key: %w", err)
-			}
-			qdrantConfig.APIKey = apiKey
 		}
 		c.Config = qdrantConfig
 	default:

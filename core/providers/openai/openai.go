@@ -137,8 +137,8 @@ func listModelsByKey(
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Make request
@@ -259,8 +259,8 @@ func HandleOpenAITextCompletionRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -326,8 +326,8 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		return nil, err
 	}
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	return HandleOpenAITextCompletionStreaming(
 		ctx,
@@ -521,7 +521,7 @@ func HandleOpenAITextCompletionStreaming(
 			// Parse into bifrost response
 			var response schemas.BifrostTextCompletionResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -609,7 +609,7 @@ func HandleOpenAITextCompletionStreaming(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
 			return
 		}
@@ -685,8 +685,8 @@ func HandleOpenAIChatCompletionRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -708,7 +708,7 @@ func HandleOpenAIChatCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		if customErrorConverter != nil {
 			return nil, customErrorConverter(resp, schemas.ChatCompletionRequest, providerName, request.Model)
 		}
@@ -755,8 +755,8 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, err
 	}
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	// Use shared streaming logic
 	return HandleOpenAIChatCompletionStreaming(
@@ -981,7 +981,7 @@ func HandleOpenAIChatCompletionStreaming(
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -1132,7 +1132,7 @@ func HandleOpenAIChatCompletionStreaming(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, streamRequestType, providerName, request.Model, logger)
 			return
 		}
@@ -1204,8 +1204,8 @@ func HandleOpenAIResponsesRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue()	)
 	}
 
 	// Use centralized converter
@@ -1228,7 +1228,7 @@ func HandleOpenAIResponsesRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		if customErrorConverter != nil {
 			return nil, customErrorConverter(resp, schemas.ResponsesRequest, providerName, request.Model)
 		}
@@ -1273,8 +1273,8 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		return nil, err
 	}
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	// Use shared streaming logic
 	return HandleOpenAIResponsesStreaming(
@@ -1455,7 +1455,7 @@ func HandleOpenAIResponsesStreaming(
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -1526,7 +1526,7 @@ func HandleOpenAIResponsesStreaming(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, logger)
 		}
 	}()
@@ -1585,8 +1585,8 @@ func HandleOpenAIEmbeddingRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Use centralized converter
@@ -1609,7 +1609,7 @@ func HandleOpenAIEmbeddingRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model)
 	}
 
@@ -1690,8 +1690,8 @@ func HandleOpenAISpeechRequest(
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -1713,7 +1713,7 @@ func HandleOpenAISpeechRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model)
 	}
 
@@ -1758,8 +1758,8 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	}
 
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue()	 != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 
 	return HandleOpenAISpeechStreamRequest(
@@ -1947,7 +1947,7 @@ func HandleOpenAISpeechStreamRequest(
 			// Parse into bifrost response
 			var response schemas.BifrostSpeechStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -1994,7 +1994,7 @@ func HandleOpenAISpeechStreamRequest(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, logger)
 		}
 	}()
@@ -2045,8 +2045,8 @@ func HandleOpenAITranscriptionRequest(
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Use centralized converter
@@ -2073,7 +2073,7 @@ func HandleOpenAITranscriptionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
@@ -2143,8 +2143,8 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	}
 
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 
 	return HandleOpenAITranscriptionStreamRequest(
@@ -2327,7 +2327,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 			var response schemas.BifrostTranscriptionStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -2371,7 +2371,7 @@ func HandleOpenAITranscriptionStreamRequest(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
 		}
 	}()
@@ -2425,8 +2425,8 @@ func HandleOpenAICountTokensRequest(
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -2449,7 +2449,7 @@ func HandleOpenAICountTokensRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.CountTokensRequest, providerName, request.Model)
 	}
 
@@ -2537,8 +2537,8 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	req.SetBody(buf.Bytes())
@@ -2551,7 +2551,7 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.FileUploadRequest, providerName, "")
 	}
 
@@ -2635,8 +2635,8 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Make request
@@ -2647,7 +2647,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.FileListRequest, providerName, "")
 	}
 
@@ -2728,8 +2728,8 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request
@@ -2743,7 +2743,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseOpenAIError(resp, schemas.FileRetrieveRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2803,8 +2803,8 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request
@@ -2818,7 +2818,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseOpenAIError(resp, schemas.FileDeleteRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2893,8 +2893,8 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request
@@ -2908,7 +2908,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseOpenAIError(resp, schemas.FileContentRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -3002,8 +3002,8 @@ func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Build request body
@@ -3111,8 +3111,8 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Make request
@@ -3193,8 +3193,8 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request
@@ -3268,8 +3268,8 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request
@@ -3382,8 +3382,8 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + *batchResp.OutputFileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
 		// Make request

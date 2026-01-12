@@ -12,10 +12,10 @@ import (
 
 // QdrantConfig represents the configuration for the Qdrant vector store.
 type QdrantConfig struct {
-	Host   string `json:"host"`              // Qdrant server host - REQUIRED
-	Port   int    `json:"port"`              // Qdrant server port - REQUIRED (typically 6334 for gRPC)
-	APIKey string `json:"api_key,omitempty"` // API key for authentication - Optional
-	UseTLS bool   `json:"use_tls,omitempty"` // Use TLS for connection - Optional
+	Host   schemas.EnvVar `json:"host"`              // Qdrant server host - REQUIRED
+	Port   schemas.EnvVar `json:"port"`              // Qdrant server port - REQUIRED (typically 6334 for gRPC)
+	APIKey schemas.EnvVar `json:"api_key,omitempty"` // API key for authentication - Optional
+	UseTLS schemas.EnvVar `json:"use_tls,omitempty"` // Use TLS for connection - Optional
 }
 
 // QdrantStore represents the Qdrant vector store.
@@ -345,18 +345,14 @@ func (s *QdrantStore) Close(ctx context.Context, namespace string) error {
 
 // newQdrantStore creates a new Qdrant vector store.
 func newQdrantStore(ctx context.Context, config *QdrantConfig, logger schemas.Logger) (*QdrantStore, error) {
-	if config.Host == "" {
+	if config.Host.GetValue() == "" {
 		return nil, fmt.Errorf("qdrant host is required")
 	}
-	if config.Port == 0 {
-		return nil, fmt.Errorf("qdrant port is required")
-	}
-
 	client, err := qdrant.NewClient(&qdrant.Config{
-		Host:                   config.Host,
-		Port:                   config.Port,
-		APIKey:                 config.APIKey,
-		UseTLS:                 config.UseTLS,
+		Host:                   config.Host.GetValue(),
+		Port:                   config.Port.CoerceInt(6334),
+		APIKey:                 config.APIKey.GetValue(),
+		UseTLS:                 config.UseTLS.CoerceBool(false),
 		SkipCompatibilityCheck: true,
 	})
 	if err != nil {

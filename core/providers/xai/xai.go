@@ -138,8 +138,8 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
@@ -181,8 +181,8 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 // ResponsesStream performs a streaming responses request to the xAI API.
 func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,

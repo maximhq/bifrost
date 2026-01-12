@@ -97,14 +97,14 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 	}
 	authCredentials := key.VertexKeyConfig.AuthCredentials
 	var tokenSource oauth2.TokenSource
-	if authCredentials == "" {
+	if authCredentials.GetValue() == "" {
 		creds, err := google.FindDefaultCredentials(context.Background(), cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find default credentials in environment: %w", err)
 		}
 		tokenSource = creds.TokenSource
 	} else {
-		conf, err := google.JWTConfigFromJSON([]byte(authCredentials), cloudPlatformScope)
+		conf, err := google.JWTConfigFromJSON([]byte(authCredentials.GetValue()), cloudPlatformScope)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create JWT config from auth credentials: %w", err)
 		}
@@ -129,11 +129,11 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	projectID := key.VertexKeyConfig.ProjectID
-	if projectID == "" {
+	if projectID.GetValue() == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 	}
 
-	region := key.VertexKeyConfig.Region
+	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
@@ -164,7 +164,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// Loop through all pages until no nextPageToken is returned
 	for {
 		// Build URL with pagination parameters
-		requestURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/models?pageSize=%d", host, projectID, region, MaxPageSize)
+		requestURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/models?pageSize=%d", host, projectID.GetValue(), region, MaxPageSize)
 		if pageToken != "" {
 			requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
 		}
@@ -189,7 +189,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
 
 			var errorResp VertexError
@@ -358,12 +358,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
+	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 	}
 
-	region := key.VertexKeyConfig.Region
+	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
@@ -374,12 +374,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	var completeURL string
 	if schemas.IsAllDigitsASCII(deployment) {
 		// Custom Fine-tuned models use OpenAPI endpoint
-		projectNumber := key.VertexKeyConfig.ProjectNumber
+		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 		if region == "global" {
 			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/%s:generateContent", projectNumber, deployment)
@@ -402,8 +402,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 	} else if schemas.IsGeminiModel(deployment) {
 		// Gemini models support api key
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 		if region == "global" {
 			completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent", projectID, deployment)
@@ -457,7 +457,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
 		return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
@@ -568,12 +568,12 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
+	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 	}
 
-	region := key.VertexKeyConfig.Region
+	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
@@ -697,12 +697,12 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// Auth query is used to pass the API key in the query string
 		authQuery := ""
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber
+		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
 		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
@@ -767,8 +767,8 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 		} else {
 			// Other models use OpenAPI endpoint for gemini models
-			if key.Value != "" {
-				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+			if key.Value.GetValue() != "" {
+				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 			}
 			if region == "global" {
 				completeURL = fmt.Sprintf("https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/global/endpoints/openapi/chat/completions", projectID)
@@ -840,12 +840,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			return nil, bifrostErr
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
 
-		region := key.VertexKeyConfig.Region
+		region := key.VertexKeyConfig.Region.GetValue()
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 		}
@@ -891,7 +891,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if resp.StatusCode() != fasthttp.StatusOK {
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
 			return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
 				Provider:    providerName,
@@ -954,23 +954,23 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			return nil, bifrostErr
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
 
-		region := key.VertexKeyConfig.Region
+		region := key.VertexKeyConfig.Region.GetValue()
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 		}
 
 		authQuery := ""
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber
+		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
 		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
@@ -1016,7 +1016,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if resp.StatusCode() != fasthttp.StatusOK {
 			// Remove client from pool for authentication/authorization errors
 			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
 			return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
 				Provider:    providerName,
@@ -1090,12 +1090,12 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	if schemas.IsAnthropicModel(deployment) {
-		region := key.VertexKeyConfig.Region
+		region := key.VertexKeyConfig.Region.GetValue()
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
@@ -1159,12 +1159,12 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			},
 		)
 	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
-		region := key.VertexKeyConfig.Region
+		region := key.VertexKeyConfig.Region.GetValue()
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 		}
 
-		projectID := key.VertexKeyConfig.ProjectID
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
 		if projectID == "" {
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
@@ -1190,12 +1190,12 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 		// Auth query is used to pass the API key in the query string
 		authQuery := ""
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 
 		// For custom/fine-tuned models, validate projectNumber is set
-		projectNumber := key.VertexKeyConfig.ProjectNumber
+		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
 		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
@@ -1273,12 +1273,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
+	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 	}
 
-	region := key.VertexKeyConfig.Region
+	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
@@ -1338,7 +1338,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if resp.StatusCode() != fasthttp.StatusOK {
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
 
 		responseBody := resp.Body()
@@ -1575,12 +1575,12 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
+	projectID := key.VertexKeyConfig.ProjectID.GetValue()
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 	}
 
-	region := key.VertexKeyConfig.Region
+	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
@@ -1595,11 +1595,11 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			completeURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", region, projectID, region)
 		}
 	} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
-		if key.Value != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value))
+		if key.Value.GetValue() != "" {
+			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
 
-		projectNumber := key.VertexKeyConfig.ProjectNumber
+		projectNumber := key.VertexKeyConfig.ProjectNumber.GetValue()
 		if schemas.IsAllDigitsASCII(deployment) && projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models", providerName)
 		}
@@ -1644,7 +1644,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-			removeVertexClient(key.VertexKeyConfig.AuthCredentials)
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 		}
 		return nil, parseVertexError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,

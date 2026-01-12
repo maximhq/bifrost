@@ -16,7 +16,7 @@ const (
 	QdrantTestTimeout     = 30 * time.Second
 	QdrantTestCollection  = "bifrost-test-collection"
 	QdrantTestDefaultHost = "localhost"
-	QdrantTestDefaultPort = 6334
+	QdrantTestDefaultPort = "6334"
 	QdrantTestDimension   = 384
 )
 
@@ -29,19 +29,16 @@ type QdrantTestSetup struct {
 }
 
 func NewQdrantTestSetup(t *testing.T) *QdrantTestSetup {
-	host := getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost)
-	port, err := getEnvWithDefaultInt("QDRANT_PORT", QdrantTestDefaultPort)
-	if err != nil {
-		t.Fatalf("Failed to get QDRANT_PORT: %v", err)
-	}
-	apiKey := os.Getenv("QDRANT_API_KEY")
-	useTLS := os.Getenv("QDRANT_USE_TLS") == "true"
+	host := schemas.NewEnvVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
+	port := schemas.NewEnvVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
+	apiKey := schemas.NewEnvVar(os.Getenv("QDRANT_API_KEY"))
+	useTLS := schemas.NewEnvVar(os.Getenv("QDRANT_USE_TLS"))
 
 	config := QdrantConfig{
-		Host:   host,
-		Port:   port,
-		APIKey: apiKey,
-		UseTLS: useTLS,
+		Host:   *host,
+		Port:   *port,
+		APIKey: *apiKey,
+		UseTLS: *useTLS,
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
@@ -155,15 +152,15 @@ func TestQdrantConfig_Validation(t *testing.T) {
 		{
 			name: "valid config",
 			config: QdrantConfig{
-				Host: "localhost",
-				Port: 6334,
+				Host: *schemas.NewEnvVar("localhost"),
+				Port: *schemas.NewEnvVar("6334"),
 			},
 			expectError: false,
 		},
 		{
 			name: "missing host",
 			config: QdrantConfig{
-				Port: 6334,
+				Port: *schemas.NewEnvVar("6334"),
 			},
 			expectError: true,
 			errorMsg:    "qdrant host is required",
@@ -171,7 +168,7 @@ func TestQdrantConfig_Validation(t *testing.T) {
 		{
 			name: "missing port",
 			config: QdrantConfig{
-				Host: "localhost",
+				Host: *schemas.NewEnvVar("localhost"),
 			},
 			expectError: true,
 			errorMsg:    "qdrant port is required",
@@ -179,18 +176,18 @@ func TestQdrantConfig_Validation(t *testing.T) {
 		{
 			name: "with api key",
 			config: QdrantConfig{
-				Host:   "cluster.qdrant.io",
-				Port:   6334,
-				APIKey: "test-key",
+				Host:   *schemas.NewEnvVar("cluster.qdrant.io"),
+				Port:   *schemas.NewEnvVar("6334"),
+				APIKey: *schemas.NewEnvVar("test-key"),
 			},
 			expectError: false,
 		},
 		{
 			name: "with tls",
 			config: QdrantConfig{
-				Host:   "localhost",
-				Port:   6334,
-				UseTLS: true,
+				Host:   *schemas.NewEnvVar("localhost"),
+				Port:   *schemas.NewEnvVar("6334"),
+				UseTLS: *schemas.NewEnvVar("true"),
 			},
 			expectError: false,
 		},
@@ -420,14 +417,18 @@ func TestVectorStoreFactory_Qdrant(t *testing.T) {
 	}
 
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-	port, _ := getEnvWithDefaultInt("QDRANT_PORT", QdrantTestDefaultPort)
+
+	host := schemas.NewEnvVar(getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost))
+	port := schemas.NewEnvVar(getEnvWithDefault("QDRANT_PORT", QdrantTestDefaultPort))
+	apiKey := schemas.NewEnvVar(os.Getenv("QDRANT_API_KEY"))
+
 	config := &Config{
 		Enabled: true,
 		Type:    VectorStoreTypeQdrant,
 		Config: QdrantConfig{
-			Host:   getEnvWithDefault("QDRANT_HOST", QdrantTestDefaultHost),
-			Port:   port,
-			APIKey: os.Getenv("QDRANT_API_KEY"),
+			Host:   *host,
+			Port:   *port,
+			APIKey: *apiKey,
 		},
 	}
 

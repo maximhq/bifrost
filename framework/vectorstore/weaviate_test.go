@@ -2,7 +2,6 @@ package vectorstore
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -37,8 +36,7 @@ type TestSetup struct {
 func NewTestSetup(t *testing.T) *TestSetup {
 	// Get configuration from environment variables
 	scheme := getEnvWithDefault("WEAVIATE_SCHEME", DefaultTestScheme)
-	host := getEnvWithDefault("WEAVIATE_HOST", DefaultTestHost)
-	apiKey := os.Getenv("WEAVIATE_API_KEY")
+	host := schemas.NewEnvVar(getEnvWithDefault("WEAVIATE_HOST", DefaultTestHost))
 
 	timeoutStr := getEnvWithDefault("WEAVIATE_TIMEOUT", "10s")
 	timeout, err := time.ParseDuration(timeoutStr)
@@ -49,7 +47,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 	config := WeaviateConfig{
 		Scheme:  scheme,
 		Host:    host,
-		APIKey:  apiKey,
+		APIKey:  schemas.NewEnvVar("env.WEAVIATE_API_KEY"),
 		Timeout: timeout,
 	}
 
@@ -179,14 +177,14 @@ func TestWeaviateConfig_Validation(t *testing.T) {
 			name: "valid config",
 			config: WeaviateConfig{
 				Scheme: "http",
-				Host:   "localhost:8080",
+				Host:   schemas.NewEnvVar("localhost:8080"),
 			},
 			expectError: false,
 		},
 		{
 			name: "missing scheme",
 			config: WeaviateConfig{
-				Host: "localhost:8080",
+				Host: schemas.NewEnvVar("localhost:8080"),
 			},
 			expectError: true,
 			errorMsg:    "scheme and host are required",
@@ -203,8 +201,8 @@ func TestWeaviateConfig_Validation(t *testing.T) {
 			name: "with api key",
 			config: WeaviateConfig{
 				Scheme: "https",
-				Host:   "cluster.weaviate.network",
-				APIKey: "test-key",
+				Host:   schemas.NewEnvVar("cluster.weaviate.network"),
+				APIKey: schemas.NewEnvVar("test-key"),
 			},
 			expectError: false,
 		},
@@ -212,7 +210,7 @@ func TestWeaviateConfig_Validation(t *testing.T) {
 			name: "with custom headers",
 			config: WeaviateConfig{
 				Scheme: "http",
-				Host:   "localhost:8080",
+				Host:   schemas.NewEnvVar("localhost:8080"),
 				Headers: map[string]string{
 					"Custom-Header": "value",
 				},
@@ -244,7 +242,7 @@ func TestWeaviateConfig_Validation(t *testing.T) {
 func TestDefaultClassName(t *testing.T) {
 	config := WeaviateConfig{
 		Scheme: "http",
-		Host:   "localhost:8080",
+		Host:   schemas.NewEnvVar("localhost:8080"),
 	}
 
 	// This will fail to connect but should set default class name
@@ -722,8 +720,8 @@ func TestVectorStoreFactory_Weaviate(t *testing.T) {
 		Type:    VectorStoreTypeWeaviate,
 		Config: WeaviateConfig{
 			Scheme: getEnvWithDefault("WEAVIATE_SCHEME", DefaultTestScheme),
-			Host:   getEnvWithDefault("WEAVIATE_HOST", DefaultTestHost),
-			APIKey: os.Getenv("WEAVIATE_API_KEY"),
+			Host:   schemas.NewEnvVar(getEnvWithDefault("WEAVIATE_HOST", DefaultTestHost)),
+			APIKey: schemas.NewEnvVar("env.WEAVIATE_API_KEY"),
 		},
 	}
 

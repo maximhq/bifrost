@@ -155,7 +155,7 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body()))
 		return nil, latency, parseAnthropicError(resp, meta)
 	}
 
@@ -187,8 +187,8 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 	req.SetRequestURI(provider.buildRequestURL(ctx, fmt.Sprintf("/v1/models?limit=%d", schemas.DefaultPageSize), schemas.ListModelsRequest))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("x-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -269,7 +269,7 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.TextCompletionRequest,
@@ -334,7 +334,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ChatCompletionRequest,
@@ -405,8 +405,8 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		"Accept":            "text/event-stream",
 		"Cache-Control":     "no-cache",
 	}
-	if key.Value != "" {
-		headers["x-api-key"] = key.Value
+	if key.Value.GetValue() != "" {
+		headers["x-api-key"] = key.Value.GetValue()
 	}
 
 	// Use shared Anthropic streaming logic
@@ -509,7 +509,7 @@ func HandleAnthropicChatCompletionStreaming(
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		
+
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
@@ -570,7 +570,7 @@ func HandleAnthropicChatCompletionStreaming(
 			}
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
+				logger.Warn("Failed to parse message_start event: %v", err)
 				continue
 			}
 			if event.Type == AnthropicStreamEventTypeMessageStart && event.Message != nil && event.Message.ID != "" {
@@ -675,7 +675,7 @@ func HandleAnthropicChatCompletionStreaming(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
+			logger.Warn("Error reading %s stream: %v", providerName, err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, modelName, logger)
 			return
 		}
@@ -685,7 +685,7 @@ func HandleAnthropicChatCompletionStreaming(
 			if response == nil {
 				logger.Warn("postResponseConverter returned nil; skipping chunk")
 				// Setting error on the context to signal to the defer that we need to close the stream
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)								
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				return
 			}
 		}
@@ -715,7 +715,7 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ResponsesRequest,
@@ -774,8 +774,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		"Accept":            "text/event-stream",
 		"Cache-Control":     "no-cache",
 	}
-	if key.Value != "" {
-		headers["x-api-key"] = key.Value
+	if key.Value.GetValue() != "" {
+		headers["x-api-key"] = key.Value.GetValue()
 	}
 
 	return HandleAnthropicResponsesStream(
@@ -935,7 +935,7 @@ func HandleAnthropicResponsesStream(
 			}
 			var event AnthropicStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse message_start event: %v", err))
+				logger.Warn("Failed to parse message_start event: %v", err)
 				continue
 			}
 			if event.Message != nil && modelName == "" {
@@ -1056,7 +1056,7 @@ func HandleAnthropicResponsesStream(
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
+			logger.Warn("Error reading %s stream: %v", providerName, err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, modelName, logger)
 		}
 	}()
@@ -1088,8 +1088,8 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("x-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1123,7 +1123,7 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseAnthropicError(resp, schemas.BatchCreateRequest, providerName, "")
 	}
 
@@ -1204,8 +1204,8 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("x-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1217,7 +1217,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseAnthropicError(resp, schemas.BatchListRequest, providerName, "")
 	}
 
@@ -1293,8 +1293,8 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1309,7 +1309,7 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.BatchRetrieveRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -1371,8 +1371,8 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1387,7 +1387,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.BatchCancelRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -1475,8 +1475,8 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/results")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1491,7 +1491,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.BatchResultsRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -1515,7 +1515,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		parseResult := providerUtils.ParseJSONL(body, func(line []byte) error {
 			var anthropicResult AnthropicBatchResultItem
 			if err := sonic.Unmarshal(line, &anthropicResult); err != nil {
-				provider.logger.Warn(fmt.Sprintf("failed to parse batch result line: %v", err))
+				provider.logger.Warn("failed to parse batch result line: %v", err)
 				return err
 			}
 
@@ -1647,8 +1647,8 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
 
-	if key.Value != "" {
-		req.Header.Set("x-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
@@ -1663,7 +1663,7 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseAnthropicError(resp, schemas.FileUploadRequest, providerName, "")
 	}
 
@@ -1742,8 +1742,8 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("x-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 	req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
@@ -1756,7 +1756,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseAnthropicError(resp, schemas.FileListRequest, providerName, "")
 	}
 
@@ -1840,8 +1840,8 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
@@ -1857,7 +1857,7 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.FileRetrieveRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -1917,8 +1917,8 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
@@ -1934,7 +1934,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusNoContent {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.FileDeleteRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2026,8 +2026,8 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value != "" {
-			req.Header.Set("x-api-key", key.Value)
+		if key.Value.GetValue() != "" {
+			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		req.Header.Set("anthropic-beta", AnthropicFilesAPIBetaHeader)
@@ -2043,7 +2043,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 		// Handle error response
 		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 			lastErr = ParseAnthropicError(resp, schemas.FileContentRequest, providerName, "")
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -2110,7 +2110,7 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		jsonData = newData
 	}
 
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.CountTokensRequest,

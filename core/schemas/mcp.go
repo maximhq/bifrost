@@ -25,9 +25,9 @@ type MCPConfig struct {
 }
 
 type MCPToolManagerConfig struct {
-	ToolExecutionTimeout     time.Duration        `json:"tool_execution_timeout"`
-	MaxAgentDepth            int                  `json:"max_agent_depth"`
-	CodeModeBindingLevel     CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
+	ToolExecutionTimeout time.Duration        `json:"tool_execution_timeout"`
+	MaxAgentDepth        int                  `json:"max_agent_depth"`
+	CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
 }
 
 const (
@@ -49,9 +49,9 @@ type MCPClientConfig struct {
 	Name             string            `json:"name"`                        // Client name
 	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
-	ConnectionString *string           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
+	ConnectionString *EnvVar           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
-	Headers          map[string]string `json:"headers,omitempty"`           // Headers to send with the request
+	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request
 	InProcessServer  *server.MCPServer `json:"-"`                           // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
 	// ToolsToExecute semantics:
@@ -67,6 +67,16 @@ type MCPClientConfig struct {
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
 	ConfigHash string `json:"-"` // Config hash for reconciliation (not serialized)
+}
+
+
+// HttpHeaders returns the HTTP headers for the MCP client config.
+func (c *MCPClientConfig) HttpHeaders() map[string]string {
+	headers := make(map[string]string)
+	for key, value := range c.Headers {
+		headers[key] = value.GetValue()
+	}
+	return headers
 }
 
 // MCPConnectionType defines the communication protocol for MCP connections

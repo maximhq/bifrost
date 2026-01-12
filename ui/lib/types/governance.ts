@@ -77,6 +77,7 @@ export interface VirtualKey {
 	customer?: Customer;
 	budget?: Budget;
 	rate_limit?: RateLimit;
+	config_hash?: string; // Present when config is synced from config.json
 }
 
 export interface VirtualKeyProviderConfig {

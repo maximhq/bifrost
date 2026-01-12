@@ -152,3 +152,69 @@ func TestCaseInsensitiveLookup(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPRequest_CaseInsensitiveHeaderLookup(t *testing.T) {
+	tests := []struct {
+		name     string
+		headers  map[string]string
+		key      string
+		expected string
+	}{
+		{
+			name:     "exact match",
+			headers:  map[string]string{"Content-Type": "application/json"},
+			key:      "Content-Type",
+			expected: "application/json",
+		},
+		{
+			name:     "case-insensitive match",
+			headers:  map[string]string{"Content-Type": "application/json"},
+			key:      "content-type",
+			expected: "application/json",
+		},
+		{
+			name:     "authorization header",
+			headers:  map[string]string{"Authorization": "Bearer token123"},
+			key:      "authorization",
+			expected: "Bearer token123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &HTTPRequest{Headers: tt.headers}
+			result := req.CaseInsensitiveHeaderLookup(tt.key)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestHTTPRequest_CaseInsensitiveQueryLookup(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    map[string]string
+		key      string
+		expected string
+	}{
+		{
+			name:     "exact match",
+			query:    map[string]string{"apiKey": "test123"},
+			key:      "apiKey",
+			expected: "test123",
+		},
+		{
+			name:     "case-insensitive match",
+			query:    map[string]string{"ApiKey": "test123"},
+			key:      "apikey",
+			expected: "test123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &HTTPRequest{Query: tt.query}
+			result := req.CaseInsensitiveQueryLookup(tt.key)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

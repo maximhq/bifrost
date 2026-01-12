@@ -202,7 +202,7 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	return nil
 }
 
-// registerTool registers a typed tool handler with the local MCP server.
+// RegisterTool registers a typed tool handler with the local MCP server.
 // This is a convenience function that handles the conversion between typed Go
 // handlers and the MCP protocol.
 //
@@ -460,11 +460,11 @@ func (m *MCPManager) createHTTPConnection(config schemas.MCPClientConfig) (*clie
 	// Prepare connection info
 	connectionInfo := schemas.MCPClientConnectionInfo{
 		Type:          config.ConnectionType,
-		ConnectionURL: config.ConnectionString,
+		ConnectionURL: config.ConnectionString.GetValuePtr(),
 	}
 
 	// Create StreamableHTTP transport
-	httpTransport, err := transport.NewStreamableHTTP(*config.ConnectionString, transport.WithHTTPHeaders(config.Headers))
+	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(config.HttpHeaders()))
 	if err != nil {
 		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
@@ -518,11 +518,11 @@ func (m *MCPManager) createSSEConnection(config schemas.MCPClientConfig) (*clien
 	// Prepare connection info
 	connectionInfo := schemas.MCPClientConnectionInfo{
 		Type:          config.ConnectionType,
-		ConnectionURL: config.ConnectionString, // Reuse HTTPConnectionURL field for SSE URL display
+		ConnectionURL: config.ConnectionString.GetValuePtr(), // Reuse HTTPConnectionURL field for SSE URL display
 	}
 
 	// Create SSE transport
-	sseTransport, err := transport.NewSSE(*config.ConnectionString, transport.WithHeaders(config.Headers))
+	sseTransport, err := transport.NewSSE(config.ConnectionString.GetValue(), transport.WithHeaders(config.HttpHeaders()))
 	if err != nil {
 		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to create SSE transport: %w", err)
 	}

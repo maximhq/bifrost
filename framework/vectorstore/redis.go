@@ -21,10 +21,10 @@ const (
 
 type RedisConfig struct {
 	// Connection settings
-	Addr     string `json:"addr"`               // Redis server address (host:port) - REQUIRED
-	Username string `json:"username,omitempty"` // Username for Redis AUTH (optional)
-	Password string `json:"password,omitempty"` // Password for Redis AUTH (optional)
-	DB       int    `json:"db,omitempty"`       // Redis database number (default: 0)
+	Addr     *schemas.EnvVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
+	Username *schemas.EnvVar `json:"username,omitempty"` // Username for Redis AUTH (optional)
+	Password *schemas.EnvVar `json:"password,omitempty"` // Password for Redis AUTH (optional)
+	DB       *schemas.EnvVar `json:"db,omitempty"`       // Redis database number (default: 0)
 
 	// Connection pool and timeout settings (passed directly to Redis client)
 	PoolSize        int           `json:"pool_size,omitempty"`          // Maximum number of socket connections (optional)
@@ -831,17 +831,27 @@ func buildKey(namespace, id string) string {
 }
 
 // newRedisStore creates a new Redis vector store.
-func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
+func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger) (*RedisStore, error) {
 	// Validate required fields
-	if config.Addr == "" {
+	if config.Addr == nil || config.Addr.GetValue() == "" {
 		return nil, fmt.Errorf("redis addr is required")
 	}
-
+	if config.Username == nil  {
+		config.Username = schemas.NewEnvVar("")
+	}
+	if config.Password == nil  {
+		config.Password = schemas.NewEnvVar("")
+	}
+	db := 0
+	if config.DB != nil  {
+		db = config.DB.CoerceInt(0)
+	}
+	// Preparing the redis connection
 	client := redis.NewClient(&redis.Options{
-		Addr:            config.Addr,
-		Username:        config.Username,
-		Password:        config.Password,
-		DB:              config.DB,
+		Addr:            config.Addr.GetValue(),
+		Username:        config.Username.GetValue(),
+		Password:        config.Password.GetValue(),
+		DB:              db,
 		Protocol:        3, // Explicitly use RESP3 protocol
 		PoolSize:        config.PoolSize,
 		MaxActiveConns:  config.MaxActiveConns,
@@ -853,12 +863,11 @@ func newRedisStore(ctx context.Context, config RedisConfig, logger schemas.Logge
 		ReadTimeout:     config.ReadTimeout,
 		WriteTimeout:    config.WriteTimeout,
 	})
-
+	// Creating store connection
 	store := &RedisStore{
 		client: client,
 		config: config,
 		logger: logger,
 	}
-
 	return store, nil
 }
