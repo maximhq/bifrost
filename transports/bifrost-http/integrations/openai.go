@@ -171,24 +171,30 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
+				// If raw response is available from OpenAI provider, use it directly
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return resp, nil
+				// Convert BifrostChatResponse to OpenAI-compatible format
+				// This ensures clients like MstyStudio receive properly formatted responses
+				return openai.ToOpenAIChatResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+					// If raw response is available from OpenAI provider, use it directly
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
 					}
-					return "", resp, nil
+					// Convert BifrostChatResponse to OpenAI-compatible streaming format
+					// This ensures clients like MstyStudio receive properly formatted responses
+					return "", openai.ToOpenAIChatStreamResponse(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err

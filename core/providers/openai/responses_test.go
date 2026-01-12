@@ -1,346 +1,201 @@
 package openai
 
 import (
-	"strings"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
+func TestToOpenAIChatResponse(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
-		name             string
-		model            string
-		message          schemas.ResponsesMessage
-		expectedIncluded bool
-		description      string
+		name     string
+		input    *schemas.BifrostChatResponse
+		validate func(t *testing.T, result *OpenAIChatResponse)
 	}{
 		{
-			name:  "reasoning-only message skipped for non-gpt-oss model",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
-					EncryptedContent: nil,                                   // nil EncryptedContent
-				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: schemas.Ptr("reasoning text"),
-						},
-					}, // non-empty ContentBlocks
-				},
+			name:  "nil input returns nil",
+			input: nil,
+			validate: func(t *testing.T, result *OpenAIChatResponse) {
+				if result != nil {
+					t.Error("expected nil result for nil input")
+				}
 			},
-			expectedIncluded: false,
-			description:      "Message with ResponsesReasoning != nil, empty Summary, non-empty ContentBlocks, non-gpt-oss model, and nil EncryptedContent should be skipped",
 		},
 		{
-			name:  "message with Summary preserved for non-gpt-oss model",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary: []schemas.ResponsesReasoningSummary{
-						{
-							Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-							Text: "summary text",
+			name: "converts non-streaming response correctly",
+			input: &schemas.BifrostChatResponse{
+				ID:      "chatcmpl-abc123",
+				Object:  "chat.completion",
+				Created: 1234567890,
+				Model:   "gpt-4o-mini",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index:        0,
+						FinishReason: schemas.Ptr("stop"),
+						ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+							Message: &schemas.ChatMessage{
+								Role:    schemas.ChatMessageRoleAssistant,
+								Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+							},
 						},
-					}, // non-empty Summary
-					EncryptedContent: nil,
+					},
 				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: schemas.Ptr("reasoning text"),
+				Usage: &schemas.BifrostLLMUsage{
+					PromptTokens:     10,
+					CompletionTokens: 5,
+					TotalTokens:      15,
+				},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider: schemas.OpenAI,
+					Latency:  100,
+				},
+			},
+			validate: func(t *testing.T, result *OpenAIChatResponse) {
+				if result == nil {
+					t.Fatal("expected non-nil result")
+				}
+				if result.ID != "chatcmpl-abc123" {
+					t.Errorf("expected ID 'chatcmpl-abc123', got '%s'", result.ID)
+				}
+				if result.Usage == nil {
+					t.Fatal("expected usage to be present")
+				}
+				if result.Usage.PromptTokens != 10 {
+					t.Errorf("expected prompt_tokens 10, got %d", result.Usage.PromptTokens)
+				}
+				if result.Usage.CompletionTokens != 5 {
+					t.Errorf("expected completion_tokens 5, got %d", result.Usage.CompletionTokens)
+				}
+				if result.Usage.TotalTokens != 15 {
+					t.Errorf("expected total_tokens 15, got %d", result.Usage.TotalTokens)
+				}
+				if len(result.Choices) != 1 {
+					t.Fatalf("expected 1 choice, got %d", len(result.Choices))
+				}
+				if result.Choices[0].Message == nil {
+					t.Fatal("expected message to be present")
+				}
+				if result.Choices[0].Message.Role != "assistant" {
+					t.Errorf("expected role 'assistant', got '%s'", result.Choices[0].Message.Role)
+				}
+			},
+		},
+		{
+			name: "converts streaming response correctly",
+			input: &schemas.BifrostChatResponse{
+				ID:      "chatcmpl-stream123",
+				Object:  "chat.completion.chunk",
+				Created: 1234567890,
+				Model:   "gpt-4o-mini",
+				Choices: []schemas.BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+							Delta: &schemas.ChatStreamResponseChoiceDelta{
+								Content: schemas.Ptr("Hello"),
+							},
 						},
 					},
 				},
 			},
-			expectedIncluded: true,
-			description:      "Message with non-empty Summary should be preserved even if it has ContentBlocks",
+			validate: func(t *testing.T, result *OpenAIChatResponse) {
+				if result == nil {
+					t.Fatal("expected non-nil result")
+				}
+				if len(result.Choices) != 1 {
+					t.Fatalf("expected 1 choice, got %d", len(result.Choices))
+				}
+				if result.Choices[0].Delta == nil {
+					t.Fatal("expected delta to be present")
+				}
+				if result.Choices[0].Delta.Content == nil || *result.Choices[0].Delta.Content != "Hello" {
+					t.Error("expected delta content 'Hello'")
+				}
+			},
 		},
 		{
-			name:  "message with EncryptedContent preserved for non-gpt-oss model",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
-					EncryptedContent: schemas.Ptr("encrypted"),              // non-nil EncryptedContent
-				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: schemas.Ptr("reasoning text"),
-						},
-					},
+			name: "output does not contain extra_fields",
+			input: &schemas.BifrostChatResponse{
+				ID:      "test",
+				Object:  "chat.completion",
+				Created: 1234567890,
+				Model:   "gpt-4",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider:       schemas.OpenAI,
+					ModelRequested: "openai/gpt-4",
+					Latency:        500,
 				},
 			},
-			expectedIncluded: true,
-			description:      "Message with non-nil EncryptedContent should be preserved even if Summary is empty",
-		},
-		{
-			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
-					EncryptedContent: nil,
-				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // empty ContentBlocks
-				},
+			validate: func(t *testing.T, result *OpenAIChatResponse) {
+				if result == nil {
+					t.Fatal("expected non-nil result")
+				}
+				// Marshal to JSON and check no extra_fields
+				jsonBytes, err := json.Marshal(result)
+				if err != nil {
+					t.Fatalf("failed to marshal result: %v", err)
+				}
+				jsonStr := string(jsonBytes)
+				if contains(jsonStr, "extra_fields") {
+					t.Error("output should not contain extra_fields")
+				}
+				if contains(jsonStr, "latency") {
+					t.Error("output should not contain latency")
+				}
+				if contains(jsonStr, "model_requested") {
+					t.Error("output should not contain model_requested")
+				}
 			},
-			expectedIncluded: true,
-			description:      "Message with empty ContentBlocks should be preserved",
-		},
-		{
-			name:  "message with nil Content preserved for non-gpt-oss model",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
-					EncryptedContent: nil,
-				},
-				Content: nil, // nil Content
-			},
-			expectedIncluded: true,
-			description:      "Message with nil Content should be preserved",
-		},
-		{
-			name:  "reasoning-only message preserved for gpt-oss model",
-			model: "gpt-oss",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
-					EncryptedContent: nil,
-				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-							Text: schemas.Ptr("reasoning text"),
-						},
-					},
-				},
-			},
-			expectedIncluded: true,
-			description:      "Message with reasoning-only content should be preserved for gpt-oss model",
-		},
-		{
-			name:  "message without ResponsesReasoning preserved",
-			model: "gpt-4o",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeText,
-							Text: schemas.Ptr("regular text"),
-						},
-					},
-				},
-			},
-			expectedIncluded: true,
-			description:      "Message without ResponsesReasoning should always be preserved",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			bifrostReq := &schemas.BifrostResponsesRequest{
-				Model: tt.model,
-				Input: []schemas.ResponsesMessage{tt.message},
-			}
-
-			result := ToOpenAIResponsesRequest(bifrostReq)
-
-			if result == nil {
-				t.Fatal("ToOpenAIResponsesRequest returned nil")
-			}
-
-			messageCount := len(result.Input.OpenAIResponsesRequestInputArray)
-			isIncluded := messageCount > 0
-
-			if isIncluded != tt.expectedIncluded {
-				t.Errorf("%s: expected message to be included=%v (messageCount=%d), got included=%v (messageCount=%d)",
-					tt.description, tt.expectedIncluded, func() int {
-						if tt.expectedIncluded {
-							return 1
-						}
-						return 0
-					}(), isIncluded, messageCount)
-			}
-
-			// If message should be included, verify it's actually present
-			if tt.expectedIncluded && messageCount == 0 {
-				t.Error("Expected message to be included but result array is empty")
-			}
-
-			// If message should be excluded, verify it's not present
-			if !tt.expectedIncluded && messageCount > 0 {
-				t.Errorf("Expected message to be excluded but found %d message(s) in result", messageCount)
-			}
+			result := ToOpenAIChatResponse(tt.input)
+			tt.validate(t, result)
 		})
 	}
 }
 
-func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
-	tests := []struct {
-		name              string
-		model             string
-		message           schemas.ResponsesMessage
-		expectedBlocks    int
-		expectedBlockText string
-		description       string
-	}{
-		{
-			name:  "gpt-oss converts Summary to ContentBlocks",
-			model: "gpt-oss",
-			message: schemas.ResponsesMessage{
-				ID:     schemas.Ptr("msg-1"),
-				Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-				Status: schemas.Ptr("completed"),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary: []schemas.ResponsesReasoningSummary{
-						{
-							Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-							Text: "First summary",
-						},
-						{
-							Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-							Text: "Second summary",
-						},
-					},
-					EncryptedContent: nil,
-				},
-				Content: nil, // No ContentBlocks initially
-			},
-			expectedBlocks:    2,
-			expectedBlockText: "First summary",
-			description:       "gpt-oss model should convert Summary to ContentBlocks when Content is nil",
-		},
-		{
-			name:  "gpt-oss preserves message when Content already exists",
-			model: "gpt-oss",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary: []schemas.ResponsesReasoningSummary{
-						{
-							Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-							Text: "summary text",
-						},
-					},
-				},
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeText,
-							Text: schemas.Ptr("existing content"),
-						},
+func TestToOpenAIChatStreamResponse(t *testing.T) {
+	t.Parallel()
+
+	input := &schemas.BifrostChatResponse{
+		ID:     "stream-test",
+		Object: "", // Empty, should default to chunk
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{
+						Content: schemas.Ptr("Hi"),
 					},
 				},
 			},
-			expectedBlocks:    1,
-			expectedBlockText: "existing content",
-			description:       "gpt-oss model should preserve message when Content already exists",
-		},
-		{
-			name:  "gpt-oss variant model converts Summary to ContentBlocks",
-			model: "provider/gpt-oss-variant",
-			message: schemas.ResponsesMessage{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-				ResponsesReasoning: &schemas.ResponsesReasoning{
-					Summary: []schemas.ResponsesReasoningSummary{
-						{
-							Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-							Text: "variant summary",
-						},
-					},
-				},
-				Content: nil,
-			},
-			expectedBlocks:    1,
-			expectedBlockText: "variant summary",
-			description:       "gpt-oss variant model should also convert Summary to ContentBlocks",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bifrostReq := &schemas.BifrostResponsesRequest{
-				Model: tt.model,
-				Input: []schemas.ResponsesMessage{tt.message},
-			}
-
-			result := ToOpenAIResponsesRequest(bifrostReq)
-
-			if result == nil {
-				t.Fatal("ToOpenAIResponsesRequest returned nil")
-			}
-
-			if len(result.Input.OpenAIResponsesRequestInputArray) != 1 {
-				t.Fatalf("Expected 1 message, got %d", len(result.Input.OpenAIResponsesRequestInputArray))
-			}
-
-			resultMsg := result.Input.OpenAIResponsesRequestInputArray[0]
-
-			// Check if Summary was converted to ContentBlocks for gpt-oss
-			if strings.Contains(tt.model, "gpt-oss") && len(tt.message.ResponsesReasoning.Summary) > 0 && tt.message.Content == nil {
-				if resultMsg.Content == nil {
-					t.Fatal("Expected Content to be created from Summary")
-				}
-
-				if len(resultMsg.Content.ContentBlocks) != tt.expectedBlocks {
-					t.Errorf("Expected %d ContentBlocks, got %d", tt.expectedBlocks, len(resultMsg.Content.ContentBlocks))
-				}
-
-				if len(resultMsg.Content.ContentBlocks) > 0 {
-					firstBlock := resultMsg.Content.ContentBlocks[0]
-					if firstBlock.Type != schemas.ResponsesOutputMessageContentTypeReasoning {
-						t.Errorf("Expected ContentBlock type to be reasoning_text, got %s", firstBlock.Type)
-					}
-
-					if firstBlock.Text == nil || *firstBlock.Text != tt.expectedBlockText {
-						t.Errorf("Expected first ContentBlock text to be %q, got %q", tt.expectedBlockText, func() string {
-							if firstBlock.Text == nil {
-								return "<nil>"
-							}
-							return *firstBlock.Text
-						}())
-					}
-				}
-
-				// Verify that original message fields are preserved
-				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
-					t.Errorf("Expected ID to be preserved")
-				}
-				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
-					t.Errorf("Expected Type to be preserved")
-				}
-				if tt.message.Status != nil && (resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
-					t.Errorf("Expected Status to be preserved")
-				}
-				if tt.message.Role != nil && (resultMsg.Role == nil || *resultMsg.Role != *tt.message.Role) {
-					t.Errorf("Expected Role to be preserved")
-				}
-			} else {
-				// For other cases, verify message is preserved as-is
-				if resultMsg.Content != nil && len(resultMsg.Content.ContentBlocks) > 0 {
-					if resultMsg.Content.ContentBlocks[0].Text == nil || *resultMsg.Content.ContentBlocks[0].Text != tt.expectedBlockText {
-						t.Errorf("Expected ContentBlock text to be preserved as %q", tt.expectedBlockText)
-					}
-				}
-			}
-		})
+	result := ToOpenAIChatStreamResponse(input)
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
+	if result.Object != "chat.completion.chunk" {
+		t.Errorf("expected object 'chat.completion.chunk', got '%s'", result.Object)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

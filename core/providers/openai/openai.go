@@ -2283,7 +2283,7 @@ func HandleOpenAITranscriptionStreamRequest(
 			if ctx.Err() != nil {
 				return
 			}
-			
+
 			line := scanner.Text()
 
 			// Skip empty lines and comments
