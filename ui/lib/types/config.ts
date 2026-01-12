@@ -91,7 +91,7 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 export interface ModelProviderKey {
 	id: string;
 	name: string;
-	value?: string;
+	value?: EnvVar;
 	models?: string[];
 	weight: number;
 	enabled?: boolean;
@@ -99,13 +99,18 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	config_hash?: string; // Present when config is synced from config.json
 }
 
 // Default ModelProviderKey
 export const DefaultModelProviderKey: ModelProviderKey = {
 	id: "",
 	name: "",
-	value: "",
+	value: {
+		value: "",
+		env_var: "",
+		from_env: false,
+	},
 	models: [],
 	weight: 1.0,
 	enabled: true,
@@ -206,6 +211,7 @@ export interface ModelProviderConfig {
 export interface ModelProvider extends ModelProviderConfig {
 	name: ModelProviderName;
 	status: ProviderStatus;
+	config_hash?: string; // Present when config is synced from config.json
 }
 
 // ListProvidersResponse matching Go's ListProvidersResponse

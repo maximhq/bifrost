@@ -163,8 +163,8 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodGet)
-	if key.Value != "" {
-		req.Header.Set("x-goog-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-goog-api-key", key.Value.GetValue())
 	}
 
 	// Make request

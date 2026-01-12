@@ -26,7 +26,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
-			Value:  os.Getenv("OPENAI_API_KEY"),
+			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 			Models: []string{"gpt-4o-mini", "gpt-4-turbo"},
 			Weight: 1.0,
 		},

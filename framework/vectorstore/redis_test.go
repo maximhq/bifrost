@@ -33,13 +33,11 @@ type RedisTestSetup struct {
 // NewRedisTestSetup creates a test setup with environment-driven configuration
 func NewRedisTestSetup(t *testing.T) *RedisTestSetup {
 	// Get configuration from environment variables
-	addr := getEnvWithDefault("REDIS_ADDR", DefaultTestAddr)
-	username := os.Getenv("REDIS_USERNAME")
-	password := os.Getenv("REDIS_PASSWORD")
-	db, err := getEnvWithDefaultInt("REDIS_DB", 0)
-	if err != nil {
-		t.Fatalf("Failed to get REDIS_DB: %v", err)
-	}
+
+	addr := schemas.NewEnvVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr))
+	username := schemas.NewEnvVar(os.Getenv("REDIS_USERNAME"))
+	password := schemas.NewEnvVar(os.Getenv("REDIS_PASSWORD"))
+	db := schemas.NewEnvVar(getEnvWithDefault("REDIS_DB", "0"))
 
 	timeoutStr := getEnvWithDefault("REDIS_TIMEOUT", "10s")
 	timeout, err := time.ParseDuration(timeoutStr)
@@ -182,14 +180,14 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name: "valid config",
 			config: RedisConfig{
-				Addr: "localhost:6379",
+				Addr: schemas.NewEnvVar("localhost:6379"),
 			},
 			expectError: false,
 		},
 		{
 			name: "missing addr",
 			config: RedisConfig{
-				Username: "user",
+				Username: schemas.NewEnvVar("user"),
 			},
 			expectError: true,
 			errorMsg:    "redis addr is required",
@@ -197,17 +195,17 @@ func TestRedisConfig_Validation(t *testing.T) {
 		{
 			name: "with credentials",
 			config: RedisConfig{
-				Addr:     "localhost:6379",
-				Username: "default",
-				Password: "",
+				Addr:     schemas.NewEnvVar("localhost:6379"),
+				Username: schemas.NewEnvVar("default"),
+				Password: schemas.NewEnvVar(""),
 			},
 			expectError: false,
 		},
 		{
 			name: "with custom db",
 			config: RedisConfig{
-				Addr: "localhost:6379",
-				DB:   1,
+				Addr: schemas.NewEnvVar("localhost:6379"),
+				DB:   schemas.NewEnvVar("1"),
 			},
 			expectError: false,
 		},
@@ -761,9 +759,9 @@ func TestVectorStoreFactory_Redis(t *testing.T) {
 		Enabled: true,
 		Type:    VectorStoreTypeRedis,
 		Config: RedisConfig{
-			Addr:     getEnvWithDefault("REDIS_ADDR", DefaultTestAddr),
-			Username: os.Getenv("REDIS_USERNAME"),
-			Password: os.Getenv("REDIS_PASSWORD"),
+			Addr:     schemas.NewEnvVar(getEnvWithDefault("REDIS_ADDR", DefaultTestAddr)),
+			Username: schemas.NewEnvVar("env.REDIS_USERNAME"),
+			Password: schemas.NewEnvVar("env.REDIS_PASSWORD"),
 		},
 	}
 

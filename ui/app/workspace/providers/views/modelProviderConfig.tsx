@@ -1,4 +1,5 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isKnownProvider, ModelProvider } from "@/lib/types/config";
 import { useEffect, useMemo, useState } from "react";
@@ -107,6 +108,7 @@ export default function ModelProviderConfig({ provider }: Props) {
 					<ModelProviderKeysTableView className="mt-4" provider={provider} />
 				</>
 			)}
+			{provider.config_hash && <ConfigSyncAlert className="my-2" />}
 		</div>
 	);
 }

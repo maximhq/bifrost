@@ -4,22 +4,23 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 )
 
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
-	ID                     uint    `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
-	ClientID               string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
-	Name                   string  `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
-	IsCodeModeClient       bool    `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
-	ConnectionType         string  `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
-	ConnectionString       *string `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON        *string `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
-	ToolsToExecuteJSON     string  `gorm:"type:text" json:"-"` // JSON serialized []string
-	ToolsToAutoExecuteJSON string  `gorm:"type:text" json:"-"` // JSON serialized []string
-	HeadersJSON            string  `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	ID                     uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.
+	ClientID               string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"client_id"`
+	Name                   string          `gorm:"type:varchar(255);uniqueIndex;not null" json:"name"`
+	IsCodeModeClient       bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
+	ConnectionType         string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
+	ConnectionString       *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
+	StdioConfigJSON        *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
+	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"` // JSON serialized []string
+	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"` // JSON serialized []string
+	HeadersJSON            string          `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -29,10 +30,10 @@ type TableMCPClient struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	StdioConfig        *schemas.MCPStdioConfig `gorm:"-" json:"stdio_config,omitempty"`
-	ToolsToExecute     []string                `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute []string                `gorm:"-" json:"tools_to_auto_execute"`
-	Headers            map[string]string       `gorm:"-" json:"headers"`
+	StdioConfig        *schemas.MCPStdioConfig   `gorm:"-" json:"stdio_config,omitempty"`
+	ToolsToExecute     []string                  `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute []string                  `gorm:"-" json:"tools_to_auto_execute"`
+	Headers            map[string]schemas.EnvVar `gorm:"-" json:"headers"`
 }
 
 // TableName sets the table name for each model
@@ -71,7 +72,15 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if c.Headers != nil {
-		data, err := json.Marshal(c.Headers)
+		headersToSerialize := make(map[string]string, len(c.Headers))
+		for key, value := range c.Headers {
+			if value.IsFromEnv() {
+				headersToSerialize[key] = value.EnvVar
+			} else {
+				headersToSerialize[key] = value.GetValue()
+			}
+		}
+		data, err := json.Marshal(headersToSerialize)
 		if err != nil {
 			return err
 		}
@@ -86,29 +95,25 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	if c.StdioConfigJSON != nil {
 		var config schemas.MCPStdioConfig
-		if err := json.Unmarshal([]byte(*c.StdioConfigJSON), &config); err != nil {
+		if err := sonic.Unmarshal([]byte(*c.StdioConfigJSON), &config); err != nil {
 			return err
 		}
 		c.StdioConfig = &config
 	}
-
 	if c.ToolsToExecuteJSON != "" {
-		if err := json.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {
+		if err := sonic.Unmarshal([]byte(c.ToolsToExecuteJSON), &c.ToolsToExecute); err != nil {
 			return err
 		}
 	}
-
 	if c.ToolsToAutoExecuteJSON != "" {
-		if err := json.Unmarshal([]byte(c.ToolsToAutoExecuteJSON), &c.ToolsToAutoExecute); err != nil {
+		if err := sonic.Unmarshal([]byte(c.ToolsToAutoExecuteJSON), &c.ToolsToAutoExecute); err != nil {
 			return err
 		}
 	}
-
 	if c.HeadersJSON != "" {
-		if err := json.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
+		if err := sonic.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }

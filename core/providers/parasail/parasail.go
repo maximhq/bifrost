@@ -109,8 +109,8 @@ func (provider *ParasailProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *ParasailProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(

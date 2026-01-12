@@ -92,8 +92,8 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	config := key.BedrockKeyConfig
 
 	region := DefaultBedrockRegion
-	if config.Region != nil {
-		region = *config.Region
+	if config.Region != nil  && config.Region.GetValue() != "" {
+		region = config.Region.GetValue()
 	}
 
 	// Create the request with the JSON body
@@ -112,8 +112,8 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
-	if key.Value != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock", provider.GetProviderKey()); err != nil {
@@ -212,7 +212,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
-		region = *key.BedrockKeyConfig.Region
+		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
 	// Create HTTP request for streaming
@@ -226,8 +226,8 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
 	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
-	if key.Value != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		// Sign the request using either explicit credentials or IAM role authentication
@@ -267,7 +267,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 // It sets required headers, calculates the request body hash, and signs the request
 // using the provided AWS credentials.
 // Returns a BifrostError if signing fails.
-func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, accessKey, secretKey string, sessionToken *string, region, service string, providerName schemas.ModelProvider) *schemas.BifrostError {
+func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, accessKey, secretKey schemas.EnvVar, sessionToken *schemas.EnvVar, region, service string, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Set required headers before signing (only if not already set)
 	if req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -302,7 +302,7 @@ func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, accessKey, s
 
 	// If both accessKey and secretKey are empty, use the default credential provider chain
 	// This will automatically use IAM roles, environment variables, shared credentials, etc.
-	if accessKey == "" && secretKey == "" {
+	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
 		cfg, err = config.LoadDefaultConfig(ctx,
 			config.WithRegion(region),
 		)
@@ -312,11 +312,11 @@ func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, accessKey, s
 			config.WithRegion(region),
 			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
 				creds := aws.Credentials{
-					AccessKeyID:     accessKey,
-					SecretAccessKey: secretKey,
+					AccessKeyID:     accessKey.GetValue(),
+					SecretAccessKey: secretKey.GetValue(),
 				}
-				if sessionToken != nil && *sessionToken != "" {
-					creds.SessionToken = *sessionToken
+				if sessionToken != nil && sessionToken.GetValue() != "" {
+					creds.SessionToken = sessionToken.GetValue()
 				}
 				return creds, nil
 			})),
@@ -356,7 +356,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	region := DefaultBedrockRegion
 	if config.Region != nil {
-		region = *config.Region
+		region = config.Region.GetValue()
 	}
 
 	// Build query parameters
@@ -395,10 +395,11 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// If Value is set, use API Key authentication - else use IAM role authentication
-	if key.Value != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
+
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock", providerName); err != nil {
 			return nil, err
 		}
@@ -650,7 +651,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn(fmt.Sprintf("Error decoding %s EventStream message: %v", providerName, err))
+				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
@@ -681,7 +682,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					Bytes []byte `json:"bytes"`
 				}
 				if err := sonic.Unmarshal(message.Payload, &chunkPayload); err != nil {
-					provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload)))
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -851,7 +852,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn(fmt.Sprintf("Error decoding %s EventStream message: %v", providerName, err))
+				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
@@ -876,7 +877,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				// Parse the JSON event into our typed structure
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload)))
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -1141,7 +1142,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn(fmt.Sprintf("Error decoding %s EventStream message: %v", providerName, err))
+				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
@@ -1166,7 +1167,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				// Parse the JSON event into our typed structure
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
-					provider.logger.Debug(fmt.Sprintf("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload)))
+					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -1405,7 +1406,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
-		region = *key.BedrockKeyConfig.Region
+		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
 	// Generate S3 key for the file
@@ -1549,7 +1550,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig != nil {
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 	}
 
@@ -1682,7 +1683,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
 		// Build S3 HEAD request
@@ -1789,7 +1790,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
 		// Build S3 DELETE request
@@ -1879,7 +1880,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
 		// Build S3 GET request
@@ -1976,7 +1977,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	// If its empty then we will honor the role_arn from the key config
 	if roleArn == "" {
 		if key.BedrockKeyConfig.ARN != nil {
-			roleArn = *key.BedrockKeyConfig.ARN
+			roleArn = key.BedrockKeyConfig.ARN.GetValue()
 		}
 	}
 	// And if still we don't get role ARN
@@ -2029,7 +2030,12 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		// Get region for S3 upload
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
+		}
+
+		var sessionKey *string
+		if key.BedrockKeyConfig.SessionToken != nil && key.BedrockKeyConfig.SessionToken.GetValue() != "" {
+			sessionKey = schemas.Ptr(key.BedrockKeyConfig.SessionToken.GetValue())
 		}
 
 		// Convert inline requests to Bedrock JSONL format
@@ -2048,9 +2054,9 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		// Upload to S3 using Bedrock credentials
 		if bifrostErr := uploadToS3(
 			ctx,
-			key.BedrockKeyConfig.AccessKey,
-			key.BedrockKeyConfig.SecretKey,
-			key.BedrockKeyConfig.SessionToken,
+			key.BedrockKeyConfig.AccessKey.GetValue(),
+			key.BedrockKeyConfig.SecretKey.GetValue(),
+			sessionKey,
 			region,
 			bucket,
 			s3Key,
@@ -2105,7 +2111,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
-		region = *key.BedrockKeyConfig.Region
+		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
 	// Create HTTP request
@@ -2235,7 +2241,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig.Region != nil {
-		region = *key.BedrockKeyConfig.Region
+		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
 	// Build URL with query params
@@ -2437,7 +2443,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
 		// URL encode the job ARN
@@ -2586,7 +2592,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil {
-			region = *key.BedrockKeyConfig.Region
+			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
 		// URL encode the job ARN
@@ -2768,7 +2774,7 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 				FileID:   file.ID,
 			})
 			if fileErr != nil {
-				provider.logger.Warn(fmt.Sprintf("failed to download batch result file %s: %v", file.ID, fileErr))
+				provider.logger.Warn("failed to download batch result file %s: %v", file.ID, fileErr)
 				continue
 			}
 
@@ -2806,8 +2812,8 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 	// Default: use model/deployment directly
 	path := fmt.Sprintf("%s/%s", deployment, basePath)
 	// If ARN is present, Bedrock expects the ARN-scoped identifier
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && *key.BedrockKeyConfig.ARN != "" {
-		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", *key.BedrockKeyConfig.ARN, deployment))
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.ARN != nil && key.BedrockKeyConfig.ARN.GetValue() != "" {
+		encodedModelIdentifier := url.PathEscape(fmt.Sprintf("%s/%s", key.BedrockKeyConfig.ARN.GetValue(), deployment))
 		path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 	}
 	return path, deployment

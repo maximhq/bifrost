@@ -38,7 +38,7 @@ echo "✅ Core build validation successful"
 # Run core tests with coverage
 echo "🔧 Running core tests with coverage..."
 cd core
-go test -v -coverprofile=coverage.txt -coverpkg=./... ./...
+go test -v -race -coverprofile=coverage.txt -coverpkg=./... ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then
@@ -119,7 +119,7 @@ echo "🎉 Creating GitHub release for $TITLE..."
 gh release create "$TAG_NAME" \
   --title "$TITLE" \
   --notes "$BODY" \
-  ${PRERELEASE_FLAG} ${LATEST_FLAG}  
+  ${PRERELEASE_FLAG} ${LATEST_FLAG}
 
 echo "✅ Core released successfully"
 echo "success=true" >> "$GITHUB_OUTPUT"

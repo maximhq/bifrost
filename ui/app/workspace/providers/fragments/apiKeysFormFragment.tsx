@@ -2,6 +2,7 @@
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
@@ -144,7 +145,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<FormItem>
 						<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : ""}</FormLabel>
 						<FormControl>
-							<Input placeholder="API Key or env.MY_KEY" type="text" {...field} value={field.value ?? ""} />
+							<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 						</FormControl>
 						<FormMessage />
 					</FormItem>
@@ -187,7 +188,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Endpoint (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -200,7 +201,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>API Version (Optional)</FormLabel>
 								<FormControl>
-									<Input placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -212,7 +213,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
 						<AlertTitle>Azure Entra ID Authentication</AlertTitle>
 						<AlertDescription>
-							To use Azure Entra ID authentication, fill in Client ID, Client Secret, and Tenant ID. Please leave API Key empty when using Entra ID authentication.
+							To use Azure Entra ID authentication, fill in Client ID, Client Secret, and Tenant ID. Please leave API Key empty when using
+							Entra ID authentication.
 						</AlertDescription>
 					</Alert>
 					<FormField
@@ -222,7 +224,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Client ID</FormLabel>
 								<FormControl>
-									<Input placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -235,7 +237,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Client Secret</FormLabel>
 								<FormControl>
-									<Input placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -248,7 +250,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Tenant ID</FormLabel>
 								<FormControl>
-									<Input placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -306,7 +308,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project ID (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -319,7 +321,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Project Number (Required only for fine-tuned models)</FormLabel>
 								<FormControl>
-									<Input placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -332,7 +334,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<Input placeholder="us-central1 or env.VERTEX_REGION" {...field} value={field.value ?? ""} />
+									<EnvVarInput placeholder="us-central1 or env.VERTEX_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -345,47 +347,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
 						</AlertDescription>
 					</Alert>
-					<FormField
-						control={control}
-						name={`key.vertex_key_config.auth_credentials`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Auth Credentials</FormLabel>
-								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
-								<FormControl>
-									<Textarea
-										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-										value={typeof field.value === "string" ? field.value : field.value ? JSON.stringify(field.value || {}, null, 2) : ""}
-										onChange={(e) => field.onChange(e.target.value)}
-										onBlur={(e) => {
-											const value = e.target.value.trim();
-											if (value.startsWith("env.")) {
-												field.onChange(value);
-											} else if (value) {
-												try {
-													try {
-														if (value) JSON.parse(value);
-													} catch {}
-													field.onChange(value);
-												} catch {
-													// leave as string; validation will catch malformed JSON
-												}
-											}
-											field.onBlur();
-										}}
-										rows={4}
-										className="max-w-full font-mono text-sm wrap-anywhere"
-									/>
-								</FormControl>
-								{isRedacted(typeof field.value === "string" ? field.value : "") && (
-									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
-										<Info className="h-3 w-3" />
-										<span>Credentials are stored securely. Edit to update.</span>
-									</div>
-								)}
-							</FormItem>
-						)}
-					/>
+				<FormField
+					control={control}
+					name={`key.vertex_key_config.auth_credentials`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Auth Credentials</FormLabel>
+							<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+							<FormControl>
+								<EnvVarInput
+									variant="textarea"
+									rows={4}
+									placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+									inputClassName="font-mono text-sm"
+									{...field}
+								/>
+							</FormControl>
+							{isRedacted(field.value?.value ?? "") && (
+								<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+									<Info className="h-3 w-3" />
+									<span>Credentials are stored securely. Edit to update.</span>
+								</div>
+							)}
+						</FormItem>
+					)}
+				/>
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.deployments`}
@@ -443,14 +429,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Access Key</FormLabel>
 								<FormControl>
-									<Input
-										placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID"
-										value={field.value ?? ""}
-										onChange={field.onChange}
-										onBlur={field.onBlur}
-										name={field.name}
-										ref={field.ref}
-									/>
+									<EnvVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -463,14 +442,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Secret Key</FormLabel>
 								<FormControl>
-									<Input
-										placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY"
-										value={field.value ?? ""}
-										onChange={field.onChange}
-										onBlur={field.onBlur}
-										name={field.name}
-										ref={field.ref}
-									/>
+									<EnvVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -483,14 +455,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Session Token (Optional)</FormLabel>
 								<FormControl>
-									<Input
-										placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN"
-										value={field.value ?? ""}
-										onChange={field.onChange}
-										onBlur={field.onBlur}
-										name={field.name}
-										ref={field.ref}
-									/>
+									<EnvVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -503,14 +468,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>Region (Required)</FormLabel>
 								<FormControl>
-									<Input
-										placeholder="us-east-1 or env.AWS_REGION"
-										value={field.value ?? ""}
-										onChange={field.onChange}
-										onBlur={field.onBlur}
-										name={field.name}
-										ref={field.ref}
-									/>
+									<EnvVarInput placeholder="us-east-1 or env.AWS_REGION" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>
@@ -523,14 +481,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormItem>
 								<FormLabel>ARN</FormLabel>
 								<FormControl>
-									<Input
-										placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN"
-										value={field.value ?? ""}
-										onChange={field.onChange}
-										onBlur={field.onBlur}
-										name={field.name}
-										ref={field.ref}
-									/>
+									<EnvVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

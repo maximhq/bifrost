@@ -246,6 +246,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													keyPlaceholder="Header name"
 													valuePlaceholder="Header value"
 													label="Headers"
+													useEnvVarInput
 												/>
 											</FormControl>
 											<FormMessage />

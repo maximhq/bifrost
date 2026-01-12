@@ -94,7 +94,7 @@ else
   exit 1
 fi
 sleep 20
-go test -coverprofile=coverage.txt -coverpkg=./... ./...
+go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then
@@ -159,7 +159,7 @@ if [[ "$PREV_TAG" == "$TAG_NAME" ]]; then
 fi
 echo "🔍 Previous tag: $PREV_TAG"
 
-# Get message of the tag  
+# Get message of the tag
 echo "🔍 Getting previous tag message..."
 PREV_CHANGELOG=$(git tag -l --format='%(contents)' "$PREV_TAG")
 echo "📝 Previous changelog body: $PREV_CHANGELOG"
@@ -214,7 +214,7 @@ else
     --title "$TITLE" \
     --notes "$BODY" \
     ${PRERELEASE_FLAG} ${LATEST_FLAG}
-    
+
 fi
 
 echo "✅ Framework released successfully"

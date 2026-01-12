@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 )
 
@@ -97,7 +98,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key := &pc.Keys[i]
 
 			// Clear the actual API key value
-			key.Value = ""
+			key.Value = *schemas.NewEnvVar("")
 
 			// Clear all Azure-related sensitive fields
 			key.AzureEndpoint = nil

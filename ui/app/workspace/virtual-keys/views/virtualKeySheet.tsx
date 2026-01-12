@@ -3,6 +3,7 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
+import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -425,11 +426,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
-				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4  pb-8"
+				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={(e) => e.preventDefault()}
 			>
-				<SheetHeader className="flex flex-col items-start  pt-8">
+				<SheetHeader className="flex flex-col items-start pt-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>
 						{isEditing
@@ -1159,7 +1160,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 								</>
 							)}
 						</div>
-
+						{isEditing && virtualKey?.config_hash && <ConfigSyncAlert className="mt-2" />}
 						{/* Form Footer */}
 						<div className="dark:bg-card border-border bg-white py-6">
 							<div className="flex justify-end gap-2">

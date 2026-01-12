@@ -214,7 +214,7 @@ export default function Providers() {
 							</div>
 						</div>
 					</div>
-					<div className="sticky bottom-0 z-10 bg-zinc-50/80 pt-2 backdrop-blur-sm dark:bg-zinc-900/80">
+					<div className="sticky bottom-0 z-10 bg-zinc-50/80 p-2 backdrop-blur-sm dark:bg-zinc-900/80">
 						<Button
 							variant="outline"
 							size="sm"

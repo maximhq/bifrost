@@ -3717,7 +3717,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 		if k.Enabled != nil && !*k.Enabled {
 			continue
 		}
-		if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
+		if strings.TrimSpace(k.Value.GetValue()) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 			supportedKeys = append(supportedKeys, k)
 		}
 	}
@@ -3775,7 +3775,7 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		}
 
 		// Check key value (or if provider allows empty keys)
-		if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
+		if strings.TrimSpace(k.Value.GetValue()) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 			filteredKeys = append(filteredKeys, k)
 		}
 	}
@@ -3850,7 +3850,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if k.Enabled != nil && !*k.Enabled {
 				continue
 			}
-			if strings.TrimSpace(k.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
+			if strings.TrimSpace(k.Value.GetValue()) != "" || canProviderKeyValueBeEmpty(baseProviderType) {
 				supportedKeys = append(supportedKeys, k)
 			}
 		}
@@ -3861,7 +3861,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if key.Enabled != nil && !*key.Enabled {
 				continue
 			}
-			modelSupported := (slices.Contains(key.Models, model) && (strings.TrimSpace(key.Value) != "" || canProviderKeyValueBeEmpty(baseProviderType))) || len(key.Models) == 0
+			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || canProviderKeyValueBeEmpty(baseProviderType)
+			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

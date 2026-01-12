@@ -11,42 +11,42 @@ import (
 
 // TableKey represents an API key configuration in the database
 type TableKey struct {
-	ID         uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name       string    `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
-	ProviderID uint      `gorm:"index;not null" json:"provider_id"`
-	Provider   string    `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
-	KeyID      string    `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
-	Value      string    `gorm:"type:text;not null" json:"value"`
-	ModelsJSON string    `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight     *float64  `json:"weight"`
-	Enabled    *bool     `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt  time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
+	ID         uint             `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name       string           `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
+	ProviderID uint             `gorm:"index;not null" json:"provider_id"`
+	Provider   string           `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
+	KeyID      string           `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
+	Value      schemas.EnvVar `gorm:"type:text;not null" json:"value"`
+	ModelsJSON string           `gorm:"type:text" json:"-"` // JSON serialized []string
+	Weight     *float64         `json:"weight"`
+	Enabled    *bool            `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt  time.Time        `gorm:"index;not null" json:"created_at"`
+	UpdatedAt  time.Time        `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
 
 	// Azure config fields (embedded instead of separate table for simplicity)
-	AzureEndpoint        *string `gorm:"type:text" json:"azure_endpoint,omitempty"`
-	AzureAPIVersion      *string `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
+	AzureEndpoint        *schemas.EnvVar `gorm:"type:text" json:"azure_endpoint,omitempty"`
+	AzureAPIVersion      *schemas.EnvVar `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
 	AzureDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
-	AzureClientID        *string `gorm:"type:varchar(255)" json:"azure_client_id,omitempty"`
-	AzureClientSecret    *string `gorm:"type:text" json:"azure_client_secret,omitempty"`
-	AzureTenantID        *string `gorm:"type:varchar(255)" json:"azure_tenant_id,omitempty"`
+	AzureClientID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_client_id,omitempty"`
+	AzureClientSecret    *schemas.EnvVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
+	AzureTenantID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_tenant_id,omitempty"`
 
 	// Vertex config fields (embedded)
-	VertexProjectID       *string `gorm:"type:varchar(255)" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber   *string `gorm:"type:varchar(255)" json:"vertex_project_number,omitempty"`
-	VertexRegion          *string `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
-	VertexAuthCredentials *string `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
+	VertexProjectID       *schemas.EnvVar `gorm:"type:varchar(255)" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber   *schemas.EnvVar `gorm:"type:varchar(255)" json:"vertex_project_number,omitempty"`
+	VertexRegion          *schemas.EnvVar `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
+	VertexAuthCredentials *schemas.EnvVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 	VertexDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
-	BedrockAccessKey         *string `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
-	BedrockSecretKey         *string `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
-	BedrockSessionToken      *string `gorm:"type:text" json:"bedrock_session_token,omitempty"`
-	BedrockRegion            *string `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
-	BedrockARN               *string `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockAccessKey         *schemas.EnvVar `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
+	BedrockSecretKey         *schemas.EnvVar `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
+	BedrockSessionToken      *schemas.EnvVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
+	BedrockRegion            *schemas.EnvVar `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
+	BedrockARN               *schemas.EnvVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
 	BedrockDeploymentsJSON   *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
@@ -63,8 +63,9 @@ type TableKey struct {
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
 
+// BeforeSave is called before saving the key to the database
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
-
+	// BeforeSave is called before saving the key to the database
 	if k.Models != nil {
 		data, err := json.Marshal(k.Models)
 		if err != nil {
@@ -74,14 +75,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	} else {
 		k.ModelsJSON = "[]"
 	}
-
+	// BeforeSave is called before saving the key to the database
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
 	}
-
+	// BeforeSave is called before saving the key to the database
 	if k.AzureKeyConfig != nil {
-		if k.AzureKeyConfig.Endpoint != "" {
+		if k.AzureKeyConfig.Endpoint.GetValue() != "" {
 			k.AzureEndpoint = &k.AzureKeyConfig.Endpoint
 		} else {
 			k.AzureEndpoint = nil
@@ -108,24 +109,24 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.AzureClientSecret = nil
 		k.AzureTenantID = nil
 	}
-
+	// BeforeSave is called before saving the key to the database
 	if k.VertexKeyConfig != nil {
-		if k.VertexKeyConfig.ProjectID != "" {
+		if k.VertexKeyConfig.ProjectID.GetValue() != "" {
 			k.VertexProjectID = &k.VertexKeyConfig.ProjectID
 		} else {
 			k.VertexProjectID = nil
 		}
-		if k.VertexKeyConfig.ProjectNumber != "" {
+		if k.VertexKeyConfig.ProjectNumber.GetValue() != "" {
 			k.VertexProjectNumber = &k.VertexKeyConfig.ProjectNumber
 		} else {
 			k.VertexProjectNumber = nil
 		}
-		if k.VertexKeyConfig.Region != "" {
+		if k.VertexKeyConfig.Region.GetValue() != "" {
 			k.VertexRegion = &k.VertexKeyConfig.Region
 		} else {
 			k.VertexRegion = nil
 		}
-		if k.VertexKeyConfig.AuthCredentials != "" {
+		if k.VertexKeyConfig.AuthCredentials.GetValue() != "" {
 			k.VertexAuthCredentials = &k.VertexKeyConfig.AuthCredentials
 		} else {
 			k.VertexAuthCredentials = nil
@@ -147,14 +148,14 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexAuthCredentials = nil
 		k.VertexDeploymentsJSON = nil
 	}
-
+	// BeforeSave is called before saving the key to the database
 	if k.BedrockKeyConfig != nil {
-		if k.BedrockKeyConfig.AccessKey != "" {
+		if k.BedrockKeyConfig.AccessKey.GetValue() != "" {
 			k.BedrockAccessKey = &k.BedrockKeyConfig.AccessKey
 		} else {
 			k.BedrockAccessKey = nil
 		}
-		if k.BedrockKeyConfig.SecretKey != "" {
+		if k.BedrockKeyConfig.SecretKey.GetValue() != "" {
 			k.BedrockSecretKey = &k.BedrockKeyConfig.SecretKey
 		} else {
 			k.BedrockSecretKey = nil
@@ -202,16 +203,18 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	} else {
 		k.Models = []string{}
 	}
-
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
 	}
-
+	if k.UseForBatchAPI == nil {
+		useForBatchAPI := false // DB default
+		k.UseForBatchAPI = &useForBatchAPI
+	}
 	// Reconstruct Azure config if fields are present
 	if k.AzureEndpoint != nil {
 		azureConfig := &schemas.AzureKeyConfig{
-			Endpoint:     "",
+			Endpoint:     *schemas.NewEnvVar(""),
 			APIVersion:   k.AzureAPIVersion,
 			ClientID:     k.AzureClientID,
 			ClientSecret: k.AzureClientSecret,
@@ -234,7 +237,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 
 		k.AzureKeyConfig = azureConfig
 	}
-
 	// Reconstruct Vertex config if fields are present
 	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || (k.VertexDeploymentsJSON != nil && *k.VertexDeploymentsJSON != "") {
 		config := &schemas.VertexKeyConfig{}
@@ -265,7 +267,6 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 
 		k.VertexKeyConfig = config
 	}
-
 	// Reconstruct Bedrock config if fields are present
 	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || (k.BedrockDeploymentsJSON != nil && *k.BedrockDeploymentsJSON != "") || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
 		bedrockConfig := &schemas.BedrockKeyConfig{}
@@ -302,6 +303,5 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 
 		k.BedrockKeyConfig = bedrockConfig
 	}
-
 	return nil
 }
