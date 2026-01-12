@@ -437,7 +437,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 		}
 		// Map ServerToolUse.WebSearchRequests to NumSearchQueries
 		if response.Usage.ServerToolUse != nil {
-			completionTokensDetails.NumSearchQueries = &response.Usage.ServerToolUse.WebSearchRequests
+			numSearchQueries := response.Usage.ServerToolUse.WebSearchRequests
+			completionTokensDetails.NumSearchQueries = &numSearchQueries
 		}
 
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
@@ -464,7 +465,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 
 		// Map ServiceTier to bifrost response
 		if response.Usage.ServiceTier != "" {
-			bifrostResponse.ServiceTier = &response.Usage.ServiceTier
+			serviceTier := response.Usage.ServiceTier
+			bifrostResponse.ServiceTier = &serviceTier
 		}
 	}
 
