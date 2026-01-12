@@ -439,11 +439,11 @@ func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.R
 		if apiKey != "" {
 			key := schemas.Key{
 				ID:               uuid.New().String(),
-				Value:            apiKey,
+				Value:            *schemas.NewEnvVar(apiKey),
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
 			}
 			if region != "" {
-				key.BedrockKeyConfig.Region = &region
+				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			return nil
@@ -457,15 +457,15 @@ func bedrockBatchPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.R
 			key := schemas.Key{
 				ID: uuid.New().String(),
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: accessKey,
-					SecretKey: secretKey,
+					AccessKey: *schemas.NewEnvVar(accessKey),
+					SecretKey: *schemas.NewEnvVar(secretKey),
 				},
 			}
 
-			key.BedrockKeyConfig.Region = &region
+			key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
 
 			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = &sessionToken
+				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
 			}
 
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
@@ -1076,13 +1076,13 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			// Case 1: API Key Authentication
 			key := schemas.Key{
 				ID:    uuid.New().String(),
-				Value: apiKey,
+				Value: *schemas.NewEnvVar(apiKey),
 				// BedrockKeyConfig is required by the provider even if using API Key
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{},
 			}
 
 			if region != "" {
-				key.BedrockKeyConfig.Region = &region
+				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 			return nil
@@ -1095,17 +1095,17 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			key := schemas.Key{
 				ID: uuid.New().String(),
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: accessKey,
-					SecretKey: secretKey,
+					AccessKey: *schemas.NewEnvVar(accessKey),
+					SecretKey: *schemas.NewEnvVar(secretKey),
 				},
 			}
 
 			if region != "" {
-				key.BedrockKeyConfig.Region = &region
+				key.BedrockKeyConfig.Region = schemas.NewEnvVar(region)
 			}
 
 			if sessionToken != "" {
-				key.BedrockKeyConfig.SessionToken = &sessionToken
+				key.BedrockKeyConfig.SessionToken = schemas.NewEnvVar(sessionToken)
 			}
 
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)

@@ -42,8 +42,7 @@
                 "provider_configs": [
                     {
                         "allowed_keys": [
-                            "azure-us-key-1-prod",
-                            "azure-us-key-2-prod"
+                            "azure-us-key-1-prod"                            
                         ],
                         "provider": "azure",
                         "weight": 0.5

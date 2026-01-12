@@ -76,8 +76,9 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	keyValue := key.Value.GetValue()
+	if keyValue != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
 	}
 
 	// Make request
@@ -155,8 +156,9 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	keyValue := key.Value.GetValue()
+	if keyValue != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + keyValue}
 	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
@@ -198,8 +200,9 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	keyValue := key.Value.GetValue()
+	if keyValue != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + keyValue}
 	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
@@ -241,8 +244,9 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 // ResponsesStream performs a streaming responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	keyValue := key.Value.GetValue()
+	if keyValue != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + keyValue}
 	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,

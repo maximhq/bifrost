@@ -17,8 +17,13 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyIndex }: P
 	const successMessage = isEditing ? "Key updated successfully" : "Key added successfully";
 
 	return (
-		<Sheet open={show} onOpenChange={(open) => { if (!open) onCancel(); }}>
-			<SheetContent className="custom-scrollbar bg-white dark:bg-card p-4">
+		<Sheet
+			open={show}
+			onOpenChange={(open) => {
+				if (!open) onCancel();
+			}}
+		>
+			<SheetContent className="custom-scrollbar dark:bg-card bg-white p-4">
 				<SheetHeader>
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

@@ -12,15 +12,22 @@ export const customProviderNameSchema = z.string().min(1, "Custom provider name 
 // Model provider name schema (union of known and custom providers)
 export const modelProviderNameSchema = z.union([knownProviderSchema, customProviderNameSchema]);
 
+// EnvVar schema - matches the Go EnvVar type from schemas/env.go
+export const envVarSchema = z.object({
+	value: z.string().optional(),
+	env_var: z.string().optional(),
+	from_env: z.boolean().optional(),
+});
+
 // Azure key config schema
 export const azureKeyConfigSchema = z
 	.object({
-		endpoint: z.url("Must be a valid URL"),
+		endpoint: envVarSchema,
 		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
-		api_version: z.string().optional(),
-		client_id: z.string().optional(),
-		client_secret: z.string().optional(),
-		tenant_id: z.string().optional(),
+		api_version: envVarSchema.optional(),
+		client_id: envVarSchema.optional(),
+		client_secret: envVarSchema.optional(),
+		tenant_id: envVarSchema.optional(),
 	})
 	.refine(
 		(data) => {
@@ -54,10 +61,10 @@ export const azureKeyConfigSchema = z
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
-		project_id: z.string().min(1, "Project ID is required"),
-		project_number: z.string().optional(),
-		region: z.string().min(1, "Region is required"),
-		auth_credentials: z.string().optional(),
+		project_id: envVarSchema,
+		project_number: envVarSchema.optional(),
+		region: envVarSchema,
+		auth_credentials: envVarSchema.optional(),
 		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 	})
 	.refine(
@@ -103,11 +110,11 @@ export const batchS3ConfigSchema = z.object({
 // Bedrock key config schema
 export const bedrockKeyConfigSchema = z
 	.object({
-		access_key: z.string().min(1, "Access key is required").optional(),
-		secret_key: z.string().min(1, "Secret key is required").optional(),
-		session_token: z.string().optional(),
-		region: z.string().min(1, "Region is required"),
-		arn: z.string().optional(),
+		access_key: envVarSchema.optional(),
+		secret_key: envVarSchema.optional(),
+		session_token: envVarSchema.optional(),
+		region: envVarSchema.optional(),
+		arn: envVarSchema.optional(),
 		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 		batch_s3_config: batchS3ConfigSchema.optional(),
 	})
@@ -145,7 +152,7 @@ export const modelProviderKeySchema = z
 	.object({
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
-		value: z.string().optional(),
+		value: envVarSchema.optional(),
 		models: z.array(z.string()).default([]).optional(),
 		weight: z.union([
 			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
@@ -179,7 +186,7 @@ export const modelProviderKeySchema = z
 				return true;
 			}
 			// Otherwise, value is required
-			return data.value && data.value.length > 0;
+			return data.value?.value && data.value?.value?.length > 0;
 		},
 		{
 			message: "Value is required",
@@ -612,7 +619,7 @@ export const mcpClientUpdateSchema = z.object({
 		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
 		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
 		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
-	headers: z.record(z.string(), z.string()).optional(),
+	headers: z.record(z.string(), envVarSchema).optional(),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -720,6 +727,7 @@ export const globalHeaderFilterFormSchema = z.object({
 });
 
 // Export type inference helpers
+export type EnvVar = z.infer<typeof envVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
 export type NetworkConfigSchema = z.infer<typeof networkConfigSchema>;

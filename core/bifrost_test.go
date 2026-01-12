@@ -612,7 +612,7 @@ func (ma *MockAccount) AddProvider(provider schemas.ModelProvider, concurrency i
 	ma.keys[provider] = []schemas.Key{
 		{
 			ID:     fmt.Sprintf("test-key-%s", provider),
-			Value:  fmt.Sprintf("sk-test-%s", provider),
+			Value:  *schemas.NewEnvVar(fmt.Sprintf("sk-test-%s", provider)),
 			Weight: 100,
 		},
 	}

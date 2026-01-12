@@ -20,8 +20,8 @@ import (
 func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
 	// Service Principal authentication
 	if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientID != nil &&
-		key.AzureKeyConfig.ClientSecret != nil && key.AzureKeyConfig.TenantID != nil && *key.AzureKeyConfig.ClientID != "" && *key.AzureKeyConfig.ClientSecret != "" && *key.AzureKeyConfig.TenantID != "" {
-		cred, err := provider.getOrCreateAuth(*key.AzureKeyConfig.TenantID, *key.AzureKeyConfig.ClientID, *key.AzureKeyConfig.ClientSecret)
+		key.AzureKeyConfig.ClientSecret != nil && key.AzureKeyConfig.TenantID != nil && key.AzureKeyConfig.ClientID.GetValue() != "" && key.AzureKeyConfig.ClientSecret.GetValue() != "" && key.AzureKeyConfig.TenantID.GetValue() != "" {
+		cred, err := provider.getOrCreateAuth(key.AzureKeyConfig.TenantID.GetValue(), key.AzureKeyConfig.ClientID.GetValue(), key.AzureKeyConfig.ClientSecret.GetValue())
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to get or create Azure authentication", err, schemas.Azure)
 		}
@@ -51,7 +51,7 @@ func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.R
 
 	// API key authentication
 	req.Header.Del("Authorization")
-	req.Header.Set("api-key", key.Value)
+	req.Header.Set("api-key", key.Value.GetValue())
 	return nil
 }
 

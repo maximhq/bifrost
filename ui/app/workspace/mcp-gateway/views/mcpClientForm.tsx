@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -29,11 +30,13 @@ const emptyStdioConfig: MCPStdioConfig = {
 	envs: [],
 };
 
+const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
+
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
 	is_code_mode_client: false,
 	connection_type: "http",
-	connection_string: "",
+	connection_string: emptyEnvVar,
 	stdio_config: emptyStdioConfig,
 	headers: {},
 };
@@ -79,17 +82,24 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		}));
 	};
 
-	const handleHeadersChange = (value: Record<string, string>) => {
+	const handleHeadersChange = (value: Record<string, EnvVar>) => {
 		setForm((prev) => ({ ...prev, headers: value }));
+	};
+
+	const handleConnectionStringChange = (value: EnvVar) => {
+		setForm((prev) => ({
+			...prev,
+			connection_string: value,
+		}));
 	};
 
 	// Validate headers format
 	const validateHeaders = (): string | null => {
 		if ((form.connection_type === "http" || form.connection_type === "sse") && form.headers) {
-			// Ensure all values are strings
-			for (const [key, value] of Object.entries(form.headers)) {
-				if (typeof value !== "string") {
-					return `Header "${key}" must have a string value`;
+			// Ensure all EnvVar values have either a value or env_var
+			for (const [key, envVar] of Object.entries(form.headers)) {
+				if (!envVar.value && !envVar.env_var) {
+					return `Header "${key}" must have a value`;
 				}
 			}
 		}
@@ -97,6 +107,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	};
 
 	const headersValidationError = validateHeaders();
+
+	// Get the connection string value for validation
+	const connectionStringValue = form.connection_string?.value || "";
 
 	const validator = new Validator([
 		// Name validation
@@ -111,9 +124,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		// Connection type specific validation
 		...(form.connection_type === "http" || form.connection_type === "sse"
 			? [
-					Validator.required(form.connection_string?.trim(), "Connection URL is required"),
+					Validator.required(connectionStringValue?.trim(), "Connection URL is required"),
 					Validator.pattern(
-						form.connection_string || "",
+						connectionStringValue,
 						/^((https?:\/\/.+)|(env\.[A-Z_]+))$/,
 						"Connection URL must start with http://, https://, or be an environment variable (env.VAR_NAME)",
 					),
@@ -236,9 +249,9 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									</TooltipProvider>
 								</div>
 
-								<Input
-									value={form.connection_string || ""}
-									onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleChange("connection_string", e.target.value)}
+								<EnvVarInput
+									value={form.connection_string}
+									onChange={handleConnectionStringChange}
 									placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
 								/>
 							</div>
@@ -249,6 +262,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									keyPlaceholder="Header name"
 									valuePlaceholder="Header value"
 									label="Headers (Optional)"
+									useEnvVarInput
 								/>
 								{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
 							</div>

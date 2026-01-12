@@ -117,7 +117,7 @@ cd transports
 
 # Run unit tests with coverage
 echo "🧪 Running unit tests with coverage..."
-go test -coverprofile=coverage.txt -coverpkg=./... ./...
+go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
 
 # Upload coverage to Codecov
 if [ -n "${CODECOV_TOKEN:-}" ]; then
@@ -181,13 +181,13 @@ EXPECTED_SERVICES=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" config -
 while [ $ELAPSED -lt $MAX_WAIT ]; do
   # Get running container count
   RUNNING_COUNT=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
-  
+
   # Check health status: count healthy and unhealthy (starting/unhealthy) services
   # Services without healthchecks will show empty health status
   HEALTH_OUTPUT=$(docker compose -f "$CONFIGS_DIR/docker-compose.yml" ps --format "{{.Name}}:{{.Health}}" 2>/dev/null)
   HEALTHY_COUNT=$(echo "$HEALTH_OUTPUT" | grep -c ":healthy") || HEALTHY_COUNT=0
   UNHEALTHY_COUNT=$(echo "$HEALTH_OUTPUT" | grep -cE ":(starting|unhealthy)") || UNHEALTHY_COUNT=0
-  
+
   # All services are ready when:
   # 1. All expected services are running
   # 2. No services are in "starting" or "unhealthy" state
@@ -196,7 +196,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     echo "✅ All Docker services are ready ($HEALTHY_COUNT with healthchecks, ${ELAPSED}s)"
     break
   fi
-  
+
   sleep 2
   ELAPSED=$((ELAPSED + 2))
   echo "   ⏳ Waiting for services... ($RUNNING_COUNT/$EXPECTED_SERVICES running, $HEALTHY_COUNT healthy, $UNHEALTHY_COUNT starting, ${ELAPSED}s/${MAX_WAIT}s)"
@@ -227,43 +227,43 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   echo "    🧹 Cleaning up SQLite database files for config: $config..."
   find "$config_path" -type f \( -name "*.db" -o -name "*.db-shm" -o -name "*.db-wal" \) -delete 2>/dev/null || true
   echo "    ✅ Database cleanup complete"
-  
+
   if [ ! -d "$config_path" ]; then
     echo "    ⚠️  Warning: Config directory not found: $config_path (skipping)"
     continue
   fi
-  
+
   # Create a temporary log file for server output
   SERVER_LOG=$(mktemp)
-  
+
   # Start the server in background with a timeout, logging to file and console
   timeout 120s $TEST_BINARY --app-dir "$config_path" --port 18080 --log-level debug 2>&1 | tee "$SERVER_LOG" &
   SERVER_PID=$!
-  
+
   # Wait for server to be ready by looking for the startup message
   echo "    ⏳ Waiting for server to start..."
   MAX_WAIT=30
   ELAPSED=0
   SERVER_READY=false
-  
+
   while [ $ELAPSED -lt $MAX_WAIT ]; do
     if grep -q "successfully started bifrost, serving UI on http://localhost:18080" "$SERVER_LOG" 2>/dev/null; then
       SERVER_READY=true
       echo "    ✅ Server started successfully with config: $config"
       break
     fi
-    
+
     # Check if server process is still running
     if ! kill -0 $SERVER_PID 2>/dev/null; then
       echo "    ❌ Server process died before starting with config: $config"
       rm -f "$SERVER_LOG"
       exit 1
     fi
-    
+
     sleep 1
     ELAPSED=$((ELAPSED + 1))
   done
-  
+
   if [ "$SERVER_READY" = false ]; then
     echo "    ❌ Server failed to start within ${MAX_WAIT}s with config: $config"
     kill $SERVER_PID 2>/dev/null || true
@@ -271,7 +271,7 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
     rm -f "$SERVER_LOG"
     exit 1
   fi
-  
+
   # Run get_curls.sh to test all GET endpoints
   echo "    🧪 Running API endpoint tests..."
   echo "    🔍 DEBUG: SCRIPT_DIR=$SCRIPT_DIR"
@@ -279,11 +279,11 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   GET_CURLS_SCRIPT="$SCRIPT_DIR/get_curls.sh"
   echo "    🔍 DEBUG: GET_CURLS_SCRIPT=$GET_CURLS_SCRIPT"
   echo "    🔍 DEBUG: File exists check: $([ -f "$GET_CURLS_SCRIPT" ] && echo 'YES' || echo 'NO')"
-  
+
   if [ -f "$GET_CURLS_SCRIPT" ]; then
     BASE_URL="http://localhost:18080" "$GET_CURLS_SCRIPT"
     CURL_EXIT_CODE=$?
-    
+
     if [ $CURL_EXIT_CODE -eq 0 ]; then
       echo "    ✅ API endpoint tests passed for config: $config"
     else
@@ -296,14 +296,14 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
   else
     echo "    ⚠️  Warning: get_curls.sh not found at $GET_CURLS_SCRIPT (skipping endpoint tests)"
   fi
-  
+
   # Kill the server
   kill $SERVER_PID 2>/dev/null || true
   wait $SERVER_PID 2>/dev/null || true
-  
+
   # Clean up log file
   rm -f "$SERVER_LOG"
-  
+
   # Clean up any lingering processes
   sleep 1
 done

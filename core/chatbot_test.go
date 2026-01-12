@@ -61,7 +61,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.OpenAI:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models: []string{"gpt-4o-mini", "gpt-4-turbo", "gpt-4o"},
 				Weight: 1.0,
 			},
@@ -69,7 +69,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Anthropic:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("ANTHROPIC_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.ANTHROPIC_API_KEY"),
 				Models: []string{"claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20240620", "claude-2.1"},
 				Weight: 1.0,
 			},
@@ -77,7 +77,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Bedrock:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("BEDROCK_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.BEDROCK_API_KEY"),
 				Models: []string{"anthropic.claude-v2:1", "mistral.mixtral-8x7b-instruct-v0:1", "mistral.mistral-large-2402-v1:0", "anthropic.claude-3-sonnet-20240229-v1:0"},
 				Weight: 1.0,
 			},
@@ -85,7 +85,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Cohere:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("COHERE_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.COHERE_API_KEY"),
 				Models: []string{"command-a-03-2025", "c4ai-aya-vision-8b"},
 				Weight: 1.0,
 			},
@@ -93,7 +93,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Azure:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("AZURE_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.AZURE_API_KEY"),
 				Models: []string{"gpt-4o"},
 				Weight: 1.0,
 			},
@@ -101,7 +101,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Vertex:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("VERTEX_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
 				Models: []string{"gemini-pro", "gemini-1.5-pro"},
 				Weight: 1.0,
 			},
@@ -109,7 +109,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Mistral:
 		return []schemas.Key{
 			{
-				Value:  os.Getenv("MISTRAL_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.MISTRAL_API_KEY"),
 				Models: []string{"mistral-large-2411", "pixtral-12b-latest"},
 				Weight: 1.0,
 			},
@@ -117,7 +117,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Ollama:
 		return []schemas.Key{
 			{
-				Value:  "", // Ollama is keyless
+				Value:  *schemas.NewEnvVar(""), // Ollama is keyless
 				Models: []string{"llama3.2", "llama3.1", "mistral", "codellama"},
 				Weight: 1.0,
 			},
@@ -243,7 +243,7 @@ func NewChatSession(config ChatbotConfig) (*ChatSession, error) {
 		schemas.MCPClientConfig{
 			Name:             "gmail-mcp",
 			ConnectionType:   schemas.MCPConnectionTypeSSE,
-			ConnectionString: bifrost.Ptr("https://mcp.composio.dev/composio/server/654c1e3f-ea7d-47b6-9e31-398d00449654/sse"),
+			ConnectionString: schemas.NewEnvVar("https://mcp.composio.dev/composio/server/654c1e3f-ea7d-47b6-9e31-398d00449654/sse"),
 		},
 	)
 
@@ -308,7 +308,7 @@ func (s *ChatSession) getAvailableProviders() []schemas.ModelProvider {
 		}
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		keys, err := s.account.GetKeysForProvider(ctx, provider)
-		if err == nil && len(keys) > 0 && keys[0].Value != "" {
+		if err == nil && len(keys) > 0 && keys[0].Value.GetValue() != "" {
 			availableProviders = append(availableProviders, provider)
 		}
 	}

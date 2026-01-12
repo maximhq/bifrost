@@ -86,8 +86,8 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value != "" {
-		req.Header.Set("xi-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
 	// Make request
@@ -212,8 +212,8 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("xi-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -335,8 +335,8 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("xi-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
 	req.SetBody(jsonBody)
@@ -411,7 +411,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+				provider.logger.Warn("Error reading stream: %v", err)
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.SpeechStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
@@ -511,8 +511,8 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
-	if key.Value != "" {
-		req.Header.Set("xi-api-key", key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 	req.SetBody(body.Bytes())
 
@@ -521,7 +521,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
 			Model:       request.Model,

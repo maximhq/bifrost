@@ -19,13 +19,12 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 	if scheme == "" {
 		scheme = "http"
 	}
-
-	host := os.Getenv("WEAVIATE_HOST")
-	if host == "" {
-		host = "localhost:9000"
+	host := schemas.NewEnvVar("env.WEAVIATE_HOST")
+	if host.GetValue() == "" {
+		host = schemas.NewEnvVar("localhost:9000")
 	}
 
-	apiKey := os.Getenv("WEAVIATE_API_KEY")
+	apiKey := schemas.NewEnvVar("env.WEAVIATE_API_KEY")
 
 	timeoutStr := os.Getenv("WEAVIATE_TIMEOUT")
 	timeout := 30 // default
@@ -45,21 +44,14 @@ func getWeaviateConfigFromEnv() vectorstore.WeaviateConfig {
 
 // getRedisConfigFromEnv retrieves Redis configuration from environment variables
 func getRedisConfigFromEnv() vectorstore.RedisConfig {
-	addr := os.Getenv("REDIS_ADDR")
-	if addr == "" {
-		addr = "localhost:6379"
+	addr := schemas.NewEnvVar("env.REDIS_ADDR")
+	if addr.GetValue() == "" {
+		addr = schemas.NewEnvVar("localhost:6379")
 	}
-	username := os.Getenv("REDIS_USERNAME")
-	password := os.Getenv("REDIS_PASSWORD")
-	db := os.Getenv("REDIS_DB")
-	if db == "" {
-		db = "0"
-	}
-	dbInt, err := strconv.Atoi(db)
-	if err != nil {
-		dbInt = 0
-	}
-
+	username := schemas.NewEnvVar("env.REDIS_USERNAME")
+	password := schemas.NewEnvVar("env.REDIS_PASSWORD")
+	db := schemas.NewEnvVar("env.REDIS_DB")
+	
 	timeoutStr := os.Getenv("REDIS_TIMEOUT")
 	if timeoutStr == "" {
 		timeoutStr = "10s"
@@ -73,7 +65,7 @@ func getRedisConfigFromEnv() vectorstore.RedisConfig {
 		Addr:           addr,
 		Username:       username,
 		Password:       password,
-		DB:             dbInt,
+		DB:             db,
 		ContextTimeout: timeout,
 	}
 }
@@ -88,7 +80,7 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, providerKey schemas.ModelProvider) ([]schemas.Key, error) {
 	return []schemas.Key{
 		{
-			Value:  os.Getenv("OPENAI_API_KEY"),
+			Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 			Models: []string{}, // Empty models array means it supports ALL models
 			Weight: 1.0,
 		},
@@ -340,7 +332,7 @@ func NewTestSetup(t *testing.T) *TestSetup {
 		CleanUpOnShutdown: true,
 		Keys: []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -578,7 +570,7 @@ func CreateTestSetupWithConversationThreshold(t *testing.T, threshold int) *Test
 		ConversationHistoryThreshold: threshold,
 		Keys: []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -599,7 +591,7 @@ func CreateTestSetupWithExcludeSystemPrompt(t *testing.T, excludeSystem bool) *T
 		ExcludeSystemPrompt: &excludeSystem,
 		Keys: []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},
@@ -621,7 +613,7 @@ func CreateTestSetupWithThresholdAndExcludeSystem(t *testing.T, threshold int, e
 		ExcludeSystemPrompt:          &excludeSystem,
 		Keys: []schemas.Key{
 			{
-				Value:  os.Getenv("OPENAI_API_KEY"),
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
 				Models: []string{},
 				Weight: 1.0,
 			},

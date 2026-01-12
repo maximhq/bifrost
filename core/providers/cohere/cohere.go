@@ -152,7 +152,6 @@ func (provider *CohereProvider) completeRequest(ctx *schemas.BifrostContext, jso
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body())))
 		return nil, latency, parseCohereError(resp, meta)
 	}
 
@@ -198,8 +197,8 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(provider.buildRequestURL(ctx, fmt.Sprintf("/v1/models?%s", params.Encode()), schemas.ListModelsRequest))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value))
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	}
 
 	// Make request
@@ -296,7 +295,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ChatCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ChatCompletionRequest,
@@ -377,8 +376,8 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -467,7 +466,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				// Parse the unified streaming event
 				var event CohereStreamEvent
 				if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-					provider.logger.Warn(fmt.Sprintf("Failed to parse stream event: %v", err))
+					provider.logger.Warn("Failed to parse stream event: %v", err)
 					continue
 				}
 
@@ -525,7 +524,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			provider.logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
@@ -550,7 +549,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Convert to Cohere v2 request
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/chat", schemas.ResponsesRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ResponsesRequest,
@@ -632,8 +631,8 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	// Set headers
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -738,7 +737,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			// Parse the unified streaming event
 			var event CohereStreamEvent
 			if err := sonic.Unmarshal([]byte(eventData), &event); err != nil {
-				provider.logger.Warn(fmt.Sprintf("Failed to parse stream event: %v", err))
+				provider.logger.Warn("Failed to parse stream event: %v", err)
 				continue
 			}
 
@@ -800,7 +799,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn(fmt.Sprintf("Error reading %s stream: %v", providerName, err))
+			provider.logger.Warn("Error reading %s stream: %v", providerName, err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
@@ -826,7 +825,7 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Create Bifrost request for conversion
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value, &providerUtils.RequestMetadata{
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/embed", schemas.EmbeddingRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.EmbeddingRequest,
@@ -957,7 +956,7 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		ctx,
 		jsonBody,
 		provider.buildRequestURL(ctx, "/v1/tokenize", schemas.CountTokensRequest),
-		key.Value,
+		key.Value.GetValue(),
 		&providerUtils.RequestMetadata{
 			Provider:    providerName,
 			Model:       request.Model,

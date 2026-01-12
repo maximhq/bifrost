@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -85,8 +84,8 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	// Make request
@@ -176,8 +175,8 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
 func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
 	var authHeader map[string]string
-	if key.Value != "" {
-		authHeader = map[string]string{"Authorization": "Bearer " + key.Value}
+	if key.Value.GetValue() != "" {
+		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
 	}
 	// Use shared OpenAI-compatible streaming logic
 	return openai.HandleOpenAIChatCompletionStreaming(
@@ -283,8 +282,8 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
-	if key.Value != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
 	req.SetBody(body.Bytes())
@@ -297,7 +296,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
@@ -383,8 +382,8 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		"Cache-Control": "no-cache",
 	}
 
-	if key.Value != "" {
-		headers["Authorization"] = "Bearer " + key.Value
+	if key.Value.GetValue() != "" {
+		headers["Authorization"] = "Bearer " + key.Value.GetValue()
 	}
 
 	// Create HTTP request for streaming
@@ -429,7 +428,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
@@ -512,7 +511,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			provider.logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
@@ -556,7 +555,7 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 	// Parse the event data
 	var eventData MistralTranscriptionStreamData
 	if err := sonic.Unmarshal([]byte(jsonData), &eventData); err != nil {
-		provider.logger.Warn(fmt.Sprintf("Failed to parse stream event data: %v", err))
+		provider.logger.Warn("Failed to parse stream event data: %v", err)
 		return
 	}
 

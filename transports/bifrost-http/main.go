@@ -92,13 +92,17 @@ func init() {
 	if defaultHost == "" {
 		defaultHost = bifrostServer.DefaultHost
 	}
+	defaultLogLevel := strings.ToLower(os.Getenv("LOG_LEVEL"))
+	if defaultLogLevel == "" {
+		defaultLogLevel = bifrostServer.DefaultLogLevel
+	}
 	// Initializing server
 	server = bifrostServer.NewBifrostHTTPServer(Version, uiContent)
 	// Updating server properties from flags
 	flag.StringVar(&server.Port, "port", bifrostServer.DefaultPort, "Port to run the server on")
 	flag.StringVar(&server.Host, "host", defaultHost, "Host to bind the server to (default: localhost, override with BIFROST_HOST env var)")
 	flag.StringVar(&server.AppDir, "app-dir", bifrostServer.DefaultAppDir, "Application data directory (contains config.json and logs)")
-	flag.StringVar(&server.LogLevel, "log-level", bifrostServer.DefaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
+	flag.StringVar(&server.LogLevel, "log-level", defaultLogLevel, "Logger level (debug, info, warn, error). Default is info.")
 	flag.StringVar(&server.LogOutputStyle, "log-style", bifrostServer.DefaultLogOutputStyle, "Logger output type (json or pretty). Default is JSON.")
 }
 
