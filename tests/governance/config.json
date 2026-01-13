@@ -1,0 +1,66 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "OpenAI Test Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "Anthropic Test Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "openrouter": {
+      "keys": [
+        {
+          "name": "OpenRouter Test Key",
+          "value": "env.OPENROUTER_API_KEY",
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./data/governance-test.db"
+    }
+  },
+  "logs_store": {
+    "enabled": false
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 300,
+    "allowed_origins": [
+      "*"
+    ],
+    "enable_logging": true,
+    "enable_governance": true,
+    "enforce_governance_header": true,
+    "allow_direct_keys": false,
+    "max_request_body_size_mb": 100,
+    "enable_litellm_fallbacks": false
+  }
+}

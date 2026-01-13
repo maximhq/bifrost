@@ -32,7 +32,7 @@ func TestVirtualKeyTokenRateLimit(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -105,7 +105,7 @@ func TestVirtualKeyRequestRateLimit(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -184,7 +184,7 @@ func TestProviderConfigTokenRateLimit(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -263,7 +263,7 @@ func TestProviderConfigRequestRateLimit(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -351,7 +351,7 @@ func TestMultipleProvidersSeparateRateLimits(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -415,7 +415,7 @@ func TestProviderAndVKRateLimitTogether(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -478,7 +478,7 @@ func TestRateLimitInMemorySync(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -621,7 +621,7 @@ func TestRateLimitTokenAndRequestTogether(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -694,7 +694,7 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -756,8 +756,8 @@ func TestRateLimitUsageTrackedInMemory(t *testing.T) {
 		t.Skip("Could not make request to test usage tracking")
 	}
 
-	// Wait for async update to in-memory store
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete usage update
+	time.Sleep(2 * time.Second)
 
 	// Get updated state - rate limit usage should have increased
 	getDataResp2 := MakeRequest(t, APIRequest{
@@ -863,7 +863,7 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -911,8 +911,8 @@ func TestProviderLevelRateLimitUsageTracking(t *testing.T) {
 		t.Skip("Could not make request to test provider rate limit tracking")
 	}
 
-	// Wait for async update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete usage update
+	time.Sleep(2 * time.Second)
 
 	// Get updated state - openai provider rate limit usage should have increased
 	getDataResp2 := MakeRequest(t, APIRequest{

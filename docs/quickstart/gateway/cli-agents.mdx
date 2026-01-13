@@ -353,7 +353,7 @@ It is Alibaba's powerful coding assistant with advanced reasoning capabilities.
 Agent integrations work with your existing Bifrost configuration. Ensure you have:
 
 - **Providers configured**: See [Provider Configuration](./provider-configuration) for setup details
-- **Optional: MCP tools**: See [MCP Integration](../../features/mcp) to enhance agent capabilities
+- **Optional: MCP tools**: See [MCP Integration](../../mcp/overview) to enhance agent capabilities
 
 ## Monitoring Agent Traffic
 
@@ -365,7 +365,7 @@ For complete monitoring capabilities, see [Built-in Observability](../../feature
 ## MCP Tools Integration
 
 <Note>
-This feature is only available on `v1.4.0-prerelease1` and above. Please check the [changelogs](../../changelogs) for more details.
+This feature is only available on `v1.4.0-prerelease1` and above.
 </Note>
 
 Bifrost exposes all configured MCP tools through a dedicated MCP server endpoint at `/mcp`. This allows external MCP clients (Claude Code, Cursor, and other MCP-compatible applications) to connect directly and access your tools.
@@ -396,10 +396,10 @@ Control which tools each client can access using Virtual Keys:
 - Configure which MCP servers and tools the key can access
 - Bifrost automatically enforces these permissions
 
-For complete setup instructions and tool filtering options, see [MCP Gateway URL](../../features/mcp/gateway-url).
+For complete setup instructions and tool filtering options, see [MCP Gateway URL](../../mcp/gateway-url).
 
 ## Next Steps
 
 - **[Provider Configuration](./provider-configuration)** - Configure AI providers for your agents
-- **[Governance](../../features/governance)** - Set usage limits and policies for your agents
+- **[Governance](../../features/governance/virtual-keys)** - Set usage limits and policies for your agents
 - **[Integrations](../../integrations/what-is-an-integration)** - Understand how Bifrost works with existing AI provider SDKs

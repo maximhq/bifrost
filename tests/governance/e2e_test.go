@@ -1,12 +1,9 @@
 package governance
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
-
-	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 // ============================================================================
@@ -43,7 +40,7 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	t.Logf("Created team with shared budget: $%.4f", teamBudget)
@@ -63,7 +60,7 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		t.Fatalf("Failed to create VK1: status %d", createVK1Resp.StatusCode)
 	}
 
-	vk1ID := ExtractIDFromResponse(t, createVK1Resp, "id")
+	vk1ID := ExtractIDFromResponse(t, createVK1Resp)
 	testData.AddVirtualKey(vk1ID)
 
 	vk1 := createVK1Resp.Body["virtual_key"].(map[string]interface{})
@@ -84,7 +81,7 @@ func TestMultipleVKsSharingTeamBudgetFairness(t *testing.T) {
 		t.Fatalf("Failed to create VK2: status %d", createVK2Resp.StatusCode)
 	}
 
-	vk2ID := ExtractIDFromResponse(t, createVK2Resp, "id")
+	vk2ID := ExtractIDFromResponse(t, createVK2Resp)
 	testData.AddVirtualKey(vk2ID)
 
 	vk2 := createVK2Resp.Body["virtual_key"].(map[string]interface{})
@@ -213,7 +210,7 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", customerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, customerResp, "id")
+	customerID := ExtractIDFromResponse(t, customerResp)
 	testData.AddCustomer(customerID)
 
 	// Create team under customer with medium budget
@@ -235,7 +232,7 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", teamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, teamResp, "id")
+	teamID := ExtractIDFromResponse(t, teamResp)
 	testData.AddTeam(teamID)
 
 	// Create VK under team with lower budget
@@ -270,7 +267,7 @@ func TestFullBudgetHierarchyEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -383,7 +380,7 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -437,8 +434,8 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		t.Skip("Could not create failing request - model may be accepted")
 	}
 
-	// Wait for any async processing
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete processing
+	time.Sleep(2 * time.Second)
 
 	// Check budget usage - should NOT have changed
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
@@ -476,8 +473,8 @@ func TestFailedRequestsDoNotConsumeBudget(t *testing.T) {
 		t.Skip("Could not make successful request")
 	}
 
-	// Wait for async update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	// Check budget usage - should have changed
 	getBudgetsResp3 := MakeRequest(t, APIRequest{
@@ -526,7 +523,7 @@ func TestInactiveVirtualKeyBlocking(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -675,7 +672,7 @@ func TestRateLimitResetBoundaryConditions(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -791,7 +788,7 @@ func TestConcurrentRequestsToSameVK(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -888,7 +885,7 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -940,8 +937,8 @@ func TestBudgetStateAfterReset(t *testing.T) {
 		t.Skip("Could not make request to consume budget")
 	}
 
-	// Wait for async update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	// Check usage after request
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
@@ -970,7 +967,7 @@ func TestBudgetStateAfterReset(t *testing.T) {
 			t.Fatalf("Failed to parse lastReset time: %v", err)
 		}
 	}
-	resetDurationParsed, err := configstoreTables.ParseDuration(resetDuration)
+	resetDurationParsed, err := ParseDuration(resetDuration)
 	if err != nil {
 		t.Fatalf("Failed to parse reset duration: %v", err)
 	}
@@ -1013,7 +1010,7 @@ func TestBudgetStateAfterReset(t *testing.T) {
 	// Poll for budget data to reflect the reset
 	_, resetVerified := WaitForAPICondition(t, APIRequest{
 		Method: "GET",
-		Path:   fmt.Sprintf("/api/governance/budgets?from_memory=true"),
+		Path:   "/api/governance/budgets?from_memory=true",
 	}, func(resp *APIResponse) bool {
 		if resp.StatusCode != 200 {
 			return false
@@ -1098,7 +1095,7 @@ func TestTeamDeletionCascade(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	t.Logf("Created team: %s", teamID)
@@ -1118,7 +1115,7 @@ func TestTeamDeletionCascade(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1228,7 +1225,7 @@ func TestVKDeletionCascade(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1236,17 +1233,28 @@ func TestVKDeletionCascade(t *testing.T) {
 
 	t.Logf("Created VK with rate limit and budget")
 
-	// Verify VK exists in in-memory store
-	getDataResp1 := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+	// Verify VK exists in in-memory store (poll to ensure sync completed)
+	vkExists := WaitForCondition(t, func() bool {
+		getDataResp1 := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	virtualKeysMap1 := getDataResp1.Body["virtual_keys"].(map[string]interface{})
+		if getDataResp1.StatusCode != 200 {
+			return false
+		}
 
-	_, exists1 := virtualKeysMap1[vkValue]
-	if !exists1 {
-		t.Fatalf("VK not found in in-memory store after creation")
+		virtualKeysMap1, ok := getDataResp1.Body["virtual_keys"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		_, exists := virtualKeysMap1[vkValue]
+		return exists
+	}, 5*time.Second, "VK exists in in-memory store")
+
+	if !vkExists {
+		t.Fatalf("VK not found in in-memory store after creation (timeout after 5s)")
 	}
 
 	t.Logf("VK exists in in-memory store ✓")
@@ -1263,20 +1271,30 @@ func TestVKDeletionCascade(t *testing.T) {
 
 	t.Logf("VK deleted from database")
 
-	// Wait for in-memory store update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for in-memory store to sync (poll with timeout instead of fixed sleep)
+	vkRemoved := WaitForCondition(t, func() bool {
+		getDataResp2 := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	// Verify VK is removed from in-memory store
-	getDataResp2 := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+		if getDataResp2.StatusCode != 200 {
+			t.Logf("Failed to get VK data: status %d", getDataResp2.StatusCode)
+			return false
+		}
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
+		virtualKeysMap2, ok := getDataResp2.Body["virtual_keys"].(map[string]interface{})
+		if !ok {
+			t.Logf("Invalid response structure for virtual_keys")
+			return false
+		}
 
-	_, exists2 := virtualKeysMap2[vkValue]
-	if exists2 {
-		t.Fatalf("VK still exists in in-memory store after deletion")
+		_, exists := virtualKeysMap2[vkValue]
+		return !exists // Return true when VK is NOT found (successfully removed)
+	}, 5*time.Second, "VK removed from in-memory store")
+
+	if !vkRemoved {
+		t.Fatalf("VK still exists in in-memory store after deletion (timeout after 5s)")
 	}
 
 	t.Logf("VK removed from in-memory store ✓")
@@ -1346,7 +1364,7 @@ func TestWeightedProviderLoadBalancing(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1480,7 +1498,7 @@ func TestProviderFallbackMechanism(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1540,4 +1558,122 @@ func TestProviderFallbackMechanism(t *testing.T) {
 
 	t.Logf("Fallback provider mechanism verified ✓")
 	t.Logf("Requests successfully routed to fallback when primary doesn't support model")
+}
+
+// ============================================================================
+// Virtual Key Header Formats
+// ============================================================================
+
+// TestVirtualKeyHeaderFormats verifies that Bifrost accepts all documented VK header formats
+// Reference: https://docs.getbifrost.ai/features/governance/virtual-keys
+// Supported headers:
+//   - x-bf-vk: Virtual key header (Bifrost native)
+//   - Authorization: Bearer token style (OpenAI style)
+//   - x-api-key: API key header (Anthropic style)
+//   - x-goog-api-key: API key header (Google Gemini style)
+func TestVirtualKeyHeaderFormats(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// Create a VK with minimal config to test header acceptance
+	vkName := "test-vk-headers-" + generateRandomID()
+	createVKResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name: vkName,
+			Budget: &BudgetRequest{
+				MaxLimit:      10.0,
+				ResetDuration: "1h",
+			},
+		},
+	})
+
+	if createVKResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
+	}
+
+	vkID := ExtractIDFromResponse(t, createVKResp)
+	testData.AddVirtualKey(vkID)
+
+	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
+	vkValue := vk["value"].(string)
+
+	t.Logf("Created VK for header format testing: %s", vkValue)
+
+	// Test all supported header formats
+	testCases := []struct {
+		name         string
+		headerName   string
+		headerValue  string
+		description  string
+		expectedPass bool
+	}{
+		{
+			name:         "x-bf-vk header",
+			headerName:   "x-bf-vk",
+			headerValue:  vkValue,
+			description:  "Bifrost native VK header",
+			expectedPass: true,
+		},
+		{
+			name:         "Authorization Bearer",
+			headerName:   "Authorization",
+			headerValue:  "Bearer " + vkValue,
+			description:  "OpenAI-style Bearer token",
+			expectedPass: true,
+		},
+		{
+			name:         "x-api-key",
+			headerName:   "x-api-key",
+			headerValue:  vkValue,
+			description:  "Anthropic-style API key",
+			expectedPass: true,
+		},
+		{
+			name:         "x-goog-api-key",
+			headerName:   "x-goog-api-key",
+			headerValue:  vkValue,
+			description:  "Google Gemini-style API key",
+			expectedPass: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Make request with the specific header format
+			resp := MakeRequestWithCustomHeaders(t, APIRequest{
+				Method: "POST",
+				Path:   "/v1/chat/completions",
+				Body: ChatCompletionRequest{
+					Model: "openai/gpt-4o-mini",
+					Messages: []ChatMessage{
+						{
+							Role:    "user",
+							Content: "Test request for header format: " + tc.name,
+						},
+					},
+				},
+			}, map[string]string{
+				tc.headerName: tc.headerValue,
+			})
+
+			if tc.expectedPass {
+				if resp.StatusCode != 200 {
+					t.Errorf("Expected %s to work, but got status %d (response: %v)", tc.description, resp.StatusCode, resp.Body)
+				} else {
+					t.Logf("✓ %s works correctly (status: %d)", tc.description, resp.StatusCode)
+				}
+			} else {
+				if resp.StatusCode == 200 {
+					t.Errorf("Expected %s to fail, but got status 200", tc.description)
+				} else {
+					t.Logf("✓ %s correctly rejected (status: %d)", tc.description, resp.StatusCode)
+				}
+			}
+		})
+	}
+
+	t.Logf("All virtual key header formats verified ✓")
 }

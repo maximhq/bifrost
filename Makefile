@@ -44,11 +44,12 @@ help: ## Show this help message
 	@echo "  LOG_LEVEL         Logger level: debug|info|warn|error (default: info)"
 	@echo "  APP_DIR           App data directory inside container (default: /app/data)"
 	@echo "  LOCAL             Use local go.work for builds (e.g., make build LOCAL=1)"
-	@echo "  DEBUG             Enable delve debugger on port 2345 (e.g., make dev DEBUG=1, make test-core DEBUG=1)"
+	@echo "  DEBUG             Enable delve debugger on port 2345 (e.g., make dev DEBUG=1, make test-core DEBUG=1, make test-governance DEBUG=1)"
 	@echo ""
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
 	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: testname)"
+	@echo "  TESTCASE          Exact test name to run (e.g., TestVirtualKeyTokenRateLimit)"
 	@echo "  PATTERN           Substring pattern to filter tests (alternative to TESTCASE)"
 
 cleanup-enterprise: ## Clean up enterprise directories if present
@@ -585,6 +586,149 @@ test-plugins: install-gotestsum ## Run plugin tests
 		echo "$(CYAN)HTML reports saved to $(TEST_REPORTS_DIR)/plugin-*.html$(NC)"; \
 	else \
 		echo "$(CYAN)JUnit XML reports saved to $(TEST_REPORTS_DIR)/plugin-*.xml$(NC)"; \
+	fi
+
+test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governance tests (Usage: make test-governance TESTCASE=TestName or PATTERN=substring, DEBUG=1 for debugger)
+	@echo "$(GREEN)Running governance tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
+		exit 1; \
+	fi
+	@if [ ! -d "tests/governance" ]; then \
+		echo "$(RED)Error: Governance tests directory not found$(NC)"; \
+		exit 1; \
+	fi
+	@TEST_FAILED=0; \
+	REPORT_FILE=""; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		echo "$(CYAN)Debug mode enabled - delve debugger will listen on port 2345$(NC)"; \
+		echo "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+	fi; \
+	if [ -n "$(TESTCASE)" ]; then \
+		echo "$(CYAN)Running test case: $(TESTCASE)$(NC)"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$$(echo $(TESTCASE) | sed 's|/|_|g').xml"; \
+		if [ -n "$(DEBUG)" ]; then \
+			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^$(TESTCASE)$$" || TEST_FAILED=1; \
+		else \
+			cd tests/governance && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../$$REPORT_FILE \
+				-- -v -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
+		fi; \
+		cd ../..; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	elif [ -n "$(PATTERN)" ]; then \
+		echo "$(CYAN)Running tests matching '$(PATTERN)'...$(NC)"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$(PATTERN).xml"; \
+		if [ -n "$(DEBUG)" ]; then \
+			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
+		else \
+			cd tests/governance && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../$$REPORT_FILE \
+				-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+		fi; \
+		cd ../..; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	else \
+		echo "$(CYAN)Running all governance tests...$(NC)"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-all.xml"; \
+		if [ -n "$(DEBUG)" ]; then \
+			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v || TEST_FAILED=1; \
+		else \
+			cd tests/governance && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../$$REPORT_FILE \
+				-- -v || TEST_FAILED=1; \
+		fi; \
+		cd ../..; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	fi; \
+	if [ -f "$$REPORT_FILE" ]; then \
+		ALL_FAILED=$$(grep -B 1 '<failure' "$$REPORT_FILE" 2>/dev/null | \
+			grep '<testcase' | \
+			sed 's/.*name="\([^"]*\)".*/\1/' | \
+			sort -u); \
+		MAX_DEPTH=$$(echo "$$ALL_FAILED" | awk -F'/' '{print NF}' | sort -n | tail -1); \
+		FAILED_TESTS=$$(echo "$$ALL_FAILED" | awk -F'/' -v max="$$MAX_DEPTH" 'NF == max'); \
+		FAILURES=$$(echo "$$FAILED_TESTS" | grep -v '^$$' | wc -l | tr -d ' '); \
+		if [ "$$FAILURES" -gt 0 ]; then \
+			echo ""; \
+			echo "$(RED)═══════════════════════════════════════════════════════════$(NC)"; \
+			echo "$(RED)                    FAILED TEST CASES                      $(NC)"; \
+			echo "$(RED)═══════════════════════════════════════════════════════════$(NC)"; \
+			echo ""; \
+			printf "$(YELLOW)%-60s %-20s$(NC)\n" "Test Name" "Status"; \
+			printf "$(YELLOW)%-60s %-20s$(NC)\n" "─────────────────────────────────────────────────────────────" "────────────────────"; \
+			echo "$$FAILED_TESTS" | while read -r testname; do \
+				if [ -n "$$testname" ]; then \
+					printf "$(RED)%-60s %-20s$(NC)\n" "$$testname" "FAILED"; \
+				fi; \
+			done; \
+			echo ""; \
+			echo "$(RED)Total Failures: $$FAILURES$(NC)"; \
+			echo ""; \
+		else \
+			echo ""; \
+			echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
+			echo "$(GREEN)                 ALL TESTS PASSED ✓                       $(NC)"; \
+			echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
+			echo ""; \
+		fi; \
+	fi; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		exit 1; \
 	fi
 
 test-all: test-core test-plugins test ## Run all tests

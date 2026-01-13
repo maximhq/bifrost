@@ -167,6 +167,9 @@ make test-core    # Run all core tests
 make test-core PROVIDER=openai  # Run specific provider tests
 make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo  # Run specific test case
 make test-plugins # Run plugin tests
+make test-governance  # Run governance tests
+make test-governance TESTCASE=TestVKBudgetExceeded  # Run specific governance test
+make test-governance PATTERN=Budget  # Run governance tests matching pattern
 make test-all     # Run all tests
 make clean-test-reports  # Clean test reports
 make generate-html-reports  # Convert XML to HTML reports

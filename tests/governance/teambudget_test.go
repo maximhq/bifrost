@@ -31,7 +31,7 @@ func TestTeamBudgetExceededWithMultipleVKs(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	// Create 2 VKs under the team
@@ -54,7 +54,7 @@ func TestTeamBudgetExceededWithMultipleVKs(t *testing.T) {
 			t.Fatalf("Failed to create VK %d: status %d", i, createVKResp.StatusCode)
 		}
 
-		vkID := ExtractIDFromResponse(t, createVKResp, "id")
+		vkID := ExtractIDFromResponse(t, createVKResp)
 		testData.AddVirtualKey(vkID)
 
 		vk := createVKResp.Body["virtual_key"].(map[string]interface{})

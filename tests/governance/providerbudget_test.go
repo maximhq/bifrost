@@ -46,7 +46,7 @@ func TestProviderBudgetExceeded(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})

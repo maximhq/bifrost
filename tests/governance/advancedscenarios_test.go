@@ -35,7 +35,7 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create team1: status %d", createTeam1Resp.StatusCode)
 	}
 
-	team1ID := ExtractIDFromResponse(t, createTeam1Resp, "id")
+	team1ID := ExtractIDFromResponse(t, createTeam1Resp)
 	testData.AddTeam(team1ID)
 
 	// Create Team 2 with higher budget
@@ -57,7 +57,7 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create team2: status %d", createTeam2Resp.StatusCode)
 	}
 
-	team2ID := ExtractIDFromResponse(t, createTeam2Resp, "id")
+	team2ID := ExtractIDFromResponse(t, createTeam2Resp)
 	testData.AddTeam(team2ID)
 
 	t.Logf("Created Team1 (budget: $%.2f) and Team2 (budget: $%.2f)", team1Budget, team2Budget)
@@ -77,7 +77,7 @@ func TestVKSwitchTeamAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -200,7 +200,7 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create customer1: status %d", createCustomer1Resp.StatusCode)
 	}
 
-	customer1ID := ExtractIDFromResponse(t, createCustomer1Resp, "id")
+	customer1ID := ExtractIDFromResponse(t, createCustomer1Resp)
 	testData.AddCustomer(customer1ID)
 
 	// Create Customer 2 with higher budget
@@ -222,7 +222,7 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create customer2: status %d", createCustomer2Resp.StatusCode)
 	}
 
-	customer2ID := ExtractIDFromResponse(t, createCustomer2Resp, "id")
+	customer2ID := ExtractIDFromResponse(t, createCustomer2Resp)
 	testData.AddCustomer(customer2ID)
 
 	t.Logf("Created Customer1 (budget: $%.2f) and Customer2 (budget: $%.2f)", customer1Budget, customer2Budget)
@@ -242,7 +242,7 @@ func TestVKSwitchCustomerAfterBudgetExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -361,7 +361,7 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		t.Fatalf("Failed to create customer1: status %d", createCustomer1Resp.StatusCode)
 	}
 
-	customer1ID := ExtractIDFromResponse(t, createCustomer1Resp, "id")
+	customer1ID := ExtractIDFromResponse(t, createCustomer1Resp)
 	testData.AddCustomer(customer1ID)
 
 	// Create Team 1 under Customer 1
@@ -383,7 +383,7 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		t.Fatalf("Failed to create team1: status %d", createTeam1Resp.StatusCode)
 	}
 
-	team1ID := ExtractIDFromResponse(t, createTeam1Resp, "id")
+	team1ID := ExtractIDFromResponse(t, createTeam1Resp)
 	testData.AddTeam(team1ID)
 
 	// Create Customer 2 with higher budget
@@ -404,7 +404,7 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		t.Fatalf("Failed to create customer2: status %d", createCustomer2Resp.StatusCode)
 	}
 
-	customer2ID := ExtractIDFromResponse(t, createCustomer2Resp, "id")
+	customer2ID := ExtractIDFromResponse(t, createCustomer2Resp)
 	testData.AddCustomer(customer2ID)
 
 	// Create Team 2 under Customer 2
@@ -426,7 +426,7 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		t.Fatalf("Failed to create team2: status %d", createTeam2Resp.StatusCode)
 	}
 
-	team2ID := ExtractIDFromResponse(t, createTeam2Resp, "id")
+	team2ID := ExtractIDFromResponse(t, createTeam2Resp)
 	testData.AddTeam(team2ID)
 
 	t.Logf("Created hierarchy: Customer1(low budget)->Team1 and Customer2(high budget)->Team2")
@@ -446,7 +446,7 @@ func TestHierarchicalChainBudgetSwitch(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -562,7 +562,7 @@ func TestVKBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -685,7 +685,7 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	// Create VK under team
@@ -703,7 +703,7 @@ func TestTeamBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -826,7 +826,7 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
 	// Create team under customer
@@ -844,7 +844,7 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	// Create VK under team
@@ -862,7 +862,7 @@ func TestCustomerBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -991,7 +991,7 @@ func TestProviderConfigBudgetUpdateAfterExhaustion(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1151,7 +1151,7 @@ func TestVKDeletionCascadeComplete(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	// Don't add to testData since we'll delete manually
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1296,7 +1296,7 @@ func TestTeamDeletionDeletesBudget(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	// Don't add to testData since we'll delete manually
 
 	t.Logf("Created team with budget")
@@ -1400,7 +1400,7 @@ func TestCustomerDeletionDeletesBudget(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	// Don't add to testData since we'll delete manually
 
 	t.Logf("Created customer with budget")
@@ -1504,7 +1504,7 @@ func TestTeamDeletionSetsVKTeamIDToNil(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	// Don't add to testData since we'll delete manually
 
 	// Create VK assigned to team
@@ -1522,7 +1522,7 @@ func TestTeamDeletionSetsVKTeamIDToNil(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1602,7 +1602,7 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	// Don't add to testData since we'll delete manually
 
 	// Create VK assigned directly to customer
@@ -1620,7 +1620,7 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})

@@ -1,424 +1,222 @@
 package governance
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"math/rand"
-	"net/http"
-	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// ModelCost defines the cost structure for a model
-type ModelCost struct {
-	Provider           string
-	InputCostPerToken  float64
-	OutputCostPerToken float64
-	MaxInputTokens     int
-	MaxOutputTokens    int
+// MockLogger implements schemas.Logger for testing
+type MockLogger struct {
+	mu       sync.Mutex
+	logs     []string
+	errors   []string
+	debugs   []string
+	infos    []string
+	warnings []string
 }
 
-// TestModels defines all models used for testing
-var TestModels = map[string]ModelCost{
-	"openai/gpt-4o": {
-		Provider:           "openai",
-		InputCostPerToken:  0.0000025,
-		OutputCostPerToken: 0.00001,
-		MaxInputTokens:     128000,
-		MaxOutputTokens:    16384,
-	},
-	"anthropic/claude-3-7-sonnet-20250219": {
-		Provider:           "anthropic",
-		InputCostPerToken:  0.000003,
-		OutputCostPerToken: 0.000015,
-		MaxInputTokens:     200000,
-		MaxOutputTokens:    128000,
-	},
-	"anthropic/claude-4-opus-20250514": {
-		Provider:           "anthropic",
-		InputCostPerToken:  0.000015,
-		OutputCostPerToken: 0.000075,
-		MaxInputTokens:     200000,
-		MaxOutputTokens:    32000,
-	},
-	"openrouter/anthropic/claude-3.7-sonnet": {
-		Provider:           "openrouter",
-		InputCostPerToken:  0.000003,
-		OutputCostPerToken: 0.000015,
-		MaxInputTokens:     200000,
-		MaxOutputTokens:    128000,
-	},
-	"openrouter/openai/gpt-4o": {
-		Provider:           "openrouter",
-		InputCostPerToken:  0.0000025,
-		OutputCostPerToken: 0.00001,
-		MaxInputTokens:     128000,
-		MaxOutputTokens:    4096,
-	},
-}
-
-// CalculateCost calculates the cost based on input and output tokens
-func CalculateCost(model string, inputTokens, outputTokens int) (float64, error) {
-	modelInfo, ok := TestModels[model]
-	if !ok {
-		return 0, fmt.Errorf("unknown model: %s", model)
-	}
-
-	inputCost := float64(inputTokens) * modelInfo.InputCostPerToken
-	outputCost := float64(outputTokens) * modelInfo.OutputCostPerToken
-	return inputCost + outputCost, nil
-}
-
-// APIRequest represents a request to the Bifrost API
-type APIRequest struct {
-	Method   string
-	Path     string
-	Body     interface{}
-	VKHeader *string
-}
-
-// APIResponse represents a response from the Bifrost API
-type APIResponse struct {
-	StatusCode int
-	Body       map[string]interface{}
-	RawBody    []byte
-}
-
-// MakeRequest makes an HTTP request to the Bifrost API
-func MakeRequest(t *testing.T, req APIRequest) *APIResponse {
-	client := &http.Client{}
-	url := fmt.Sprintf("http://localhost:8080%s", req.Path)
-
-	var body io.Reader
-	if req.Body != nil {
-		bodyBytes, err := json.Marshal(req.Body)
-		if err != nil {
-			t.Fatalf("Failed to marshal request body: %v", err)
-		}
-		body = bytes.NewReader(bodyBytes)
-	}
-
-	httpReq, err := http.NewRequest(req.Method, url, body)
-	if err != nil {
-		t.Fatalf("Failed to create HTTP request: %v", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Add virtual key header if provided
-	if req.VKHeader != nil {
-		httpReq.Header.Set("x-bf-vk", *req.VKHeader)
-	}
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		t.Fatalf("Failed to execute HTTP request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	rawBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("Failed to read response body: %v", err)
-	}
-
-	var responseBody map[string]interface{}
-	if len(rawBody) > 0 {
-		err = json.Unmarshal(rawBody, &responseBody)
-		if err != nil {
-			// If unmarshaling fails, store the raw response
-			responseBody = map[string]interface{}{"raw": string(rawBody)}
-		}
-	}
-
-	return &APIResponse{
-		StatusCode: resp.StatusCode,
-		Body:       responseBody,
-		RawBody:    rawBody,
+func NewMockLogger() *MockLogger {
+	return &MockLogger{
+		logs:     make([]string, 0),
+		errors:   make([]string, 0),
+		debugs:   make([]string, 0),
+		infos:    make([]string, 0),
+		warnings: make([]string, 0),
 	}
 }
 
-// generateRandomID generates a random ID for test resources
-func generateRandomID() string {
-	rand.Seed(time.Now().UnixNano())
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
-	}
-	return string(b)
+func (ml *MockLogger) SetLevel(level schemas.LogLevel) {}
+
+func (ml *MockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+
+func (ml *MockLogger) Error(format string, args ...interface{}) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.errors = append(ml.errors, format)
 }
 
-// CreateVirtualKeyRequest represents a request to create a virtual key
-type CreateVirtualKeyRequest struct {
-	Name            string                  `json:"name"`
-	Description     string                  `json:"description,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budget          *BudgetRequest          `json:"budget,omitempty"`
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
+func (ml *MockLogger) Warn(format string, args ...interface{}) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.warnings = append(ml.warnings, format)
 }
 
-// ProviderConfigRequest represents a provider configuration for a virtual key
-type ProviderConfigRequest struct {
-	ID            *uint                   `json:"id,omitempty"`
-	Provider      string                  `json:"provider"`
-	Weight        float64                 `json:"weight,omitempty"`
-	AllowedModels []string                `json:"allowed_models,omitempty"`
-	Budget        *BudgetRequest          `json:"budget,omitempty"`
-	RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`
+func (ml *MockLogger) Info(format string, args ...interface{}) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.infos = append(ml.infos, format)
 }
 
-// BudgetRequest represents a budget request
-type BudgetRequest struct {
-	MaxLimit      float64 `json:"max_limit"`
-	ResetDuration string  `json:"reset_duration"`
+func (ml *MockLogger) Debug(format string, args ...interface{}) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.debugs = append(ml.debugs, format)
 }
 
-// CreateTeamRequest represents a request to create a team
-type CreateTeamRequest struct {
-	Name       string         `json:"name"`
-	CustomerID *string        `json:"customer_id,omitempty"`
-	Budget     *BudgetRequest `json:"budget,omitempty"`
+func (ml *MockLogger) Fatal(format string, args ...interface{}) {
+	ml.mu.Lock()
+	defer ml.mu.Unlock()
+	ml.errors = append(ml.errors, format)
 }
 
-// CreateCustomerRequest represents a request to create a customer
-type CreateCustomerRequest struct {
-	Name   string         `json:"name"`
-	Budget *BudgetRequest `json:"budget,omitempty"`
-}
+// Test data builders
 
-// UpdateBudgetRequest represents a request to update a budget
-type UpdateBudgetRequest struct {
-	MaxLimit      *float64 `json:"max_limit,omitempty"`
-	ResetDuration *string  `json:"reset_duration,omitempty"`
-}
-
-// CreateRateLimitRequest represents a request to create a rate limit
-type CreateRateLimitRequest struct {
-	TokenMaxLimit        *int64  `json:"token_max_limit,omitempty"`
-	TokenResetDuration   *string `json:"token_reset_duration,omitempty"`
-	RequestMaxLimit      *int64  `json:"request_max_limit,omitempty"`
-	RequestResetDuration *string `json:"request_reset_duration,omitempty"`
-}
-
-// UpdateVirtualKeyRequest represents a request to update a virtual key
-type UpdateVirtualKeyRequest struct {
-	Name            *string                 `json:"name,omitempty"`
-	TeamID          *string                 `json:"team_id,omitempty"`
-	CustomerID      *string                 `json:"customer_id,omitempty"`
-	Budget          *UpdateBudgetRequest    `json:"budget,omitempty"`
-	RateLimit       *CreateRateLimitRequest `json:"rate_limit,omitempty"`
-	IsActive        *bool                   `json:"is_active,omitempty"`
-	ProviderConfigs []ProviderConfigRequest `json:"provider_configs,omitempty"`
-}
-
-// UpdateTeamRequest represents a request to update a team
-type UpdateTeamRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
-}
-
-// UpdateCustomerRequest represents a request to update a customer
-type UpdateCustomerRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
-}
-
-// ChatCompletionRequest represents an OpenAI-compatible chat completion request
-type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
-}
-
-// ChatMessage represents a chat message in OpenAI format
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// ExtractIDFromResponse extracts the ID from a creation response
-func ExtractIDFromResponse(t *testing.T, resp *APIResponse, keyPath string) string {
-	if resp.StatusCode >= 400 {
-		t.Fatalf("Request failed with status %d: %v", resp.StatusCode, resp.Body)
-	}
-
-	// Navigate through the response to find the ID
-	data := resp.Body
-	parts := []string{"virtual_key", "team", "customer"}
-	for _, part := range parts {
-		if val, ok := data[part]; ok {
-			if nested, ok := val.(map[string]interface{}); ok {
-				if id, ok := nested["id"].(string); ok {
-					return id
-				}
-			}
-		}
-	}
-
-	t.Fatalf("Could not extract ID from response: %v", resp.Body)
-	return ""
-}
-
-// CheckErrorMessage checks if the response error contains expected text
-// Returns true if error found, false otherwise. Asserts fail if status is not >= 400.
-func CheckErrorMessage(t *testing.T, resp *APIResponse, expectedText string) bool {
-	if resp.StatusCode < 400 {
-		t.Fatalf("Expected error response but got status %d. Response: %v", resp.StatusCode, resp.Body)
-	}
-
-	// Check in various fields where errors might appear
-	if msg, ok := resp.Body["message"].(string); ok && contains(msg, expectedText) {
-		return true
-	}
-
-	if err, ok := resp.Body["error"].(string); ok && contains(err, expectedText) {
-		return true
-	}
-
-	// Check raw body as fallback
-	if contains(string(resp.RawBody), expectedText) {
-		return true
-	}
-
-	return false
-}
-
-// contains checks if a string contains a substring (case-insensitive)
-func contains(haystack, needle string) bool {
-	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
-}
-
-// GlobalTestData stores IDs of created resources for cleanup
-type GlobalTestData struct {
-	VirtualKeys []string
-	Teams       []string
-	Customers   []string
-}
-
-// NewGlobalTestData creates a new test data holder
-func NewGlobalTestData() *GlobalTestData {
-	return &GlobalTestData{
-		VirtualKeys: make([]string, 0),
-		Teams:       make([]string, 0),
-		Customers:   make([]string, 0),
+func buildVirtualKey(id, value, name string, isActive bool) *configstoreTables.TableVirtualKey {
+	return &configstoreTables.TableVirtualKey{
+		ID:       id,
+		Value:    value,
+		Name:     name,
+		IsActive: isActive,
 	}
 }
 
-// AddVirtualKey adds a virtual key ID to the test data
-func (g *GlobalTestData) AddVirtualKey(id string) {
-	g.VirtualKeys = append(g.VirtualKeys, id)
+func buildVirtualKeyWithBudget(id, value, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableVirtualKey {
+	vk := buildVirtualKey(id, value, name, true)
+	vk.Budget = budget
+	budgetID := budget.ID
+	vk.BudgetID = &budgetID
+	return vk
 }
 
-// AddTeam adds a team ID to the test data
-func (g *GlobalTestData) AddTeam(id string) {
-	g.Teams = append(g.Teams, id)
+func buildVirtualKeyWithRateLimit(id, value, name string, rateLimit *configstoreTables.TableRateLimit) *configstoreTables.TableVirtualKey {
+	vk := buildVirtualKey(id, value, name, true)
+	vk.RateLimit = rateLimit
+	rateLimitID := rateLimit.ID
+	vk.RateLimitID = &rateLimitID
+	return vk
 }
 
-// AddCustomer adds a customer ID to the test data
-func (g *GlobalTestData) AddCustomer(id string) {
-	g.Customers = append(g.Customers, id)
+func buildVirtualKeyWithProviders(id, value, name string, providers []configstoreTables.TableVirtualKeyProviderConfig) *configstoreTables.TableVirtualKey {
+	vk := buildVirtualKey(id, value, name, true)
+	vk.ProviderConfigs = providers
+	return vk
 }
 
-// Cleanup deletes all created resources
-func (g *GlobalTestData) Cleanup(t *testing.T) {
-	// Delete virtual keys
-	for _, vkID := range g.VirtualKeys {
-		resp := MakeRequest(t, APIRequest{
-			Method: "DELETE",
-			Path:   fmt.Sprintf("/api/governance/virtual-keys/%s", vkID),
-		})
-		if resp.StatusCode >= 400 && resp.StatusCode != 404 {
-			t.Logf("Warning: failed to delete virtual key %s: status %d", vkID, resp.StatusCode)
-		}
+func buildBudget(id string, maxLimit float64, resetDuration string) *configstoreTables.TableBudget {
+	return &configstoreTables.TableBudget{
+		ID:            id,
+		MaxLimit:      maxLimit,
+		CurrentUsage:  0,
+		ResetDuration: resetDuration,
+		LastReset:     time.Now(),
 	}
-
-	// Delete teams
-	for _, teamID := range g.Teams {
-		resp := MakeRequest(t, APIRequest{
-			Method: "DELETE",
-			Path:   fmt.Sprintf("/api/governance/teams/%s", teamID),
-		})
-		if resp.StatusCode >= 400 && resp.StatusCode != 404 {
-			t.Logf("Warning: failed to delete team %s: status %d", teamID, resp.StatusCode)
-		}
-	}
-
-	// Delete customers
-	for _, customerID := range g.Customers {
-		resp := MakeRequest(t, APIRequest{
-			Method: "DELETE",
-			Path:   fmt.Sprintf("/api/governance/customers/%s", customerID),
-		})
-		if resp.StatusCode >= 400 && resp.StatusCode != 404 {
-			t.Logf("Warning: failed to delete customer %s: status %d", customerID, resp.StatusCode)
-		}
-	}
-
-	t.Logf("Cleanup completed: deleted %d VKs, %d teams, %d customers",
-		len(g.VirtualKeys), len(g.Teams), len(g.Customers))
 }
 
-// WaitForCondition polls a condition function until it returns true or times out
-// Useful for waiting for async updates to propagate to in-memory store
-func WaitForCondition(t *testing.T, checkFunc func() bool, timeout time.Duration, description string) bool {
-	deadline := time.Now().Add(timeout)
-	attempt := 0
-
-	for time.Now().Before(deadline) {
-		attempt++
-		if checkFunc() {
-			if attempt > 1 {
-				t.Logf("Condition '%s' met after %d attempts", description, attempt)
-			}
-			return true
-		}
-
-		// Progressive backoff: start with 50ms, max 500ms
-		sleepDuration := time.Duration(50*attempt) * time.Millisecond
-		if sleepDuration > 500*time.Millisecond {
-			sleepDuration = 500 * time.Millisecond
-		}
-		time.Sleep(sleepDuration)
+func buildBudgetWithUsage(id string, maxLimit, currentUsage float64, resetDuration string) *configstoreTables.TableBudget {
+	return &configstoreTables.TableBudget{
+		ID:            id,
+		MaxLimit:      maxLimit,
+		CurrentUsage:  currentUsage,
+		ResetDuration: resetDuration,
+		LastReset:     time.Now(),
 	}
-
-	t.Logf("Timeout waiting for condition '%s' after %d attempts (%.1fs)", description, attempt, timeout.Seconds())
-	return false
 }
 
-// WaitForAPICondition makes repeated API requests until a condition is satisfied or times out
-// Useful for verifying async updates in API responses
-func WaitForAPICondition(t *testing.T, req APIRequest, condition func(*APIResponse) bool, timeout time.Duration, description string) (*APIResponse, bool) {
-	deadline := time.Now().Add(timeout)
-	attempt := 0
-	var lastResp *APIResponse
-
-	for time.Now().Before(deadline) {
-		attempt++
-		lastResp = MakeRequest(t, req)
-
-		if condition(lastResp) {
-			if attempt > 1 {
-				t.Logf("API condition '%s' met after %d attempts", description, attempt)
-			}
-			return lastResp, true
-		}
-
-		// Progressive backoff: start with 100ms, max 500ms
-		sleepDuration := time.Duration(100*attempt) * time.Millisecond
-		if sleepDuration > 500*time.Millisecond {
-			sleepDuration = 500 * time.Millisecond
-		}
-		time.Sleep(sleepDuration)
+func buildRateLimit(id string, tokenMaxLimit, requestMaxLimit int64) *configstoreTables.TableRateLimit {
+	duration := "1m"
+	return &configstoreTables.TableRateLimit{
+		ID:                   id,
+		TokenMaxLimit:        &tokenMaxLimit,
+		TokenCurrentUsage:    0,
+		TokenResetDuration:   &duration,
+		TokenLastReset:       time.Now(),
+		RequestMaxLimit:      &requestMaxLimit,
+		RequestCurrentUsage:  0,
+		RequestResetDuration: &duration,
+		RequestLastReset:     time.Now(),
 	}
+}
 
-	t.Logf("Timeout waiting for API condition '%s' after %d attempts (%.1fs)", description, attempt, timeout.Seconds())
-	return lastResp, false
+func buildRateLimitWithUsage(id string, tokenMaxLimit, tokenUsage, requestMaxLimit, requestUsage int64) *configstoreTables.TableRateLimit {
+	duration := "1m"
+	return &configstoreTables.TableRateLimit{
+		ID:                   id,
+		TokenMaxLimit:        &tokenMaxLimit,
+		TokenCurrentUsage:    tokenUsage,
+		TokenResetDuration:   &duration,
+		TokenLastReset:       time.Now(),
+		RequestMaxLimit:      &requestMaxLimit,
+		RequestCurrentUsage:  requestUsage,
+		RequestResetDuration: &duration,
+		RequestLastReset:     time.Now(),
+	}
+}
+
+func buildTeam(id, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableTeam {
+	team := &configstoreTables.TableTeam{
+		ID:   id,
+		Name: name,
+	}
+	if budget != nil {
+		team.Budget = budget
+		team.BudgetID = &budget.ID
+	}
+	return team
+}
+
+func buildCustomer(id, name string, budget *configstoreTables.TableBudget) *configstoreTables.TableCustomer {
+	customer := &configstoreTables.TableCustomer{
+		ID:   id,
+		Name: name,
+	}
+	if budget != nil {
+		customer.Budget = budget
+		customer.BudgetID = &budget.ID
+	}
+	return customer
+}
+
+func buildProviderConfig(provider string, allowedModels []string) configstoreTables.TableVirtualKeyProviderConfig {
+	return configstoreTables.TableVirtualKeyProviderConfig{
+		Provider:      provider,
+		AllowedModels: allowedModels,
+		Weight:        bifrost.Ptr(1.0),
+		RateLimit:     nil,
+		Budget:        nil,
+		Keys:          []configstoreTables.TableKey{},
+	}
+}
+
+func buildProviderConfigWithRateLimit(provider string, allowedModels []string, rateLimit *configstoreTables.TableRateLimit) configstoreTables.TableVirtualKeyProviderConfig {
+	pc := buildProviderConfig(provider, allowedModels)
+	pc.RateLimit = rateLimit
+	if rateLimit != nil {
+		pc.RateLimitID = &rateLimit.ID
+	}
+	return pc
+}
+
+// Test helpers
+
+func assertDecision(t *testing.T, expected Decision, result *EvaluationResult) {
+	t.Helper()
+	assert.NotNil(t, result, "EvaluationResult should not be nil")
+	assert.Equal(t, expected, result.Decision, "Decision mismatch. Reason: %s", result.Reason)
+}
+
+func assertVirtualKeyFound(t *testing.T, result *EvaluationResult) {
+	t.Helper()
+	assert.NotNil(t, result.VirtualKey, "VirtualKey should be found in result")
+}
+
+func assertRateLimitInfo(t *testing.T, result *EvaluationResult) {
+	t.Helper()
+	assert.NotNil(t, result.RateLimitInfo, "RateLimitInfo should be present in result")
+}
+
+func requireNoError(t *testing.T, err error, msg string) {
+	t.Helper()
+	require.NoError(t, err, msg)
+}
+
+func requireError(t *testing.T, err error, msg string) {
+	t.Helper()
+	require.Error(t, err, msg)
 }

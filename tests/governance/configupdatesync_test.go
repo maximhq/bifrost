@@ -37,7 +37,7 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -91,8 +91,8 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		t.Skip("Could not make request to consume tokens")
 	}
 
-	// Wait for async update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete usage update
+	time.Sleep(2 * time.Second)
 
 	// Get state with usage
 	getVKResp2 := MakeRequest(t, APIRequest{
@@ -262,7 +262,7 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -316,8 +316,8 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Skip("Could not make request to consume budget")
 	}
 
-	// Wait for async update
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	// Get state with usage
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
@@ -427,7 +427,7 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -484,7 +484,8 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 		t.Skip("Could not make request to consume provider tokens")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete usage update
+	time.Sleep(2 * time.Second)
 
 	// Get state with usage
 	getVKResp2 := MakeRequest(t, APIRequest{
@@ -610,7 +611,7 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	// Create VK under team to consume budget
@@ -628,7 +629,7 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -794,7 +795,7 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
 	// Create team and VK under customer
@@ -812,7 +813,7 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	vkName := "test-vk-under-customer-" + generateRandomID()
@@ -829,7 +830,7 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -884,7 +885,8 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Skip("Could not make request to consume customer budget")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	// Get state with usage
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
@@ -990,7 +992,7 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -1047,7 +1049,8 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Skip("Could not make request to consume provider budget")
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	// Get state with usage
 	getBudgetsResp2 := MakeRequest(t, APIRequest{

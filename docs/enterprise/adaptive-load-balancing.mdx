@@ -4,9 +4,17 @@ description: "Advanced load balancing algorithms with predictive scaling, health
 icon: "brain"
 ---
 
+<Info>
+**Looking for comprehensive provider routing documentation?**
+
+For a detailed guide covering how adaptive load balancing works with governance routing, the two-level architecture (provider + key selection), Model Catalog integration, and example scenarios, see the [**Provider Routing Guide**](/providers/provider-routing).
+
+This page focuses on the technical implementation and performance characteristics of adaptive load balancing.
+</Info>
+
 ## Overview
 
-**Adaptive Load Balancing** in Bifrost automatically optimizes traffic distribution across provider keys and models based on real-time performance metrics. The system continuously monitors error rates, latency, and throughput to dynamically adjust weights, ensuring optimal performance and reliability.
+**Adaptive Load Balancing** in Bifrost Enterprise automatically optimizes traffic distribution across providers and keys based on real-time performance metrics. The system operates at **two levels** - provider selection (direction) and key selection (route) - continuously monitoring error rates, latency, and throughput to dynamically adjust weights, ensuring optimal performance and reliability.
 
 ### Key Features
 

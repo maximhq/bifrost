@@ -32,7 +32,7 @@ func TestUsageTrackingRateLimitReset(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -154,7 +154,7 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -209,8 +209,8 @@ func TestUsageTrackingBudgetReset(t *testing.T) {
 		t.Skip("Could not execute request to test budget reset")
 	}
 
-	// Get updated budget usage
-	time.Sleep(500 * time.Millisecond)
+	// Wait for async PostHook goroutine to complete budget update
+	time.Sleep(2 * time.Second)
 
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
@@ -260,13 +260,19 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 	testData := NewGlobalTestData()
 	defer testData.Cleanup(t)
 
-	// Create a VK with no limits (to ensure request succeeds)
+	// Create a VK with rate limit to track usage
 	vkName := "test-vk-usage-update-" + generateRandomID()
+	tokenLimit := int64(100000)
+	tokenResetDuration := "1h"
 	createVKResp := MakeRequest(t, APIRequest{
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
 			Name: vkName,
+			RateLimit: &CreateRateLimitRequest{
+				TokenMaxLimit:      &tokenLimit,
+				TokenResetDuration: &tokenResetDuration,
+			},
 		},
 	})
 
@@ -274,7 +280,7 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -318,26 +324,71 @@ func TestInMemoryUsageUpdateOnRequest(t *testing.T) {
 
 	t.Logf("Request consumed %d tokens", tokensUsed)
 
-	// Give time for async update
-	time.Sleep(1 * time.Second)
+	// Wait for async update to propagate to in-memory store
+	var rateLimitID string
+	var tokenUsage int64
+	usageUpdated := WaitForCondition(t, func() bool {
+		getDataResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	// Check in-memory store for updated rate limit usage
-	getDataResp := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+		if getDataResp.StatusCode != 200 {
+			return false
+		}
 
-	if getDataResp.StatusCode != 200 {
-		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
+		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		vkData, ok := virtualKeysMap[vkValue].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		// Rate limit should exist
+		rateLimitID, _ = vkData["rate_limit_id"].(string)
+		if rateLimitID == "" {
+			return false
+		}
+
+		// Fetch the rate limit data to check token usage
+		getRateLimitsResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/rate-limits?from_memory=true",
+		})
+
+		if getRateLimitsResp.StatusCode != 200 {
+			return false
+		}
+
+		rateLimitsMap, ok := getRateLimitsResp.Body["rate_limits"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		rateLimitData, ok := rateLimitsMap[rateLimitID].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		// Check that token usage has been updated (should be > 0 after the request)
+		if tokenCurrentUsage, ok := rateLimitData["token_current_usage"].(float64); ok {
+			tokenUsage = int64(tokenCurrentUsage)
+			return tokenUsage > 0
+		}
+
+		return false
+	}, 3*time.Second, "usage updated in in-memory store")
+
+	if !usageUpdated {
+		t.Fatalf("Rate limit usage not updated in in-memory store after request (timeout after 3s)")
 	}
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
-
-	// Rate limit should exist and be updated
-	rateLimitID, _ := vkData["rate_limit_id"].(string)
 	if rateLimitID != "" {
 		t.Logf("Rate limit tracking is enabled for VK ✓")
+		t.Logf("Token usage in rate limit: %d tokens", tokenUsage)
 	} else {
 		t.Logf("No rate limit on VK (optional)")
 	}
@@ -378,7 +429,7 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -410,6 +461,10 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 		t.Logf("Request %d succeeded", i+1)
 	}
 
+	// Wait for async PostHook goroutines to complete budget updates
+	t.Logf("Waiting 3 seconds for async updates to complete...")
+	time.Sleep(3 * time.Second)
+
 	// Get usage before reset
 	getVKResp := MakeRequest(t, APIRequest{
 		Method: "GET",
@@ -436,9 +491,9 @@ func TestResetTickerBothBudgetAndRateLimit(t *testing.T) {
 
 	t.Logf("Budget usage before reset: $%.6f", usageBeforeReset)
 
-	// Wait for reset
-	t.Logf("Waiting 35 seconds for reset ticker...")
-	time.Sleep(35 * time.Second)
+	// Wait for reset (reset ticker runs every 10s, budget resets at 30s, add buffer for processing)
+	t.Logf("Waiting 40 seconds for reset ticker...")
+	time.Sleep(40 * time.Second)
 
 	// Get usage after reset
 	getBudgetsResp2 := MakeRequest(t, APIRequest{
@@ -500,7 +555,7 @@ func TestDataPersistenceAcrossRequests(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})

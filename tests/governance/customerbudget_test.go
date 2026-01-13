@@ -31,7 +31,7 @@ func TestCustomerBudgetExceededWithMultipleVKs(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
 	// Create 2 VKs under the customer (directly, without team)
@@ -54,7 +54,7 @@ func TestCustomerBudgetExceededWithMultipleVKs(t *testing.T) {
 			t.Fatalf("Failed to create VK %d: status %d", i, createVKResp.StatusCode)
 		}
 
-		vkID := ExtractIDFromResponse(t, createVKResp, "id")
+		vkID := ExtractIDFromResponse(t, createVKResp)
 		testData.AddVirtualKey(vkID)
 
 		vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -185,7 +185,7 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
 	// Create 2 teams under the customer
@@ -208,7 +208,7 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 			t.Fatalf("Failed to create team %d: status %d", i, createTeamResp.StatusCode)
 		}
 
-		teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+		teamID := ExtractIDFromResponse(t, createTeamResp)
 		testData.AddTeam(teamID)
 
 		// Create a VK under each team
@@ -229,7 +229,7 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 			t.Fatalf("Failed to create VK %d: status %d", i, createVKResp.StatusCode)
 		}
 
-		vkID := ExtractIDFromResponse(t, createVKResp, "id")
+		vkID := ExtractIDFromResponse(t, createVKResp)
 		testData.AddVirtualKey(vkID)
 
 		vk := createVKResp.Body["virtual_key"].(map[string]interface{})

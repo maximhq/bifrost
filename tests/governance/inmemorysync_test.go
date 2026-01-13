@@ -30,7 +30,7 @@ func TestInMemorySyncVirtualKeyUpdate(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -154,7 +154,7 @@ func TestInMemorySyncTeamUpdate(t *testing.T) {
 		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
 	}
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	t.Logf("Created team %s with initial budget $%.2f", teamName, initialBudget)
@@ -266,7 +266,7 @@ func TestInMemorySyncCustomerUpdate(t *testing.T) {
 		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
 	}
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
 	t.Logf("Created customer %s with initial budget $%.2f", customerName, initialBudget)
@@ -377,23 +377,34 @@ func TestInMemorySyncVirtualKeyDelete(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
 	vkValue := vk["value"].(string)
 
-	// Verify in-memory store has the VK
-	getDataResp := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+	// Verify in-memory store has the VK (poll to ensure sync completed)
+	vkExists := WaitForCondition(t, func() bool {
+		getDataResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	virtualKeysMap := getDataResp.Body["virtual_keys"].(map[string]interface{})
+		if getDataResp.StatusCode != 200 {
+			return false
+		}
 
-	_, exists := virtualKeysMap[vkValue]
-	if !exists {
-		t.Fatalf("VK not found in in-memory store after creation")
+		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		_, exists := virtualKeysMap[vkValue]
+		return exists
+	}, 5*time.Second, "VK exists in in-memory store after creation")
+
+	if !vkExists {
+		t.Fatalf("VK not found in in-memory store after creation (timeout after 5s)")
 	}
 
 	t.Logf("VK found in in-memory store after creation ✓")
@@ -410,19 +421,28 @@ func TestInMemorySyncVirtualKeyDelete(t *testing.T) {
 
 	t.Logf("Deleted VK from database")
 
-	// Verify in-memory store is updated
-	time.Sleep(2 * time.Second)
+	// Verify in-memory store is updated (poll with timeout instead of fixed sleep)
+	vkRemoved := WaitForCondition(t, func() bool {
+		getDataResp2 := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	getDataResp2 := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+		if getDataResp2.StatusCode != 200 {
+			return false
+		}
 
-	virtualKeysMap2 := getDataResp2.Body["virtual_keys"].(map[string]interface{})
+		virtualKeysMap2, ok := getDataResp2.Body["virtual_keys"].(map[string]interface{})
+		if !ok {
+			return false
+		}
 
-	_, exists = virtualKeysMap2[vkValue]
-	if exists {
-		t.Fatalf("VK %s still exists in in-memory store after deletion", vkValue)
+		_, exists := virtualKeysMap2[vkValue]
+		return !exists // Return true when VK is NOT found (successfully removed)
+	}, 5*time.Second, "VK removed from in-memory store after deletion")
+
+	if !vkRemoved {
+		t.Fatalf("VK %s still exists in in-memory store after deletion (timeout after 5s)", vkValue)
 	}
 
 	t.Logf("VK removed from in-memory store ✓")
@@ -448,7 +468,7 @@ func TestDataEndpointConsistency(t *testing.T) {
 		},
 	})
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	teamName := "test-team-consistency-" + generateRandomID()
@@ -464,7 +484,7 @@ func TestDataEndpointConsistency(t *testing.T) {
 		},
 	})
 
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
+	teamID := ExtractIDFromResponse(t, createTeamResp)
 	testData.AddTeam(teamID)
 
 	customerName := "test-customer-consistency-" + generateRandomID()
@@ -480,10 +500,37 @@ func TestDataEndpointConsistency(t *testing.T) {
 		},
 	})
 
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
+	customerID := ExtractIDFromResponse(t, createCustomerResp)
 	testData.AddCustomer(customerID)
 
-	time.Sleep(1 * time.Second)
+	// Wait for all resources to be available in in-memory store
+	allResourcesReady := WaitForCondition(t, func() bool {
+		getVKResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
+		if getVKResp.StatusCode != 200 {
+			return false
+		}
+
+		getTeamsResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/teams?from_memory=true",
+		})
+		if getTeamsResp.StatusCode != 200 {
+			return false
+		}
+
+		getCustomersResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/customers?from_memory=true",
+		})
+		return getCustomersResp.StatusCode == 200
+	}, 3*time.Second, "all resources available in in-memory store")
+
+	if !allResourcesReady {
+		t.Fatalf("Resources not available in in-memory store (timeout after 3s)")
+	}
 
 	// Get data from separate endpoints
 	getVKResp := MakeRequest(t, APIRequest{

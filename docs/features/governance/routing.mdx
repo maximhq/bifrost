@@ -4,9 +4,17 @@ description: "Direct requests to specific AI models, providers, and keys using V
 icon: "arrow-progress"
 ---
 
+<Info>
+**Looking for comprehensive provider routing documentation?**
+
+For a detailed guide covering governance-based routing, adaptive load balancing, Model Catalog, and how they interact, see the [**Provider Routing Guide**](/providers/provider-routing).
+
+This page focuses specifically on configuring governance routing via Virtual Keys.
+</Info>
+
 ## Overview
 
-Bifrost's routing capabilities offer granular control over how requests are directed to different AI models and providers. By configuring routing rules on a Virtual Key, you can enforce which providers and models are accessible, implement sophisticated load balancing strategies, create automatic fallbacks, and restrict access to specific provider API keys.
+Bifrost's governance-based routing capabilities offer granular control over how requests are directed to different AI models and providers through Virtual Key configuration. By configuring routing rules on a Virtual Key, you can enforce which providers and models are accessible, implement weighted load balancing strategies, create automatic fallbacks, and restrict access to specific provider API keys.
 
 This powerful feature enables key use cases like:
 
@@ -23,6 +31,16 @@ Virtual Keys can be restricted to use only specific provider/models. When provid
 - **No Restrictions** (default): VK can use any available provider/models based on global configuration
 - **With Restrictions**: VK limited to only the specified provider/models with weighted load balancing
 
+**Model Validation:**
+When you configure provider restrictions on a Virtual Key, Bifrost validates that the requested model is allowed for the selected provider:
+- **Explicit `allowed_models`**: If you specify models in the provider config, only those models are permitted
+- **Empty `allowed_models`**: Bifrost uses the **Model Catalog** (populated from pricing data + list models API) to determine which models the provider supports
+- **Model Catalog Sync**: On startup and provider updates, Bifrost calls each provider's list models API. If this fails, you'll see a warning: `{"level":"warn","message":"failed to list models for provider <name>: failed to execute HTTP request to provider API"}`
+
+<Note>
+**Cross-provider routing does NOT happen automatically**. For example, requests for `gpt-4o` will NOT be routed to Anthropic unless you explicitly add `"gpt-4o"` to Anthropic's `allowed_models` in the Virtual Key configuration. Each provider only handles models it actually supports (determined by the Model Catalog).
+</Note>
+
 ## Weighted Load Balancing
 
 When you configure multiple providers on a Virtual Key, Bifrost automatically implements weighted load balancing. Each provider is assigned a weight, and requests are distributed proportionally.
@@ -30,17 +48,18 @@ When you configure multiple providers on a Virtual Key, Bifrost automatically im
 **Example Configuration:**
 ```
 Virtual Key: vk-prod-main
-├── OpenAI 
-│   ├── Allowed Models: [gpt-4o, gpt-4o-mini]
+├── OpenAI
+│   ├── Allowed Models: [gpt-4o, gpt-4o-mini]  ← Explicit whitelist
 │   └── Weight: 0.2 (20% of traffic)
 └── Azure
-    ├── Allowed Models: [gpt-4o]
+    ├── Allowed Models: [gpt-4o]  ← Explicit whitelist
     └── Weight: 0.8 (80% of traffic)
 ```
 
 **Load Balancing Behavior:**
-- For `gpt-4o`: 80% Azure, 20% OpenAI (both providers support it)
-- For `gpt-4o-mini`: 100% OpenAI (only provider that supports it)
+- For `gpt-4o`: 80% Azure, 20% OpenAI (both providers have it in allowed_models)
+- For `gpt-4o-mini`: 100% OpenAI (only OpenAI has it in allowed_models)
+- For `claude-3-sonnet`: ❌ Rejected (neither provider has it in allowed_models)
 
 **Usage:**
 To trigger weighted load balancing, send requests with just the model name:
@@ -60,6 +79,28 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Info>
 Weights are automatically normalized to a sum 1.0 based on the weights of all providers available on the VK for the given model.
 </Info>
+
+**Example with Empty `allowed_models` (using Model Catalog):**
+```json
+{
+  "provider_configs": [
+    {
+      "provider": "openai",
+      "allowed_models": [],  // Uses Model Catalog
+      "weight": 0.5
+    },
+    {
+      "provider": "anthropic",
+      "allowed_models": [],  // Uses Model Catalog
+      "weight": 0.5
+    }
+  ]
+}
+```
+With this configuration:
+- Request for `gpt-4o` → Routed to OpenAI (Model Catalog shows OpenAI supports this)
+- Request for `claude-3-sonnet` → Routed to Anthropic (Model Catalog shows Anthropic supports this)
+- Request for `gpt-4o` will NOT route to Anthropic (Model Catalog shows Anthropic doesn't support OpenAI models)
 
 ## Automatic Fallbacks
 
@@ -106,7 +147,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ![Virtual Key Provider/Model Restrictions](../../media/ui-virtual-key-routing.png)
 
 3. In **Provider Configurations** section, add the provider you want to restrict the VK to
-4. Add the models you want to restrict the VK to, or leave it blank to allow all models for this provider
+4. **Allowed Models**:
+   - **Specify models**: Enter specific models (e.g., `["gpt-4o", "gpt-4o-mini"]`) to explicitly whitelist only those models
+   - **Leave blank**: Uses the Model Catalog to determine which models this provider supports (populated from pricing data and the provider's list models API)
 5. Add the weight you want to give to this provider
 6. Click on the **Save** button
 </Tab>
@@ -266,3 +309,23 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 - **Compliance** - Ensure certain workloads only use compliant/audited keys
 
 <Note>The models restrictions applied on the keys of individual providers will always be applied and will work together with the provider/model or api key restrictions set on the virtual key.</Note>
+
+## Troubleshooting
+
+### Model Catalog Sync Failures
+
+If you see warnings like this in your Bifrost logs during startup or provider updates:
+```json
+{"level":"warn","time":"2026-01-13T14:18:53+05:30","message":"failed to list models for provider ollama: failed to execute HTTP request to provider API"}
+```
+
+**What this means:**
+- Bifrost attempted to call the provider's list models API to populate the Model Catalog
+- The request failed (network issue, provider unavailable, incorrect credentials, etc.)
+- If your Virtual Key has `allowed_models: []` (empty) for this provider, model validation will fall back to the pricing data only
+
+**How to fix:**
+1. Check that the provider is correctly configured and accessible
+2. Verify network connectivity to the provider's API
+3. Ensure API credentials are valid
+4. Consider using explicit `allowed_models` instead of relying on the Model Catalog for critical providers

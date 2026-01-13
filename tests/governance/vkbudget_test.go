@@ -3,81 +3,25 @@ package governance
 import (
 	"strconv"
 	"testing"
-	"time"
 )
 
-// TestCrissCrossComplexBudgetHierarchy tests complex scenarios involving provider, VK, team, and customer level budgets
-// Tests that the most restrictive budget at each level is enforced
-func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
+// TestVKBudgetExceeded tests that VK level budgets are enforced by making requests until budget is consumed
+func TestVKBudgetExceeded(t *testing.T) {
 	t.Parallel()
 	testData := NewGlobalTestData()
 	defer testData.Cleanup(t)
 
-	// Create a customer with a moderate budget
-	customerBudget := 0.15
-	customerName := "test-customer-criss-cross-" + generateRandomID()
-	createCustomerResp := MakeRequest(t, APIRequest{
-		Method: "POST",
-		Path:   "/api/governance/customers",
-		Body: CreateCustomerRequest{
-			Name: customerName,
-			Budget: &BudgetRequest{
-				MaxLimit:      customerBudget,
-				ResetDuration: "1h",
-			},
-		},
-	})
-
-	if createCustomerResp.StatusCode != 200 {
-		t.Fatalf("Failed to create customer: status %d", createCustomerResp.StatusCode)
-	}
-
-	customerID := ExtractIDFromResponse(t, createCustomerResp, "id")
-	testData.AddCustomer(customerID)
-
-	// Create a team under customer with a tighter budget
-	teamBudget := 0.12
-	createTeamResp := MakeRequest(t, APIRequest{
-		Method: "POST",
-		Path:   "/api/governance/teams",
-		Body: CreateTeamRequest{
-			Name:       "test-team-criss-cross-" + generateRandomID(),
-			CustomerID: &customerID,
-			Budget: &BudgetRequest{
-				MaxLimit:      teamBudget,
-				ResetDuration: "1h",
-			},
-		},
-	})
-
-	if createTeamResp.StatusCode != 200 {
-		t.Fatalf("Failed to create team: status %d", createTeamResp.StatusCode)
-	}
-
-	teamID := ExtractIDFromResponse(t, createTeamResp, "id")
-	testData.AddTeam(teamID)
-
-	// Create a VK with even tighter budget and provider-specific budgets
+	// Create a VK with a fixed budget
 	vkBudget := 0.01
+	vkName := "test-vk-budget-exceeded-" + generateRandomID()
 	createVKResp := MakeRequest(t, APIRequest{
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
 		Body: CreateVirtualKeyRequest{
-			Name:   "test-vk-criss-cross-" + generateRandomID(),
-			TeamID: &teamID,
+			Name: vkName,
 			Budget: &BudgetRequest{
 				MaxLimit:      vkBudget,
 				ResetDuration: "1h",
-			},
-			ProviderConfigs: []ProviderConfigRequest{
-				{
-					Provider: "openai",
-					Weight:   1.0,
-					Budget: &BudgetRequest{
-						MaxLimit:      0.08, // Even tighter provider budget
-						ResetDuration: "1h",
-					},
-				},
 			},
 		},
 	})
@@ -86,25 +30,23 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
 	vkValue := vk["value"].(string)
 
-	t.Logf("Created hierarchy: Customer ($%.2f) -> Team ($%.2f) -> VK ($%.2f) with Provider Budget ($0.08)",
-		customerBudget, teamBudget, vkBudget)
+	t.Logf("Created VK %s with budget $%.2f", vkName, vkBudget)
 
-	// Wait for VK and provider config budgets to be synced to in-memory store
-	time.Sleep(1000 * time.Millisecond)
-
-	// Test: Provider budget should be the limiting factor (most restrictive)
+	// Keep making requests, tracking actual token usage from responses, until budget is exceeded
 	consumedBudget := 0.0
 	requestNum := 1
 	var lastSuccessfulCost float64
+
 	var shouldStop = false
 
 	for requestNum <= 50 {
+		// Create a longer prompt to consume more tokens and budget faster
 		longPrompt := "Please provide a comprehensive and detailed response to the following question. " +
 			"I need extensive information covering all aspects of the topic. " +
 			"Provide multiple paragraphs with detailed explanations. " +
@@ -141,11 +83,12 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 
 		if resp.StatusCode >= 400 {
 			// Request failed - check if it's due to budget
-			if CheckErrorMessage(t, resp, "budget") || CheckErrorMessage(t, resp, "provider") {
-				t.Logf("Request %d correctly rejected: budget exceeded in criss-cross hierarchy", requestNum)
-				t.Logf("Consumed budget: $%.6f (provider budget limit: $0.08)", consumedBudget)
+			if CheckErrorMessage(t, resp, "budget") {
+				t.Logf("Request %d correctly rejected: budget exceeded", requestNum)
+				t.Logf("Consumed budget: $%.6f (limit: $%.2f)", consumedBudget, vkBudget)
 				t.Logf("Last successful request cost: $%.6f", lastSuccessfulCost)
 
+				// Verify that we made at least one successful request before hitting budget
 				if requestNum == 1 {
 					t.Fatalf("First request should have succeeded but was rejected due to budget")
 				}
@@ -166,8 +109,8 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 					consumedBudget += actualCost
 					lastSuccessfulCost = actualCost
 
-					t.Logf("Request %d succeeded: input_tokens=%d, output_tokens=%d, cost=$%.6f, consumed=$%.6f",
-						requestNum, actualInputTokens, actualOutputTokens, actualCost, consumedBudget)
+					t.Logf("Request %d succeeded: input_tokens=%d, output_tokens=%d, cost=$%.6f, consumed=$%.6f/$%.2f",
+						requestNum, actualInputTokens, actualOutputTokens, actualCost, consumedBudget, vkBudget)
 				}
 			}
 		}
@@ -178,11 +121,11 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 			break
 		}
 
-		if consumedBudget >= 0.08 { // Provider budget
+		if consumedBudget >= vkBudget {
 			shouldStop = true
 		}
 	}
 
-	t.Fatalf("Made %d requests but never hit provider budget limit - budget not being enforced",
-		requestNum-1)
+	t.Fatalf("Made %d requests but never hit budget limit (consumed $%.6f / $%.2f) - budget not being enforced",
+		requestNum-1, consumedBudget, vkBudget)
 }

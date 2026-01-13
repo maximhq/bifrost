@@ -34,7 +34,7 @@ func TestVirtualKeyTokenRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -155,7 +155,7 @@ func TestVirtualKeyRequestRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -245,7 +245,7 @@ func TestProviderConfigTokenRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -372,7 +372,7 @@ func TestProviderConfigRequestRateLimitEnforcement(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -467,7 +467,7 @@ func TestProviderAndVKRateLimitBothEnforced(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -545,7 +545,7 @@ func TestRateLimitInMemoryUsageTracking(t *testing.T) {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
 
-	vkID := ExtractIDFromResponse(t, createVKResp, "id")
+	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
 
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
@@ -587,25 +587,35 @@ func TestRateLimitInMemoryUsageTracking(t *testing.T) {
 
 	t.Logf("Request used %d tokens", tokensUsed)
 
-	// Wait for async update
-	time.Sleep(1 * time.Second)
+	// Wait for async update to propagate to in-memory store
+	var rateLimitID string
+	usageUpdated := WaitForCondition(t, func() bool {
+		getDataResp := MakeRequest(t, APIRequest{
+			Method: "GET",
+			Path:   "/api/governance/virtual-keys?from_memory=true",
+		})
 
-	// Verify rate limit usage is tracked in in-memory store
-	getDataResp := MakeRequest(t, APIRequest{
-		Method: "GET",
-		Path:   "/api/governance/virtual-keys?from_memory=true",
-	})
+		if getDataResp.StatusCode != 200 {
+			return false
+		}
 
-	if getDataResp.StatusCode != 200 {
-		t.Fatalf("Failed to get governance data: status %d", getDataResp.StatusCode)
+		virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
+		if !ok || virtualKeysMap == nil {
+			return false
+		}
+
+		vkData, ok := virtualKeysMap[vkValue].(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		rateLimitID, _ = vkData["rate_limit_id"].(string)
+		return rateLimitID != ""
+	}, 3*time.Second, "rate limit usage tracked in in-memory store")
+
+	if !usageUpdated {
+		t.Fatalf("Rate limit usage not tracked in in-memory store after request (timeout after 3s)")
 	}
-
-	virtualKeysMap, ok := getDataResp.Body["virtual_keys"].(map[string]interface{})
-	if !ok || virtualKeysMap == nil {
-		t.Fatalf("Virtual keys field missing or not a map in get response")
-	}
-	vkData := virtualKeysMap[vkValue].(map[string]interface{})
-	rateLimitID, _ := vkData["rate_limit_id"].(string)
 
 	if rateLimitID != "" {
 		t.Logf("Rate limit %s is configured and tracking usage ✓", rateLimitID)

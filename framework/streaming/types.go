@@ -124,8 +124,6 @@ type StreamAccumulator struct {
 
 // getLastChatChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
 	if sa.MaxChatChunkIndex < 0 {
 		return nil
 	}
@@ -139,8 +137,6 @@ func (sa *StreamAccumulator) getLastChatChunk() *ChatStreamChunk {
 
 // getLastResponsesChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
 	if sa.MaxResponsesChunkIndex < 0 {
 		return nil
 	}
@@ -154,8 +150,6 @@ func (sa *StreamAccumulator) getLastResponsesChunk() *ResponsesStreamChunk {
 
 // getLastTranscriptionChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastTranscriptionChunk() *TranscriptionStreamChunk {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
 	if sa.MaxTranscriptionChunkIndex < 0 {
 		return nil
 	}
@@ -169,8 +163,6 @@ func (sa *StreamAccumulator) getLastTranscriptionChunk() *TranscriptionStreamChu
 
 // getLastAudioChunk returns the chunk with the highest ChunkIndex (contains metadata like TokenUsage, Cost)
 func (sa *StreamAccumulator) getLastAudioChunk() *AudioStreamChunk {
-	sa.mu.Lock()
-	defer sa.mu.Unlock()
 	if sa.MaxAudioChunkIndex < 0 {
 		return nil
 	}

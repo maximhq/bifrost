@@ -111,6 +111,7 @@
                   "providers/supported-providers/xai"
                 ]
               },
+              "providers/provider-routing",
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers"
@@ -161,14 +162,14 @@
             "group": "MCP Gateway",
             "icon": "toolbox",
             "pages": [
-              "features/mcp/overview",
-              "features/mcp/connecting-to-servers",
-              "features/mcp/tool-execution",
-              "features/mcp/agent-mode",
-              "features/mcp/code-mode",
-              "features/mcp/gateway-url",
-              "features/mcp/tool-hosting",
-              "features/mcp/filtering"
+              "mcp/overview",
+              "mcp/connecting-to-servers",
+              "mcp/tool-execution",
+              "mcp/agent-mode",
+              "mcp/code-mode",
+              "mcp/gateway-url",
+              "mcp/tool-hosting",
+              "mcp/filtering"
             ]
           },
           {
@@ -477,6 +478,38 @@
     {
       "source": "/plugins/writing-plugin",
       "destination": "/plugins/writing-go-plugin"
+    },
+    {
+      "source": "/features/mcp/overview",
+      "destination": "/mcp/overview"
+    },
+    {
+      "source": "/features/mcp/connecting-to-servers",
+      "destination": "/mcp/connecting-to-servers"
+    },
+    {
+      "source": "/features/mcp/tool-execution",
+      "destination": "/mcp/tool-execution"
+    },
+    {
+      "source": "/features/mcp/agent-mode",
+      "destination": "/mcp/agent-mode"
+    },
+    {
+      "source": "/features/mcp/code-mode",
+      "destination": "/mcp/code-mode"
+    },
+    {
+      "source": "/features/mcp/gateway-url",
+      "destination": "/mcp/gateway-url"
+    },
+    {
+      "source": "/features/mcp/tool-hosting",
+      "destination": "/mcp/tool-hosting"
+    },
+    {
+      "source": "/features/mcp/filtering",
+      "destination": "/mcp/filtering"
     }
   ],
   "footer": {
