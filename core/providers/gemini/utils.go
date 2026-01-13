@@ -1143,7 +1143,9 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	// Extract additionalProperties
 	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
-		jsonSchema.AdditionalProperties = schemas.Ptr(additionalProps)
+		jsonSchema.AdditionalProperties = &schemas.ToolParamsAdditionalProperties{BoolValue: &additionalProps}
+	} else if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(map[string]any); ok {
+		jsonSchema.AdditionalProperties = &schemas.ToolParamsAdditionalProperties{ObjectValue: &additionalProps}
 	}
 
 	// Extract name/title

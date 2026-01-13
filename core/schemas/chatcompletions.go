@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+
+	"github.com/bytedance/sonic"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -273,12 +275,12 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type                 string      `json:"type"`                           // Type of the parameters
-	Description          *string     `json:"description,omitempty"`          // Description of the parameters
-	Required             []string    `json:"required,omitempty"`             // Required parameter names
-	Properties           *OrderedMap `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string    `json:"enum,omitempty"`                 // Enum values for the parameters
-	AdditionalProperties *bool       `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Type                 string                          `json:"type"`                           // Type of the parameters
+	Description          *string                         `json:"description,omitempty"`          // Description of the parameters
+	Required             []string                        `json:"required,omitempty"`             // Required parameter names
+	Properties           *OrderedMap                     `json:"properties,omitempty"`           // Parameter properties
+	Enum                 []string                        `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *ToolParamsAdditionalProperties `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
@@ -305,6 +307,45 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	}
 	*t = ToolFunctionParameters(temp)
 	return nil
+}
+
+// ToolParamsAdditionalProperties handle `additionalProperties` being either a bool value
+// or an object, according to JSONSchema:
+// https://json-schema.org/understanding-json-schema/reference/object#additionalproperties
+type ToolParamsAdditionalProperties struct {
+	BoolValue   *bool
+	ObjectValue *map[string]any
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for ToolAdditionalProperties.
+// Handles both the value being either bool or a generic jsonschema object.
+func (t *ToolParamsAdditionalProperties) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as a bool
+	var boolValue bool
+	if err := sonic.Unmarshal(data, &boolValue); err == nil {
+		t.BoolValue = &boolValue
+		return nil
+	}
+
+	// Otherwise unmarshal as a generic object
+	var objectValue map[string]any
+	if err := sonic.Unmarshal(data, &objectValue); err != nil {
+		return err
+	}
+	t.ObjectValue = &objectValue
+	return nil
+}
+
+// UnmarshalJSON implements custom JSON marshalling for ToolAdditionalProperties.
+// If object value exists then it take precedence, else bool value.
+func (t *ToolParamsAdditionalProperties) MarshalJSON() ([]byte, error) {
+	if t.ObjectValue != nil {
+		return sonic.Marshal(t.ObjectValue)
+	}
+	if t.BoolValue != nil {
+		return sonic.Marshal(t.BoolValue)
+	}
+	return sonic.Marshal(nil)
 }
 
 type OrderedMap map[string]interface{}
