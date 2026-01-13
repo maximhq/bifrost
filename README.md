@@ -56,6 +56,26 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
+## Enterprise Deployments
+
+Bifrost supports enterprise-grade, private deployments for teams running production AI systems at scale.
+In addition to private networking, custom security controls, and governance, enterprise deployments unlock advanced capabilities including adaptive load balancing, clustering, guardrails, MCP gateway and and other features designed for enterprise-grade scale and reliability.
+
+👉 <a href="https://www.getmaxim.ai/bifrost/enterprise" target="_blank">Explore enterprise capabilities</a>
+
+<div align="start">
+  <a href="https://calendly.com/maximai/bifrost-demo" target="_blank">
+    <img src=".github/assets/book-demo-button.png" alt="Book a Demo" style="max-height: 36px;" />
+  </a>
+</div>
+
+
+
+
+
+
+---
+
 ## Key Features
 
 ### Core Infrastructure
