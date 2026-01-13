@@ -63,9 +63,9 @@ In addition to private networking, custom security controls, and governance, ent
 
 👉 <a href="https://www.getmaxim.ai/bifrost/enterprise" target="_blank">Explore enterprise capabilities</a>
 
-<div align="start">
-  <a href="https://calendly.com/maximai/bifrost-demo" target="_blank">
-    <img src=".github/assets/book-demo-button.png" alt="Book a Demo" style="max-height: 36px;" />
+<div align="left">
+  <a href="https://calendly.com/maximai/bifrost-demo">
+    <img src=".github/assets/book-demo-button.png" alt="Book a Demo" width="170" style="margin-top:5px;"/>
   </a>
 </div>
 
