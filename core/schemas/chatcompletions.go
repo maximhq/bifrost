@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
-
-	"github.com/bytedance/sonic"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -322,30 +320,30 @@ type AdditionalProperties struct {
 func (t *AdditionalProperties) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a bool
 	var boolValue bool
-	if err := sonic.Unmarshal(data, &boolValue); err == nil {
+	if err := Unmarshal(data, &boolValue); err == nil {
 		t.BoolValue = &boolValue
 		return nil
 	}
 
 	// Otherwise unmarshal as a generic object
 	var objectValue map[string]any
-	if err := sonic.Unmarshal(data, &objectValue); err != nil {
+	if err := Unmarshal(data, &objectValue); err != nil {
 		return err
 	}
 	t.ObjectValue = &objectValue
 	return nil
 }
 
-// UnmarshalJSON implements custom JSON marshalling for AdditionalProperties.
+// MarshalJSON implements custom JSON marshalling for AdditionalProperties.
 // If object value exists then it take precedence, else bool value.
 func (t *AdditionalProperties) MarshalJSON() ([]byte, error) {
 	if t.ObjectValue != nil {
-		return sonic.Marshal(t.ObjectValue)
+		return Marshal(t.ObjectValue)
 	}
 	if t.BoolValue != nil {
-		return sonic.Marshal(t.BoolValue)
+		return Marshal(t.BoolValue)
 	}
-	return sonic.Marshal(nil)
+	return Marshal(nil)
 }
 
 type OrderedMap map[string]interface{}
