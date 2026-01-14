@@ -687,3 +687,206 @@ func TestToBifrostResponsesResponse(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Tool Conversion Tests
+// =============================================================================
+
+func TestConvertAnthropicToolToBifrost(t *testing.T) {
+	tests := []struct {
+		name string
+		tool *AnthropicTool
+		want *schemas.ResponsesTool
+	}{
+		{
+			name: "tool_search_tool_bm25_20251119 preserves type and cache_control",
+			tool: &AnthropicTool{
+				Name:         "tool_search_tool_bm25",
+				Type:         func() *AnthropicToolType { t := AnthropicToolTypeToolSearchBm25_20251119; return &t }(),
+				CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+			},
+			want: &schemas.ResponsesTool{
+				Type:         schemas.ResponsesToolType(AnthropicToolTypeToolSearchBm25_20251119),
+				Name:         strPtr("tool_search_tool_bm25"),
+				CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+			},
+		},
+		{
+			name: "text_editor_20250728 preserves type, cache_control and max_characters",
+			tool: &AnthropicTool{
+				Name:          "str_replace_based_edit_tool",
+				Type:          func() *AnthropicToolType { t := AnthropicToolTypeTextEditor20250728; return &t }(),
+				CacheControl:  &schemas.CacheControl{Type: "ephemeral"},
+				MaxCharacters: func() *int64 { v := int64(20000); return &v }(),
+			},
+			want: &schemas.ResponsesTool{
+				Type:          schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
+				Name:          strPtr("str_replace_based_edit_tool"),
+				CacheControl:  &schemas.CacheControl{Type: "ephemeral"},
+				MaxCharacters: func() *int64 { v := int64(20000); return &v }(),
+			},
+		},
+		{
+			name: "custom tool with input_schema and defer_loading",
+			tool: &AnthropicTool{
+				Name:         "my_custom_tool",
+				Description:  strPtr("A custom tool"),
+				DeferLoading: func() *bool { v := true; return &v }(),
+				InputSchema: &schemas.ToolFunctionParameters{
+					Type: "object",
+				},
+			},
+			want: &schemas.ResponsesTool{
+				Type:         schemas.ResponsesToolTypeFunction,
+				Name:         strPtr("my_custom_tool"),
+				Description:  strPtr("A custom tool"),
+				DeferLoading: func() *bool { v := true; return &v }(),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertAnthropicToolToBifrost(tt.tool)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestConvertBifrostToolToAnthropic(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		tool  *schemas.ResponsesTool
+		want  *AnthropicTool
+	}{
+		{
+			name:  "tool_search_tool_bm25_20251119 preserves type, name and cache_control",
+			model: "claude-sonnet-4-0",
+			tool: &schemas.ResponsesTool{
+				Type:         schemas.ResponsesToolType(AnthropicToolTypeToolSearchBm25_20251119),
+				Name:         strPtr("tool_search_tool_bm25"),
+				CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+			},
+			want: &AnthropicTool{
+				Type:         func() *AnthropicToolType { t := AnthropicToolTypeToolSearchBm25_20251119; return &t }(),
+				Name:         string(AnthropicToolNameToolSearchBm25),
+				CacheControl: &schemas.CacheControl{Type: "ephemeral"},
+			},
+		},
+		{
+			name:  "text_editor_20250728 preserves type, cache_control and max_characters",
+			model: "claude-sonnet-4-0",
+			tool: &schemas.ResponsesTool{
+				Type:          schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
+				Name:          strPtr("str_replace_based_edit_tool"),
+				CacheControl:  &schemas.CacheControl{Type: "ephemeral"},
+				MaxCharacters: func() *int64 { v := int64(20000); return &v }(),
+			},
+			want: &AnthropicTool{
+				Type:          func() *AnthropicToolType { t := AnthropicToolTypeTextEditor20250728; return &t }(),
+				Name:          string(AnthropicToolNameTextEditor),
+				CacheControl:  &schemas.CacheControl{Type: "ephemeral"},
+				MaxCharacters: func() *int64 { v := int64(20000); return &v }(),
+			},
+		},
+		{
+			name:  "function tool becomes custom with input_schema and defer_loading",
+			model: "claude-sonnet-4-0",
+			tool: &schemas.ResponsesTool{
+				Type:         schemas.ResponsesToolTypeFunction,
+				Name:         strPtr("my_custom_tool"),
+				Description:  strPtr("A custom tool"),
+				DeferLoading: func() *bool { v := true; return &v }(),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+					},
+				},
+			},
+			want: &AnthropicTool{
+				Type:         func() *AnthropicToolType { t := AnthropicToolTypeCustom; return &t }(),
+				Name:         "my_custom_tool",
+				Description:  strPtr("A custom tool"),
+				DeferLoading: func() *bool { v := true; return &v }(),
+				InputSchema: &schemas.ToolFunctionParameters{
+					Type: "object",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertBifrostToolToAnthropic(tt.model, tt.tool)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestToolRoundTrip verifies that built-in Anthropic tools survive the
+// Anthropic -> Bifrost -> Anthropic conversion without losing their type.
+func TestToolRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		tool *AnthropicTool
+	}{
+		{
+			name: "tool_search_tool_bm25_20251119",
+			tool: &AnthropicTool{
+				Name: "tool_search_tool_bm25",
+				Type: func() *AnthropicToolType { t := AnthropicToolTypeToolSearchBm25_20251119; return &t }(),
+			},
+		},
+		{
+			name: "text_editor_20250728",
+			tool: &AnthropicTool{
+				Name: "str_replace_based_edit_tool",
+				Type: func() *AnthropicToolType { t := AnthropicToolTypeTextEditor20250728; return &t }(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Convert Anthropic -> Bifrost
+			bifrostTool := convertAnthropicToolToBifrost(tt.tool)
+			if bifrostTool == nil {
+				t.Fatal("convertAnthropicToolToBifrost returned nil")
+			}
+
+			// Convert Bifrost -> Anthropic
+			roundTripped := convertBifrostToolToAnthropic("claude-sonnet-4-0", bifrostTool)
+			if roundTripped == nil {
+				t.Fatal("convertBifrostToolToAnthropic returned nil")
+			}
+
+			// Verify the type is preserved
+			if tt.tool.Type == nil {
+				t.Fatal("original tool type is nil")
+			}
+			if roundTripped.Type == nil {
+				t.Fatalf("round-tripped tool type is nil, expected %s", *tt.tool.Type)
+			}
+			if *roundTripped.Type != *tt.tool.Type {
+				t.Errorf("type mismatch: got %s, want %s", *roundTripped.Type, *tt.tool.Type)
+			}
+
+			// For built-in tools, input_schema should NOT be set
+			if roundTripped.InputSchema != nil {
+				t.Errorf("built-in tool should not have input_schema, but got: %+v", roundTripped.InputSchema)
+			}
+
+
+		})
+	}
+}

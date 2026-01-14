@@ -35,7 +35,7 @@ const (
 	AnthropicBetaContext1m20250807           = "context-1m-2025-08-07"
 	AnthropicBetaContextManagement20250627   = "context-management-2025-06-27"
 	AnthropicBetaModelContextWindow20250826  = "model-context-window-exceeded-2025-08-26"
-	AnthropicBetaSkills20251002              = "skills-2025-10-02"
+	AnthropicBetaSkills20251002 = "skills-2025-10-02"
 
 	// Deprecated: Use AnthropicBetaFilesAPI20250414 instead
 	AnthropicFilesAPIBetaHeader = AnthropicBetaFilesAPI20250414
@@ -316,24 +316,26 @@ type AnthropicImageContent struct {
 type AnthropicToolType string
 
 const (
-	AnthropicToolTypeCustom             AnthropicToolType = "custom"
-	AnthropicToolTypeBash20250124       AnthropicToolType = "bash_20250124"
-	AnthropicToolTypeComputer20250124   AnthropicToolType = "computer_20250124"
-	AnthropicToolTypeComputer20251124   AnthropicToolType = "computer_20251124" // for claude-opus-4.5
-	AnthropicToolTypeCodeExecution      AnthropicToolType = "code_execution_20250825"
-	AnthropicToolTypeTextEditor20250124 AnthropicToolType = "text_editor_20250124"
-	AnthropicToolTypeTextEditor20250429 AnthropicToolType = "text_editor_20250429"
-	AnthropicToolTypeTextEditor20250728 AnthropicToolType = "text_editor_20250728"
-	AnthropicToolTypeWebSearch20250305  AnthropicToolType = "web_search_20250305"
+	AnthropicToolTypeCustom                  AnthropicToolType = "custom"
+	AnthropicToolTypeBash20250124            AnthropicToolType = "bash_20250124"
+	AnthropicToolTypeComputer20250124        AnthropicToolType = "computer_20250124"
+	AnthropicToolTypeComputer20251124        AnthropicToolType = "computer_20251124" // for claude-opus-4.5
+	AnthropicToolTypeCodeExecution           AnthropicToolType = "code_execution_20250825"
+	AnthropicToolTypeTextEditor20250124      AnthropicToolType = "text_editor_20250124"
+	AnthropicToolTypeTextEditor20250429      AnthropicToolType = "text_editor_20250429"
+	AnthropicToolTypeTextEditor20250728      AnthropicToolType = "text_editor_20250728"
+	AnthropicToolTypeWebSearch20250305       AnthropicToolType = "web_search_20250305"
+	AnthropicToolTypeToolSearchBm25_20251119 AnthropicToolType = "tool_search_tool_bm25_20251119" // Built-in tool for searching available tools
 )
 
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer   AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
-	AnthropicToolNameBash       AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameComputer       AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch      AnthropicToolName = "web_search"
+	AnthropicToolNameBash           AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor     AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameToolSearchBm25 AnthropicToolName = "tool_search_tool_bm25"
 )
 
 type AnthropicToolComputerUse struct {
@@ -369,6 +371,7 @@ type AnthropicTool struct {
 	Strict         *bool                           `json:"strict,omitempty"`          // Beta: Enable strict schema validation
 	AllowedCallers []string                        `json:"allowed_callers,omitempty"` // Beta: "direct", "code_execution_20250825"
 	InputExamples  []map[string]interface{}        `json:"input_examples,omitempty"`  // Beta: Example inputs for the tool
+	MaxCharacters  *int64                          `json:"max_characters,omitempty"`  // Beta: Max characters for text_editor tool
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch

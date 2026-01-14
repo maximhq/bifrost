@@ -1066,7 +1066,9 @@ type ResponsesTool struct {
 	Description *string           `json:"description,omitempty"` // Common description field (Function, Custom tools)
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
-	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	CacheControl  *CacheControl `json:"cache_control,omitempty"`
+	MaxCharacters *int64        `json:"max_characters,omitempty"` // Max characters for text_editor tools (Anthropic)
+	DeferLoading  *bool         `json:"defer_loading,omitempty"`  // If true, tool not included in initial prompt (Anthropic tool search)
 
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch

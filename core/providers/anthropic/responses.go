@@ -3149,27 +3149,41 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 
 		case AnthropicToolTypeTextEditor20250124:
 			return &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124),
-				Name: &tool.Name,
+				Type:          schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124),
+				Name:          &tool.Name,
+				CacheControl:  tool.CacheControl,
+				MaxCharacters: tool.MaxCharacters,
 			}
 		case AnthropicToolTypeTextEditor20250429:
 			return &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429),
-				Name: &tool.Name,
+				Type:          schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429),
+				Name:          &tool.Name,
+				CacheControl:  tool.CacheControl,
+				MaxCharacters: tool.MaxCharacters,
 			}
 		case AnthropicToolTypeTextEditor20250728:
 			return &schemas.ResponsesTool{
-				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
-				Name: &tool.Name,
+				Type:          schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
+				Name:          &tool.Name,
+				CacheControl:  tool.CacheControl,
+				MaxCharacters: tool.MaxCharacters,
+			}
+
+		case AnthropicToolTypeToolSearchBm25_20251119:
+			return &schemas.ResponsesTool{
+				Type:         schemas.ResponsesToolType(AnthropicToolTypeToolSearchBm25_20251119),
+				Name:         &tool.Name,
+				CacheControl: tool.CacheControl,
 			}
 		}
 	}
 
 	// Handle custom/default tool type (function)
 	bifrostTool := &schemas.ResponsesTool{
-		Type:        schemas.ResponsesToolTypeFunction,
-		Name:        &tool.Name,
-		Description: tool.Description,
+		Type:         schemas.ResponsesToolTypeFunction,
+		Name:         &tool.Name,
+		Description:  tool.Description,
+		DeferLoading: tool.DeferLoading,
 	}
 
 	if tool.InputSchema != nil {
@@ -3331,23 +3345,36 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124):
 		return &AnthropicTool{
-			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250124),
-			Name: string(AnthropicToolNameTextEditor),
+			Type:          schemas.Ptr(AnthropicToolTypeTextEditor20250124),
+			Name:          string(AnthropicToolNameTextEditor),
+			CacheControl:  tool.CacheControl,
+			MaxCharacters: tool.MaxCharacters,
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250429):
 		return &AnthropicTool{
-			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250429),
-			Name: string(AnthropicToolNameTextEditor),
+			Type:          schemas.Ptr(AnthropicToolTypeTextEditor20250429),
+			Name:          string(AnthropicToolNameTextEditor),
+			CacheControl:  tool.CacheControl,
+			MaxCharacters: tool.MaxCharacters,
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728):
 		return &AnthropicTool{
-			Type: schemas.Ptr(AnthropicToolTypeTextEditor20250728),
-			Name: string(AnthropicToolNameTextEditor),
+			Type:          schemas.Ptr(AnthropicToolTypeTextEditor20250728),
+			Name:          string(AnthropicToolNameTextEditor),
+			CacheControl:  tool.CacheControl,
+			MaxCharacters: tool.MaxCharacters,
+		}
+	case schemas.ResponsesToolType(AnthropicToolTypeToolSearchBm25_20251119):
+		return &AnthropicTool{
+			Type:         schemas.Ptr(AnthropicToolTypeToolSearchBm25_20251119),
+			Name:         string(AnthropicToolNameToolSearchBm25),
+			CacheControl: tool.CacheControl,
 		}
 	}
 
 	anthropicTool := &AnthropicTool{
-		Type: schemas.Ptr(AnthropicToolTypeCustom),
+		Type:         schemas.Ptr(AnthropicToolTypeCustom),
+		DeferLoading: tool.DeferLoading,
 	}
 
 	if tool.Name != nil {
