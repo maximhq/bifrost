@@ -13,6 +13,9 @@ func (response *ElevenlabsListModelsResponse) ToBifrostListModelsResponse(provid
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(*response)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerKey,
+		},
 	}
 
 	for _, model := range *response {

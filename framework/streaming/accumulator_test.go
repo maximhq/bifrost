@@ -63,7 +63,7 @@ func TestChatStreamingFinalChunkNoDeadlock(t *testing.T) {
 				CompletionTokens: 50,
 				TotalTokens:      150,
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ChatCompletionStreamRequest,
 				Provider:       schemas.Anthropic,
 				ModelRequested: "claude-opus-4",
@@ -139,7 +139,7 @@ func TestResponsesStreamingFinalChunkNoDeadlock(t *testing.T) {
 				InputTokens:  100,
 				OutputTokens: 50,
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ResponsesStreamRequest,
 				Provider:       schemas.Anthropic,
 				ModelRequested: "claude-opus-4",
@@ -304,7 +304,7 @@ func TestAudioStreamingFinalChunkNoDeadlock(t *testing.T) {
 				OutputTokens: 50,
 				TotalTokens:  150,
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       schemas.OpenAI,
 				ModelRequested: "tts-1",
@@ -375,7 +375,7 @@ func TestTranscriptionStreamingFinalChunkNoDeadlock(t *testing.T) {
 	response := &schemas.BifrostResponse{
 		TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
 			Text: "Complete transcription",
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.TranscriptionStreamRequest,
 				Provider:       schemas.OpenAI,
 				ModelRequested: "whisper-1",

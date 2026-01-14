@@ -509,7 +509,7 @@ func HandleAnthropicChatCompletionStreaming(
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		
+
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
@@ -638,7 +638,7 @@ func HandleAnthropicChatCompletionStreaming(
 				break
 			}
 			if response != nil {
-				response.ExtraFields = schemas.BifrostResponseExtraFields{
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.ChatCompletionStreamRequest,
 					Provider:       providerName,
 					ModelRequested: modelName,
@@ -685,13 +685,16 @@ func HandleAnthropicChatCompletionStreaming(
 			if response == nil {
 				logger.Warn("postResponseConverter returned nil; skipping chunk")
 				// Setting error on the context to signal to the defer that we need to close the stream
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)								
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				return
 			}
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
-			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			if response.ExtraFields == nil {
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+			}
+			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1006,7 +1009,7 @@ func HandleAnthropicResponsesStream(
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ResponsesStreamRequest,
 						Provider:       providerName,
 						ModelRequested: modelName,
@@ -1035,7 +1038,10 @@ func HandleAnthropicResponsesStream(
 						response.Response.Usage = usage
 						// Set raw request if enabled
 						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+							if response.ExtraFields == nil {
+								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+							}
+							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1167,7 +1173,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 			Object:  "list",
 			Data:    []schemas.BifrostBatchRetrieveResponse{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -1249,7 +1255,7 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 		Object:  "list",
 		Data:    batches,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1418,7 +1424,7 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 			ID:     anthropicResp.ID,
 			Object: anthropicResp.Type,
 			Status: ToBifrostBatchStatus(anthropicResp.ProcessingStatus),
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCancelRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1542,7 +1548,7 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
 			BatchID: request.BatchID,
 			Results: results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchResultsRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1709,7 +1715,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 			Object:  "list",
 			Data:    []schemas.FileObject{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileListRequest,
 				Provider:    providerName,
 			},
@@ -1796,7 +1802,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 		Object:  "list",
 		Data:    files,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1949,7 +1955,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 				ID:      request.FileID,
 				Object:  "file",
 				Deleted: true,
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					RequestType: schemas.FileDeleteRequest,
 					Provider:    providerName,
 					Latency:     latency.Milliseconds(),
@@ -1981,7 +1987,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 			ID:      anthropicResp.ID,
 			Object:  "file",
 			Deleted: anthropicResp.Type == "file_deleted",
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileDeleteRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2072,7 +2078,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 			FileID:      request.FileID,
 			Content:     content,
 			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileContentRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),

@@ -486,7 +486,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				}
 				if response != nil {
 					response.ID = responseID
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ChatCompletionStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
@@ -504,7 +504,10 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					if isLastChunk {
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+							if response.ExtraFields == nil {
+								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+							}
+							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -753,7 +756,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			// Handle each response in the slice
 			for i, response := range responses {
 				if response != nil {
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ResponsesStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
@@ -773,7 +776,10 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 						}
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+							if response.ExtraFields == nil {
+								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+							}
+							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

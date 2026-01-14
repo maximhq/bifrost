@@ -54,7 +54,9 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	}
 
 	ctx.SetContentType("application/json")
-	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
+	clone := *bifrostErr
+	clone.ExtraFields = schemas.BifrostErrorExtraFields{}
+	if encodeErr := json.NewEncoder(ctx).Encode(&clone); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))

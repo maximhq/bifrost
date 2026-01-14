@@ -74,9 +74,9 @@ type BifrostResponsesResponse struct {
 	Tools              []ResponsesTool                     `json:"tools,omitempty"`       // Tools to use
 	Truncation         *string                             `json:"truncation,omitempty"`
 	Usage              *ResponsesResponseUsage             `json:"usage,omitempty"`
-	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
+	ExtraFields        *BifrostResponseExtraFields         `json:"extra_fields,omitempty"`
 
-	// Perplexity-specific fields
+	// Perplexity-specific fields - these are not part of OpenAI spec
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
@@ -1472,7 +1472,7 @@ type BifrostResponsesStreamResponse struct {
 	Message *string `json:"message,omitempty"`
 	Param   *string `json:"param,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`

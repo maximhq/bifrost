@@ -23,15 +23,15 @@ func (r *BifrostChatRequest) GetRawRequestBody() []byte {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ID                string                      `json:"id"`
+	Choices           []BifrostResponseChoice     `json:"choices"`
+	Created           int                         `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                      `json:"model"`
+	Object            string                      `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       *string                     `json:"service_tier,omitempty"`
+	SystemFingerprint string                      `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage            `json:"usage"`
+	ExtraFields       *BifrostResponseExtraFields `json:"extra_fields"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -45,6 +45,27 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		return nil
 	}
 
+	extraFieldsPtr := &BifrostResponseExtraFields{
+		RequestType:    TextCompletionRequest,
+		ChunkIndex:     0,
+		Provider:       "",
+		ModelRequested: "",
+		Latency:        0,
+		RawResponse:    nil,
+		CacheDebug:     nil,
+	}
+	if cr.ExtraFields != nil {
+		extraFieldsPtr = &BifrostResponseExtraFields{
+			RequestType:    TextCompletionRequest,
+			ChunkIndex:     cr.ExtraFields.ChunkIndex,
+			Provider:       cr.ExtraFields.Provider,
+			ModelRequested: cr.ExtraFields.ModelRequested,
+			Latency:        cr.ExtraFields.Latency,
+			RawResponse:    cr.ExtraFields.RawResponse,
+			CacheDebug:     cr.ExtraFields.CacheDebug,
+		}
+	}
+
 	if len(cr.Choices) == 0 {
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,
@@ -52,15 +73,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 			Object:            "text_completion",
 			SystemFingerprint: cr.SystemFingerprint,
 			Usage:             cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
-			},
+			ExtraFields:       extraFieldsPtr,
 		}
 	}
 
@@ -83,16 +96,8 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 					LogProbs:     choice.LogProbs,
 				},
 			},
-			Usage: cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
-			},
+			Usage:       cr.Usage,
+			ExtraFields: extraFieldsPtr,
 		}
 	}
 
@@ -118,16 +123,8 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 					LogProbs:     choice.LogProbs,
 				},
 			},
-			Usage: cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
-			},
+			Usage:       cr.Usage,
+			ExtraFields: extraFieldsPtr,
 		}
 	}
 
@@ -138,15 +135,7 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		Object:            "text_completion",
 		SystemFingerprint: cr.SystemFingerprint,
 		Usage:             cr.Usage,
-		ExtraFields: BifrostResponseExtraFields{
-			RequestType:    TextCompletionRequest,
-			ChunkIndex:     cr.ExtraFields.ChunkIndex,
-			Provider:       cr.ExtraFields.Provider,
-			ModelRequested: cr.ExtraFields.ModelRequested,
-			Latency:        cr.ExtraFields.Latency,
-			RawResponse:    cr.ExtraFields.RawResponse,
-			CacheDebug:     cr.ExtraFields.CacheDebug,
-		},
+		ExtraFields:       extraFieldsPtr,
 	}
 }
 

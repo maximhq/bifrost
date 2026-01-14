@@ -51,6 +51,9 @@ func (r *MistralTranscriptionResponse) ToBifrostTranscriptionResponse() *schemas
 		Duration: r.Duration,
 		Language: r.Language,
 		Task:     schemas.Ptr("transcribe"),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			RequestType: schemas.TranscriptionRequest,
+		},
 	}
 
 	// Convert segments

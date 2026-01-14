@@ -32,9 +32,9 @@ type BifrostListModelsRequest struct {
 }
 
 type BifrostListModelsResponse struct {
-	Data          []Model                    `json:"data"`
-	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
-	NextPageToken string                     `json:"next_page_token,omitempty"` // Token to retrieve next page
+	Data          []Model                     `json:"data"`
+	ExtraFields   *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+	NextPageToken string                      `json:"next_page_token,omitempty"` // Token to retrieve next page
 
 	// Anthropic specific fields
 	FirstID *string `json:"-"`

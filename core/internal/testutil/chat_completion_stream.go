@@ -164,7 +164,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					},
 				},
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				Provider: testConfig.Provider,
 			},
 		}

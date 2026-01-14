@@ -14,6 +14,9 @@ func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKe
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerKey,
+		},
 	}
 
 	for _, model := range response.Models {

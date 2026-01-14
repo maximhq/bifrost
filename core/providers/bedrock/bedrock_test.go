@@ -677,7 +677,7 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			actual, err := bedrock.ToBedrockChatCompletionRequest(ctx, tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -705,7 +705,7 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 	trace := testTrace
 	latency := testLatency
 	props := testProps
-	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
 		name     string
@@ -1435,7 +1435,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 						},
 					},
 				},
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					Latency: latency,
 				},
 			},
@@ -1775,7 +1775,7 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 	toolInput := map[string]interface{}{
 		"location": "NYC",
 	}
-	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	tests := []struct {
 		name     string
@@ -1986,7 +1986,7 @@ func TestToBedrockResponsesRequest_AdditionalFields(t *testing.T) {
 		},
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)
@@ -2013,7 +2013,7 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 		},
 	}
 
-	ctx := schemas.NewBifrostContext(context.Background(),schemas.NoDeadline)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, bedrockReq)

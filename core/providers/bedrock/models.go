@@ -153,6 +153,9 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.ModelSummaries)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerKey,
+		},
 	}
 
 	deploymentValues := make([]string, 0, len(deployments))

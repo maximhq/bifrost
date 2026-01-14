@@ -479,7 +479,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		// Create final response
 		response := anthropicResponse.ToBifrostChatResponse()
 
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
+		response.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ChatCompletionRequest,
 			Provider:       providerName,
 			ModelRequested: request.Model,
@@ -529,7 +529,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		return response, nil
 	} else {
-		response := &schemas.BifrostChatResponse{}
+		response := &schemas.BifrostChatResponse{
+			ExtraFields: &schemas.BifrostResponseExtraFields{},
+		}
 
 		// Use enhanced response handler with pre-allocated response
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -912,7 +914,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		// Create final response
 		response := anthropicResponse.ToBifrostResponsesResponse()
 
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
+		response.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesRequest,
 			Provider:       providerName,
 			ModelRequested: request.Model,

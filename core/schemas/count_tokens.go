@@ -10,5 +10,5 @@ type BifrostCountTokensResponse struct {
 	TokenStrings       []string                      `json:"token_strings,omitempty"`
 	OutputTokens       *int                          `json:"output_tokens,omitempty"`
 	TotalTokens        *int                          `json:"total_tokens"`
-	ExtraFields        BifrostResponseExtraFields    `json:"extra_fields"`
+	ExtraFields        *BifrostResponseExtraFields   `json:"extra_fields,omitempty"`
 }

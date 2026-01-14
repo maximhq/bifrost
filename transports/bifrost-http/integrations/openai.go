@@ -96,6 +96,71 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	}
 }
 
+// stripExtraFieldsForOpenAI creates a shallow copy of the response with extra fields set to nil
+// for OpenAI-compatible client compatibility. This removes Bifrost-specific fields that
+// OpenAI-compatible clients cannot parse.
+func StripExtraFieldsForOpenAI(resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = nil
+	clone.SearchResults = nil
+	clone.Videos = nil
+	clone.Citations = nil
+	return &clone
+}
+
+// stripExtraFieldsForOpenAIText creates a shallow copy of the text completion response
+// with extra fields set to nil for OpenAI-compatible client compatibility.
+func stripExtraFieldsForOpenAIText(resp *schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = nil
+	return &clone
+}
+
+// stripExtraFieldsForOpenAIResponses creates a shallow copy of the responses response
+// with extra fields set to nil for OpenAI-compatible client compatibility.
+func stripExtraFieldsForOpenAIResponses(resp *schemas.BifrostResponsesResponse) *schemas.BifrostResponsesResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = nil
+	clone.SearchResults = nil
+	clone.Videos = nil
+	clone.Citations = nil
+	return &clone
+}
+
+// stripExtraFieldsForOpenAIResponsesStream creates a shallow copy of the responses stream response
+// with extra fields set to nil for OpenAI-compatible client compatibility.
+func stripExtraFieldsForOpenAIResponsesStream(resp *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = nil
+	clone.SearchResults = nil
+	clone.Videos = nil
+	clone.Citations = nil
+	return &clone
+}
+
+// stripExtraFieldsForOpenAIError creates a copy of the error without extra fields
+// for OpenAI-compatible client compatibility.
+func stripExtraFieldsForOpenAIError(err *schemas.BifrostError) *schemas.BifrostError {
+	if err == nil {
+		return nil
+	}
+	clone := *err
+	clone.ExtraFields = schemas.BifrostErrorExtraFields{}
+	return &clone
+}
+
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
 func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -122,22 +187,28 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
+					return stripExtraFieldsForOpenAIText(resp), nil
+				}
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			StreamConfig: &StreamConfig{
 				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
+					}
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
+						return "", stripExtraFieldsForOpenAIText(resp), nil
 					}
 					return "", resp, nil
 				},
@@ -171,33 +242,33 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-				// If raw response is available from OpenAI provider, use it directly
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				// Convert BifrostChatResponse to OpenAI-compatible format
-				// This ensures clients like MstyStudio receive properly formatted responses
-				return openai.ToOpenAIChatResponse(resp), nil
+				if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
+					return StripExtraFieldsForOpenAI(resp), nil
+				}
+				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			StreamConfig: &StreamConfig{
 				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-					// If raw response is available from OpenAI provider, use it directly
-					if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
 					}
-					// Convert BifrostChatResponse to OpenAI-compatible streaming format
-					// This ensures clients like MstyStudio receive properly formatted responses
-					return "", openai.ToOpenAIChatStreamResponse(resp), nil
+					if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
+						return "", StripExtraFieldsForOpenAI(resp), nil
+					}
+					return "", resp, nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return err
+					return stripExtraFieldsForOpenAIError(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -227,22 +298,28 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
+				if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
+					return stripExtraFieldsForOpenAIResponses(resp), nil
+				}
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
+					}
+					if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
+						return string(resp.Type), stripExtraFieldsForOpenAIResponsesStream(resp), nil
 					}
 					return string(resp.Type), resp, nil
 				},
@@ -276,7 +353,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type for input tokens")
 			},
 			CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -284,7 +361,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
 		})
@@ -312,7 +389,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid embedding request type")
 			},
 			EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -320,7 +397,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
 		})
@@ -348,11 +425,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid speech request type")
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			StreamConfig: &StreamConfig{
 				SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
@@ -390,7 +467,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid transcription request type")
 			},
 			TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
+				if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
@@ -398,11 +475,11 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			StreamConfig: &StreamConfig{
 				TranscriptionStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields != nil && resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
@@ -448,7 +525,7 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 				return openai.ToOpenAIListModelsResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: setQueryParamsAndAzureEndpointPreHook(handlerStore),
 		})
@@ -534,7 +611,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				// Provider is parsed from JSON body (extra_body), default to OpenAI if not set
@@ -637,7 +714,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractBatchListQueryParams(handlerStore),
 		})
@@ -688,7 +765,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractBatchIDFromPath(handlerStore),
 		})
@@ -737,7 +814,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractBatchIDFromPath(handlerStore),
 		})
@@ -786,7 +863,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 				// Default to OpenAI if provider not set from extra_body
@@ -841,7 +918,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractFileListQueryParams(handlerStore),
 		})
@@ -887,7 +964,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
 		})
@@ -935,7 +1012,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return resp, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
 		})
@@ -970,7 +1047,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 				return nil, errors.New("invalid file content request type")
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-				return err
+				return stripExtraFieldsForOpenAIError(err)
 			},
 			PreCallback: extractFileIDFromPath(handlerStore),
 		})

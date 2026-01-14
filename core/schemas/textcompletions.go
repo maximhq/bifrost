@@ -65,13 +65,13 @@ func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatReques
 }
 
 type BifrostTextCompletionResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "text_completion" (same for text completion stream)
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ID                string                      `json:"id"`
+	Choices           []BifrostResponseChoice     `json:"choices"`
+	Model             string                      `json:"model"`
+	Object            string                      `json:"object"` // "text_completion" (same for text completion stream)
+	SystemFingerprint string                      `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage            `json:"usage"`
+	ExtraFields       *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 type TextCompletionInput struct {

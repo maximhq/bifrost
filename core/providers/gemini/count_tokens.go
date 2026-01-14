@@ -55,7 +55,7 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 		InputTokens:        inputTokens,
 		InputTokensDetails: inputDetails,
 		TotalTokens:        &total,
-		ExtraFields:        schemas.BifrostResponseExtraFields{},
+		ExtraFields:        &schemas.BifrostResponseExtraFields{},
 	}
 }
 

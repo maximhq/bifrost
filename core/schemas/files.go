@@ -102,7 +102,7 @@ type BifrostFileUploadResponse struct {
 	StorageBackend FileStorageBackend `json:"storage_backend,omitempty"`
 	StorageURI     string             `json:"storage_uri,omitempty"` // S3/GCS URI if applicable
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostFileListRequest represents a request to list files.
@@ -139,7 +139,7 @@ type BifrostFileListResponse struct {
 	HasMore bool         `json:"has_more,omitempty"`
 	After   *string      `json:"after,omitempty"` // Continuation token for pagination
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostFileRetrieveRequest represents a request to retrieve file metadata.
@@ -179,7 +179,7 @@ type BifrostFileRetrieveResponse struct {
 	StorageBackend FileStorageBackend `json:"storage_backend,omitempty"`
 	StorageURI     string             `json:"storage_uri,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostFileDeleteRequest represents a request to delete a file.
@@ -208,7 +208,7 @@ type BifrostFileDeleteResponse struct {
 	Object  string `json:"object,omitempty"` // "file"
 	Deleted bool   `json:"deleted"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostFileContentRequest represents a request to download file content.
@@ -237,5 +237,5 @@ type BifrostFileContentResponse struct {
 	Content     []byte `json:"-"`                      // Raw file content (not serialized)
 	ContentType string `json:"content_type,omitempty"` // MIME type
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }

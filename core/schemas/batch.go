@@ -111,7 +111,7 @@ type BifrostBatchCreateResponse struct {
 	// Gemini-specific (operation response)
 	OperationName *string `json:"operation_name,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostBatchListRequest represents a request to list batch jobs.
@@ -143,7 +143,7 @@ type BifrostBatchListResponse struct {
 	// Anthropic pagination
 	NextCursor *string `json:"next_cursor,omitempty"` // For cursor-based pagination
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostBatchRetrieveRequest represents a request to retrieve a batch job.
@@ -198,7 +198,7 @@ type BifrostBatchRetrieveResponse struct {
 	Done          *bool   `json:"done,omitempty"`
 	Progress      *int    `json:"progress,omitempty"` // Percentage progress
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostBatchCancelRequest represents a request to cancel a batch job.
@@ -227,7 +227,7 @@ type BifrostBatchCancelResponse struct {
 	CancellingAt  *int64             `json:"cancelling_at,omitempty"`
 	CancelledAt   *int64             `json:"cancelled_at,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // BifrostBatchResultsRequest represents a request to retrieve batch results.
@@ -290,5 +290,5 @@ type BifrostBatchResultsResponse struct {
 	HasMore    bool    `json:"has_more,omitempty"`
 	NextCursor *string `json:"next_cursor,omitempty"`
 
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }

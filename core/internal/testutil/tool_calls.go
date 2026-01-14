@@ -60,7 +60,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 
 		// Create operations for both Chat Completions and Responses API
 		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)	
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,

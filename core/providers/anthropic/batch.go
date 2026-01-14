@@ -139,7 +139,7 @@ func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schem
 		ResultsURL:       r.ResultsURL,
 		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
 		ExpiresAt:        &expiresAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCreateRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -178,7 +178,7 @@ func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(providerName sch
 		ProcessingStatus: &r.ProcessingStatus,
 		ResultsURL:       r.ResultsURL,
 		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

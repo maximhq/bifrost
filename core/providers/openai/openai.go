@@ -293,7 +293,9 @@ func HandleOpenAITextCompletionRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	response := &schemas.BifrostTextCompletionResponse{}
+	response := &schemas.BifrostTextCompletionResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
@@ -624,7 +626,10 @@ func HandleOpenAITextCompletionStreaming(
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
-			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			if response.ExtraFields == nil {
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+			}
+			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -720,7 +725,9 @@ func HandleOpenAIChatCompletionRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	response := &schemas.BifrostChatResponse{}
+	response := &schemas.BifrostChatResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -980,6 +987,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{}
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue
@@ -1027,7 +1035,10 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
 						// Set raw request if enabled
 						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+							if response.ExtraFields == nil {
+								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+							}
+							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1144,7 +1155,10 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			// Set raw request if enabled
 			if sendBackRawRequest {
-				providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+				if response.ExtraFields == nil {
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+				}
+				providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1240,7 +1254,9 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	response := &schemas.BifrostResponsesResponse{}
+	response := &schemas.BifrostResponsesResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -1506,7 +1522,10 @@ func HandleOpenAIResponsesStreaming(
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 				// Set raw request if enabled
 				if sendBackRawRequest {
-					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+					if response.ExtraFields == nil {
+						response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+					}
+					providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1618,7 +1637,9 @@ func HandleOpenAIEmbeddingRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := &schemas.BifrostEmbeddingResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -1728,7 +1749,7 @@ func HandleOpenAISpeechRequest(
 	// The audio data is typically in MP3, WAV, or other audio formats as specified by response_format
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		Audio: body,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.SpeechRequest,
 			Provider:       providerName,
 			ModelRequested: request.Model,
@@ -1737,7 +1758,10 @@ func HandleOpenAISpeechRequest(
 	}
 
 	if sendBackRawRequest {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		if bifrostResponse.ExtraFields == nil {
+			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
+		}
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	return bifrostResponse, nil
@@ -1961,7 +1985,7 @@ func HandleOpenAISpeechStreamRequest(
 
 			chunkIndex++
 
-			response.ExtraFields = schemas.BifrostResponseExtraFields{
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
@@ -1977,7 +2001,10 @@ func HandleOpenAISpeechStreamRequest(
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				if sendBackRawRequest {
-					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+					if response.ExtraFields == nil {
+						response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+					}
+					providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)
@@ -2122,7 +2149,7 @@ func HandleOpenAITranscriptionRequest(
 		}
 	}
 
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
+	response.ExtraFields = &schemas.BifrostResponseExtraFields{
 		RequestType:    schemas.TranscriptionRequest,
 		Provider:       providerName,
 		ModelRequested: request.Model,
@@ -2341,7 +2368,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 			chunkIndex++
 
-			response.ExtraFields = schemas.BifrostResponseExtraFields{
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.TranscriptionStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
@@ -2596,7 +2623,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 			Object:  "list",
 			Data:    []schemas.FileObject{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileListRequest,
 				Provider:    providerName,
 			},
@@ -2688,7 +2715,7 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		Object:  "list",
 		Data:    files,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2849,7 +2876,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 			ID:      openAIResp.ID,
 			Object:  openAIResp.Object,
 			Deleted: openAIResp.Deleted,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileDeleteRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2937,7 +2964,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 			FileID:      request.FileID,
 			Content:     content,
 			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileContentRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -3077,7 +3104,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 			Object:  "list",
 			Data:    []schemas.BifrostBatchRetrieveResponse{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -3154,7 +3181,7 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 		Object:  "list",
 		Data:    batches,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -3315,7 +3342,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 			Status:       ToBifrostBatchStatus(openAIResp.Status),
 			CancellingAt: openAIResp.CancellingAt,
 			CancelledAt:  openAIResp.CancelledAt,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCancelRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -3430,7 +3457,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
 			BatchID: request.BatchID,
 			Results: results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchResultsRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),

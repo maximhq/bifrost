@@ -550,7 +550,7 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas
 		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileUploadRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -579,7 +579,7 @@ func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schem
 		Purpose:        schemas.FilePurposeBatch,
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

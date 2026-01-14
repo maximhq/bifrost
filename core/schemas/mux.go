@@ -1147,8 +1147,10 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 
 	// Copy other relevant fields
 	chatResp.ExtraFields = responsesResp.ExtraFields
-	chatResp.ExtraFields.RequestType = ChatCompletionRequest
-	chatResp.ExtraFields.Provider = responsesResp.ExtraFields.Provider
+	if chatResp.ExtraFields != nil {
+		chatResp.ExtraFields.RequestType = ChatCompletionRequest
+		chatResp.ExtraFields.Provider = responsesResp.ExtraFields.Provider
+	}
 
 	return chatResp
 }
