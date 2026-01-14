@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
@@ -135,6 +136,20 @@ type Log struct {
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
+}
+
+// NewFromMap creates a new Log from a map[string]interface{}
+func NewLogEntryFromMap(entry map[string]interface{}) *Log {
+	var log Log
+	data, err := sonic.Marshal(entry)
+	if err != nil {
+		return nil
+	}
+	err = sonic.Unmarshal(data, &log)
+	if err != nil {
+		return nil
+	}
+	return &log
 }
 
 // TableName sets the table name for GORM

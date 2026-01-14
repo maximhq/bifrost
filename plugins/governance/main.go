@@ -3,12 +3,14 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -144,10 +146,27 @@ func Init(
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
 	// 4. Perform startup reset check for any expired limits from downtime
+	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
 	if configStore != nil {
-		if err := tracker.PerformStartupResets(ctx); err != nil {
-			logger.Warn("startup reset failed: %v", err)
-			// Continue initialization even if startup reset fails (non-critical)
+		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
+		lock := lockManager.NewLock("governance_startup_reset")
+		// Acquire the lock
+		lockAcquired := true
+		if err := lock.LockWithRetry(ctx, 10); err != nil {
+			logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
+			lockAcquired = false
+		}
+		// Only run startup resets if we successfully acquired the lock
+		if lockAcquired {
+			defer func() {
+				if err := lock.Unlock(ctx); err != nil && !errors.Is(err, configstore.ErrLockNotHeld) {
+					logger.Warn("failed to release governance startup reset lock: %v", err)
+				}
+			}()
+			if err := tracker.PerformStartupResets(ctx); err != nil {
+				logger.Warn("startup reset failed: %v", err)
+				// Continue initialization even if startup reset fails (non-critical)
+			}
 		}
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
@@ -204,10 +223,18 @@ func InitFromStore(
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 	// Perform startup reset check for any expired limits from downtime
+	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
 	if configStore != nil {
-		if err := tracker.PerformStartupResets(ctx); err != nil {
-			logger.Warn("startup reset failed: %v", err)
-			// Continue initialization even if startup reset fails (non-critical)
+		lockManager := configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second))
+		lock := lockManager.NewLock("governance_startup_reset")
+		if err := lock.Lock(ctx); err != nil {
+			logger.Warn("failed to acquire governance startup reset lock, skipping startup reset: %v", err)
+		} else {
+			defer lock.Unlock(ctx)
+			if err := tracker.PerformStartupResets(ctx); err != nil {
+				logger.Warn("startup reset failed: %v", err)
+				// Continue initialization even if startup reset fails (non-critical)
+			}
 		}
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
