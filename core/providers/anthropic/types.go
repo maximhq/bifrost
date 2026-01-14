@@ -158,23 +158,27 @@ type AnthropicMessage struct {
 type AnthropicContent struct {
 	ContentStr    *string
 	ContentBlocks []AnthropicContentBlock
+	ContentBlock  *AnthropicContentBlock // For "bash_code_execution_tool_result"
 }
 
 // MarshalJSON implements custom JSON marshalling for AnthropicContent.
 // It marshals either ContentStr or ContentBlocks directly without wrapping.
 func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	// Validation: ensure only one field is set at a time
-	if mc.ContentStr != nil && mc.ContentBlocks != nil {
-		return nil, fmt.Errorf("both ContentStr and ContentBlocks are set; only one should be non-nil")
+	if mc.ContentStr != nil && mc.ContentBlocks != nil && mc.ContentBlock != nil {
+		return nil, fmt.Errorf("both ContentStr, ContentBlocks and ContentBlock are set; only one should be non-nil")
 	}
 
 	if mc.ContentStr != nil {
 		return sonic.Marshal(*mc.ContentStr)
 	}
-	if mc.ContentBlocks != nil {
+	if mc.ContentBlock != nil && mc.ContentBlocks == nil {
+		return sonic.Marshal(*mc.ContentBlock)
+	}
+	if mc.ContentBlocks != nil && mc.ContentBlock == nil {
 		return sonic.Marshal(mc.ContentBlocks)
 	}
-	// If both are nil, return null
+	// If all are nil, return null
 	return sonic.Marshal(nil)
 }
 
@@ -188,6 +192,13 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	// Try to unmarshal as a direct ContentBlock
+	var contentBlock AnthropicContentBlock
+	if err := sonic.Unmarshal(data, &contentBlock); err == nil {
+		mc.ContentBlock = &contentBlock
+		return nil
+	}
+
 	// Try to unmarshal as a direct array of ContentBlock
 	var arrayContent []AnthropicContentBlock
 	if err := sonic.Unmarshal(data, &arrayContent); err == nil {
@@ -195,24 +206,26 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return fmt.Errorf("content field is neither a string nor an array of ContentBlock")
+	return fmt.Errorf("content field is neither a string, ContentBlock nor an array of ContentBlock")
 }
 
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText                AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage               AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeDocument            AnthropicContentBlockType = "document"
-	AnthropicContentBlockTypeToolUse             AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse       AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult          AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchToolResult AnthropicContentBlockType = "web_search_tool_result"
-	AnthropicContentBlockTypeWebSearchResult     AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse          AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult       AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking            AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking    AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeText                        AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage                       AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument                    AnthropicContentBlockType = "document"
+	AnthropicContentBlockTypeToolUse                     AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse               AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult                  AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchToolResult         AnthropicContentBlockType = "web_search_tool_result"
+	AnthropicContentBlockTypeWebSearchResult             AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse                  AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult               AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeBashCodeExecutionToolResult AnthropicContentBlockType = "bash_code_execution_tool_result"
+	AnthropicContentBlockTypeBashCodeExecutionResult     AnthropicContentBlockType = "bash_code_execution_result"
+	AnthropicContentBlockTypeThinking                    AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking            AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -236,6 +249,9 @@ type AnthropicContentBlock struct {
 	URL              *string                   `json:"url,omitempty"`               // For web_search_result content
 	EncryptedContent *string                   `json:"encrypted_content,omitempty"` // For web_search_result content
 	PageAge          *string                   `json:"page_age,omitempty"`          // For web_search_result content
+	StdOut           *string                   `json:"stdout,omitempty"`            // For bash_code_execution_result content
+	StdErr           *string                   `json:"stderr,omitempty"`            // For bash_code_execution_result content
+	ReturnCode       *int                      `json:"return_code,omitempty"`       // For bash_code_execution_result content
 }
 
 // AnthropicSource represents image or document source in Anthropic format
@@ -360,10 +376,12 @@ const (
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer   AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
-	AnthropicToolNameBash       AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameComputer          AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch         AnthropicToolName = "web_search"
+	AnthropicToolNameBash              AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor        AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameBashCodeExecution AnthropicToolName = "bash_code_execution"
+	AnthropicToolNameCodeExecution     AnthropicToolName = "code_execution"
 )
 
 type AnthropicToolComputerUse struct {
@@ -451,6 +469,7 @@ type AnthropicMessageResponse struct {
 	Model        string                  `json:"model"`
 	StopReason   AnthropicStopReason     `json:"stop_reason,omitempty"`
 	StopSequence *string                 `json:"stop_sequence,omitempty"`
+	Container    *AnthropicContainer     `json:"container,omitempty"`
 	Usage        *AnthropicUsage         `json:"usage,omitempty"`
 }
 
@@ -473,6 +492,11 @@ type AnthropicUsage struct {
 	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
 	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
 	OutputTokens             int                         `json:"output_tokens"`
+}
+
+type AnthropicContainer struct {
+	ID        string `json:"id"`
+	ExpiresAt string `json:"expires_at"` // ISO 8601 timestamp when the container expires (sent by Anthropic)
 }
 
 type AnthropicUsageCacheCreation struct {

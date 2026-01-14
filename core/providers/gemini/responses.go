@@ -146,7 +146,12 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		Model: response.ModelVersion,
 	}
 
-	// Convert usage information
+	// Map Gemini's responseId to the standard ID field
+	if response.ResponseID != "" {
+		bifrostResp.ID = &response.ResponseID
+	}
+
+	// Convert usage information with extended token details
 	bifrostResp.Usage = convertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
 
 	// Convert candidates to Responses output messages
@@ -160,6 +165,16 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	return bifrostResp
 }
 
+// ToGeminiResponsesResponse converts a BifrostResponsesResponse back to Gemini's GenerateContentResponse format.
+// This is the reverse transformation of ToResponsesBifrostResponsesResponse, used when returning responses
+// to clients that expect Gemini's native format.
+//
+// Key conversion rules:
+//  1. Code execution: ResponsesMessageTypeCodeInterpreterCall messages are converted to executableCode + codeExecutionResult parts
+//  2. Thought signatures: Reasoning messages with EncryptedContent are attached to adjacent parts (executableCode, functionCall, or text)
+//     rather than being emitted as standalone thoughtSignature parts
+//  3. Function calls: ResponsesMessageTypeFunctionCall messages become functionCall parts with signatures preserved
+//  4. Text content: Content blocks with Signature fields get their signatures attached to the text parts
 func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *GenerateContentResponse {
 	if bifrostResp == nil {
 		return nil
@@ -169,7 +184,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		ModelVersion: bifrostResp.Model,
 	}
 
-	// Set response ID if available
+	// Map the standard ID field to Gemini's responseId
 	if bifrostResp.ID != nil {
 		geminiResp.ResponseID = *bifrostResp.ID
 	}
@@ -317,6 +332,70 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 				})
 			}
 
+			// Handle code interpreter calls (code execution)
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall && msg.ResponsesToolMessage != nil {
+				if msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
+					codeInterpreter := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+
+					// Look back to see if the previous message is a reasoning message with encrypted content
+					// If so, extract the thought signature and mark it as consumed
+					var thoughtSig []byte
+					if i > 0 {
+						prevMsg := bifrostResp.Output[i-1]
+						if prevMsg.Type != nil && *prevMsg.Type == schemas.ResponsesMessageTypeReasoning &&
+							prevMsg.ResponsesReasoning != nil && prevMsg.ResponsesReasoning.EncryptedContent != nil {
+							decodedSig, err := base64.StdEncoding.DecodeString(*prevMsg.ResponsesReasoning.EncryptedContent)
+							if err == nil {
+								thoughtSig = decodedSig
+								// Mark the previous reasoning message as consumed
+								consumedIndices[i-1] = true
+							}
+						}
+					}
+
+					// Create the ExecutableCode part with thought signature attached
+					if codeInterpreter.Code != nil && codeInterpreter.Language != nil {
+						executablePart := &Part{
+							ExecutableCode: &ExecutableCode{
+								Language: *codeInterpreter.Language,
+								Code:     *codeInterpreter.Code,
+							},
+						}
+
+						// Attach thought signature to the executableCode part
+						if len(thoughtSig) > 0 {
+							executablePart.ThoughtSignature = thoughtSig
+						}
+
+						currentParts = append(currentParts, executablePart)
+					}
+
+					// Add CodeExecutionResult parts for each output
+					if len(codeInterpreter.Outputs) > 0 {
+						for _, output := range codeInterpreter.Outputs {
+							if output.ResponsesCodeInterpreterOutputLogs != nil {
+								logs := output.ResponsesCodeInterpreterOutputLogs
+
+								// Map return code to Gemini outcome
+								outcome := OutcomeOK
+								if logs.ReturnCode != nil && *logs.ReturnCode != 0 {
+									outcome = OutcomeFailed
+								}
+
+								resultPart := &Part{
+									CodeExecutionResult: &CodeExecutionResult{
+										Outcome: outcome,
+										Output:  logs.Logs,
+									},
+								}
+
+								currentParts = append(currentParts, resultPart)
+							}
+						}
+					}
+				}
+			}
+
 			// Handle reasoning messages
 			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
 				// Skip this reasoning message if it was already consumed as a thought signature
@@ -335,14 +414,10 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 						}
 					}
 				}
-				if msg.ResponsesReasoning.EncryptedContent != nil {
-					decodedSig, err := base64.StdEncoding.DecodeString(*msg.ResponsesReasoning.EncryptedContent)
-					if err == nil {
-						currentParts = append(currentParts, &Part{
-							ThoughtSignature: decodedSig,
-						})
-					}
-				}
+
+				// Standalone thoughtSignature without summary should be attached to adjacent parts
+				// Don't create a standalone part - this will be handled by looking ahead/behind
+				// in the code execution and function call handlers above
 			}
 		}
 
@@ -383,8 +458,52 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			CandidatesTokenCount: int32(bifrostResp.Usage.OutputTokens),
 			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
 		}
+
+		// Add thoughts token count
 		if bifrostResp.Usage.OutputTokensDetails != nil {
 			geminiResp.UsageMetadata.ThoughtsTokenCount = int32(bifrostResp.Usage.OutputTokensDetails.ReasoningTokens)
+
+			// Add candidates tokens details (output modality breakdown)
+			if len(bifrostResp.Usage.OutputTokensDetails.ModalityTokenCount) > 0 {
+				details := make([]*ModalityTokenCount, len(bifrostResp.Usage.OutputTokensDetails.ModalityTokenCount))
+				for i, detail := range bifrostResp.Usage.OutputTokensDetails.ModalityTokenCount {
+					details[i] = &ModalityTokenCount{
+						Modality:   detail.Modality,
+						TokenCount: int32(detail.TokenCount),
+					}
+				}
+				geminiResp.UsageMetadata.CandidatesTokensDetails = details
+			}
+		}
+
+		// Add input tokens details
+		if bifrostResp.Usage.InputTokensDetails != nil {
+			// Add cached tokens
+			if bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
+				geminiResp.UsageMetadata.CachedContentTokenCount = int32(bifrostResp.Usage.InputTokensDetails.CachedTokens)
+			}
+
+			// Add tool use prompt token count
+			if bifrostResp.Usage.InputTokensDetails.ToolUseTokens > 0 {
+				geminiResp.UsageMetadata.ToolUsePromptTokenCount = int32(bifrostResp.Usage.InputTokensDetails.ToolUseTokens)
+			}
+
+			// Add prompt tokens details (modality breakdown)
+			if len(bifrostResp.Usage.InputTokensDetails.ModalityTokenCount) > 0 {
+				// Split modality details between tool use and prompt
+				// For now, we'll put them all in PromptTokensDetails since we can't easily distinguish
+				details := make([]*ModalityTokenCount, len(bifrostResp.Usage.InputTokensDetails.ModalityTokenCount))
+				for i, detail := range bifrostResp.Usage.InputTokensDetails.ModalityTokenCount {
+					details[i] = &ModalityTokenCount{
+						Modality:   detail.Modality,
+						TokenCount: int32(detail.TokenCount),
+					}
+				}
+				geminiResp.UsageMetadata.PromptTokensDetails = details
+				// Also set ToolUsePromptTokensDetails to the same value
+				// Gemini might use either field depending on context
+				geminiResp.UsageMetadata.ToolUsePromptTokensDetails = details
+			}
 		}
 	}
 
@@ -1759,6 +1878,14 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 				responsesTools = append(responsesTools, responsesTool)
 			}
 		}
+
+		// Handle CodeExecution tool
+		if tool.CodeExecution != nil {
+			responsesTool := schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeCodeInterpreter,
+			}
+			responsesTools = append(responsesTools, responsesTool)
+		}
 	}
 
 	return responsesTools
@@ -1806,7 +1933,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 			continue
 		}
 
-		for _, part := range candidate.Content.Parts {
+		for partIdx, part := range candidate.Content.Parts {
 			// Handle different types of parts
 			switch {
 			case part.Thought:
@@ -1983,44 +2110,90 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				}
 				messages = append(messages, msg)
 
-			case part.CodeExecutionResult != nil:
-				// Handle code execution results
-				output := part.CodeExecutionResult.Output
-				if part.CodeExecutionResult.Outcome != OutcomeOK {
-					output = "Error: " + output
-				}
-
-				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &output,
-							},
-						},
-					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
-				}
-				messages = append(messages, msg)
-
 			case part.ExecutableCode != nil:
-				// Handle executable code
-				codeContent := "```" + part.ExecutableCode.Language + "\n" + part.ExecutableCode.Code + "\n```"
+				// Handle executable code - create a code_interpreter_call message
+				// Generate a unique ID for this code execution
+				codeID := fmt.Sprintf("code_%s", providerUtils.GetRandomString(32))
+
+				// If there's a thought signature, create a reasoning message BEFORE the code_interpreter_call
+				// This preserves the order so we can reconstruct it correctly
+				if part.ThoughtSignature != nil {
+					thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
+					reasoningMsg := schemas.ResponsesMessage{
+						ID:   schemas.Ptr("rs_" + providerUtils.GetRandomString(32)),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+						ResponsesReasoning: &schemas.ResponsesReasoning{
+							Summary:          []schemas.ResponsesReasoningSummary{},
+							EncryptedContent: &thoughtSig,
+						},
+					}
+					messages = append(messages, reasoningMsg)
+				}
 
 				msg := schemas.ResponsesMessage{
-					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{
-							{
-								Type: schemas.ResponsesOutputMessageContentTypeText,
-								Text: &codeContent,
-							},
+					ID:     &codeID,
+					Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: &codeID,
+						ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+							Code:        &part.ExecutableCode.Code,
+							Language:    &part.ExecutableCode.Language,
+							ContainerID: "", // Gemini doesn't use containers, so we use an empty string
+							Outputs:     []schemas.ResponsesCodeInterpreterOutput{},
 						},
 					},
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 				}
+
+				// Look ahead to find the corresponding CodeExecutionResult
+				// It should be in the next part or parts
+				for j := partIdx + 1; j < len(candidate.Content.Parts); j++ {
+					nextPart := candidate.Content.Parts[j]
+					if nextPart.CodeExecutionResult != nil {
+						// Add the execution result as output
+						var log schemas.ResponsesCodeInterpreterOutputLogs
+						log.Type = "logs"
+
+						// Map Gemini outcome to return code
+						var returnCode int
+						switch nextPart.CodeExecutionResult.Outcome {
+						case OutcomeOK:
+							returnCode = 0
+							log.Logs = nextPart.CodeExecutionResult.Output
+						case OutcomeFailed:
+							returnCode = 1
+							log.Logs = nextPart.CodeExecutionResult.Output
+						case OutcomeDeadlineExceeded:
+							returnCode = 124 // Standard timeout exit code
+							log.Logs = nextPart.CodeExecutionResult.Output
+						default:
+							returnCode = 1
+							log.Logs = nextPart.CodeExecutionResult.Output
+						}
+						log.ReturnCode = &returnCode
+
+						msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs = append(
+							msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs,
+							schemas.ResponsesCodeInterpreterOutput{
+								ResponsesCodeInterpreterOutputLogs: &log,
+							},
+						)
+						break
+					}
+					// Stop looking if we hit another executable code or other significant content
+					if nextPart.ExecutableCode != nil || nextPart.Text != "" || nextPart.FunctionCall != nil {
+						break
+					}
+				}
+
 				messages = append(messages, msg)
+
+			case part.CodeExecutionResult != nil:
+				// Skip standalone CodeExecutionResult - it should already be handled with ExecutableCode
+				// This case is here to prevent it from being treated as unknown content
+				continue
 			case part.ThoughtSignature != nil:
 				// Handle thought signature
 				thoughtSig := base64.StdEncoding.EncodeToString(part.ThoughtSignature)
@@ -2242,10 +2415,14 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 					geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, funcDecl)
 				}
 			}
+		} else if tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
+			// Add CodeExecution tool
+			geminiTool.CodeExecution = &ToolCodeExecution{}
 		}
 	}
 
-	if len(geminiTool.FunctionDeclarations) > 0 {
+	// Return the tool if it has any declarations or code execution
+	if len(geminiTool.FunctionDeclarations) > 0 || geminiTool.CodeExecution != nil {
 		return []Tool{geminiTool}
 	}
 	return []Tool{}
@@ -2375,6 +2552,65 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 		// Handle tool calls from assistant messages
 		if msg.ResponsesToolMessage != nil && msg.Type != nil {
 			switch *msg.Type {
+			case schemas.ResponsesMessageTypeCodeInterpreterCall:
+				// Convert code_interpreter_call to Gemini ExecutableCode + CodeExecutionResult
+				if msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
+					codeInterpreter := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+
+					var thoughtSig []byte
+					// Look back to see if the previous message is a reasoning message with encrypted content
+					if i > 0 {
+						prevMsg := messages[i-1]
+						if prevMsg.Type != nil && *prevMsg.Type == schemas.ResponsesMessageTypeReasoning &&
+							prevMsg.ResponsesReasoning != nil && prevMsg.ResponsesReasoning.EncryptedContent != nil {
+							decodedSig, err := base64.StdEncoding.DecodeString(*prevMsg.ResponsesReasoning.EncryptedContent)
+							if err == nil {
+								thoughtSig = decodedSig
+							}
+						}
+					}
+
+					// Add ExecutableCode part with thought signature attached
+					if codeInterpreter.Code != nil && codeInterpreter.Language != nil {
+						executablePart := &Part{
+							ExecutableCode: &ExecutableCode{
+								Language: *codeInterpreter.Language,
+								Code:     *codeInterpreter.Code,
+							},
+						}
+
+						// Attach thought signature to the executableCode part only
+						if len(thoughtSig) > 0 {
+							executablePart.ThoughtSignature = thoughtSig
+						}
+
+						content.Parts = append(content.Parts, executablePart)
+					}
+
+					// Add CodeExecutionResult parts for each output (without thoughtSignature)
+					if len(codeInterpreter.Outputs) > 0 {
+						for _, output := range codeInterpreter.Outputs {
+							if output.ResponsesCodeInterpreterOutputLogs != nil {
+								logs := output.ResponsesCodeInterpreterOutputLogs
+
+								// Map return code to Gemini outcome
+								outcome := OutcomeOK
+								if logs.ReturnCode != nil && *logs.ReturnCode != 0 {
+									outcome = OutcomeFailed
+								}
+
+								resultPart := &Part{
+									CodeExecutionResult: &CodeExecutionResult{
+										Outcome: outcome,
+										Output:  logs.Logs,
+									},
+								}
+
+								content.Parts = append(content.Parts, resultPart)
+							}
+						}
+					}
+				}
 			case schemas.ResponsesMessageTypeFunctionCall:
 				// Convert function call to Gemini FunctionCall
 				if msg.ResponsesToolMessage.Name != nil {

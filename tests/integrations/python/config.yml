@@ -184,6 +184,7 @@ provider_scenarios:
     end2end_tool_calling: true
     automatic_function_calling: true
     "web_search": true
+    code_execution: true
     image_url: true
     image_base64: true
     file_input: true
@@ -247,6 +248,7 @@ provider_scenarios:
     end2end_tool_calling: true
     automatic_function_calling: true
     web_search: true
+    code_execution: true
     image_url: true
     image_base64: true
     file_input: true
@@ -289,6 +291,7 @@ provider_scenarios:
     multiple_tool_calls: true
     end2end_tool_calling: true
     automatic_function_calling: true
+    code_execution: true
     image_url: false  # Gemini requires base64 or file upload
     image_base64: true
     file_input: true
@@ -457,6 +460,7 @@ scenario_capabilities:
   end2end_tool_calling: "tools"
   automatic_function_calling: "tools"
   web_search: "chat"
+  code_execution: "tools"
   image_url: "vision"
   image_base64: "vision"
   file_input: "file"

@@ -3042,3 +3042,116 @@ class TestOpenAIIntegration:
         
         print(f"✓ Web search (streaming) test passed!")
 
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("code_execution")
+    )
+    def test_64_code_execution_math(self, test_config, provider, model, vk_enabled):
+        """Test Case 64: Code Execution - Mathematical Computation"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        # Test solving a mathematical equation using code execution
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": "Calculate the sum of all prime numbers between 1 and 50 using Python. Show your work."}
+            ],
+            tools=[
+                {
+                    "type": "code_interpreter"
+                }
+            ],
+            extra_body={"provider": provider} if not vk_enabled else None,
+            extra_query={"vk": "true"} if vk_enabled else None
+        )
+
+        # Validate response
+        assert_valid_chat_response(response)
+        assert response.choices, "Response should have choices"
+        assert len(response.choices) > 0, "Should have at least one choice"
+
+        message = response.choices[0].message
+        assert message.content, "Message should have content"
+
+        # The response should contain the result (sum of primes 1-50 = 328)
+        content_text = message.content.lower()
+        assert any(keyword in content_text for keyword in ["328", "prime", "sum"]), \
+            f"Response should contain calculation result. Got: {message.content}"
+
+        print(f"✓ Code execution (math) test passed!")
+        print(f"  Response: {message.content[:200]}...")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("code_execution")
+    )
+    def test_65_code_execution_data_analysis(self, test_config, provider, model, vk_enabled):
+        """Test Case 65: Code Execution - Data Analysis"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        # Test statistical analysis using code execution
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": "Calculate the mean and standard deviation of the following numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. Use Python to compute these statistics."}
+            ],
+            tools=[
+                {
+                    "type": "code_interpreter"
+                }
+            ],
+            extra_body={"provider": provider} if not vk_enabled else None,
+            extra_query={"vk": "true"} if vk_enabled else None
+        )
+
+        # Validate response
+        assert_valid_chat_response(response)
+        assert response.choices, "Response should have choices"
+
+        message = response.choices[0].message
+        assert message.content, "Message should have content"
+
+        # The response should contain statistical calculations
+        # Mean should be 5.5, std dev ~2.87
+        content_text = message.content.lower()
+        assert any(keyword in content_text for keyword in ["mean", "average", "5.5", "standard deviation", "std"]), \
+            f"Response should contain statistical results. Got: {message.content}"
+
+        print(f"✓ Code execution (data analysis) test passed!")
+        print(f"  Response: {message.content[:200]}...")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("code_execution")
+    )
+    def test_66_code_execution_equation_solving(self, test_config, provider, model, vk_enabled):
+        """Test Case 66: Code Execution - Equation Solving"""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        # Test equation solving using code execution
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": "Solve the equation 3x + 11 = 14 for x using Python."}
+            ],
+            tools=[
+                {
+                    "type": "code_interpreter"
+                }
+            ],
+            extra_body={"provider": provider} if not vk_enabled else None,
+            extra_query={"vk": "true"} if vk_enabled else None
+        )
+
+        # Validate response
+        assert_valid_chat_response(response)
+        assert response.choices, "Response should have choices"
+
+        message = response.choices[0].message
+        assert message.content, "Message should have content"
+
+        # The solution should be x = 1
+        content_text = message.content.lower()
+        assert any(keyword in content_text for keyword in ["x = 1", "x=1", "1.0", "solution"]), \
+            f"Response should contain equation solution. Got: {message.content}"
+
+        print(f"✓ Code execution (equation solving) test passed!")
+        print(f"  Response: {message.content[:200]}...")
+
