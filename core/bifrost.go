@@ -1559,7 +1559,6 @@ func (bifrost *Bifrost) GetConfiguredProviders() ([]schemas.ModelProvider, error
 // Buffered requests in the old queue will be transferred to the new queue to prevent loss.
 func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error {
 	bifrost.logger.Info(fmt.Sprintf("Updating provider configuration for provider %s", providerKey))
-
 	// Get the updated configuration from the account
 	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil {

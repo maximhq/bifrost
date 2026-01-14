@@ -661,6 +661,44 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 	return processedProviders, nil
 }
 
+// GetProviderConfig retrieves the provider configuration from the database.
+func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error) {
+	var dbProvider tables.TableProvider
+	if err := s.db.WithContext(ctx).Preload("Keys").Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	keys := make([]schemas.Key, len(dbProvider.Keys))
+	for i, dbKey := range dbProvider.Keys {
+		keys[i] = schemas.Key{
+			ID:               dbKey.KeyID,
+			Name:             dbKey.Name,
+			Value:            dbKey.Value,
+			Models:           dbKey.Models,
+			Weight:           getWeight(dbKey.Weight),
+			Enabled:          dbKey.Enabled,
+			UseForBatchAPI:   dbKey.UseForBatchAPI,
+			AzureKeyConfig:   dbKey.AzureKeyConfig,
+			VertexKeyConfig:  dbKey.VertexKeyConfig,
+			BedrockKeyConfig: dbKey.BedrockKeyConfig,
+			ConfigHash:       dbKey.ConfigHash,
+		}
+	}
+	return &ProviderConfig{
+		Keys:                     keys,
+		NetworkConfig:            dbProvider.NetworkConfig,
+		ConcurrencyAndBufferSize: dbProvider.ConcurrencyAndBufferSize,
+		ProxyConfig:              dbProvider.ProxyConfig,
+		SendBackRawRequest:       dbProvider.SendBackRawRequest,
+		SendBackRawResponse:      dbProvider.SendBackRawResponse,
+		CustomProviderConfig:     dbProvider.CustomProviderConfig,
+		ConfigHash:               dbProvider.ConfigHash,
+	}, nil
+}
+
 // GetMCPConfig retrieves the MCP configuration from the database.
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
@@ -914,15 +952,21 @@ func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMode
 	return modelPrices, nil
 }
 
-// CreateModelPrices creates a new model pricing record in the database.
-func (s *RDBConfigStore) CreateModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
+// UpsertModelPrices creates or updates a model pricing record in the database.
+func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
 		txDB = tx[0]
 	} else {
 		txDB = s.db
 	}
-	if err := txDB.WithContext(ctx).Create(pricing).Error; err != nil {
+	// Upsert pricing (create or update if exists based on unique index: model, provider, mode)
+	if err := txDB.WithContext(ctx).Clauses(
+		clause.OnConflict{
+			Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
+			UpdateAll: true,
+		},
+	).Create(pricing).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -2279,4 +2323,103 @@ func (s *RDBConfigStore) Close(ctx context.Context) error {
 		return err
 	}
 	return sqlDB.Close()
+}
+
+// TryAcquireLock attempts to insert a lock row. Returns true if the lock was acquired.
+// Uses INSERT ... ON CONFLICT DO NOTHING for atomic lock acquisition.
+func (s *RDBConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	// Set CreatedAt if not already set
+	if lock.CreatedAt.IsZero() {
+		lock.CreatedAt = time.Now().UTC()
+	}
+
+	// Use GORM clause-based insert for dialect-appropriate SQL
+	result := s.db.WithContext(ctx).Clauses(
+		clause.OnConflict{
+			Columns:   []clause.Column{{Name: "lock_key"}},
+			DoNothing: true,
+		},
+	).Create(lock)
+
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to acquire lock: %w", result.Error)
+	}
+
+	// If RowsAffected is 1, the lock was acquired
+	return result.RowsAffected == 1, nil
+}
+
+// GetLock retrieves a lock by its key. Returns nil if the lock doesn't exist.
+func (s *RDBConfigStore) GetLock(ctx context.Context, lockKey string) (*tables.TableDistributedLock, error) {
+	var lock tables.TableDistributedLock
+	result := s.db.WithContext(ctx).Where("lock_key = ?", lockKey).First(&lock)
+
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get lock: %w", result.Error)
+	}
+
+	return &lock, nil
+}
+
+// UpdateLockExpiry updates the expiration time for an existing lock.
+// Only succeeds if the holder ID matches the current lock holder.
+func (s *RDBConfigStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	result := s.db.WithContext(ctx).Model(&tables.TableDistributedLock{}).
+		Where("lock_key = ? AND holder_id = ? AND expires_at > ?", lockKey, holderID, time.Now().UTC()).
+		Update("expires_at", expiresAt)
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to update lock expiry: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return ErrLockNotHeld
+	}
+
+	return nil
+}
+
+// ReleaseLock deletes a lock if the holder ID matches.
+// Returns true if the lock was released, false if it wasn't held by the given holder.
+func (s *RDBConfigStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
+	result := s.db.WithContext(ctx).
+		Where("lock_key = ? AND holder_id = ?", lockKey, holderID).
+		Delete(&tables.TableDistributedLock{})
+
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to release lock: %w", result.Error)
+	}
+
+	return result.RowsAffected > 0, nil
+}
+
+// CleanupExpiredLocks removes all locks that have expired.
+// Returns the number of locks cleaned up.
+func (s *RDBConfigStore) CleanupExpiredLocks(ctx context.Context) (int64, error) {
+	result := s.db.WithContext(ctx).
+		Where("expires_at < ?", time.Now().UTC()).
+		Delete(&tables.TableDistributedLock{})
+
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to cleanup expired locks: %w", result.Error)
+	}
+
+	return result.RowsAffected, nil
+}
+
+// CleanupExpiredLockByKey atomically deletes a specific lock only if it has expired.
+// Returns true if an expired lock was deleted, false if the lock doesn't exist or hasn't expired.
+func (s *RDBConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey string) (bool, error) {
+	result := s.db.WithContext(ctx).
+		Where("lock_key = ? AND expires_at < ?", lockKey, time.Now().UTC()).
+		Delete(&tables.TableDistributedLock{})
+
+	if result.Error != nil {
+		return false, fmt.Errorf("failed to cleanup expired lock: %w", result.Error)
+	}
+
+	return result.RowsAffected > 0, nil
 }

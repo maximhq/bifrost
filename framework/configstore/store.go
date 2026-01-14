@@ -33,6 +33,7 @@ type ConfigStore interface {
 	UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config ProviderConfig, tx ...*gorm.DB) error
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
+	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
@@ -134,7 +135,7 @@ type ConfigStore interface {
 
 	// Model pricing CRUD
 	GetModelPrices(ctx context.Context) ([]tables.TableModelPricing, error)
-	CreateModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
+	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
 	// Key management
@@ -144,6 +145,25 @@ type ConfigStore interface {
 
 	// Generic transaction manager
 	ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error
+
+	// TryAcquireLock attempts to insert a lock row. Returns true if the lock was acquired.
+	// If the lock already exists and is not expired, returns false.
+	TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error)
+
+	// GetLock retrieves a lock by its key. Returns nil if the lock doesn't exist.
+	GetLock(ctx context.Context, lockKey string) (*tables.TableDistributedLock, error)
+
+	// UpdateLockExpiry updates the expiration time for an existing lock.
+	// Only succeeds if the holder ID matches the current lock holder.
+	UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error
+
+	// ReleaseLock deletes a lock if the holder ID matches.
+	// Returns true if the lock was released, false if it wasn't held by the given holder.
+	ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error)
+
+	// CleanupExpiredLocks removes all locks that have expired.
+	// Returns the number of locks cleaned up.
+	CleanupExpiredLocks(ctx context.Context) (int64, error)
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)

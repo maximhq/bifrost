@@ -1,6 +1,7 @@
 // Configuration types that match the Go backend structures
 
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { EnvVar } from "./schemas";
 
 // Known provider names - all supported standard providers
 export type KnownProvider = (typeof KnownProvidersNames)[number];
@@ -21,37 +22,37 @@ export const isKnownProvider = (provider: string): provider is KnownProvider => 
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig
 export interface AzureKeyConfig {
-	endpoint: string;
+	endpoint: EnvVar;
 	deployments?: Record<string, string> | string; // Allow string during editing
-	api_version?: string;
-	client_id?: string;
-	client_secret?: string;
-	tenant_id?: string;
+	api_version?: EnvVar;
+	client_id?: EnvVar;
+	client_secret?: EnvVar;
+	tenant_id?: EnvVar;
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
-	endpoint: "",
+	endpoint: { value: "", env_var: "", from_env: false },
 	deployments: {},
-	api_version: "2024-02-01",
-	client_id: "",
-	client_secret: "",
-	tenant_id: "",
+	api_version: { value: "2024-02-01", env_var: "", from_env: false },
+	client_id: { value: "", env_var: "", from_env: false },
+	client_secret: { value: "", env_var: "", from_env: false },
+	tenant_id: { value: "", env_var: "", from_env: false },
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
 export interface VertexKeyConfig {
-	project_id: string;
-	project_number?: string;
-	region: string;
-	auth_credentials?: string; // Always string - JSON string or env var
+	project_id: EnvVar;
+	project_number?: EnvVar;
+	region: EnvVar;
+	auth_credentials?: EnvVar;
 	deployments?: Record<string, string> | string; // Allow string during editing
 }
 
 export const DefaultVertexKeyConfig: VertexKeyConfig = {
-	project_id: "",
-	project_number: "",
-	region: "",
-	auth_credentials: "",
+	project_id: { value: "", env_var: "", from_env: false },
+	project_number: { value: "", env_var: "", from_env: false },
+	region: { value: "", env_var: "", from_env: false },
+	auth_credentials: { value: "", env_var: "", from_env: false },
 	deployments: {},
 } as const satisfies Required<VertexKeyConfig>;
 
@@ -67,22 +68,22 @@ export interface BatchS3Config {
 
 // BedrockKeyConfig matching Go's schemas.BedrockKeyConfig
 export interface BedrockKeyConfig {
-	access_key?: string;
-	secret_key?: string;
-	session_token?: string;
-	region: string;
-	arn?: string;
+	access_key?: EnvVar;
+	secret_key?: EnvVar;
+	session_token?: EnvVar;
+	region?: EnvVar;
+	arn?: EnvVar;
 	deployments?: Record<string, string> | string; // Allow string during editing
 	batch_s3_config?: BatchS3Config;
 }
 
 // Default BedrockKeyConfig
 export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
-	access_key: "",
-	secret_key: "",
-	session_token: undefined as unknown as string,
-	region: "us-east-1",
-	arn: undefined as unknown as string,
+	access_key: { value: "", env_var: "", from_env: false },
+	secret_key: { value: "", env_var: "", from_env: false },
+	session_token: undefined as unknown as EnvVar,
+	region: { value: "us-east-1", env_var: "", from_env: false },
+	arn: { value: "", env_var: "", from_env: false },
 	deployments: {},
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;

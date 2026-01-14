@@ -6,6 +6,7 @@ import ProgressProvider from "@/components/progressBar";
 import Sidebar from "@/components/sidebar";
 import { ThemeProvider } from "@/components/themeProvider";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { useStoreSync } from "@/hooks/useStoreSync";
 import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
@@ -22,6 +23,11 @@ const DevProfiler = dynamic(
   { ssr: false }
 );
 
+function StoreSyncInitializer() {
+	useStoreSync();
+	return null;
+}
+
 function AppContent({ children }: { children: React.ReactNode }) {
 	const { data: bifrostConfig, error, isLoading } = useGetCoreConfigQuery({});
 
@@ -33,6 +39,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 
 	return (
 		<WebSocketProvider>
+			<StoreSyncInitializer />
 			<SidebarProvider>
 				<Sidebar />
 				<div className="dark:bg-card custom-scrollbar my-[0.5rem] h-[calc(100dvh-1rem)] w-full overflow-auto rounded-md border border-gray-200 bg-white dark:border-zinc-800 mr-[0.5rem]">

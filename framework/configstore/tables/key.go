@@ -80,6 +80,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		enabled := true // DB default
 		k.Enabled = &enabled
 	}
+	if k.UseForBatchAPI == nil {
+		useForBatchAPI := false // DB default
+		k.UseForBatchAPI = &useForBatchAPI
+	}
 	// BeforeSave is called before saving the key to the database
 	if k.AzureKeyConfig != nil {
 		if k.AzureKeyConfig.Endpoint.GetValue() != "" {
