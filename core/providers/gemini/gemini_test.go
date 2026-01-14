@@ -556,7 +556,7 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 									},
 								},
 								Required:             []string{"user_id", "status"},
-								AdditionalProperties: &schemas.ToolParamsAdditionalProperties{BoolValue: schemas.Ptr(false)},
+								AdditionalProperties: &schemas.AdditionalProperties{BoolValue: schemas.Ptr(false)},
 							},
 						},
 					},

@@ -129,14 +129,14 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 type ResponsesTextConfigFormatJSONSchema struct {
-	Name                 *string                         `json:"name,omitempty"`
-	Schema               *any                            `json:"schema,omitempty"`
-	Description          *string                         `json:"description,omitempty"`
-	Strict               *bool                           `json:"strict,omitempty"`
-	AdditionalProperties *ToolParamsAdditionalProperties `json:"additionalProperties,omitempty"`
-	Properties           *map[string]any                 `json:"properties,omitempty"`
-	Required             []string                        `json:"required,omitempty"`
-	Type                 *string                         `json:"type,omitempty"`
+	Name                 *string               `json:"name,omitempty"`
+	Schema               *any                  `json:"schema,omitempty"`
+	Description          *string               `json:"description,omitempty"`
+	Strict               *bool                 `json:"strict,omitempty"`
+	AdditionalProperties *AdditionalProperties `json:"additionalProperties,omitempty"`
+	Properties           *map[string]any       `json:"properties,omitempty"`
+	Required             []string              `json:"required,omitempty"`
+	Type                 *string               `json:"type,omitempty"`
 }
 
 type ResponsesResponseConversation struct {

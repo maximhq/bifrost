@@ -275,12 +275,12 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type                 string                          `json:"type"`                           // Type of the parameters
-	Description          *string                         `json:"description,omitempty"`          // Description of the parameters
-	Required             []string                        `json:"required,omitempty"`             // Required parameter names
-	Properties           *OrderedMap                     `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string                        `json:"enum,omitempty"`                 // Enum values for the parameters
-	AdditionalProperties *ToolParamsAdditionalProperties `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Type                 string                `json:"type"`                           // Type of the parameters
+	Description          *string               `json:"description,omitempty"`          // Description of the parameters
+	Required             []string              `json:"required,omitempty"`             // Required parameter names
+	Properties           *OrderedMap           `json:"properties,omitempty"`           // Parameter properties
+	Enum                 []string              `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *AdditionalProperties `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
@@ -309,17 +309,17 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ToolParamsAdditionalProperties handle `additionalProperties` being either a bool value
+// AdditionalProperties handle `additionalProperties` being either a bool value
 // or an object, according to JSONSchema:
 // https://json-schema.org/understanding-json-schema/reference/object#additionalproperties
-type ToolParamsAdditionalProperties struct {
+type AdditionalProperties struct {
 	BoolValue   *bool
 	ObjectValue *map[string]any
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolParamsAdditionalProperties.
 // Handles both the value being either bool or a generic jsonschema object.
-func (t *ToolParamsAdditionalProperties) UnmarshalJSON(data []byte) error {
+func (t *AdditionalProperties) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a bool
 	var boolValue bool
 	if err := sonic.Unmarshal(data, &boolValue); err == nil {
@@ -338,7 +338,7 @@ func (t *ToolParamsAdditionalProperties) UnmarshalJSON(data []byte) error {
 
 // UnmarshalJSON implements custom JSON marshalling for ToolParamsAdditionalProperties.
 // If object value exists then it take precedence, else bool value.
-func (t *ToolParamsAdditionalProperties) MarshalJSON() ([]byte, error) {
+func (t *AdditionalProperties) MarshalJSON() ([]byte, error) {
 	if t.ObjectValue != nil {
 		return sonic.Marshal(t.ObjectValue)
 	}

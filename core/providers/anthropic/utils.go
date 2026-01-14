@@ -766,9 +766,9 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{})
 		}
 
 		if additionalProps, ok := schemaMap["additionalProperties"].(bool); ok {
-			jsonSchema.AdditionalProperties = &schemas.ToolParamsAdditionalProperties{BoolValue: &additionalProps}
+			jsonSchema.AdditionalProperties = &schemas.AdditionalProperties{BoolValue: &additionalProps}
 		} else if additionalProps, ok := schemaMap["additionalProperties"].(map[string]any); ok {
-			jsonSchema.AdditionalProperties = &schemas.ToolParamsAdditionalProperties{ObjectValue: &additionalProps}
+			jsonSchema.AdditionalProperties = &schemas.AdditionalProperties{ObjectValue: &additionalProps}
 		}
 
 		format.JSONSchema = jsonSchema
