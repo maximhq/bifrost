@@ -430,7 +430,7 @@ func (m *MockConfigStore) UpdateProvider(ctx context.Context, provider schemas.M
 	return nil
 }
 
-func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider) error {
+func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	delete(m.providers, provider)
 	return nil
 }
@@ -738,7 +738,7 @@ func (m *MockConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMod
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
+func (m *MockConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	return nil
 }
 

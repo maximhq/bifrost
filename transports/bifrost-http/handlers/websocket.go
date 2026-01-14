@@ -197,6 +197,26 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 	h.BroadcastMarshaledMessage(data)
 }
 
+// BroadcastUpdatesToClients sends a store update notification to all connected WebSocket clients
+// The tags parameter should match RTK Query tagTypes (e.g., "Providers", "VirtualKeys", "MCPClients")
+func (h *WebSocketHandler) BroadcastUpdatesToClients(tags []string) {
+	message := struct {
+		Type string   `json:"type"`
+		Tags []string `json:"tags"`
+	}{
+		Type: "store_update",
+		Tags: tags,
+	}
+
+	data, err := json.Marshal(message)
+	if err != nil {
+		logger.Error("failed to marshal store update: %v", err)
+		return
+	}
+
+	h.BroadcastMarshaledMessage(data)
+}
+
 // BroadcastMarshaledMessage sends an adaptive routing update to all connected WebSocket clients
 func (h *WebSocketHandler) BroadcastMarshaledMessage(data []byte) {
 	// Get a snapshot of clients to avoid holding the lock during writes

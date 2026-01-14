@@ -23,6 +23,9 @@ type PostgresConfig struct {
 
 // newPostgresConfigStore creates a new Postgres config store.
 func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (ConfigStore, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	// Validate required config
 	if config.Host == nil || config.Host.GetValue() == "" {
 		return nil, fmt.Errorf("postgres host is required")

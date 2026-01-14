@@ -57,14 +57,12 @@ func (mc *ModelCatalog) shouldSyncPricing(ctx context.Context) (bool, string) {
 // syncPricing syncs pricing data from URL to database and updates cache
 func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 	mc.logger.Debug("starting pricing data synchronization for governance")
-
 	if mc.shouldSyncPricingFunc != nil {
 		if !mc.shouldSyncPricingFunc(ctx) {
 			mc.logger.Debug("pricing sync cancelled by custom function")
 			return nil
 		}
 	}
-
 	// Load pricing data from URL
 	pricingData, err := mc.loadPricingFromURL(ctx)
 	if err != nil {
@@ -83,28 +81,19 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 
 	// Update database in transaction
 	err = mc.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
-		// Clear existing pricing data
-		if err := mc.configStore.DeleteModelPrices(ctx, tx); err != nil {
-			return fmt.Errorf("failed to clear existing pricing data: %v", err)
-		}
-
 		// Deduplicate and insert new pricing data
 		seen := make(map[string]bool)
 		for modelKey, entry := range pricingData {
 			pricing := convertPricingDataToTableModelPricing(modelKey, entry)
-
 			// Create composite key for deduplication
 			key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-
 			// Skip if already seen
 			if exists, ok := seen[key]; ok && exists {
 				continue
 			}
-
 			// Mark as seen
 			seen[key] = true
-
-			if err := mc.configStore.CreateModelPrices(ctx, &pricing, tx); err != nil {
+			if err := mc.configStore.UpsertModelPrices(ctx, &pricing, tx); err != nil {
 				return fmt.Errorf("failed to create pricing record for model %s: %w", pricing.Model, err)
 			}
 		}
@@ -229,6 +218,28 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 	go mc.syncWorker(ctx)
 }
 
+// syncTick performs a single sync tick with proper lock management
+func (mc *ModelCatalog) syncTick(ctx context.Context) {
+	// Guard against nil distributedLockManager
+	if mc.distributedLockManager == nil {
+		if err := mc.checkAndSyncPricing(ctx); err != nil {
+			mc.logger.Error("background pricing sync failed: %v", err)
+		}
+		return
+	}
+	// Acquire the distributed lock
+	lock := mc.distributedLockManager.NewLock("modelcatalog_sync")
+	if err := lock.LockWithRetry(ctx, 10); err != nil {
+		mc.logger.Error("failed to acquire pricing sync lock: %v", err)
+		return
+	}
+	defer lock.Unlock(ctx) // Now correctly scoped to this function
+	// Check and sync pricing data
+	if err := mc.checkAndSyncPricing(ctx); err != nil {
+		mc.logger.Error("background pricing sync failed: %v", err)
+	}
+}
+
 // syncWorker runs the background sync check
 func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 	defer mc.wg.Done()
@@ -239,11 +250,7 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-mc.syncTicker.C:
-			// Check and sync pricing data - this handles the sync internally
-			if err := mc.checkAndSyncPricing(ctx); err != nil {
-				mc.logger.Error("background pricing sync failed: %v", err)
-			}
-
+			mc.syncTick(ctx)
 		case <-mc.done:
 			return
 		}

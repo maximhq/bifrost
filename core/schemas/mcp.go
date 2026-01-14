@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -67,6 +68,19 @@ type MCPClientConfig struct {
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
 	ConfigHash string `json:"-"` // Config hash for reconciliation (not serialized)
+}
+
+// NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
+func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
+	var config MCPClientConfig
+	data, err := sonic.Marshal(configMap)
+	if err != nil {
+		return nil
+	}
+	if err := sonic.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return &config
 }
 
 

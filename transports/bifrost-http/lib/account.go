@@ -29,7 +29,6 @@ func (baseAccount *BaseAccount) GetConfiguredProviders() ([]schemas.ModelProvide
 	if baseAccount.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
-
 	return baseAccount.store.GetAllProviders()
 }
 
@@ -81,36 +80,28 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	if baseAccount.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
-
 	config, err := baseAccount.store.GetProviderConfigRaw(providerKey)
 	if err != nil {
 		return nil, err
 	}
-
 	providerConfig := &schemas.ProviderConfig{}
-
 	if config.ProxyConfig != nil {
 		providerConfig.ProxyConfig = config.ProxyConfig
 	}
-
 	if config.NetworkConfig != nil {
 		providerConfig.NetworkConfig = *config.NetworkConfig
 	} else {
 		providerConfig.NetworkConfig = schemas.DefaultNetworkConfig
 	}
-
 	if config.ConcurrencyAndBufferSize != nil {
 		providerConfig.ConcurrencyAndBufferSize = *config.ConcurrencyAndBufferSize
 	} else {
 		providerConfig.ConcurrencyAndBufferSize = schemas.DefaultConcurrencyAndBufferSize
 	}
-
 	providerConfig.SendBackRawRequest = config.SendBackRawRequest
 	providerConfig.SendBackRawResponse = config.SendBackRawResponse
-
 	if config.CustomProviderConfig != nil {
 		providerConfig.CustomProviderConfig = config.CustomProviderConfig
 	}
-
 	return providerConfig, nil
 }

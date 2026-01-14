@@ -135,6 +135,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddDistributedLocksTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2198,6 +2201,46 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running azure_client_id_and_client_secret_and_tenant_id migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddDistributedLocksTable adds the distributed_locks table for distributed locking
+func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_distributed_locks_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Use raw SQL with IF NOT EXISTS for atomic, race-condition-safe table creation
+			createTableSQL := `
+				CREATE TABLE IF NOT EXISTS distributed_locks (
+					lock_key VARCHAR(255) PRIMARY KEY,
+					holder_id VARCHAR(255) NOT NULL,
+					expires_at TIMESTAMP NOT NULL,
+					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+				)
+			`
+			if err := tx.Exec(createTableSQL).Error; err != nil {
+				return fmt.Errorf("failed to create distributed_locks table: %w", err)
+			}
+			// Create index on expires_at for efficient cleanup queries
+			createIndexSQL := `CREATE INDEX IF NOT EXISTS idx_distributed_locks_expires_at ON distributed_locks (expires_at)`
+			if err := tx.Exec(createIndexSQL).Error; err != nil {
+				return fmt.Errorf("failed to create expires_at index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.Exec("DROP TABLE IF EXISTS distributed_locks").Error; err != nil {
+				return fmt.Errorf("failed to drop distributed_locks table: %w", err)
+			}
+			return nil
+		},
+	}})
+
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running distributed_locks table migration: %s", err.Error())
 	}
 	return nil
 }

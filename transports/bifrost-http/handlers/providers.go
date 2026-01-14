@@ -467,7 +467,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, response)
 		return
 	}
-
+	// Refetch models if any key is added or removed
 	if len(redactedConfig.Keys) > 0 &&
 		(payload.CustomProviderConfig == nil ||
 			!payload.CustomProviderConfig.IsKeyLess ||
@@ -482,9 +482,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			logger.Warn(fmt.Sprintf("Failed to delete models for provider %s: %v", provider, err))
 		}
 	}
-
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
-
 	SendJSON(ctx, response)
 }
 
@@ -867,7 +865,6 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 	if config.ConcurrencyAndBufferSize == nil {
 		config.ConcurrencyAndBufferSize = &schemas.DefaultConcurrencyAndBufferSize
 	}
-
 	return ProviderResponse{
 		Name:                     provider,
 		Keys:                     config.Keys,

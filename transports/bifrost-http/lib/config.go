@@ -1989,12 +1989,10 @@ func (c *Config) processEnvValue(value string) (string, string, error) {
 func (c *Config) GetProviderConfigRaw(provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
-
 	config, exists := c.Providers[provider]
 	if !exists {
 		return nil, ErrNotFound
 	}
-
 	// Return direct reference for maximum performance - this is used by Bifrost core
 	// CRITICAL: Never modify the returned data as it's shared
 	return &config, nil
@@ -2282,10 +2280,14 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 	}
 	// Update in-memory configuration first (so client can read updated config)
 	c.Providers[provider] = config
-	// Update provider in database within a transaction
-	var dbErr error
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skipDBUpdate, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok && skipDBUpdate {
+			goto updateClientProvider
+		}
+	}
 	if c.ConfigStore != nil {
-		dbErr = c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Update provider in database within a transaction
+		dbErr := c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			if err := c.ConfigStore.UpdateProvider(ctx, provider, config, tx); err != nil {
 				if errors.Is(err, configstore.ErrNotFound) {
 					return ErrNotFound
@@ -2300,7 +2302,7 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 			return dbErr
 		}
 	}
-
+updateClientProvider:
 	// Release lock before calling client.UpdateProvider to avoid deadlock
 	// client.UpdateProvider will call GetConfigForProvider which needs RLock
 	c.Mu.Unlock()
