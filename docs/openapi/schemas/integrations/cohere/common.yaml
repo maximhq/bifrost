@@ -1,0 +1,14 @@
+# Cohere Integration Common Types
+
+CohereError:
+  type: object
+  properties:
+    type:
+      type: string
+      description: Error type
+    message:
+      type: string
+      description: Error message
+    code:
+      type: string
+      description: Optional error code

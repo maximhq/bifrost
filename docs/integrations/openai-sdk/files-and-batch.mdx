@@ -1,0 +1,669 @@
+---
+title: "Files and Batch API"
+description: "Upload files and create batch jobs for asynchronous processing using the OpenAI SDK through Bifrost across multiple providers."
+tag: "Beta"
+icon: "folder-open"
+---
+
+## Overview
+
+Bifrost supports the OpenAI Files API and Batch API with **cross-provider routing**. This means you can use the familiar OpenAI SDK to manage files and batch jobs across multiple providers including OpenAI, Anthropic, Bedrock, and Gemini.
+
+The provider is specified using `extra_body` (for POST requests) or `extra_query` (for GET requests) parameters.
+
+---
+
+## Client Setup
+
+The base client setup is the same for all providers. The provider is specified per-request:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"  # Your actual API key
+)
+```
+
+---
+
+## Files API
+
+### Upload a File
+
+<Note>
+**Bedrock** requires S3 storage configuration. OpenAI and Gemini use their native file storage. Anthropic uses inline requests (no file upload).
+</Note>
+
+<Tabs group="provider">
+<Tab title="OpenAI Provider">
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-openai-api-key"
+)
+
+# Create JSONL content for OpenAI batch format
+jsonl_content = '''{"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 100}}
+{"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 100}}'''
+
+# Upload file (uses OpenAI's native file storage)
+response = client.files.create(
+    file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={"provider": "openai"},
+)
+
+print(f"Uploaded file ID: {response.id}")
+```
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+For Bedrock, you need to provide S3 storage configuration:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# Create JSONL content using OpenAI-style format (Bifrost converts to Bedrock format internally)
+jsonl_content = '''{"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "anthropic.claude-3-sonnet-20240229-v1:0", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 100}}
+{"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "anthropic.claude-3-sonnet-20240229-v1:0", "messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 100}}'''
+
+# Upload file with S3 storage configuration
+response = client.files.create(
+    file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={
+        "provider": "bedrock",
+        "storage_config": {
+            "s3": {
+                "bucket": "your-s3-bucket",
+                "region": "us-west-2",
+                "prefix": "bifrost-batch-output",
+            },
+        },
+    },
+)
+
+print(f"Uploaded file ID: {response.id}")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+Anthropic uses inline requests for batching (no file upload needed). See the Batch API section below.
+
+</Tab>
+<Tab title="Gemini Provider">
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# Create JSONL content using OpenAI-style format (Bifrost converts to Gemini format internally)
+jsonl_content = '''{"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 100}}
+{"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 100}}'''
+
+# Upload file (uses Gemini's native file storage)
+response = client.files.create(
+    file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={"provider": "gemini"},
+)
+
+print(f"Uploaded file ID: {response.id}")
+```
+
+</Tab>
+</Tabs>
+
+### List Files
+
+```python
+# List files for OpenAI or Gemini (no S3 config needed)
+response = client.files.list(
+    extra_query={"provider": "openai"}  # or "gemini"
+)
+
+for file in response.data:
+    print(f"File ID: {file.id}, Name: {file.filename}")
+
+# For Bedrock (requires S3 config)
+response = client.files.list(
+    extra_query={
+        "provider": "bedrock",
+        "storage_config": {
+            "s3": {
+                "bucket": "your-s3-bucket",
+                "region": "us-west-2",
+                "prefix": "bifrost-batch-output",
+            },
+        },
+    }
+)
+```
+
+### Retrieve File Metadata
+
+```python
+# Retrieve file metadata (specify provider)
+file_id = "file-abc123"
+response = client.files.retrieve(
+    file_id,
+    extra_query={"provider": "bedrock"}  # or "openai", "gemini"
+)
+
+print(f"File ID: {response.id}")
+print(f"Filename: {response.filename}")
+print(f"Purpose: {response.purpose}")
+print(f"Bytes: {response.bytes}")
+```
+
+### Delete a File
+
+```python
+# Delete file (specify provider)
+file_id = "file-abc123"
+response = client.files.delete(
+    file_id,
+    extra_query={"provider": "bedrock"}  # or "openai", "gemini"
+)
+
+print(f"Deleted: {response.deleted}")
+```
+
+### Download File Content
+
+```python
+# Download file content (specify provider)
+file_id = "file-abc123"
+response = client.files.content(
+    file_id,
+    extra_query={"provider": "bedrock"}  # or "openai", "gemini"
+)
+
+# Handle different response types
+if hasattr(response, "read"):
+    content = response.read()
+elif hasattr(response, "content"):
+    content = response.content
+else:
+    content = response
+
+# Decode bytes to string if needed
+if isinstance(content, bytes):
+    content = content.decode("utf-8")
+
+print(f"File content:\n{content}")
+```
+
+---
+
+## Batch API
+
+### Create a Batch
+
+<Tabs group="provider">
+<Tab title="OpenAI Provider">
+
+For native OpenAI batching:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-openai-api-key"
+)
+
+# First upload a file (see Files API section)
+# Then create batch using the file ID
+
+batch = client.batches.create(
+    input_file_id="file-abc123",
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={"provider": "openai"},
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")
+```
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+For Bedrock, you need to provide output S3 URI:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# First upload a file with S3 config (see Files API section)
+# Then create batch using the file ID
+
+batch = client.batches.create(
+    input_file_id="file-abc123",
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={
+        "provider": "bedrock",
+        "model": "anthropic.claude-3-sonnet-20240229-v1:0",
+        "output_s3_uri": "s3://your-bucket/batch-output",
+    },
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")
+```
+
+</Tab>
+<Tab title="Anthropic Provider">
+
+Anthropic supports inline requests (no file upload required):
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-anthropic-api-key"
+)
+
+# Create inline requests for Anthropic
+requests = [
+    {
+        "custom_id": "request-1",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Hello!"}]
+        }
+    },
+    {
+        "custom_id": "request-2",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "How are you?"}]
+        }
+    }
+]
+
+# Create batch with inline requests (no file ID needed)
+batch = client.batches.create(
+    input_file_id="",  # Empty for inline requests
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={
+        "provider": "anthropic",
+        "requests": requests,
+    },
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")
+```
+
+</Tab>
+<Tab title="Gemini Provider">
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# First upload a file with Gemini format (see Files API section)
+# Then create batch using the file ID
+
+batch = client.batches.create(
+    input_file_id="file-abc123",
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={
+        "provider": "gemini",
+        "model": "gemini-1.5-flash",
+    },
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")
+```
+
+</Tab>
+</Tabs>
+
+### List Batches
+
+```python
+# List batches (specify provider)
+response = client.batches.list(
+    limit=10,
+    extra_query={
+        "provider": "bedrock",  # or "openai", "anthropic", "gemini"
+        "model": "anthropic.claude-3-sonnet-20240229-v1:0",  # Required for bedrock
+    }
+)
+
+for batch in response.data:
+    print(f"Batch ID: {batch.id}, Status: {batch.status}")
+```
+
+### Retrieve Batch Status
+
+```python
+# Retrieve batch status (specify provider)
+batch_id = "batch-abc123"
+batch = client.batches.retrieve(
+    batch_id,
+    extra_query={"provider": "bedrock"}  # or "openai", "anthropic", "gemini"
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")
+
+if batch.request_counts:
+    print(f"Total: {batch.request_counts.total}")
+    print(f"Completed: {batch.request_counts.completed}")
+    print(f"Failed: {batch.request_counts.failed}")
+```
+
+### Cancel a Batch
+
+```python
+# Cancel batch (specify provider)
+batch_id = "batch-abc123"
+batch = client.batches.cancel(
+    batch_id,
+    extra_body={"provider": "bedrock"}  # or "openai", "anthropic", "gemini"
+)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.status}")  # "cancelling" or "cancelled"
+```
+
+---
+
+## End-to-End Workflows
+
+### OpenAI Batch Workflow
+
+```python
+import time
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-openai-api-key"
+)
+
+# Configuration
+provider = "openai"
+
+# Step 1: Create OpenAI JSONL content
+jsonl_content = '''{"custom_id": "req-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "What is 2+2?"}], "max_tokens": 100}}
+{"custom_id": "req-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "What is the capital of France?"}], "max_tokens": 100}}'''
+
+# Step 2: Upload file (uses OpenAI's native file storage)
+print("Step 1: Uploading batch input file...")
+uploaded_file = client.files.create(
+    file=("batch_e2e.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={"provider": provider},
+)
+print(f"  Uploaded file: {uploaded_file.id}")
+
+# Step 3: Create batch
+print("Step 2: Creating batch job...")
+batch = client.batches.create(
+    input_file_id=uploaded_file.id,
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={"provider": provider},
+)
+print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+# Step 4: Poll for completion
+print("Step 3: Polling batch status...")
+for i in range(10):
+    batch = client.batches.retrieve(batch.id, extra_query={"provider": provider})
+    print(f"  Poll {i+1}: status = {batch.status}")
+
+    if batch.status in ["completed", "failed", "expired", "cancelled"]:
+        break
+
+    if batch.request_counts:
+        print(f"    Completed: {batch.request_counts.completed}/{batch.request_counts.total}")
+
+    time.sleep(5)
+
+print(f"\nSuccess! Batch {batch.id} workflow completed.")
+```
+
+### Bedrock Batch Workflow
+
+```python
+import time
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# Configuration
+provider = "bedrock"
+s3_bucket = "your-s3-bucket"
+s3_region = "us-west-2"
+model = "anthropic.claude-3-sonnet-20240229-v1:0"
+
+# Step 1: Create JSONL content using OpenAI-style format (Bifrost converts to Bedrock format internally)
+jsonl_content = '''{"custom_id": "req-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "anthropic.claude-3-sonnet-20240229-v1:0", "messages": [{"role": "user", "content": "What is 2+2?"}], "max_tokens": 100}}
+{"custom_id": "req-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "anthropic.claude-3-sonnet-20240229-v1:0", "messages": [{"role": "user", "content": "What is the capital of France?"}], "max_tokens": 100}}'''
+
+# Step 2: Upload file
+print("Step 1: Uploading batch input file...")
+uploaded_file = client.files.create(
+    file=("batch_e2e.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={
+        "provider": provider,
+        "storage_config": {
+            "s3": {"bucket": s3_bucket, "region": s3_region, "prefix": "batch-input"},
+        },
+    },
+)
+print(f"  Uploaded file: {uploaded_file.id}")
+
+# Step 3: Create batch
+print("Step 2: Creating batch job...")
+batch = client.batches.create(
+    input_file_id=uploaded_file.id,
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={
+        "provider": provider,
+        "model": model,
+        "output_s3_uri": f"s3://{s3_bucket}/batch-output",
+    },
+)
+print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+# Step 4: Poll for completion
+print("Step 3: Polling batch status...")
+for i in range(10):
+    batch = client.batches.retrieve(batch.id, extra_query={"provider": provider})
+    print(f"  Poll {i+1}: status = {batch.status}")
+    
+    if batch.status in ["completed", "failed", "expired", "cancelled"]:
+        break
+    
+    if batch.request_counts:
+        print(f"    Completed: {batch.request_counts.completed}/{batch.request_counts.total}")
+    
+    time.sleep(5)
+
+print(f"\nSuccess! Batch {batch.id} workflow completed.")
+```
+
+### Anthropic Inline Batch Workflow
+
+```python
+import time
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-anthropic-api-key"
+)
+
+provider = "anthropic"
+
+# Step 1: Create inline requests
+print("Step 1: Creating inline requests...")
+requests = [
+    {
+        "custom_id": "math-question",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is 15 * 7?"}]
+        }
+    },
+    {
+        "custom_id": "geography-question",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is the largest ocean?"}]
+        }
+    }
+]
+print(f"  Created {len(requests)} inline requests")
+
+# Step 2: Create batch
+print("Step 2: Creating batch job...")
+batch = client.batches.create(
+    input_file_id="",
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={"provider": provider, "requests": requests},
+)
+print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+# Step 3: Poll for completion
+print("Step 3: Polling batch status...")
+for i in range(10):
+    batch = client.batches.retrieve(batch.id, extra_query={"provider": provider})
+    print(f"  Poll {i+1}: status = {batch.status}")
+    
+    if batch.status in ["completed", "failed", "expired", "cancelled", "ended"]:
+        break
+    
+    time.sleep(5)
+
+print(f"\nSuccess! Batch {batch.id} workflow completed.")
+```
+
+### Gemini Batch Workflow
+
+```python
+import time
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8080/openai",
+    api_key="your-api-key"
+)
+
+# Configuration
+provider = "gemini"
+model = "gemini-1.5-flash"
+
+# Step 1: Create JSONL content using OpenAI-style format (Bifrost converts to Gemini format internally)
+jsonl_content = '''{"custom_id": "req-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "What is 2+2?"}], "max_tokens": 100}}
+{"custom_id": "req-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-1.5-flash", "messages": [{"role": "user", "content": "What is the capital of France?"}], "max_tokens": 100}}'''
+
+# Step 2: Upload file (uses Gemini's native file storage)
+print("Step 1: Uploading batch input file...")
+uploaded_file = client.files.create(
+    file=("batch_e2e.jsonl", jsonl_content.encode(), "application/jsonl"),
+    purpose="batch",
+    extra_body={"provider": provider},
+)
+print(f"  Uploaded file: {uploaded_file.id}")
+
+# Step 3: Create batch
+print("Step 2: Creating batch job...")
+batch = client.batches.create(
+    input_file_id=uploaded_file.id,
+    endpoint="/v1/chat/completions",
+    completion_window="24h",
+    extra_body={
+        "provider": provider,
+        "model": model,
+    },
+)
+print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+# Step 4: Poll for completion
+print("Step 3: Polling batch status...")
+for i in range(10):
+    batch = client.batches.retrieve(batch.id, extra_query={"provider": provider})
+    print(f"  Poll {i+1}: status = {batch.status}")
+
+    if batch.status in ["completed", "failed", "expired", "cancelled"]:
+        break
+
+    if batch.request_counts:
+        print(f"    Completed: {batch.request_counts.completed}/{batch.request_counts.total}")
+
+    time.sleep(5)
+
+print(f"\nSuccess! Batch {batch.id} workflow completed.")
+```
+
+---
+
+## Provider-Specific Notes
+
+| Provider | File Upload | Batch Creation | Extra Configuration |
+|----------|-------------|----------------|---------------------|
+| **OpenAI** | ✅ Native storage | ✅ File-based | None |
+| **Bedrock** | ✅ S3-based | ✅ File-based | `storage_config`, `output_s3_uri` |
+| **Anthropic** | ❌ Not supported | ✅ Inline requests | `requests` array in `extra_body` |
+| **Gemini** | ✅ Native storage | ✅ File-based | `model` in `extra_body` |
+
+<Note>
+- **OpenAI** and **Gemini** use their native file storage - no S3 configuration needed
+- **Bedrock** requires S3 storage configuration (`storage_config`, `output_s3_uri`)
+- **Anthropic** does not support file-based batch operations - use inline requests instead
+</Note>
+
+---
+
+## Next Steps
+
+- **[Overview](./overview)** - OpenAI SDK integration basics
+- **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Governance, semantic caching, and more

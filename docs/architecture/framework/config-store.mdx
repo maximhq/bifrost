@@ -1,0 +1,157 @@
+---
+title: "Config Store"
+description: "A persistent and flexible configuration management system for Bifrost, supporting multiple database backends."
+icon: "gear"
+---
+
+The ConfigStore is a critical component of the Bifrost framework, providing a centralized and persistent storage solution for all gateway configurations. It abstracts the underlying database, offering a unified API for managing everything from provider settings and virtual keys to governance policies and plugin configurations.
+
+## Core Features
+
+- **Unified Configuration API**: A single interface (`ConfigStore`) for all configuration CRUD (Create, Read, Update, Delete) operations.
+- **Multiple Backend Support**: Out-of-the-box support for SQLite and PostgreSQL, with an extensible architecture for adding new database backends.
+- **Comprehensive Data Management**: Manages a wide range of configuration data, including:
+    - Provider and key settings
+    - Virtual keys and governance rules (budgets, rate limits)
+    - Customer and team information for multi-tenancy
+    - Plugin configurations
+    - Vector store and log store settings
+    - Model pricing information
+- **Transactional Operations**: Ensures data consistency by supporting atomic transactions for complex configuration changes.
+- **Database Migrations**: Integrated migration system to manage schema evolution across different versions of Bifrost.
+- **Environment Variable Handling**: Securely manages sensitive data like API keys by storing references to environment variables instead of raw values.
+
+## Architecture
+
+The ConfigStore is designed around the `ConfigStore` interface, which defines all the methods for interacting with the configuration data. The primary implementation is `RDBConfigStore`, which uses [GORM](https://gorm.io/) as an ORM to communicate with relational databases.
+
+### Supported Backends
+
+- **SQLite**: The default, file-based database, perfect for local development, testing, and single-node deployments. It requires no external services.
+- **PostgreSQL**: A robust, production-grade database suitable for large-scale, high-availability deployments.
+
+The backend is selected and configured in Bifrost's main configuration file.
+
+### Initialization
+
+The ConfigStore is initialized at startup based on the provided configuration.
+
+```go
+import (
+    "github.com/maximhq/bifrost/framework/configstore"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Example: Initialize a SQLite-based ConfigStore
+config := &configstore.Config{
+    Enabled: true,
+    Type:    configstore.ConfigStoreTypeSQLite,
+    Config: &configstore.SQLiteConfig{
+        File: "/path/to/config.db",
+    },
+}
+
+var logger schemas.Logger // Assume logger is initialized
+store, err := configstore.NewConfigStore(context.Background(), config, logger)
+if err != nil {
+    // Handle error
+}
+```
+
+Here is an example for initializing a PostgreSQL-based `ConfigStore`:
+```go
+// Example: Initialize a PostgreSQL-based ConfigStore
+pgConfig := &configstore.Config{
+    Enabled: true,
+    Type:    configstore.ConfigStoreTypePostgres,
+    Config: &configstore.PostgresConfig{
+        Host:         "localhost",
+        Port:         "5432",
+        User:         "postgres",
+        Password:     "secret",
+        DBName:       "bifrost",
+        SSLMode:      "disable",
+        MaxIdleConns: 5,  // Optional: Maximum idle connections (default: 5)
+        MaxOpenConns: 50, // Optional: Maximum open connections (default: 50)
+    },
+}
+
+store, err = configstore.NewConfigStore(context.Background(), pgConfig, logger)
+if err != nil {
+    // Handle error
+}
+```
+
+### Connection Pool Configuration
+
+For PostgreSQL backends, you can configure the database connection pool to optimize performance based on your workload:
+
+- **MaxIdleConns**: Maximum number of idle connections in the pool (default: 5)
+- **MaxOpenConns**: Maximum number of open connections to the database (default: 50)
+
+These parameters help manage database connection resources effectively. Increase them for high-traffic deployments or decrease them for resource-constrained environments.
+
+## Data Models
+
+The ConfigStore manages a variety of data models, which are defined as GORM tables in the `framework/configstore/tables` directory. Some of the key models include:
+
+- `TableVirtualKey`: Represents a virtual key with its associated governance rules, keys, and metadata.
+- `TableProvider` & `TableKey`: Store provider-specific configurations and the physical API keys.
+- `TableBudget` & `TableRateLimit`: Define spending limits and request rate limits for governance.
+- `TableCustomer` & `TableTeam`: Enable multi-tenant configurations.
+- `TableModelPricing`: Caches model pricing information for cost calculation.
+- `TablePlugin`: Stores configuration for loaded plugins.
+
+## Usage
+
+The `ConfigStore` interface provides a rich set of methods for managing Bifrost's configuration.
+
+### Managing Virtual Keys
+
+```go
+// Create a new virtual key
+newKey := &tables.TableVirtualKey{
+    ID: "vk-12345",
+    Name: "My Test Key",
+    // ... other fields
+}
+err := store.CreateVirtualKey(ctx, newKey)
+
+// Retrieve a virtual key
+virtualKey, err := store.GetVirtualKey(ctx, "vk-12345")
+```
+
+### Managing Providers
+
+```go
+// Get all provider configurations
+providers, err := store.GetProvidersConfig(ctx)
+
+// Update a specific provider
+providerConfig := providers[schemas.OpenAI]
+providerConfig.NetworkConfig.TimeoutSeconds = 120
+err = store.UpdateProvider(ctx, schemas.OpenAI, providerConfig, envKeys)
+```
+
+### Executing Transactions
+
+For operations that require multiple database writes, you can use a transaction to ensure atomicity.
+
+```go
+err := store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+    // Perform multiple operations within this transaction
+    if err := store.CreateBudget(ctx, budget1, tx); err != nil {
+        return err // Rollback
+    }
+    if err := store.UpdateRateLimit(ctx, limit1, tx); err != nil {
+        return err // Rollback
+    }
+    return nil // Commit
+})
+```
+
+## Migrations
+
+The ConfigStore includes a migration system to handle database schema changes between Bifrost versions. Migrations are automatically applied at startup, ensuring the database schema is always up-to-date. This process is managed by the `migrator` package and is transparent to the user.
+
+The ConfigStore is a powerful and flexible component that provides the backbone for Bifrost's dynamic configuration capabilities. Its support for multiple backends and transactional operations makes it suitable for both small-scale and large-scale, production environments.

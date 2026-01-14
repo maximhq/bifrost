@@ -1,0 +1,182 @@
+---
+title: "Vault Support"
+description: "Secure API key management with HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, and Azure Key Vault integration. Store and retrieve sensitive credentials using enterprise-grade secret management."
+icon: "vault"
+---
+
+Bifrost's vault support enables seamless integration with enterprise-grade secret management systems, allowing you to connect to existing vaults and automatically sync virtual keys and provider API keys directly onto the Bifrost platform.
+
+## Overview
+
+The vault integration provides:
+
+- **Automated Key Synchronization**: Connect to your existing vault infrastructure and sync all API keys automatically
+- **Periodic Key Management**: Regular synchronization ensures deprecated and archived keys are properly managed
+- **Multi-Vault Support**: Compatible with HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, and Azure Key Vault
+- **Zero-Downtime Operations**: Keys are synced without interrupting your running services
+
+## Supported Vault Systems
+
+### HashiCorp Vault
+
+Connect to your HashiCorp Vault instance for centralized secret management.
+
+```json
+{
+  "vault": {
+    "type": "hashicorp",
+    "address": "https://vault.company.com:8200",
+    "token": "${VAULT_TOKEN}",
+    "mount": "secret",
+    "sync_interval": "300s"
+  }
+}
+```
+
+### AWS Secrets Manager
+
+Integrate with AWS Secrets Manager for cloud-native secret storage.
+
+```json
+{
+  "vault": {
+    "type": "aws_secrets_manager",
+    "region": "us-east-1",
+    "access_key_id": "${AWS_ACCESS_KEY_ID}",
+    "secret_access_key": "${AWS_SECRET_ACCESS_KEY}",
+    "sync_interval": "300s"
+  }
+}
+```
+
+### Google Secret Manager
+
+Use Google Cloud's Secret Manager for secure key storage.
+
+```json
+{
+  "vault": {
+    "type": "google_secret_manager",
+    "project_id": "your-project-id",
+    "credentials_file": "/path/to/service-account.json",
+    "sync_interval": "300s"
+  }
+}
+```
+
+### Azure Key Vault
+
+Connect to Azure Key Vault for Microsoft cloud environments.
+
+```json
+{
+  "vault": {
+    "type": "azure_key_vault",
+    "vault_url": "https://your-keyvault.vault.azure.net/",
+    "client_id": "${AZURE_CLIENT_ID}",
+    "client_secret": "${AZURE_CLIENT_SECRET}",
+    "tenant_id": "${AZURE_TENANT_ID}",
+    "sync_interval": "300s"
+  }
+}
+```
+
+## Key Synchronization
+
+### Automatic Sync Process
+
+Bifrost automatically synchronizes keys from your vault at regular intervals:
+
+1. **Discovery**: Scans the configured vault paths for API keys and virtual keys
+2. **Validation**: Verifies key format and accessibility
+3. **Sync**: Updates Bifrost's internal key store with new and modified keys
+4. **Deprecation**: Identifies and archives keys that have been removed from the vault
+5. **Notification**: Logs sync status and any issues encountered
+
+### Sync Configuration
+
+Configure synchronization behavior to match your operational requirements:
+
+```json
+{
+  "vault": {
+    "sync_interval": "300s",
+    "sync_paths": [
+      "bifrost/provider-keys/*",
+      "bifrost/virtual-keys/*"
+    ],
+    "auto_deprecate": true,
+    "backup_deprecated_keys": true
+  }
+}
+```
+
+#### Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `sync_interval` | Time between sync operations | `300s` |
+| `sync_paths` | Vault paths to monitor for keys | `["bifrost/*"]` |
+| `auto_deprecate` | Automatically deprecate removed keys | `true` |
+| `backup_deprecated_keys` | Backup keys before deprecation | `true` |
+
+## Key Management Lifecycle
+
+### Key States
+
+Keys in Bifrost can have the following states:
+
+- **Active**: Currently in use and available for requests
+- **Deprecated**: Marked for removal but still functional
+- **Archived**: Removed from active use but retained for audit purposes
+- **Expired**: Keys that have exceeded their validity period
+
+### Deprecation Process
+
+When keys are removed from the vault:
+
+1. **Detection**: Next sync cycle identifies missing keys
+2. **Grace Period**: Keys enter deprecated state with configurable grace period
+3. **Notification**: Administrators are notified of pending deprecation
+4. **Archive**: Keys are moved to archived state after grace period expires
+
+```json
+{
+  "vault": {
+    "deprecation": {
+      "grace_period": "24h",
+      "notify_admins": true,
+      "retain_archived": "90d"
+    }
+  }
+}
+```
+
+## Security Considerations
+
+### Authentication
+
+- **Vault Tokens**: Use time-limited tokens with minimal required permissions
+- **IAM Roles**: Leverage cloud provider IAM roles for secure authentication
+- **Certificate-based Auth**: Support for mutual TLS authentication where available
+
+### Encryption
+
+- **Transit Encryption**: All communication with vault systems uses TLS
+- **At-Rest Encryption**: Keys are encrypted in Bifrost's internal storage
+- **Key Rotation**: Automatic detection and handling of rotated vault credentials
+
+### Audit Trail
+
+Complete audit logging for all vault operations:
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "operation": "key_sync",
+  "vault_type": "hashicorp",
+  "keys_synced": 15,
+  "keys_deprecated": 2,
+  "status": "success"
+}
+```

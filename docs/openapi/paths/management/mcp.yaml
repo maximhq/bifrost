@@ -1,0 +1,151 @@
+execute-tool:
+  post:
+    operationId: executeMCPTool
+    summary: Execute MCP tool
+    description: Executes an MCP tool and returns the result.
+    tags:
+      - MCP
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/ExecuteToolRequest'
+    responses:
+      '200':
+        description: Tool executed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/ExecuteToolResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+clients:
+  get:
+    operationId: getMCPClients
+    summary: List MCP clients
+    description: Returns a list of all configured MCP clients with their tools and connection state.
+    tags:
+      - MCP
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '../../schemas/management/mcp.yaml#/MCPClient'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client:
+  post:
+    operationId: addMCPClient
+    summary: Add MCP client
+    description: Adds a new MCP client with the specified configuration.
+    tags:
+      - MCP
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+    responses:
+      '200':
+        description: MCP client added successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-by-id:
+  put:
+    operationId: editMCPClient
+    summary: Edit MCP client
+    description: Updates an existing MCP client's configuration.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+    responses:
+      '200':
+        description: MCP client updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: removeMCPClient
+    summary: Remove MCP client
+    description: Removes an MCP client from the configuration.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP client removed successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-reconnect:
+  post:
+    operationId: reconnectMCPClient
+    summary: Reconnect MCP client
+    description: Reconnects an MCP client that is in an error or disconnected state.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP client reconnected successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -1,0 +1,28 @@
+chat-completions:
+  post:
+    operationId: createChatCompletion
+    summary: Create a chat completion
+    description: |
+      Creates a completion for the provided messages. Supports streaming via SSE.
+    tags:
+      - Chat Completions
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/chat.yaml#/ChatCompletionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/chat.yaml#/ChatCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/chat.yaml#/ChatCompletionStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -1,0 +1,24 @@
+---
+title: "v1.3.21"
+description: "v1.3.21 changelog"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.21
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.21
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.21
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="v1.3.21">
+
+- fix: handle case when config store is nil in session and plugins handlers
+- chore: adds integration tests for different config combinations
+
+</Update>

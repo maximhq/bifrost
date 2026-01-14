@@ -1,0 +1,13 @@
+# Anthropic Integration Count Tokens Schemas
+
+AnthropicCountTokensRequest:
+  # Uses the same format as AnthropicMessageRequest
+  allOf:
+    - $ref: './messages.yaml#/AnthropicMessageRequest'
+
+AnthropicCountTokensResponse:
+  type: object
+  properties:
+    input_tokens:
+      type: integer
+      description: Number of input tokens

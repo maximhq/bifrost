@@ -1,0 +1,286 @@
+---
+title: "Model Catalog"
+description: "A centralized system for managing model information, pricing, and capabilities across all supported AI providers."
+icon: "book-open"
+---
+
+The Model Catalog is a foundational component of Bifrost that provides a unified interface for managing AI models, including their pricing, capabilities, and availability. It serves as a centralized repository for all model-related information, enabling dynamic cost calculation, intelligent model routing, and efficient resource management.
+
+## Core Features
+
+### **1. Automatic Pricing Synchronization**
+The Model Catalog manages pricing data through a two-phase approach:
+
+**Startup Behavior:**
+- **With ConfigStore**: Downloads a pricing sheet from Maxim's datasheet, persists it to the config store, and then loads it into memory for fast lookups.
+- **Without ConfigStore**: Downloads the pricing sheet directly into memory on every startup.
+
+**Ongoing Synchronization:**
+- When ConfigStore is available, an automatic sync occurs every 24 hours to keep pricing data current.
+- All pricing data is cached in memory for O(1) lookup performance during cost calculations.
+
+This ensures that cost calculations always use the latest pricing information from AI providers while maintaining optimal performance.
+
+### **2. Multi-Modal Cost Calculation**
+It supports diverse pricing models across different AI operation types:
+- **Text Operations**: Token-based and character-based pricing for chat completions, text completions, and embeddings.
+- **Audio Processing**: Token-based and duration-based pricing for speech synthesis and transcription.
+- **Image Processing**: Per-image costs with tiered pricing for high-token contexts.
+
+### **3. Model Information Management**
+The Model Catalog maintains a pool of available models for each provider, populated from the pricing data. This allows for:
+- Listing all available models for a given provider.
+- Finding all providers that support a specific model.
+
+### **4. Intelligent Cache Cost Handling**
+It integrates with semantic caching to provide accurate cost calculations:
+- **Cache Hits**: Zero cost for direct cache hits, and embedding cost only for semantic matches.
+- **Cache Misses**: Combined cost of the base model usage plus the embedding generation cost for cache storage.
+
+### **5. Tiered Pricing Support**
+The system automatically applies different pricing rates for high-token contexts (e.g., above 128k tokens), reflecting real provider pricing models for various modalities.
+
+## Configuration
+
+The `ModelCatalog` can be configured during initialization by passing a `Config` struct.
+
+```go
+type Config struct {
+	PricingURL          *string        `json:"pricing_url,omitempty"`
+	PricingSyncInterval *time.Duration `json:"pricing_sync_interval,omitempty"`
+}
+```
+
+- **`PricingURL`**: Overrides the default URL (`https://getbifrost.ai/datasheet`) for downloading the pricing sheet.
+- **`PricingSyncInterval`**: Customizes the interval for periodic pricing data synchronization. The default is 24 hours.
+
+This configuration is passed during the initialization of the `ModelCatalog`:
+
+```go
+config := &modelcatalog.Config{
+    PricingURL: "https://my-custom-url.com/pricing.json",
+}
+modelCatalog, err := modelcatalog.Init(context.Background(), config, configStore, logger)
+```
+
+## Architecture
+
+### ModelCatalog
+The `ModelCatalog` is the central component that handles all model and pricing operations:
+
+```go
+type ModelCatalog struct {
+    configStore configstore.ConfigStore
+    logger      schemas.Logger
+
+    pricingURL          string
+    pricingSyncInterval time.Duration
+
+    // In-memory cache for fast access
+    pricingData map[string]configstoreTables.TableModelPricing
+    mu          sync.RWMutex
+
+    modelPool map[schemas.ModelProvider][]string
+
+    // Background sync worker
+    syncTicker *time.Ticker
+    done       chan struct{}
+    wg         sync.WaitGroup
+    syncCtx    context.Context
+    syncCancel context.CancelFunc
+}
+```
+
+### Pricing Data Structure
+Each model's pricing information includes comprehensive cost metrics, supporting various modalities and tiered pricing:
+
+```go
+// PricingEntry represents a single model's pricing information
+type PricingEntry struct {
+    // Basic pricing
+    InputCostPerToken  float64 `json:"input_cost_per_token"`
+    OutputCostPerToken float64 `json:"output_cost_per_token"`
+    Provider           string  `json:"provider"`
+    Mode               string  `json:"mode"`
+
+    // Additional pricing for media
+    InputCostPerImage          *float64 `json:"input_cost_per_image,omitempty"`
+    InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
+    InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+
+    // Character-based pricing
+    InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
+    OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+
+    // Pricing above 128k tokens
+    InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+    InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
+    InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+    InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+    InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+    OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+    OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+
+    // Cache and batch pricing
+    CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
+    InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
+    OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
+}
+```
+
+## Usage in Plugins
+
+### Initialization
+In Bifrost's gateway, the `ModelCatalog` is initialized once at the start and shared across all plugins:
+
+```go
+import "github.com/maximhq/bifrost/framework/modelcatalog"
+
+// Initialize model catalog with config store and logger
+modelCatalog, err := modelcatalog.Init(context.Background(), &modelcatalog.Config{}, configStore, logger)
+if err != nil {
+    return fmt.Errorf("failed to initialize model catalog: %w", err)
+}
+```
+
+### Basic Cost Calculation
+Calculate costs from a Bifrost response:
+
+```go
+// Calculate cost for a completed request
+cost := modelCatalog.CalculateCost(
+    result, // *schemas.BifrostResponse
+)
+
+logger.Info("Request cost: $%.6f", cost)
+```
+
+### Advanced Cost Calculation with Usage Details
+For more granular cost calculation with custom usage data:
+
+```go
+// Custom usage calculation
+usage := &schemas.BifrostLLMUsage{
+    PromptTokens:     1500,
+    CompletionTokens: 800,
+    TotalTokens:      2300,
+}
+
+cost := modelCatalog.CalculateCostFromUsage(
+    "openai",                       // provider
+    "gpt-4",                        // model
+    usage,                          // usage data
+    schemas.ChatCompletionRequest,  // request type
+    false,                          // is cache read
+    false,                          // is batch
+    nil,                            // audio seconds (for audio models)
+    nil,                            // audio token details
+)
+```
+
+### Cache Aware Cost Calculation
+For workflows that implement semantic caching, use cache-aware cost calculation:
+
+```go
+// This automatically handles cache hits/misses and embedding costs
+cost := modelCatalog.CalculateCostWithCacheDebug(
+    result, // *schemas.BifrostResponse with cache debug info
+)
+
+// Cache hits return 0 for direct hits, embedding cost for semantic matches
+// Cache misses return base model cost + embedding generation cost
+```
+
+### Model Discovery
+The `ModelCatalog` provides several methods to query for model and provider information.
+
+#### Get Models for a Provider
+Retrieve a list of all models supported by a specific provider.
+```go
+openaiModels := modelCatalog.GetModelsForProvider(schemas.OpenAI)
+for _, model := range openaiModels {
+    logger.Info("Found OpenAI model: %s", model.ID)
+}
+```
+
+#### Get Providers for a Model
+Find all providers that offer a specific model.
+```go
+gpt4Providers := modelCatalog.GetProvidersForModel("gpt-4")
+for _, provider := range gpt4Providers {
+    logger.Info("gpt-4 is available from: %s", provider)
+}
+```
+
+#### Dynamically Add Models
+You can dynamically add models to the catalog's pool from a `v1/models` compatible response structure. This is useful for providers that expose a model list endpoint.
+```go
+// response is *schemas.BifrostListModelsResponse
+modelCatalog.AddModelDataToPool(response)
+```
+This is automatically done in Bifrost gateway initialization for all providers that are supported by Bifrost.
+### Reloading Configuration
+You can reload the pricing configuration at runtime if you need to change the pricing URL or sync interval.
+```go
+newConfig := &modelcatalog.Config{
+    PricingSyncInterval: 12 * time.Hour,
+}
+err := modelCatalog.ReloadPricing(ctx, newConfig)
+```
+
+## Error Handling and Fallbacks
+
+The Model Catalog handles missing pricing data gracefully with intelligent fallbacks:
+
+```go
+// getPricing returns pricing information for a model (thread-safe)
+func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	if !ok {
+		// Example fallback: if a gemini model is not found, try looking it up under the vertex provider
+		if provider == string(schemas.Gemini) {
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
+			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
+			if ok {
+				return &pricing, true
+			}
+        }
+		return nil, false
+	}
+	return &pricing, true
+}
+
+// When pricing is not found, CalculateCost returns 0.0 and logs a warning
+// This ensures operations continue smoothly without billing failures
+```
+
+
+## Cleanup and Lifecycle Management
+
+Properly clean up resources when shutting down:
+
+```go
+// Cleanup model catalog resources
+defer func() {
+    if err := modelCatalog.Cleanup(); err != nil {
+        logger.Error("Failed to cleanup model catalog: %v", err)
+    }
+}()
+```
+
+## Thread Safety
+
+All `ModelCatalog` operations are thread-safe, making it suitable for concurrent usage across multiple plugins and goroutines. The internal pricing data cache uses read-write mutexes for optimal performance during frequent lookups.
+
+## Best Practices
+
+1. **Shared Instance**: Use a single `ModelCatalog` instance across all plugins to avoid redundant data synchronization.
+2. **Error Handling**: Always handle the case where pricing returns 0.0 due to missing model data.
+3. **Logging**: Monitor pricing sync failures and missing model warnings in production.
+4. **Cache Awareness**: Use `CalculateCostWithCacheDebug` when implementing caching features.
+5. **Resource Cleanup**: Always call `Cleanup()` during application shutdown to prevent resource leaks.
+
+The Model Catalog provides a robust, production-ready foundation for implementing billing, budgeting, and cost monitoring features in Bifrost plugins.

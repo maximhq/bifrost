@@ -1,0 +1,28 @@
+text-completions:
+  post:
+    operationId: createTextCompletion
+    summary: Create a text completion
+    description: |
+      Creates a completion for the provided prompt. Supports streaming via SSE.
+    tags:
+      - Text Completions
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/text.yaml#/TextCompletionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/text.yaml#/TextCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/text.yaml#/TextCompletionStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

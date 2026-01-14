@@ -1,0 +1,77 @@
+---
+title: "Install make command"
+description: "This guide explains how to install make command."
+icon: "compact-disc"
+---
+
+
+## Windows
+
+### Option A: Chocolatey (easy)
+
+```
+# Run in an elevated PowerShell (Run as Administrator)
+choco install make
+# verify
+make --version
+```
+
+### Option B: Scoop (no admin needed)
+```
+# In a normal PowerShell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+iwr get.scoop.sh -useb | iex
+scoop install make
+make --version
+```
+
+### Option C: MSYS2 (full Unix-like env)
+
+```
+# 1) Install MSYS2 from https://www.msys2.org/
+# 2) In "MSYS2 MSYS" terminal:
+pacman -Syu         # then reopen terminal if asked
+pacman -S make
+make --version
+```
+
+<Note> Visual Studio’s nmake is a different tool (not GNU make). </Note>
+
+## Ubuntu / Debian
+
+```
+sudo apt update
+# Pulls in compilers and common build tools, including make
+sudo apt install build-essential
+# (or just) sudo apt install make
+make --version
+```
+
+## macOS
+
+### Option A: Xcode Command Line Tools (most common)
+
+```
+xcode-select --install   # follow the prompt
+make --version
+```
+
+This provides Apple’s/BSD-flavored make, which is fine for most projects.
+
+### Option B: Homebrew (get GNU make ≥ 4.x as gmake)
+
+```
+# Install Homebrew if needed: https://brew.sh
+brew install make
+gmake --version
+```
+
+If a project specifically requires GNU make as make, you can use:
+
+echo 'alias make="gmake"' >> ~/.zshrc && source ~/.zshrc
+
+## Troubleshooting tips
+
+- If make isn’t found, restart your terminal (or on Windows, open a new PowerShell) so your PATH updates.
+- Run which make (where make on Windows) to confirm which binary you’re using.
+- For Windows builds that depend on Unix tools (sed, grep, etc.), prefer MSYS2 or WSL for a smoother experience.

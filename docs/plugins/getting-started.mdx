@@ -1,0 +1,111 @@
+---
+title: "Getting Started"
+description: "Learn how to extend Bifrost's functionality by creating custom plugins that intercept and modify requests and responses."
+icon: "book"
+---
+
+<Note>
+Dynamic plugins require dynamic builds of Bifrost which are not enabled by default to keep Bifrost setup easier. If you want to build and try custom plugins on OSS read [building dynamically linked Bifrost binary](./building-dynamic-binary)
+</Note>
+
+
+## What are Bifrost Plugins?
+
+Bifrost plugins allow you to extend the gateway's functionality by intercepting requests and responses. Plugins can modify, log, validate, or enrich data as it flows through the system, giving you powerful hooks into Bifrost's request lifecycle.
+
+## Use Cases
+
+Custom plugins enable you to:
+
+- **Transform requests and responses** - Modify data before it reaches providers or after it returns
+- **Add custom validation** - Enforce business rules on incoming requests
+- **Implement custom caching** - Cache responses based on custom logic
+- **Integrate with external systems** - Send data to logging, monitoring, or analytics platforms
+- **Apply custom transformations** - Parse, filter, or enrich LLM responses
+
+## Plugin Architecture
+
+![architecture](../media/dynamic-plugins-architecture.png)
+
+Bifrost leverages **Go's native plugin system** to enable dynamic extensibility. Plugins are built as **shared object files** (`.so` files) that are loaded at runtime by the Bifrost gateway.
+
+### How Go Plugins Work
+
+Go plugins use the `plugin` package from the standard library, which allows Go programs to dynamically load code at runtime. Here's what makes this approach powerful:
+
+- **Native Go Integration** - Plugins are written in Go and have full access to Bifrost's type system and interfaces
+- **Dynamic Loading** - Plugins can be loaded, unloaded, and reloaded without restarting Bifrost
+- **Type Safety** - Go's type system ensures plugin methods match expected signatures
+- **Performance** - No IPC overhead; plugins run in the same process as Bifrost
+
+### Building Shared Objects
+
+Plugins must be compiled as shared objects using Go's `-buildmode=plugin` flag:
+
+```bash
+go build -buildmode=plugin -o myplugin.so main.go
+```
+
+This generates a `.so` file that exports specific functions matching Bifrost's plugin interface:
+
+<Tabs>
+  <Tab title="v1.4.x+">
+    - `Init(config any) error` - Initialize the plugin with configuration
+    - `GetName() string` - Return the plugin name
+    - `PreHook()` - Intercept requests before they reach providers
+    - `PostHook()` - Process responses after provider calls
+    - `HTTPTransportMiddleware()` - Middleware for HTTP transport layer (HTTP transport only)
+    - `Cleanup() error` - Clean up resources on shutdown
+  </Tab>
+  <Tab title="v1.3.x">
+    - `Init(config any) error` - Initialize the plugin with configuration
+    - `GetName() string` - Return the plugin name
+    - `PreHook()` - Intercept requests before they reach providers
+    - `PostHook()` - Process responses after provider calls
+    - `TransportInterceptor()` - Modify raw HTTP headers/body (HTTP transport only)
+    - `Cleanup() error` - Clean up resources on shutdown
+  </Tab>
+</Tabs>
+
+### Platform Requirements
+
+**Important Limitations:**
+
+- **Supported Platforms**: Linux and macOS (Darwin) only
+- **No Cross-Compilation**: Plugins must be built on the target platform
+- **Architecture Matching**: Plugin and Bifrost must use the same architecture (amd64, arm64)
+- **Go Version Compatibility**: Plugin must be built with the same Go version as Bifrost
+
+This means if you're running Bifrost on Linux AMD64, you must build your plugin on Linux AMD64 with the same Go version.
+
+### Plugin Lifecycle
+
+1. **Load** - Bifrost loads the `.so` file using Go's `plugin.Open()`
+2. **Initialize** - Calls `Init()` with configuration from `config.json`
+3. **Hook Execution** - Calls `PreHook()` and `PostHook()` for each request
+4. **Cleanup** - Calls `Cleanup()` when Bifrost shuts down
+
+Plugins execute in a specific order:
+
+<Tabs>
+  <Tab title="v1.4.x+">
+    1. `HTTPTransportMiddleware` - HTTP transport middleware (HTTP transport only)
+    2. `PreHook` - Executes in registration order, can short-circuit requests
+    3. Provider call (if not short-circuited)
+    4. `PostHook` - Executes in reverse order of PreHooks
+  </Tab>
+  <Tab title="v1.3.x">
+    1. `TransportInterceptor` - Modifies raw HTTP requests (HTTP transport only)
+    2. `PreHook` - Executes in registration order, can short-circuit requests
+    3. Provider call (if not short-circuited)
+    4. `PostHook` - Executes in reverse order of PreHooks
+  </Tab>
+</Tabs>
+
+## Next Steps
+
+Ready to build your first plugin? Choose your approach:
+
+- **[Writing Go Plugins](./writing-go-plugin)** - Native Go plugins using shared objects (`.so` files). Best for performance and full Go ecosystem access.
+- **[Writing WASM Plugins](./writing-wasm-plugin)** - Cross-platform plugins using WebAssembly. Write in TypeScript, Go (TinyGo), or Rust. No version matching required.
+

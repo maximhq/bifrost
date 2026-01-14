@@ -1,0 +1,131 @@
+name: Bug report
+description: Report a problem or regression in Bifrost
+title: "[Bug]: <short summary>"
+labels: [bug]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out a bug report! Please provide as much detail as possible.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and discussions to avoid duplicates
+          required: true
+        - label: I am using the latest version (or have tested against main/nightly)
+          required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? Include screenshots if helpful.
+      placeholder: Clear and concise description of the bug
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal, reproducible example. Link to a repo, gist, or include exact steps.
+      placeholder: |
+        1. Go to '...'
+        2. Run '...'
+        3. Observe '...'
+    validations:
+      required: true
+
+  - type: input
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: input
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What actually happened?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area(s)
+      multiple: true
+      options:
+        - Core (Go)
+        - Framework
+        - Transports (HTTP)
+        - Plugins
+        - UI (Next.js)
+        - Docs
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Affected version(s).
+      placeholder: e.g., v1.0.3 
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Include as many as apply.
+      placeholder: |
+        - OS: macOS 14.5, Linux x.y, Windows 11
+        - Go: 1.22.x
+        - Node: 20.x, npm/pnpm/yarn version
+        - Browser (if UI): Chrome/Firefox/Safari versions
+        - Bifrost components and versions (core, transports, ui)
+        - Any relevant environment flags/config
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs/output
+      description: Paste error logs, stack traces, or console output.
+      render: shell
+      placeholder: |
+        <paste logs here>
+    validations:
+      required: false
+
+  - type: input
+    id: regression
+    attributes:
+      label: Regression?
+      description: If this worked in a previous version, which version?
+      placeholder: e.g., Worked in v0.8.0, broke in v0.9.0
+    validations:
+      required: false
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Low (minor issue or cosmetic)
+        - Medium (some functionality impaired)
+        - High (major functionality broken)
+        - Critical (blocks releases or production)
+    validations:
+      required: true
+
+

@@ -1,0 +1,172 @@
+---
+title: "Log Store"
+description: "A robust and queryable system for persisting API request and response logs, with support for multiple database backends."
+icon: "clipboard-list"
+---
+
+The LogStore is a core component of the Bifrost framework responsible for capturing, storing, and retrieving detailed logs of API requests and responses. It provides a persistent, queryable audit trail of all activity passing through the gateway, which is essential for debugging, monitoring, analytics, and compliance.
+
+## Core Features
+
+- **Persistent Logging**: Automatically saves detailed information about each API request, including input, output, status, latency, and cost.
+- **Multiple Backend Support**: Comes with built-in support for SQLite and PostgreSQL, allowing you to choose the best storage solution for your deployment needs.
+- **Rich Querying and Filtering**: A powerful search API allows you to filter and sort logs based on a wide range of criteria such as provider, model, status, latency, cost, and content.
+- **Performance Analytics**: The search functionality also provides aggregated statistics, including total requests, success rate, average latency, total tokens, and total cost for the queried data.
+- **Structured Data Model**: Logs are stored in a structured format, with complex objects like message history and tool calls serialized as JSON for efficient storage and retrieval.
+- **Automatic Data Management**: Includes GORM hooks to automatically handle JSON serialization/deserialization and to build a searchable content summary.
+
+## Architecture
+
+The LogStore is built around the `LogStore` interface, which defines the standard methods for interacting with the log database. The primary implementation, `RDBLogStore`, uses GORM to provide an abstraction over relational databases.
+
+### Supported Backends
+
+- **SQLite**: The default, file-based database, ideal for local development and smaller, single-node deployments.
+- **PostgreSQL**: A production-ready database for scalable and high-availability deployments.
+
+The backend is configured in Bifrost's main configuration file.
+
+### Initialization
+
+The LogStore is initialized at startup based on the provided configuration.
+
+```go
+import (
+    "github.com/maximhq/bifrost/framework/logstore"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Example: Initialize a SQLite-based LogStore
+config := &logstore.Config{
+    Enabled: true,
+    Type:    logstore.LogStoreTypeSQLite,
+    Config: &logstore.SQLiteConfig{
+        File: "/path/to/logs.db",
+    },
+}
+
+var logger schemas.Logger // Assume logger is initialized
+store, err := logstore.NewLogStore(context.Background(), config, logger)
+if err != nil {
+    // Handle error
+}
+```
+
+Here is an example for initializing a PostgreSQL-based `LogStore`:
+```go
+// Example: Initialize a PostgreSQL-based LogStore
+pgConfig := &logstore.Config{
+    Enabled: true,
+    Type:    logstore.LogStoreTypePostgres,
+    Config: &logstore.PostgresConfig{
+        Host:         "localhost",
+        Port:         "5432",
+        User:         "postgres",
+        Password:     "secret",
+        DBName:       "bifrost_logs",
+        SSLMode:      "disable",
+        MaxIdleConns: 5,  // Optional: Maximum idle connections (default: 5)
+        MaxOpenConns: 50, // Optional: Maximum open connections (default: 50)
+    },
+}
+
+store, err = logstore.NewLogStore(context.Background(), pgConfig, logger)
+if err != nil {
+    // Handle error
+}
+```
+
+### Connection Pool Configuration
+
+For PostgreSQL backends, you can configure the database connection pool to optimize performance based on your workload:
+
+- **MaxIdleConns**: Maximum number of idle connections in the pool (default: 5)
+- **MaxOpenConns**: Maximum number of open connections to the database (default: 50)
+
+These parameters help manage database connection resources effectively. Increase them for high-traffic deployments or decrease them for resource-constrained environments.
+
+## Data Model
+
+The core of the LogStore is the `Log` struct, which represents a single log entry in the `logs` table.
+
+```go
+// Log represents a complete log entry for a request/response cycle
+type Log struct {
+    ID                  string    `gorm:"primaryKey;type:varchar(255)"`
+    Timestamp           time.Time `gorm:"index;not null"`
+    Object              string    `gorm:"type:varchar(255);index;not null;column:object_type"`
+    Provider            string    `gorm:"type:varchar(255);index;not null"`
+    Model               string    `gorm:"type:varchar(255);index;not null"`
+    Latency             *float64
+    Cost                *float64  `gorm:"index"`
+    Status              string    `gorm:"type:varchar(50);index;not null"` // "processing", "success", or "error"
+    Stream              bool      `gorm:"default:false"`
+
+    // Denormalized token fields for easier querying
+    PromptTokens     int `gorm:"default:0"`
+    CompletionTokens int `gorm:"default:0"`
+    TotalTokens      int `gorm:"default:0"`
+
+    // JSON serialized fields
+    InputHistory        string `gorm:"type:text"`
+    OutputMessage       string `gorm:"type:text"`
+    TokenUsage          string `gorm:"type:text"`
+    ErrorDetails        string `gorm:"type:text"`
+    // ... and many more for different data types
+}
+```
+Complex data like message arrays and tool calls are serialized into JSON strings for storage and are automatically deserialized back into their struct forms when retrieved.
+
+## Usage
+
+### Creating Log Entries
+
+A log entry is created by populating a `Log` struct and passing it to the `Create` method. This is typically handled internally by Bifrost's logging plugins.
+
+```go
+logEntry := &logstore.Log{
+    ID:        "req-xyz123",
+    Timestamp: time.Now(),
+    Provider:  "openai",
+    Model:     "gpt-4",
+    Status:    "success",
+    // ... other fields
+}
+err := store.Create(ctx, logEntry)
+```
+
+### Searching and Filtering Logs
+
+The `SearchLogs` method provides a powerful way to query logs with fine-grained filters and pagination.
+
+```go
+// Define search criteria
+filters := logstore.SearchFilters{
+    Providers: []string{"openai", "anthropic"},
+    Status:    []string{"error"},
+    StartTime: &startTime, // time.Time pointer
+}
+
+pagination := logstore.PaginationOptions{
+    Limit:  50,
+    Offset: 0,
+    SortBy: "timestamp",
+    Order:  "desc",
+}
+
+// Execute the search
+results, err := store.SearchLogs(ctx, filters, pagination)
+if err != nil {
+    // Handle error
+}
+
+// Process the results
+for _, log := range results.Logs {
+    fmt.Printf("Found log: %s\n", log.ID)
+}
+
+// Access aggregated stats
+fmt.Printf("Total errors: %d\n", results.Stats.TotalRequests)
+```
+
+The LogStore is an indispensable tool for observability in Bifrost, providing the detailed audit trail needed to monitor, debug, and analyze AI application performance and behavior effectively.

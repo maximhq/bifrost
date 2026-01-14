@@ -1,0 +1,176 @@
+# OpenAI Integration - Files API Endpoints
+
+files:
+  post:
+    operationId: openaiUploadFile
+    summary: Upload file (OpenAI format)
+    description: |
+      Uploads a file for use with batch processing or other features.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/openai/files.yaml#/OpenAIFileUploadRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/files.yaml#/OpenAIFileUploadResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+  get:
+    operationId: openaiListFiles
+    summary: List files (OpenAI format)
+    description: |
+      Lists uploaded files.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: purpose
+        in: query
+        schema:
+          type: string
+        description: Filter by purpose
+      - name: limit
+        in: query
+        schema:
+          type: integer
+        description: Maximum files to return
+      - name: after
+        in: query
+        schema:
+          type: string
+        description: Cursor for pagination
+      - name: order
+        in: query
+        schema:
+          type: string
+          enum: [asc, desc]
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Filter by provider
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/files.yaml#/OpenAIFileListResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+files-by-id:
+  get:
+    operationId: openaiRetrieveFile
+    summary: Retrieve file metadata (OpenAI format)
+    description: |
+      Retrieves metadata for an uploaded file.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Provider for the file
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/files.yaml#/OpenAIFileRetrieveResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+  delete:
+    operationId: openaiDeleteFile
+    summary: Delete file (OpenAI format)
+    description: |
+      Deletes an uploaded file.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID to delete
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Provider for the file
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/files.yaml#/OpenAIFileDeleteResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+files-content:
+  get:
+    operationId: openaiGetFileContent
+    summary: Get file content (OpenAI format)
+    description: |
+      Retrieves the content of an uploaded file.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/files/{file_id}/content`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Provider for the file
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

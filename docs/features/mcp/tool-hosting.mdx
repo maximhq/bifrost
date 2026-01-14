@@ -1,0 +1,517 @@
+---
+title: "Tool Hosting"
+sidebarTitle: "Tool Hosting"
+description: "Register custom tools directly in your Go application without external MCP servers."
+icon: "toolbox"
+---
+
+<Info>
+This feature is only available when using Bifrost as a **Go SDK**. It is not available in the Gateway deployment.
+</Info>
+
+## Overview
+
+**Tool Hosting** allows you to register custom tools directly within your Go application. These tools run in-process with zero network overhead, making them ideal for:
+
+- Application-specific business logic
+- High-performance operations
+- Testing and development
+- Tools that need access to application state
+
+Bifrost automatically creates an internal MCP server (`bifrostInternal`) when you register your first tool.
+
+---
+
+## Basic Usage
+
+### Step 1: Define Your Tool Schema
+
+Create a schema that describes your tool's parameters:
+
+```go
+import "github.com/maximhq/bifrost/core/schemas"
+
+// Define the tool schema
+calculatorSchema := schemas.ChatTool{
+    Type: schemas.ChatToolTypeFunction,
+    Function: &schemas.ChatToolFunction{
+        Name:        "calculator",
+        Description: schemas.Ptr("Perform basic arithmetic operations"),
+        Parameters: &schemas.ToolFunctionParameters{
+            Type: "object",
+            Properties: &schemas.OrderedMap{
+                "operation": map[string]interface{}{
+                    "type":        "string",
+                    "description": "The arithmetic operation to perform",
+                    "enum":        []string{"add", "subtract", "multiply", "divide"},
+                },
+                "a": map[string]interface{}{
+                    "type":        "number",
+                    "description": "First operand",
+                },
+                "b": map[string]interface{}{
+                    "type":        "number",
+                    "description": "Second operand",
+                },
+            },
+            Required: []string{"operation", "a", "b"},
+        },
+    },
+}
+```
+
+### Step 2: Implement the Handler
+
+Create a function that handles tool execution:
+
+```go
+func calculatorHandler(args any) (string, error) {
+    // Parse arguments
+    argsMap, ok := args.(map[string]interface{})
+    if !ok {
+        return "", fmt.Errorf("invalid arguments")
+    }
+
+    operation, _ := argsMap["operation"].(string)
+    a, _ := argsMap["a"].(float64)
+    b, _ := argsMap["b"].(float64)
+
+    var result float64
+    switch operation {
+    case "add":
+        result = a + b
+    case "subtract":
+        result = a - b
+    case "multiply":
+        result = a * b
+    case "divide":
+        if b == 0 {
+            return "", fmt.Errorf("division by zero")
+        }
+        result = a / b
+    default:
+        return "", fmt.Errorf("unknown operation: %s", operation)
+    }
+
+    return fmt.Sprintf("%.2f", result), nil
+}
+```
+
+### Step 3: Register the Tool
+
+Register your tool with Bifrost:
+
+```go
+import (
+    "context"
+    bifrost "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+    // Initialize Bifrost with MCP enabled (even empty config is fine)
+    client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+        Account: account,
+        MCPConfig: &schemas.MCPConfig{}, // Required for tool registration
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Register the calculator tool
+    err = client.RegisterMCPTool(
+        "calculator",
+        "Perform basic arithmetic operations",
+        calculatorHandler,
+        calculatorSchema,
+    )
+    if err != nil {
+        panic(fmt.Sprintf("Failed to register tool: %v", err))
+    }
+
+    // Now the tool is available in all chat requests
+}
+```
+
+---
+
+## Complete Example
+
+Here's a complete example with multiple tools:
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "time"
+
+    bifrost "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func main() {
+    // Initialize with empty MCP config to enable tool registration
+    client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+        Account: schemas.Account{
+            Provider: schemas.OpenAI,
+            APIKey:   "your-api-key",
+        },
+        MCPConfig: &schemas.MCPConfig{},
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // Register a calculator tool
+    registerCalculator(client)
+
+    // Register a time tool
+    registerTimeTool(client)
+
+    // Make a request - tools are automatically available
+    response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o",
+        Input: []schemas.ChatMessage{
+            {
+                Role: schemas.ChatMessageRoleUser,
+                Content: schemas.ChatMessageContent{
+                    ContentStr: bifrost.Ptr("What is 15 * 7? Also, what time is it?"),
+                },
+            },
+        },
+    })
+
+    if err != nil {
+        panic(err)
+    }
+
+    // Handle tool calls...
+}
+
+func registerCalculator(client *bifrost.Bifrost) {
+    schema := schemas.ChatTool{
+        Type: schemas.ChatToolTypeFunction,
+        Function: &schemas.ChatToolFunction{
+            Name:        "calculator",
+            Description: schemas.Ptr("Perform arithmetic: add, subtract, multiply, divide"),
+            Parameters: &schemas.ToolFunctionParameters{
+                Type: "object",
+                Properties: &schemas.OrderedMap{
+                    "operation": map[string]interface{}{
+                        "type": "string",
+                        "enum": []string{"add", "subtract", "multiply", "divide"},
+                    },
+                    "a": map[string]interface{}{"type": "number"},
+                    "b": map[string]interface{}{"type": "number"},
+                },
+                Required: []string{"operation", "a", "b"},
+            },
+        },
+    }
+
+    handler := func(args any) (string, error) {
+        m := args.(map[string]interface{})
+        op := m["operation"].(string)
+        a := m["a"].(float64)
+        b := m["b"].(float64)
+
+        var result float64
+        switch op {
+        case "add":
+            result = a + b
+        case "subtract":
+            result = a - b
+        case "multiply":
+            result = a * b
+        case "divide":
+            if b == 0 {
+                return "", fmt.Errorf("cannot divide by zero")
+            }
+            result = a / b
+        }
+        return fmt.Sprintf("%.2f", result), nil
+    }
+
+    if err := client.RegisterMCPTool("calculator", "Arithmetic calculator", handler, schema); err != nil {
+        panic(err)
+    }
+}
+
+func registerTimeTool(client *bifrost.Bifrost) {
+    schema := schemas.ChatTool{
+        Type: schemas.ChatToolTypeFunction,
+        Function: &schemas.ChatToolFunction{
+            Name:        "get_current_time",
+            Description: schemas.Ptr("Get the current date and time"),
+            Parameters: &schemas.ToolFunctionParameters{
+                Type: "object",
+                Properties: &schemas.OrderedMap{
+                    "timezone": map[string]interface{}{
+                        "type":        "string",
+                        "description": "Timezone (e.g., 'America/New_York', 'UTC')",
+                    },
+                },
+                Required: []string{},
+            },
+        },
+    }
+
+    handler := func(args any) (string, error) {
+        m := args.(map[string]interface{})
+        tzName, _ := m["timezone"].(string)
+
+        var loc *time.Location
+        var err error
+        if tzName != "" {
+            loc, err = time.LoadLocation(tzName)
+            if err != nil {
+                return "", fmt.Errorf("invalid timezone: %s", tzName)
+            }
+        } else {
+            loc = time.UTC
+        }
+
+        now := time.Now().In(loc)
+        return now.Format("2006-01-02 15:04:05 MST"), nil
+    }
+
+    if err := client.RegisterMCPTool("get_current_time", "Get current time", handler, schema); err != nil {
+        panic(err)
+    }
+}
+```
+
+---
+
+## Typed Handlers
+
+For better type safety, use typed structs with JSON marshaling:
+
+```go
+// Define typed arguments
+type WeatherArgs struct {
+    City    string `json:"city"`
+    Units   string `json:"units,omitempty"` // celsius or fahrenheit
+}
+
+type WeatherResponse struct {
+    City        string  `json:"city"`
+    Temperature float64 `json:"temperature"`
+    Units       string  `json:"units"`
+    Condition   string  `json:"condition"`
+}
+
+func weatherHandler(args any) (string, error) {
+    // Parse to typed struct
+    argsBytes, _ := json.Marshal(args)
+    var typedArgs WeatherArgs
+    if err := json.Unmarshal(argsBytes, &typedArgs); err != nil {
+        return "", fmt.Errorf("invalid arguments: %v", err)
+    }
+
+    // Default units
+    if typedArgs.Units == "" {
+        typedArgs.Units = "celsius"
+    }
+
+    // Your weather logic here...
+    response := WeatherResponse{
+        City:        typedArgs.City,
+        Temperature: 22.5,
+        Units:       typedArgs.Units,
+        Condition:   "sunny",
+    }
+
+    // Return as JSON string
+    result, _ := json.Marshal(response)
+    return string(result), nil
+}
+```
+
+---
+
+## Tool Naming
+
+Tool names from `RegisterMCPTool` are prefixed with `bifrostInternal_` when exposed to LLMs:
+
+| Registered Name | LLM Sees |
+|-----------------|----------|
+| `calculator` | `bifrostInternal_calculator` |
+| `get_weather` | `bifrostInternal_get_weather` |
+
+This prevents naming conflicts with tools from external MCP servers.
+
+---
+
+## Error Handling
+
+Return errors from your handler to indicate tool execution failures:
+
+```go
+func myHandler(args any) (string, error) {
+    // Validation errors
+    if args == nil {
+        return "", fmt.Errorf("arguments required")
+    }
+
+    // Business logic errors
+    if someCondition {
+        return "", fmt.Errorf("operation not permitted: %s", reason)
+    }
+
+    // External service errors
+    result, err := callExternalService()
+    if err != nil {
+        return "", fmt.Errorf("service error: %w", err)
+    }
+
+    return result, nil
+}
+```
+
+Errors are returned to the LLM as tool error messages, allowing it to handle the failure gracefully.
+
+---
+
+## Accessing Application State
+
+Since tools run in-process, they can access your application's state:
+
+```go
+type AppContext struct {
+    DB        *sql.DB
+    Cache     *redis.Client
+    UserID    string
+    SessionID string
+}
+
+func createUserTool(appCtx *AppContext) func(args any) (string, error) {
+    return func(args any) (string, error) {
+        // Access database
+        rows, err := appCtx.DB.Query("SELECT * FROM users WHERE id = ?", appCtx.UserID)
+        if err != nil {
+            return "", err
+        }
+        defer rows.Close()
+
+        // Access cache
+        cached, _ := appCtx.Cache.Get(context.Background(), "user:"+appCtx.UserID).Result()
+
+        // Return result
+        return fmt.Sprintf("User data: %s", cached), nil
+    }
+}
+
+// Usage
+appCtx := &AppContext{
+    DB:     db,
+    Cache:  redisClient,
+    UserID: "user123",
+}
+client.RegisterMCPTool("get_user_data", "Get current user data", createUserTool(appCtx), schema)
+```
+
+---
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Validate inputs">
+    Always validate arguments before processing:
+    ```go
+    func handler(args any) (string, error) {
+        m, ok := args.(map[string]interface{})
+        if !ok {
+            return "", fmt.Errorf("expected object arguments")
+        }
+
+        required := []string{"field1", "field2"}
+        for _, field := range required {
+            if _, exists := m[field]; !exists {
+                return "", fmt.Errorf("missing required field: %s", field)
+            }
+        }
+        // ...
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Return structured data">
+    Return JSON for complex responses:
+    ```go
+    func handler(args any) (string, error) {
+        result := map[string]interface{}{
+            "status": "success",
+            "data": []string{"item1", "item2"},
+            "count": 2,
+        }
+        bytes, _ := json.Marshal(result)
+        return string(bytes), nil
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Handle timeouts">
+    Use context for long-running operations:
+    ```go
+    func handler(args any) (string, error) {
+        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
+
+        result, err := longOperation(ctx)
+        if errors.Is(err, context.DeadlineExceeded) {
+            return "", fmt.Errorf("operation timed out")
+        }
+        return result, err
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Log for debugging">
+    Add logging for troubleshooting:
+    ```go
+    func handler(args any) (string, error) {
+        log.Printf("Tool called with args: %+v", args)
+
+        result, err := doWork(args)
+        if err != nil {
+            log.Printf("Tool error: %v", err)
+            return "", err
+        }
+
+        log.Printf("Tool result: %s", result)
+        return result, nil
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Comparison with External MCP Servers
+
+| Aspect | Tool Hosting (In-Process) | External MCP Server |
+|--------|---------------------------|---------------------|
+| Latency | ~0.1ms (no network) | 10-500ms (network dependent) |
+| Deployment | Part of your app | Separate process/service |
+| Language | Go only | Any language |
+| Configuration | Code only | config.json, API, or UI |
+| State Access | Direct access | Via APIs |
+| Scaling | Scales with app | Independent scaling |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Tool Execution" icon="play" href="./tool-execution">
+    Learn how tool execution works
+  </Card>
+  <Card title="Agent Mode" icon="robot" href="./agent-mode">
+    Enable auto-execution for hosted tools
+  </Card>
+</CardGroup>

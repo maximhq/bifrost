@@ -1,0 +1,203 @@
+# Logging API schemas
+
+LogEntry:
+  type: object
+  description: Log entry
+  properties:
+    id:
+      type: string
+    provider:
+      type: string
+    model:
+      type: string
+    status:
+      type: string
+      enum: ["processing", "success", "error"]
+    object:
+      type: string
+    timestamp:
+      type: string
+      format: date-time
+    latency:
+      type: number
+    input_tokens:
+      type: integer
+    output_tokens:
+      type: integer
+    total_tokens:
+      type: integer
+    cost:
+      type: number
+    selected_key_id:
+      type: string
+    selected_key_name:
+      type: string
+    virtual_key_id:
+      type: string
+    virtual_key_name:
+      type: string
+    request:
+      type: object
+      additionalProperties: true
+    response:
+      type: object
+      additionalProperties: true
+    error:
+      type: object
+      additionalProperties: true
+    created_at:
+      type: string
+      format: date-time
+
+SearchFilters:
+  type: object
+  description: Log search filters
+  properties:
+    providers:
+      type: array
+      items:
+        type: string
+    models:
+      type: array
+      items:
+        type: string
+    status:
+      type: array
+      items:
+        type: string
+    objects:
+      type: array
+      items:
+        type: string
+    selected_key_ids:
+      type: array
+      items:
+        type: string
+    virtual_key_ids:
+      type: array
+      items:
+        type: string
+    start_time:
+      type: string
+      format: date-time
+    end_time:
+      type: string
+      format: date-time
+    min_latency:
+      type: number
+    max_latency:
+      type: number
+    min_tokens:
+      type: integer
+    max_tokens:
+      type: integer
+    min_cost:
+      type: number
+    max_cost:
+      type: number
+    missing_cost_only:
+      type: boolean
+    content_search:
+      type: string
+
+SearchLogsResponse:
+  type: object
+  description: Search logs response
+  properties:
+    logs:
+      type: array
+      items:
+        $ref: '#/LogEntry'
+    total:
+      type: integer
+    offset:
+      type: integer
+    limit:
+      type: integer
+
+LogStats:
+  type: object
+  description: Log statistics
+  properties:
+    total_requests:
+      type: integer
+    total_tokens:
+      type: integer
+    total_cost:
+      type: number
+    average_latency:
+      type: number
+    success_rate:
+      type: number
+    provider_breakdown:
+      type: object
+      additionalProperties:
+        type: integer
+    model_breakdown:
+      type: object
+      additionalProperties:
+        type: integer
+
+DroppedRequestsResponse:
+  type: object
+  description: Dropped requests response
+  properties:
+    dropped_requests:
+      type: integer
+      format: int64
+
+FilterDataResponse:
+  type: object
+  description: Available filter data response
+  properties:
+    models:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+          name:
+            type: string
+    selected_keys:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+    virtual_keys:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+
+DeleteLogsRequest:
+  type: object
+  description: Delete logs request
+  required:
+    - ids
+  properties:
+    ids:
+      type: array
+      items:
+        type: string
+
+RecalculateCostRequest:
+  type: object
+  description: Recalculate cost request
+  properties:
+    filters:
+      $ref: '#/SearchFilters'
+    limit:
+      type: integer
+      description: Maximum number of logs to process (default 200, max 1000)
+
+RecalculateCostResponse:
+  type: object
+  description: Recalculate cost response
+  properties:
+    processed:
+      type: integer
+    updated:
+      type: integer
+    remaining:
+      type: integer

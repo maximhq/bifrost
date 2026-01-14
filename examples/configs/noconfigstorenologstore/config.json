@@ -1,0 +1,8 @@
+{
+  "config_store": {
+    "enabled": false
+  },
+  "logs_store": {
+    "enabled": false
+  }
+}

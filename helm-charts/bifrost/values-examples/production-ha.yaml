@@ -1,0 +1,146 @@
+# Configuration: Production High-Availability Setup
+# PostgreSQL + Weaviate + Auto-scaling + Ingress
+# Usage: helm install bifrost ./bifrost -f values-examples/production-ha.yaml
+
+# Multiple replicas for HA
+replicaCount: 3
+
+# Auto-scaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: bifrost.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls
+      hosts:
+        - bifrost.yourdomain.com
+
+# Resource limits for production
+resources:
+  limits:
+    cpu: 4000m
+    memory: 4Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# PostgreSQL with higher resources
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    password: "CHANGE_ME_SECURE_PASSWORD"
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+
+# Weaviate for semantic caching
+vectorStore:
+  enabled: true
+  type: weaviate
+  weaviate:
+    enabled: true
+    replicas: 2
+    persistence:
+      enabled: true
+      size: 50Gi
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+
+# Bifrost production configuration
+bifrost:
+  # Reference to external Kubernetes Secret for encryption key
+  # Create the secret with: kubectl create secret generic bifrost-encryption --from-literal=key=YOUR_ENCRYPTION_KEY
+  encryptionKeySecret:
+    name: "bifrost-encryption"
+    key: "key"
+  
+  client:
+    initialPoolSize: 1000
+    allowedOrigins:
+      - "https://yourdomain.com"
+      - "https://app.yourdomain.com"
+    enableLogging: true
+    enableGovernance: true
+    maxRequestBodySizeMb: 100
+  
+  providers: {}
+    # Add your production provider keys here
+  
+  plugins:
+    telemetry:
+      enabled: true
+      config: {}
+    
+    logging:
+      enabled: true
+      config: {}
+    
+    semanticCache:
+      enabled: true
+      # Reference to external Kubernetes Secret for OpenAI API key
+      # Create the secret with: kubectl create secret generic bifrost-semantic-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+      secretRef:
+        name: "bifrost-semantic-cache"
+        key: "openai-key"
+      config:
+        provider: "openai"
+        # keys are injected from the secret via environment variable
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.85
+        ttl: "1h"
+        conversation_history_threshold: 5
+
+# Pod affinity for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - bifrost
+          topologyKey: kubernetes.io/hostname
+

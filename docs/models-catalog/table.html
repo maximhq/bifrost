@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Models Catalog</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: transparent;
+      color: #1a202c;
+    }
+
+    .filters-container {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+      align-items: stretch;
+    }
+
+    .search-input, .provider-select {
+      padding: 10px 14px;
+      font-size: 14px;
+      border: 2px solid rgba(12, 59, 67, 0.2);
+      border-radius: 8px;
+      outline: none;
+      transition: border-color 0.2s;
+      font-family: inherit;
+      background: white;
+      color: #1a202c;
+    }
+
+    .search-input {
+      flex: 1;
+    }
+
+    .provider-select {
+      min-width: 200px;
+    }
+
+    .search-input:focus, .provider-select:focus {
+      border-color: #0C3B43;
+    }
+
+    .search-info {
+      margin-bottom: 12px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .table-wrapper {
+      overflow: auto;
+      border: 1px solid rgba(12, 59, 67, 0.2);
+      border-radius: 8px;
+      background: white;
+      max-height: 600px;
+    }
+
+    .models-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .models-table thead {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .models-table thead tr {
+      background-color: #f7fafc;
+    }
+
+    .models-table th {
+      padding: 12px 16px;
+      text-align: left;
+      font-weight: 600;
+      color: #2d3748;
+      border-bottom: 2px solid rgba(12, 59, 67, 0.2);
+      white-space: nowrap;
+      background-color: #f7fafc;
+    }
+
+    .models-table th.center {
+      text-align: center;
+    }
+
+    .models-table tbody tr {
+      transition: background-color 0.2s;
+    }
+
+    .models-table tbody tr:hover {
+      background-color: #f7fafc;
+    }
+
+    .models-table td {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(12, 59, 67, 0.1);
+      color: rgba(26, 32, 44, 0.8);
+    }
+
+    .models-table td.center {
+      text-align: center;
+    }
+
+    .models-table td.capitalize {
+      text-transform: capitalize;
+    }
+
+    .models-table td.mono {
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    }
+
+    .view-details-btn {
+      color: #0C3B43;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      font-size: 14px;
+      padding: 4px 8px;
+      text-decoration: none;
+      transition: text-decoration 0.2s;
+    }
+
+    .view-details-btn:hover {
+      text-decoration: underline;
+    }
+
+    .loading, .error, .empty, .no-results {
+      padding: 40px;
+      text-align: center;
+      font-size: 16px;
+      color: #666;
+    }
+
+    .error {
+      color: #e53e3e;
+      border: 1px solid #feb2b2;
+      border-radius: 8px;
+      background: #fff5f5;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #0C3B43;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Modal styles */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.5);
+      animation: fadeIn 0.2s;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .modal-content {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      max-width: 672px;
+      width: 100%;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      animation: slideIn 0.2s;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: scale(0.95);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      border-bottom: 1px solid rgba(12, 59, 67, 0.2);
+    }
+
+    .modal-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #1a202c;
+      margin: 0;
+    }
+
+    .modal-close-btn {
+      padding: 8px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: background-color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-close-btn:hover {
+      background-color: #f7fafc;
+    }
+
+    .modal-body {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+    }
+
+    .model-usage-section {
+      background: rgba(12, 59, 67, 0.1);
+      border: 1px solid rgba(12, 59, 67, 0.2);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .model-usage-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #0C3B43;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .model-usage-copy {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .model-usage-code {
+      flex: 1;
+      font-size: 14px;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      color: #1a202c;
+      background: white;
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(12, 59, 67, 0.2);
+    }
+
+    .copy-btn {
+      padding: 8px;
+      color: #0C3B43;
+      background: none;
+      border: none;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: background-color 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .copy-btn:hover {
+      background: rgba(12, 59, 67, 0.1);
+    }
+
+    .json-section-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(26, 32, 44, 0.7);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .json-pre {
+      font-size: 13px;
+      color: #1a202c;
+      background: #f7fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow: auto;
+      border: 1px solid rgba(12, 59, 67, 0.2);
+      margin: 0;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 16px;
+      border-top: 1px solid rgba(12, 59, 67, 0.2);
+    }
+
+    .modal-btn {
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .modal-btn-secondary {
+      color: #1a202c;
+      background: #f7fafc;
+    }
+
+    .modal-btn-secondary:hover {
+      background: #e2e8f0;
+    }
+
+    .modal-btn-primary {
+      color: white;
+      background: #0C3B43;
+    }
+
+    .modal-btn-primary:hover {
+      background: #0a2f35;
+    }
+
+    .copy-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #0C3B43;
+      color: white;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+      animation: slideUp 0.3s;
+      z-index: 100;
+    }
+
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="loading">
+      <div class="spinner"></div>
+      <div>Loading models...</div>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+
+  <script>
+    let models = []
+    let searchTerm = ''
+    let selectedProvider = 'all'
+
+    function showToast (message) {
+      const toast = document.createElement('div')
+      toast.className = 'copy-toast'
+      toast.textContent = message
+      document.body.appendChild(toast)
+      setTimeout(() => {
+        toast.remove()
+      }, 2000)
+    }
+
+    function copyToClipboard (text, successMessage) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast(successMessage || 'Copied to clipboard!')
+      }).catch(err => {
+        console.error('Failed to copy:', err)
+        showToast('Failed to copy')
+      })
+    }
+
+    function showModal (model) {
+      const modalRoot = document.getElementById('modal-root')
+      const modelString = `model: "${model.provider || 'unknown'}/${model.model || 'unknown'}"`
+      const jsonString = JSON.stringify(model, null, 2)
+
+      modalRoot.innerHTML = `
+        <div class="modal-overlay" id="modal-overlay">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3 class="modal-title">Model Details: ${model.model || 'Unknown'}</h3>
+              <button class="modal-close-btn" id="modal-close">
+                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div class="modal-body">
+              <div class="model-usage-section">
+                <div class="model-usage-label">Use on Bifrost</div>
+                <div class="model-usage-copy">
+                  <code class="model-usage-code">${modelString}</code>
+                  <button class="copy-btn" id="copy-model-string" title="Copy model string">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div class="json-section-label">Full Configuration (JSON)</div>
+                <pre class="json-pre">${jsonString}</pre>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="modal-btn modal-btn-secondary" id="copy-json">Copy JSON</button>
+              <button class="modal-btn modal-btn-primary" id="modal-close-btn">Close</button>
+            </div>
+          </div>
+        </div>
+      `
+
+      // Add event listeners
+      document.getElementById('modal-overlay').addEventListener('click', (e) => {
+        if (e.target.id === 'modal-overlay') {
+          closeModal()
+        }
+      })
+      document.getElementById('modal-close').addEventListener('click', closeModal)
+      document.getElementById('modal-close-btn').addEventListener('click', closeModal)
+      document.getElementById('copy-model-string').addEventListener('click', () => {
+        copyToClipboard(modelString, 'Model string copied!')
+      })
+      document.getElementById('copy-json').addEventListener('click', () => {
+        copyToClipboard(jsonString, 'JSON copied!')
+      })
+
+      // Prevent body scroll when modal is open
+      document.body.style.overflow = 'hidden'
+    }
+
+    function closeModal () {
+      const modalRoot = document.getElementById('modal-root')
+      modalRoot.innerHTML = ''
+      document.body.style.overflow = ''
+    }
+
+    function getProviders () {
+      const providers = new Set()
+      models.forEach(model => {
+        if (model.provider) {
+          providers.add(model.provider)
+        }
+      })
+      return Array.from(providers).sort()
+    }
+
+    function filterModels () {
+      let filtered = models
+
+      // Filter by provider
+      if (selectedProvider !== 'all') {
+        filtered = filtered.filter(model => model.provider === selectedProvider)
+      }
+
+      // Filter by search term
+      if (searchTerm) {
+        const term = searchTerm.toLowerCase()
+        filtered = filtered.filter(model =>
+          Object.values(model).some(value =>
+            String(value).toLowerCase().includes(term)
+          )
+        )
+      }
+
+      return filtered
+    }
+
+    function render () {
+      const root = document.getElementById('root')
+      if (!root) return
+
+      const filteredModels = filterModels()
+      const providers = getProviders()
+
+      root.innerHTML = `
+        <div class="filters-container">
+          <input
+            type="text"
+            class="search-input"
+            placeholder="Search models, providers, or any field..."
+            value="${searchTerm}"
+            id="model-search-input"
+          />
+          <select class="provider-select" id="provider-select">
+            <option value="all">All Providers</option>
+            ${providers.map(provider => `
+              <option value="${provider}" ${selectedProvider === provider ? 'selected' : ''}>
+                ${provider.charAt(0).toUpperCase() + provider.slice(1)}
+              </option>
+            `).join('')}
+          </select>
+        </div>
+        <div class="search-info">
+          Showing ${filteredModels.length} of ${models.length} models
+        </div>
+        <div class="table-wrapper">
+          <table class="models-table">
+            <thead>
+              <tr>
+                <th style="width: 200px;">Provider</th>
+                <th>Model</th>
+                <th class="center" style="width: 150px;">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredModels.length === 0 && searchTerm
+                ? `<tr><td colspan="3" class="no-results">No models found matching "${searchTerm}"</td></tr>`
+                : filteredModels.map((model, idx) => `
+                  <tr>
+                    <td class="capitalize">${model.provider || '—'}</td>
+                    <td class="mono">${model.model || '—'}</td>
+                    <td class="center">
+                      <button class="view-details-btn" data-index="${idx}">
+                        View Details
+                      </button>
+                    </td>
+                  </tr>
+                `).join('')
+              }
+            </tbody>
+          </table>
+        </div>
+      `
+
+      // Add event listeners
+      const searchInput = document.getElementById('model-search-input')
+      if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+          searchTerm = e.target.value
+          render()
+        })
+      }
+
+      const providerSelect = document.getElementById('provider-select')
+      if (providerSelect) {
+        providerSelect.addEventListener('change', (e) => {
+          selectedProvider = e.target.value
+          render()
+        })
+      }
+
+      // Add click handlers for view details buttons
+      const detailButtons = document.querySelectorAll('.view-details-btn')
+      detailButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const index = parseInt(e.target.dataset.index)
+          showModal(filteredModels[index])
+        })
+      })
+    }
+
+    async function init () {
+      const root = document.getElementById('root')
+      if (!root) return
+
+      try {
+        const response = await fetch('https://getbifrost.ai/datasheet')
+        if (!response.ok) {
+          throw new Error('Failed to fetch models')
+        }
+        const data = await response.json()
+
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+          const modelsArray = Object.entries(data).map(([modelName, config]) => ({
+            model: modelName,
+            ...config
+          }))
+          if (modelsArray.length === 0) {
+            throw new Error('No models data received')
+          }
+          models = modelsArray
+        } else if (Array.isArray(data)) {
+          if (data.length === 0) {
+            throw new Error('No models data received')
+          }
+          models = data
+        } else {
+          throw new Error('Invalid data format')
+        }
+
+        if (models.length === 0) {
+          root.innerHTML = '<div class="empty">No models available</div>'
+          return
+        }
+
+        render()
+      } catch (error) {
+        root.innerHTML = `<div class="error">Error: ${error.message}</div>`
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init)
+    } else {
+      init()
+    }
+  </script>
+</body>
+</html>

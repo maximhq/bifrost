@@ -1,0 +1,168 @@
+---
+title: "OpenRouter"
+description: "OpenRouter API conversion guide - routing to multiple providers, reasoning support, parameter handling, and streaming"
+icon: "split"
+---
+
+## Overview
+
+OpenRouter is an **OpenAI-compatible provider routing service** that accesses models from multiple providers (OpenAI, Anthropic, Google, Meta, etc.) through a unified interface. Bifrost delegates to the OpenAI implementation with special handling for reasoning models. Key features:
+- **Provider aggregation** - Access 100+ models from multiple vendors
+- **Reasoning support** - Extended thinking for supported models
+- **Parameter compatibility** - Intelligent reasoning effort conversion
+- **Streaming support** - Full SSE support with usage tracking
+- **Tool calling** - Complete function definition and execution
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
+
+**Note**: OpenRouter's Responses API is currently in **beta**.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+OpenRouter supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Reasoning Parameter Handling
+
+OpenRouter supports extended thinking on compatible models:
+
+```json
+// Bifrost request
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 10000
+  }
+}
+
+// OpenRouter conversion
+{
+  "reasoning_effort": "high"
+}
+```
+
+**Reasoning Models:** gpt-oss-120b and compatible models with special handling for reasoning content.
+
+### Cache Control Stripping
+
+Anthropic-specific cache control directives are automatically removed:
+
+```go
+// Bifrost supports cache control from Anthropic
+{
+  "messages": [{
+    "role": "user",
+    "content": [{
+      "type": "text",
+      "text": "...",
+      "cache_control": {"type": "ephemeral"}  // ← Stripped
+    }]
+  }]
+}
+
+// Sent to OpenRouter without cache directives
+```
+
+### Filtered Parameters
+
+Removed for OpenRouter compatibility:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - OpenAI-specific
+
+OpenRouter supports all standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+OpenRouter's Responses API is handled as a distinct endpoint at `/v1/responses`. This API is currently in **beta** on OpenRouter.
+
+Same parameter support as Chat Completions, with requests forwarded directly to the Responses API endpoint without conversion to Chat Completions.
+
+**Special Message Handling (gpt-oss vs other models):**
+For details on how reasoning is handled differently between gpt-oss and other models, see [OpenAI Responses API documentation](/providers/supported-providers/openai) for the comprehensive explanation of reasoning conversion (summaries vs. content blocks).
+
+---
+
+# 3. Text Completions
+
+OpenRouter supports legacy text completion format:
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Direct pass-through |
+| `max_tokens` | max_tokens |
+| `temperature`, `top_p` | Direct pass-through |
+| `stop` | Stop sequences |
+
+---
+
+# 4. List Models
+
+Lists 100+ models available through OpenRouter, including:
+- OpenAI (GPT-4, GPT-4 Turbo, etc.)
+- Anthropic (Claude 3 family)
+- Google (Gemini)
+- Meta (Llama)
+- Mistral
+- And many more
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Embedding | Not offered by OpenRouter API |
+| Image Generation | Not offered by OpenRouter API |
+| Speech/TTS | Not offered by OpenRouter API |
+| Transcription/STT | Not offered by OpenRouter API |
+| Batch Operations | Not offered by OpenRouter API |
+| File Management | Not offered by OpenRouter API |
+
+---
+
+## Caveats
+
+<Accordion title="Cache Control Stripped">
+**Severity**: Medium
+**Behavior**: Anthropic cache control directives are removed
+**Impact**: Prompt caching features unavailable
+**Code**: Stripped during JSON marshaling
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered
+**Impact**: prompt_cache_key, verbosity, store removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: SanitizeUserField enforces 64-char max
+</Accordion>

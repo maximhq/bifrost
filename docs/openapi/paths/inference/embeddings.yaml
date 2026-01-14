@@ -1,0 +1,25 @@
+embeddings:
+  post:
+    operationId: createEmbedding
+    summary: Create embeddings
+    description: |
+      Creates an embedding vector representing the input text.
+    tags:
+      - Embeddings
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/embeddings.yaml#/EmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/embeddings.yaml#/EmbeddingResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

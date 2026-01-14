@@ -1,0 +1,28 @@
+responses:
+  post:
+    operationId: createResponse
+    summary: Create a response
+    description: |
+      Creates a response using the OpenAI Responses API format. Supports streaming via SSE.
+    tags:
+      - Responses
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/responses.yaml#/ResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/responses.yaml#/ResponsesStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

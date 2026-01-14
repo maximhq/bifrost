@@ -1,0 +1,23 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") .Values.vectorStore.weaviate.enabled (not .Values.vectorStore.weaviate.external.enabled) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "bifrost.fullname" . }}-weaviate
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.vectorStore.weaviate.persistence.storageClass }}
+  {{- if (eq "-" .Values.vectorStore.weaviate.persistence.storageClass) }}
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ .Values.vectorStore.weaviate.persistence.storageClass }}
+  {{- end }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.vectorStore.weaviate.persistence.size }}
+{{- end }}

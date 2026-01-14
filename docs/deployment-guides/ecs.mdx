@@ -1,0 +1,1542 @@
+---
+title: "ECS"
+description: "Deploy Bifrost as a service in ECS AWS clusters"
+icon: "aws"
+---
+
+Deploy Bifrost on AWS ECS using either Makefile automation or direct AWS CLI commands. This guide covers both Fargate and EC2 launch types, with options for managing configuration secrets.
+
+<Note>
+This guide assumes you already have:
+- An ECS cluster
+- VPC with subnets
+- Security groups configured (must allow inbound traffic on port 8080 or your container port)
+- (Optional) Application Load Balancer with target group
+
+**Security Group Requirements:**
+- For direct access (no load balancer): Allow inbound traffic on port 8080 (or `CONTAINER_PORT`) from your IP or `0.0.0.0/0`
+- For load balancer: Allow inbound traffic from the load balancer's security group
+</Note>
+
+## Deployment Methods
+
+Choose your preferred deployment method:
+
+<Tabs>
+<Tab title="Using Makefile">
+
+## Quick Start with Makefile
+
+The easiest way to deploy Bifrost to ECS is using the provided Makefile.
+
+<Note>
+**First-time deployment?** If you don't know your VPC ID or network configuration, run:
+```bash
+make list-ecs-network-resources
+```
+This will list all available VPCs, subnets, and security groups in your AWS region.
+</Note>
+
+```bash
+# First, create your config.json file with your Bifrost configuration
+cat > /tmp/bifrost-config.json <<EOF
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-db-host",
+      "port": "5432",
+      "user": "your-db-user",
+      "password": "your-db-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-db-host",
+      "port": "5432",
+      "user": "your-db-user",
+      "password": "your-db-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+EOF
+
+# Deploy with VPC ID (recommended - auto-fetches all subnets)
+make deploy-ecs \
+  VPC_ID='vpc-xxx' \
+  SECURITY_GROUP_IDS='sg-xxx' \
+  CONFIG_JSON_FILE='/tmp/bifrost-config.json'
+
+# Deploy with specific subnet IDs
+make deploy-ecs \
+  SUBNET_IDS='subnet-xxx,subnet-yyy' \
+  SECURITY_GROUP_IDS='sg-xxx' \
+  CONFIG_JSON_FILE='/tmp/bifrost-config.json'
+
+# Deploy with EC2 launch type and SSM Parameter Store
+make deploy-ecs \
+  LAUNCH_TYPE=EC2 \
+  SECRET_BACKEND=ssm \
+  VPC_ID='vpc-xxx' \
+  SECURITY_GROUP_IDS='sg-xxx' \
+  CONFIG_JSON_FILE='/tmp/bifrost-config.json'
+
+# Deploy with Application Load Balancer
+make deploy-ecs \
+  VPC_ID='vpc-xxx' \
+  SECURITY_GROUP_IDS='sg-xxx' \
+  TARGET_GROUP_ARN='arn:aws:elasticloadbalancing:...' \
+  CONFIG_JSON_FILE='/tmp/bifrost-config.json'
+
+# Deploy without configuration secret
+make deploy-ecs \
+  VPC_ID='vpc-xxx' \
+  SECURITY_GROUP_IDS='sg-xxx'
+```
+
+### Available Makefile Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ECS_CLUSTER_NAME` | `bifrost-cluster` | Name of the ECS cluster |
+| `ECS_SERVICE_NAME` | `bifrost-service` | Name of the ECS service |
+| `ECS_TASK_FAMILY` | `bifrost-task` | Task definition family name |
+| `IMAGE_TAG` | `latest` | Bifrost Docker image tag |
+| `LAUNCH_TYPE` | `FARGATE` | Launch type: `FARGATE` or `EC2` |
+| `SECRET_BACKEND` | `secretsmanager` | Secret storage: `secretsmanager` or `ssm` |
+| `AWS_REGION` | `us-east-1` | AWS region |
+| `VPC_ID` | (optional*) | VPC ID (auto-fetches all subnets in VPC) |
+| `SUBNET_IDS` | (optional*) | Comma-separated subnet IDs (if VPC_ID not provided) |
+| `SECURITY_GROUP_IDS` | (required) | Comma-separated security group IDs |
+| `TARGET_GROUP_ARN` | (optional) | ALB target group ARN |
+| `CONTAINER_PORT` | `8080` | Container port |
+| `SECRET_NAME` | `bifrost/config` | Secret/parameter name |
+| `CONFIG_JSON_FILE` | (optional) | Path to config.json file |
+| `SECRET_ARN` | (optional) | Existing secret ARN (skip auto-lookup) |
+| `EXECUTION_ROLE_ARN` | (optional) | ECS task execution role ARN |
+| `TASK_ROLE_ARN` | (optional) | ECS task role ARN |
+
+<Note>
+**Network Configuration (*)**:  
+You must provide either `VPC_ID` OR `SUBNET_IDS`:
+- **VPC_ID** (recommended): Automatically fetches all subnets in the VPC. Simpler and works across all availability zones.
+- **SUBNET_IDS**: Specify exact subnet IDs if you want fine-grained control over subnet placement.
+</Note>
+
+### Makefile Targets
+
+- `list-ecs-network-resources`: List available VPCs, subnets and security groups in your AWS region (helpful for first deployment)
+- `deploy-ecs`: Complete deployment (creates secret if CONFIG_JSON_FILE provided, registers task definition, creates service, waits for stabilization, and shows deployment status)
+- `create-ecs-secret`: Create/update configuration secret (requires CONFIG_JSON_FILE parameter)
+- `register-ecs-task-definition`: Register new task definition (with or without secret)
+- `create-ecs-service`: Create or update ECS service
+- `update-ecs-service`: Force new deployment
+- `tail-ecs-logs`: Continuously tail CloudWatch logs in real-time (Ctrl+C to exit)
+- `ecs-status`: Show current service status, running tasks, and recent logs
+- `get-ecs-url`: Get the public URL/IP to access the service (works with or without load balancer)
+- `cleanup-ecs`: Remove service and deregister task definitions
+
+<Note>
+**CONFIG_JSON_FILE Parameter**: This is optional. If provided, the Makefile will create a secret in AWS Secrets Manager or SSM Parameter Store and mount it in the ECS task. If omitted, the task will be deployed without a secret, and you can use other configuration methods (environment variables, mounted volumes, etc.).
+
+**How Configuration Secrets Work**: When `CONFIG_JSON_FILE` is provided, the deployment:
+1. Stores your `config.json` in AWS Secrets Manager or SSM Parameter Store
+2. Injects the secret as an environment variable `BIFROST_CONFIG` into the container
+3. Uses a custom entrypoint that:
+   - Silently writes the secret content to `/app/data/config.json`
+   - Exits with error only if `BIFROST_CONFIG` is not set
+   - Then starts Bifrost normally
+4. Bifrost reads the configuration from the file at startup
+
+This approach ensures your configuration is securely stored and properly mounted as a file, which is required by Bifrost. The entrypoint does not log any config data to keep logs clean and secure.
+</Note>
+
+</Tab>
+
+<Tab title="Using AWS CLI">
+
+## Deployment with AWS CLI
+
+Deploy Bifrost to ECS using direct AWS CLI commands. This section provides step-by-step instructions for both Fargate and EC2 launch types.
+
+<Tabs>
+<Tab title="Fargate">
+
+### 1. Configuration Secret
+
+Choose between AWS Secrets Manager or SSM Parameter Store to store your Bifrost configuration.
+
+<Tabs>
+<Tab title="Secrets Manager">
+
+Create a secret containing the Bifrost configuration with Postgres backend:
+
+```bash
+# Create the configuration JSON
+cat > /tmp/bifrost-config.json <<EOF
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+EOF
+
+# Create the secret
+aws secretsmanager create-secret \
+  --name bifrost/config \
+  --secret-string file:///tmp/bifrost-config.json \
+  --region us-east-1
+
+# Get the secret ARN (save this for later)
+aws secretsmanager describe-secret \
+  --secret-id bifrost/config \
+  --region us-east-1 \
+  --query 'ARN' \
+  --output text
+```
+
+</Tab>
+<Tab title="SSM Parameter Store">
+
+Create a parameter containing the Bifrost configuration:
+
+```bash
+# Create the configuration JSON
+cat > /tmp/bifrost-config.json <<EOF
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+EOF
+
+# Create the parameter
+aws ssm put-parameter \
+  --name /bifrost/config \
+  --value file:///tmp/bifrost-config.json \
+  --type SecureString \
+  --region us-east-1
+
+# Get the parameter ARN (save this for later)
+aws ssm get-parameter \
+  --name /bifrost/config \
+  --region us-east-1 \
+  --query 'Parameter.ARN' \
+  --output text
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Important**: The task definitions below include a custom `entryPoint` and `command` that:
+1. Reads the `BIFROST_CONFIG` environment variable (injected from the secret)
+2. Silently writes it to `/app/data/config.json` (where Bifrost expects the configuration file)
+3. Exits with error if `BIFROST_CONFIG` is not set
+4. Then starts the Bifrost application
+
+This is necessary because ECS injects secrets as environment variables, but Bifrost reads configuration from a file. The entrypoint does not log any config data to keep logs clean and secure.
+</Note>
+
+### 2. Task Definition
+
+Create a task definition for Fargate with the configuration secret injected:
+
+<Tabs>
+<Tab title="With Secrets Manager">
+
+```bash
+# Create task definition JSON
+cat > /tmp/bifrost-task-definition.json <<EOF
+{
+  "family": "bifrost-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "bifrost",
+      "image": "maximhq/bifrost:latest",
+      "essential": true,
+      "entryPoint": ["/bin/sh", "-c"],
+      "command": ["if [ -n \"$BIFROST_CONFIG\" ]; then echo \"$BIFROST_CONFIG\" > /app/data/config.json; else echo \"ERROR: BIFROST_CONFIG not set\" >&2 && exit 1; fi && exec /app/docker-entrypoint.sh /app/main"],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "BIFROST_CONFIG",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:YOUR_ACCOUNT_ID:secret:bifrost/config"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bifrost-task",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "bifrost",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Register the task definition
+aws ecs register-task-definition \
+  --cli-input-json file:///tmp/bifrost-task-definition.json \
+  --region us-east-1
+```
+
+<Note>
+The `executionRoleArn` must have permissions to:
+- Pull images from Docker Hub
+- Read secrets from Secrets Manager
+- Create CloudWatch log groups and streams
+</Note>
+
+</Tab>
+<Tab title="With SSM Parameter Store">
+
+```bash
+# Create task definition JSON
+cat > /tmp/bifrost-task-definition.json <<EOF
+{
+  "family": "bifrost-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "bifrost",
+      "image": "maximhq/bifrost:latest",
+      "essential": true,
+      "entryPoint": ["/bin/sh", "-c"],
+      "command": ["if [ -n \"$BIFROST_CONFIG\" ]; then echo \"$BIFROST_CONFIG\" > /app/data/config.json; else echo \"ERROR: BIFROST_CONFIG not set\" >&2 && exit 1; fi && exec /app/docker-entrypoint.sh /app/main"],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "BIFROST_CONFIG",
+          "valueFrom": "arn:aws:ssm:us-east-1:YOUR_ACCOUNT_ID:parameter/bifrost/config"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bifrost-task",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "bifrost",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Register the task definition
+aws ecs register-task-definition \
+  --cli-input-json file:///tmp/bifrost-task-definition.json \
+  --region us-east-1
+```
+
+<Note>
+The `executionRoleArn` must have permissions to:
+- Pull images from Docker Hub
+- Read parameters from SSM Parameter Store
+- Create CloudWatch log groups and streams
+</Note>
+
+</Tab>
+</Tabs>
+
+### 3. Create ECS Service
+
+<Tabs>
+<Tab title="Without Load Balancer">
+
+```bash
+aws ecs create-service \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --task-definition bifrost-task \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx,subnet-yyy],securityGroups=[sg-xxx],assignPublicIp=ENABLED}" \
+  --region us-east-1
+```
+
+</Tab>
+<Tab title="With Application Load Balancer">
+
+```bash
+aws ecs create-service \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --task-definition bifrost-task \
+  --desired-count 1 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx,subnet-yyy],securityGroups=[sg-xxx],assignPublicIp=ENABLED}" \
+  --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:us-east-1:YOUR_ACCOUNT_ID:targetgroup/bifrost-tg/xxx,containerName=bifrost,containerPort=8080" \
+  --health-check-grace-period-seconds 60 \
+  --region us-east-1
+```
+
+<Note>
+When using an ALB:
+- The security group must allow traffic from the ALB
+- The target group health check should point to `/health`
+- Set an appropriate health check grace period (60+ seconds)
+</Note>
+
+</Tab>
+</Tabs>
+
+### 4. Update Service
+
+To deploy a new version or force a redeployment:
+
+```bash
+aws ecs update-service \
+  --cluster bifrost-cluster \
+  --service bifrost-service \
+  --force-new-deployment \
+  --region us-east-1
+```
+
+</Tab>
+
+<Tab title="EC2">
+
+### 1. Configuration Secret
+
+Choose between AWS Secrets Manager or SSM Parameter Store to store your Bifrost configuration.
+
+<Tabs>
+<Tab title="Secrets Manager">
+
+Create a secret containing the Bifrost configuration with Postgres backend:
+
+```bash
+# Create the configuration JSON
+cat > /tmp/bifrost-config.json <<EOF
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+EOF
+
+# Create the secret
+aws secretsmanager create-secret \
+  --name bifrost/config \
+  --secret-string file:///tmp/bifrost-config.json \
+  --region us-east-1
+
+# Get the secret ARN (save this for later)
+aws secretsmanager describe-secret \
+  --secret-id bifrost/config \
+  --region us-east-1 \
+  --query 'ARN' \
+  --output text
+```
+
+</Tab>
+<Tab title="SSM Parameter Store">
+
+Create a parameter containing the Bifrost configuration:
+
+```bash
+# Create the configuration JSON
+cat > /tmp/bifrost-config.json <<EOF
+{
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "your-postgres-host",
+      "port": "5432",
+      "user": "your-postgres-user",
+      "password": "your-postgres-password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  }
+}
+EOF
+
+# Create the parameter
+aws ssm put-parameter \
+  --name /bifrost/config \
+  --value file:///tmp/bifrost-config.json \
+  --type SecureString \
+  --region us-east-1
+
+# Get the parameter ARN (save this for later)
+aws ssm get-parameter \
+  --name /bifrost/config \
+  --region us-east-1 \
+  --query 'Parameter.ARN' \
+  --output text
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Important**: The task definitions below include a custom `entryPoint` and `command` that:
+1. Reads the `BIFROST_CONFIG` environment variable (injected from the secret)
+2. Silently writes it to `/app/data/config.json` (where Bifrost expects the configuration file)
+3. Exits with error if `BIFROST_CONFIG` is not set
+4. Then starts the Bifrost application
+
+This is necessary because ECS injects secrets as environment variables, but Bifrost reads configuration from a file. The entrypoint does not log any config data to keep logs clean and secure.
+</Note>
+
+### 2. Task Definition
+
+Create a task definition for EC2 launch type with the configuration secret injected:
+
+<Tabs>
+<Tab title="With Secrets Manager">
+
+```bash
+# Create task definition JSON
+cat > /tmp/bifrost-task-definition.json <<EOF
+{
+  "family": "bifrost-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "bifrost",
+      "image": "maximhq/bifrost:latest",
+      "cpu": 256,
+      "memory": 512,
+      "essential": true,
+      "entryPoint": ["/bin/sh", "-c"],
+      "command": ["if [ -n \"$BIFROST_CONFIG\" ]; then echo \"$BIFROST_CONFIG\" > /app/data/config.json; else echo \"ERROR: BIFROST_CONFIG not set\" >&2 && exit 1; fi && exec /app/docker-entrypoint.sh /app/main"],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "BIFROST_CONFIG",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:YOUR_ACCOUNT_ID:secret:bifrost/config"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bifrost-task",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "bifrost",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Register the task definition
+aws ecs register-task-definition \
+  --cli-input-json file:///tmp/bifrost-task-definition.json \
+  --region us-east-1
+```
+
+<Note>
+For EC2 launch type:
+- CPU and memory are specified at the container level
+- Ensure your EC2 instances have sufficient resources
+- The ECS agent must be running on the instances
+</Note>
+
+</Tab>
+<Tab title="With SSM Parameter Store">
+
+```bash
+# Create task definition JSON
+cat > /tmp/bifrost-task-definition.json <<EOF
+{
+  "family": "bifrost-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "bifrost",
+      "image": "maximhq/bifrost:latest",
+      "cpu": 256,
+      "memory": 512,
+      "essential": true,
+      "entryPoint": ["/bin/sh", "-c"],
+      "command": ["if [ -n \"$BIFROST_CONFIG\" ]; then echo \"$BIFROST_CONFIG\" > /app/data/config.json; else echo \"ERROR: BIFROST_CONFIG not set\" >&2 && exit 1; fi && exec /app/docker-entrypoint.sh /app/main"],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "BIFROST_CONFIG",
+          "valueFrom": "arn:aws:ssm:us-east-1:YOUR_ACCOUNT_ID:parameter/bifrost/config"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bifrost-task",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "bifrost",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Register the task definition
+aws ecs register-task-definition \
+  --cli-input-json file:///tmp/bifrost-task-definition.json \
+  --region us-east-1
+```
+
+</Tab>
+</Tabs>
+
+### 3. Create ECS Service
+
+<Tabs>
+<Tab title="Without Load Balancer">
+
+```bash
+aws ecs create-service \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --task-definition bifrost-task \
+  --desired-count 1 \
+  --launch-type EC2 \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx,subnet-yyy],securityGroups=[sg-xxx]}" \
+  --region us-east-1
+```
+
+</Tab>
+<Tab title="With Application Load Balancer">
+
+```bash
+aws ecs create-service \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --task-definition bifrost-task \
+  --desired-count 1 \
+  --launch-type EC2 \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx,subnet-yyy],securityGroups=[sg-xxx]}" \
+  --load-balancers "targetGroupArn=arn:aws:elasticloadbalancing:us-east-1:YOUR_ACCOUNT_ID:targetgroup/bifrost-tg/xxx,containerName=bifrost,containerPort=8080" \
+  --health-check-grace-period-seconds 60 \
+  --region us-east-1
+```
+
+</Tab>
+</Tabs>
+
+### 4. Update Service
+
+To deploy a new version or force a redeployment:
+
+```bash
+aws ecs update-service \
+  --cluster bifrost-cluster \
+  --service bifrost-service \
+  --force-new-deployment \
+  --region us-east-1
+```
+
+</Tab>
+</Tabs>
+
+</Tab>
+
+<Tab title="Using CloudFormation">
+
+## CloudFormation Deployment
+
+Deploy Bifrost to ECS using AWS CloudFormation for infrastructure as code management.
+
+<Note>
+The CloudFormation template is available in the repository at `cloudformation/ecs-deployment.yaml`.
+You can use it directly or customize it for your needs.
+
+**Configuration Secret Handling**: When you provide `ConfigSecretArn`, the template automatically:
+1. Injects the secret as an environment variable `BIFROST_CONFIG` into the container
+2. Uses a custom entrypoint that:
+   - Silently writes the secret content to `/app/data/config.json`
+   - Exits with error if secret is not set
+3. This ensures Bifrost can read the configuration from the expected file location
+
+The entrypoint does not log any config data to keep logs clean and secure.
+</Note>
+
+### CloudFormation Template
+
+The template (`cloudformation/ecs-deployment.yaml`):
+
+```yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy Bifrost service on ECS'
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: bifrost-cluster
+    Description: Name of the ECS cluster
+  
+  ServiceName:
+    Type: String
+    Default: bifrost-service
+    Description: Name of the ECS service
+  
+  TaskFamily:
+    Type: String
+    Default: bifrost-task
+    Description: Task definition family name
+  
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Bifrost Docker image tag
+  
+  LaunchType:
+    Type: String
+    Default: FARGATE
+    AllowedValues:
+      - FARGATE
+      - EC2
+    Description: ECS launch type
+  
+  ContainerPort:
+    Type: Number
+    Default: 8080
+    Description: Container port
+  
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Desired number of tasks
+  
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the service will run
+  
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnet IDs for the service (use public subnets for direct access)
+  
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security group IDs (must allow inbound on ContainerPort)
+  
+  ConfigSecretArn:
+    Type: String
+    Default: ''
+    Description: (Optional) ARN of Secrets Manager secret or SSM parameter containing config.json
+  
+  ExecutionRoleArn:
+    Type: String
+    Default: ''
+    Description: (Optional) ECS task execution role ARN (will create default if not provided)
+  
+  TaskRoleArn:
+    Type: String
+    Default: ''
+    Description: (Optional) ECS task role ARN
+  
+  TargetGroupArn:
+    Type: String
+    Default: ''
+    Description: (Optional) ALB target group ARN for load balancing
+  
+  AssignPublicIp:
+    Type: String
+    Default: ENABLED
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+    Description: Assign public IP to tasks (ENABLED for direct access without load balancer)
+
+Conditions:
+  IsFargate: !Equals [!Ref LaunchType, FARGATE]
+  HasSecret: !Not [!Equals [!Ref ConfigSecretArn, '']]
+  HasExecutionRole: !Not [!Equals [!Ref ExecutionRoleArn, '']]
+  HasTaskRole: !Not [!Equals [!Ref TaskRoleArn, '']]
+  HasTargetGroup: !Not [!Equals [!Ref TargetGroupArn, '']]
+  CreateExecutionRole: !And
+    - !Not [!Condition HasExecutionRole]
+    - !Condition IsFargate
+
+Resources:
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${TaskFamily}'
+      RetentionInDays: 7
+
+  # ECS Task Execution Role (created only if not provided and using Fargate)
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: CreateExecutionRole
+    Properties:
+      RoleName: !Sub '${ServiceName}-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:bifrost/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/bifrost/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: '*'
+
+  # ECS Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref TaskFamily
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - !Ref LaunchType
+      Cpu: !If [IsFargate, '512', '256']
+      Memory: !If [IsFargate, '1024', '512']
+      ExecutionRoleArn: !If
+        - HasExecutionRole
+        - !Ref ExecutionRoleArn
+        - !If
+          - CreateExecutionRole
+          - !GetAtt TaskExecutionRole.Arn
+          - !Ref AWS::NoValue
+      TaskRoleArn: !If [HasTaskRole, !Ref TaskRoleArn, !Ref AWS::NoValue]
+      ContainerDefinitions:
+        - Name: bifrost
+          Image: !Sub 'maximhq/bifrost:${ImageTag}'
+          Essential: true
+          EntryPoint: !If
+            - HasSecret
+            - - /bin/sh
+              - -c
+            - !Ref AWS::NoValue
+          Command: !If
+            - HasSecret
+            - - 'if [ -n "$BIFROST_CONFIG" ]; then echo "$BIFROST_CONFIG" > /app/data/config.json; else echo "ERROR: BIFROST_CONFIG not set" >&2 && exit 1; fi && exec /app/docker-entrypoint.sh /app/main'
+            - !Ref AWS::NoValue
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment: []
+          Secrets: !If
+            - HasSecret
+            - - Name: BIFROST_CONFIG
+                ValueFrom: !Ref ConfigSecretArn
+            - !Ref AWS::NoValue
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !Sub 'wget --no-verbose --tries=1 --spider http://localhost:${ContainerPort}/health || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: bifrost
+
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref ServiceName
+      Cluster: !Ref ClusterName
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: !Ref LaunchType
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
+          AssignPublicIp: !Ref AssignPublicIp
+      LoadBalancers: !If
+        - HasTargetGroup
+        - - ContainerName: bifrost
+            ContainerPort: !Ref ContainerPort
+            TargetGroupArn: !Ref TargetGroupArn
+        - !Ref AWS::NoValue
+      HealthCheckGracePeriodSeconds: !If [HasTargetGroup, 60, !Ref AWS::NoValue]
+
+Outputs:
+  ServiceName:
+    Description: ECS Service Name
+    Value: !Ref Service
+    Export:
+      Name: !Sub '${AWS::StackName}-ServiceName'
+  
+  TaskDefinitionArn:
+    Description: Task Definition ARN
+    Value: !Ref TaskDefinition
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskDefinitionArn'
+  
+  LogGroupName:
+    Description: CloudWatch Log Group
+    Value: !Ref LogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'
+  
+  ExecutionRoleArn:
+    Condition: CreateExecutionRole
+    Description: Created Task Execution Role ARN
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ExecutionRoleArn'
+```
+
+### Deploy with CloudFormation
+
+<Tabs>
+<Tab title="Without Load Balancer">
+
+**Deploy without configuration secret:**
+
+```bash
+aws cloudformation create-stack \
+  --stack-name bifrost-ecs-stack \
+  --template-body file://cloudformation/ecs-deployment.yaml \
+  --parameters \
+    ParameterKey=VpcId,ParameterValue=vpc-xxx \
+    ParameterKey=SubnetIds,ParameterValue="subnet-xxx\,subnet-yyy" \
+    ParameterKey=SecurityGroupIds,ParameterValue="sg-xxx" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+
+# Wait for stack creation
+aws cloudformation wait stack-create-complete \
+  --stack-name bifrost-ecs-stack \
+  --region us-east-1
+
+# Get service details
+aws cloudformation describe-stacks \
+  --stack-name bifrost-ecs-stack \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs'
+```
+
+**Deploy with Secrets Manager:**
+
+First, create the secret:
+
+```bash
+aws secretsmanager create-secret \
+  --name bifrost/config \
+  --secret-string file://config.json \
+  --region us-east-1
+
+# Get the secret ARN
+SECRET_ARN=$(aws secretsmanager describe-secret \
+  --secret-id bifrost/config \
+  --region us-east-1 \
+  --query 'ARN' \
+  --output text)
+```
+
+Then deploy with the secret:
+
+```bash
+aws cloudformation create-stack \
+  --stack-name bifrost-ecs-stack \
+  --template-body file://cloudformation/ecs-deployment.yaml \
+  --parameters \
+    ParameterKey=VpcId,ParameterValue=vpc-xxx \
+    ParameterKey=SubnetIds,ParameterValue="subnet-xxx\,subnet-yyy" \
+    ParameterKey=SecurityGroupIds,ParameterValue="sg-xxx" \
+    ParameterKey=ConfigSecretArn,ParameterValue=$SECRET_ARN \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+</Tab>
+<Tab title="With Load Balancer">
+
+```bash
+aws cloudformation create-stack \
+  --stack-name bifrost-ecs-stack \
+  --template-body file://cloudformation/ecs-deployment.yaml \
+  --parameters \
+    ParameterKey=VpcId,ParameterValue=vpc-xxx \
+    ParameterKey=SubnetIds,ParameterValue="subnet-xxx\,subnet-yyy" \
+    ParameterKey=SecurityGroupIds,ParameterValue="sg-xxx" \
+    ParameterKey=TargetGroupArn,ParameterValue=arn:aws:elasticloadbalancing:... \
+    ParameterKey=AssignPublicIp,ParameterValue=DISABLED \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+<Note>
+When using a load balancer, you can set `AssignPublicIp=DISABLED` if your tasks don't need direct internet access (they'll use NAT Gateway via the load balancer).
+</Note>
+
+</Tab>
+<Tab title="EC2 Launch Type">
+
+```bash
+aws cloudformation create-stack \
+  --stack-name bifrost-ecs-stack \
+  --template-body file://cloudformation/ecs-deployment.yaml \
+  --parameters \
+    ParameterKey=VpcId,ParameterValue=vpc-xxx \
+    ParameterKey=SubnetIds,ParameterValue="subnet-xxx\,subnet-yyy" \
+    ParameterKey=SecurityGroupIds,ParameterValue="sg-xxx" \
+    ParameterKey=LaunchType,ParameterValue=EC2 \
+    ParameterKey=ExecutionRoleArn,ParameterValue=arn:aws:iam::ACCOUNT:role/ecsTaskExecutionRole \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+```
+
+<Note>
+For EC2 launch type, you must provide an existing `ExecutionRoleArn` as the template only auto-creates roles for Fargate.
+</Note>
+
+</Tab>
+</Tabs>
+
+### Update Stack
+
+To update your deployment (e.g., change image tag or configuration):
+
+```bash
+# Update the stack
+aws cloudformation update-stack \
+  --stack-name bifrost-ecs-stack \
+  --template-body file://cloudformation/ecs-deployment.yaml \
+  --parameters \
+    ParameterKey=VpcId,UsePreviousValue=true \
+    ParameterKey=SubnetIds,UsePreviousValue=true \
+    ParameterKey=SecurityGroupIds,UsePreviousValue=true \
+    ParameterKey=ImageTag,ParameterValue=v1.2.0 \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1
+
+# Wait for update to complete
+aws cloudformation wait stack-update-complete \
+  --stack-name bifrost-ecs-stack \
+  --region us-east-1
+```
+
+### Get Service URL
+
+After deployment, get your service URL:
+
+```bash
+# Get the task public IP (without load balancer)
+TASK_ARN=$(aws ecs list-tasks \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --region us-east-1 \
+  --query 'taskArns[0]' \
+  --output text)
+
+ENI_ID=$(aws ecs describe-tasks \
+  --cluster bifrost-cluster \
+  --tasks $TASK_ARN \
+  --region us-east-1 \
+  --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+  --output text)
+
+PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+  --network-interface-ids $ENI_ID \
+  --region us-east-1 \
+  --query 'NetworkInterfaces[0].Association.PublicIp' \
+  --output text)
+
+echo "Service URL: http://$PUBLIC_IP:8080"
+echo "Health check: http://$PUBLIC_IP:8080/health"
+
+# Test the service
+curl http://$PUBLIC_IP:8080/health
+```
+
+### Monitor Logs
+
+```bash
+# Tail logs
+aws logs tail /ecs/bifrost-task --follow --region us-east-1
+
+# View recent logs
+LOG_STREAM=$(aws logs describe-log-streams \
+  --log-group-name /ecs/bifrost-task \
+  --order-by LastEventTime \
+  --descending \
+  --max-items 1 \
+  --region us-east-1 \
+  --query 'logStreams[0].logStreamName' \
+  --output text)
+
+aws logs get-log-events \
+  --log-group-name /ecs/bifrost-task \
+  --log-stream-name $LOG_STREAM \
+  --region us-east-1
+```
+
+### Delete Stack
+
+To remove all resources:
+
+```bash
+aws cloudformation delete-stack \
+  --stack-name bifrost-ecs-stack \
+  --region us-east-1
+
+# Wait for deletion
+aws cloudformation wait stack-delete-complete \
+  --stack-name bifrost-ecs-stack \
+  --region us-east-1
+```
+
+### CloudFormation Parameters Reference
+
+| Parameter | Default | Required | Description |
+|-----------|---------|----------|-------------|
+| `ClusterName` | `bifrost-cluster` | No | ECS cluster name (must exist) |
+| `ServiceName` | `bifrost-service` | No | ECS service name |
+| `TaskFamily` | `bifrost-task` | No | Task definition family |
+| `ImageTag` | `latest` | No | Docker image tag |
+| `LaunchType` | `FARGATE` | No | `FARGATE` or `EC2` |
+| `ContainerPort` | `8080` | No | Container port |
+| `DesiredCount` | `1` | No | Number of tasks |
+| `VpcId` | - | **Yes** | VPC ID |
+| `SubnetIds` | - | **Yes** | Comma-separated subnet IDs |
+| `SecurityGroupIds` | - | **Yes** | Comma-separated security group IDs |
+| `ConfigSecretArn` | (empty) | No | Secret/parameter ARN |
+| `ExecutionRoleArn` | (empty) | No | Task execution role ARN |
+| `TaskRoleArn` | (empty) | No | Task role ARN |
+| `TargetGroupArn` | (empty) | No | ALB target group ARN |
+| `AssignPublicIp` | `ENABLED` | No | Assign public IP to tasks |
+
+
+</Tab>
+</Tabs>
+
+## IAM Permissions
+
+### Task Execution Role
+
+The task execution role (`ecsTaskExecutionRole`) needs the following permissions:
+
+<Note>
+The Makefile automatically creates the CloudWatch log group `/ecs/bifrost-task`, so the execution role only needs `CreateLogStream` and `PutLogEvents` permissions, not `CreateLogGroup`.
+</Note>
+
+<Tabs>
+<Tab title="For Secrets Manager">
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/ecs/bifrost-task:*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:YOUR_ACCOUNT_ID:secret:bifrost/config*"
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="For SSM Parameter Store">
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:log-group:/ecs/bifrost-task:*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameters",
+        "ssm:GetParameter"
+      ],
+      "Resource": "arn:aws:ssm:us-east-1:YOUR_ACCOUNT_ID:parameter/bifrost/config"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt"
+      ],
+      "Resource": "arn:aws:kms:us-east-1:YOUR_ACCOUNT_ID:key/YOUR_KMS_KEY_ID"
+    }
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+## Accessing Your Service
+
+### Without Load Balancer
+
+When deployed without a load balancer, the ECS task gets a public IP address. You can find it using AWS CLI:
+
+```bash
+# Get the public IP address of your running task
+aws ec2 describe-network-interfaces \
+  --network-interface-ids $(aws ecs describe-tasks \
+    --cluster bifrost-cluster \
+    --tasks $(aws ecs list-tasks \
+      --cluster bifrost-cluster \
+      --service-name bifrost-service \
+      --region us-east-1 \
+      --query 'taskArns[0]' \
+      --output text) \
+    --region us-east-1 \
+    --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+    --output text) \
+  --region us-east-1 \
+  --query 'NetworkInterfaces[0].Association.PublicIp' \
+  --output text
+```
+
+<Warning>
+**Important Notes:**
+- The public IP changes every time the task is restarted
+- You must allow inbound traffic on port 8080 (or your `CONTAINER_PORT`) in your security group
+- For production, consider using an Application Load Balancer for a stable endpoint
+</Warning>
+
+**Testing your deployment:**
+
+```bash
+# Test health endpoint (replace YOUR_PUBLIC_IP with the IP from above)
+curl http://YOUR_PUBLIC_IP:8080/health
+
+# Expected response
+{"status":"ok"}
+```
+
+### With Load Balancer
+
+If you deployed with `TARGET_GROUP_ARN`, your service is accessible via the load balancer's DNS name:
+
+```bash
+# Get the load balancer DNS name (replace YOUR_TARGET_GROUP_ARN with your actual ARN)
+aws elbv2 describe-load-balancers \
+  --load-balancer-arns $(aws elbv2 describe-target-groups \
+    --target-group-arns YOUR_TARGET_GROUP_ARN \
+    --region us-east-1 \
+    --query 'TargetGroups[0].LoadBalancerArns[0]' \
+    --output text) \
+  --region us-east-1 \
+  --query 'LoadBalancers[0].DNSName' \
+  --output text
+
+# Test via load balancer (replace YOUR_ALB_DNS with the DNS from above)
+curl http://YOUR_ALB_DNS/health
+```
+
+The load balancer provides:
+- ✅ Stable DNS endpoint
+- ✅ SSL/TLS termination (if configured)
+- ✅ Health checks with automatic failover
+- ✅ Multiple task load balancing
+
+## Monitoring and Logs
+
+### Tail Logs (Makefile)
+
+The easiest way to monitor your deployment logs:
+
+```bash
+# Tail logs in real-time (press Ctrl+C to exit)
+make tail-ecs-logs
+
+# Check service status and recent logs
+make ecs-status
+```
+
+<Note>
+The `deploy-ecs` command automatically waits for the deployment to stabilize and shows you:
+- Deployment status (running/desired count)
+- Task details (ARN, status, health)
+- Recent logs (last 20 events)
+
+After deployment completes, use `make tail-ecs-logs` to continuously monitor your application.
+</Note>
+
+### View Logs (AWS CLI)
+
+```bash
+# Tail logs using AWS CLI v2 (recommended)
+aws logs tail /ecs/bifrost-task --follow --region us-east-1
+
+# Get log stream names
+aws logs describe-log-streams \
+  --log-group-name /ecs/bifrost-task \
+  --order-by LastEventTime \
+  --descending \
+  --max-items 5 \
+  --region us-east-1
+
+# View logs from a specific stream
+aws logs get-log-events \
+  --log-group-name /ecs/bifrost-task \
+  --log-stream-name bifrost/bifrost/TASK_ID \
+  --region us-east-1
+```
+
+### Check Service Status
+
+```bash
+# Describe service
+aws ecs describe-services \
+  --cluster bifrost-cluster \
+  --services bifrost-service \
+  --region us-east-1
+
+# List tasks
+aws ecs list-tasks \
+  --cluster bifrost-cluster \
+  --service-name bifrost-service \
+  --region us-east-1
+
+# Describe task
+aws ecs describe-tasks \
+  --cluster bifrost-cluster \
+  --tasks TASK_ARN \
+  --region us-east-1
+```
+
+## Cleanup
+
+To remove all ECS resources:
+
+```bash
+# Using Makefile
+make cleanup-ecs
+
+# Or manually
+# Delete service
+aws ecs update-service \
+  --cluster bifrost-cluster \
+  --service bifrost-service \
+  --desired-count 0 \
+  --region us-east-1
+
+aws ecs delete-service \
+  --cluster bifrost-cluster \
+  --service bifrost-service \
+  --region us-east-1
+
+# Deregister task definitions
+aws ecs list-task-definitions \
+  --family-prefix bifrost-task \
+  --region us-east-1 \
+  --query 'taskDefinitionArns[]' \
+  --output text | \
+  xargs -n 1 aws ecs deregister-task-definition --task-definition --region us-east-1
+
+# Delete secret (optional)
+aws secretsmanager delete-secret \
+  --secret-id bifrost/config \
+  --force-delete-without-recovery \
+  --region us-east-1
+
+# Or delete SSM parameter (optional)
+aws ssm delete-parameter \
+  --name /bifrost/config \
+  --region us-east-1
+```

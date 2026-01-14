@@ -1,0 +1,408 @@
+---
+title: "Audit Logs"
+description: "Comprehensive security and compliance audit logging with detailed tracking of authentication, authorization, configuration changes, and data access for enterprise governance and regulatory requirements."
+icon: "scroll"
+---
+
+## Overview
+
+**Audit Logs** in Bifrost provide complete visibility into security-critical events, user activities, configuration changes, and data access patterns. Enterprise audit logging ensures compliance with regulatory requirements including SOC 2, GDPR, HIPAA, and ISO 27001 through comprehensive, immutable audit trails.
+
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Immutable Logs** | Tamper-proof audit trails with cryptographic verification |
+| **Real-Time Capture** | Instant logging of all security-relevant events |
+| **Granular Filtering** | Query by user, action, resource, or time range |
+| **Long-Term Retention** | Configurable retention policies for compliance |
+| **SIEM Integration** | Export to Splunk, Datadog, Elastic, and more |
+| **Alert Triggers** | Automated alerts on suspicious activities |
+
+---
+
+## What Gets Logged
+
+### Authentication Events
+- User login (successful/failed)
+- User logout
+- Session creation/expiration
+- MFA verification
+- Password changes
+- Failed authentication attempts
+- Account lockouts
+- SSO redirects
+
+### Authorization Events
+- Model access attempts
+- Provider access checks
+- Virtual key usage
+- Budget limit checks
+- Rate limit violations
+- Permission denials
+
+### Configuration Changes
+- Virtual key creation/modification/deletion
+- Team/customer creation/updates
+- User provisioning/deprovisioning
+- Budget adjustments
+- Rate limit changes
+- Provider key updates
+- Guardrail configuration changes
+- SAML/OIDC settings updates
+
+### Data Access Events
+- PII detection and handling
+- Data export operations
+- Log access and queries
+- Sensitive configuration access
+- API key exposure attempts
+
+### Security Events
+- Prompt injection attempts
+- Jailbreak attempts
+- Unusual access patterns
+- Multiple failed authentication attempts
+- API key abuse
+- Rate limit violations
+- Suspicious IP addresses
+- Guardrail violations
+
+---
+
+## Configuration
+
+### Basic Audit Logging Setup
+
+<Tabs group="audit-config">
+<Tab title="config.json">
+
+```json
+{
+  "enterprise": {
+    "audit_logs": {
+      "enabled": true,
+      "retention": {
+        "duration": "365d",
+        "archive_after": "90d"
+      },
+      "capture": {
+        "authentication": true,
+        "authorization": true,
+        "configuration_changes": true,
+        "data_access": true,
+        "security_events": true
+      },
+      "immutability": {
+        "enabled": true,
+        "verification_method": "cryptographic_hash"
+      }
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Environment Variables">
+
+```bash
+# Enable audit logging
+BIFROST_AUDIT_LOGS_ENABLED=true
+
+# Retention settings
+BIFROST_AUDIT_RETENTION_DAYS=365
+BIFROST_AUDIT_ARCHIVE_DAYS=90
+
+# Event capture
+BIFROST_AUDIT_AUTH_EVENTS=true
+BIFROST_AUDIT_CONFIG_CHANGES=true
+BIFROST_AUDIT_SECURITY_EVENTS=true
+
+# Immutability
+BIFROST_AUDIT_IMMUTABLE=true
+```
+
+</Tab>
+</Tabs>
+
+### Advanced Configuration
+
+```json
+{  
+    "audit_logs": {
+      "enabled": true,     
+        "backup": {
+          "type": "s3",
+          "bucket": "bifrost-audit-logs",
+          "region": "us-west-2",
+          "encryption": "AES256"
+        }
+      },
+      "retention": {
+        "duration": "365d",
+        "archive_after": "90d",
+        "delete_after": "2555d",
+        "hot_storage_days": 30
+      },
+      "capture": {
+        "authentication": {
+          "enabled": true,
+          "include_failed_attempts": true,
+          "track_session_duration": true
+        },
+        "authorization": {
+          "enabled": true,
+          "log_allowed_access": false,
+          "log_denied_access": true
+        },
+        "configuration_changes": {
+          "enabled": true,
+          "track_before_after": true,
+          "exclude_fields": ["password", "api_key"]
+        },
+        "data_access": {
+          "enabled": true,
+          "log_pii_detection": true,
+          "log_sensitive_operations": true
+        },
+        "security_events": {
+          "enabled": true,
+          "severity_threshold": "medium"
+        }
+      },
+      "enrichment": {
+        "geo_location": true,
+        "user_agent_parsing": true,
+        "ip_reputation": true
+      },
+      "immutability": {
+        "enabled": true,
+        "verification_method": "cryptographic_hash",
+        "signing_key": "${AUDIT_LOG_SIGNING_KEY}"
+      }
+    }
+}
+```
+
+---
+
+## Querying Audit Logs
+
+### API-Based Queries
+
+**Query Authentication Events:**
+```bash
+curl -X GET "http://localhost:8080/api/audit-logs?event_type=authentication&start_date=2024-01-01&end_date=2024-01-31" \
+  -H "Authorization: Bearer admin-token"
+```
+
+**Query by User:**
+```bash
+curl -X GET "http://localhost:8080/api/audit-logs?user_id=user-alice-001&limit=100" \
+  -H "Authorization: Bearer admin-token"
+```
+
+**Query Failed Access Attempts:**
+```bash
+curl -X GET "http://localhost:8080/api/audit-logs?action=access_denied&severity=high" \
+  -H "Authorization: Bearer admin-token"
+```
+
+**Query Configuration Changes:**
+```bash
+curl -X GET "http://localhost:8080/api/audit-logs?event_type=configuration_change&resource_type=virtual_key" \
+  -H "Authorization: Bearer admin-token"
+```
+
+### Advanced Filtering
+
+```bash
+curl -X POST http://localhost:8080/api/audit-logs/query \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer admin-token" \
+  -d '{
+    "filters": {
+      "event_types": ["authentication", "authorization"],
+      "date_range": {
+        "start": "2024-01-01T00:00:00Z",
+        "end": "2024-01-31T23:59:59Z"
+      },
+      "actors": {
+        "user_ids": ["user-alice-001", "user-bob-002"],
+        "ip_addresses": ["203.0.113.0/24"]
+      },
+      "status": ["failed", "blocked"],
+      "severity": ["medium", "high", "critical"]
+    },
+    "sort": {
+      "field": "timestamp",
+      "order": "desc"
+    },
+    "limit": 1000,
+    "include_details": true
+  }'
+```
+
+### Response Format
+
+```json
+{
+  "total_count": 347,
+  "returned_count": 100,
+  "page": 1,
+  "audit_logs": [
+    {
+      "event_id": "evt_001",
+      "timestamp": "2024-01-15T10:30:00.123Z",
+      "event_type": "authentication",
+      "action": "user_login",
+      "status": "failed",
+      "severity": "medium",
+      "actor": {
+        "user_id": "user-alice-001",
+        "email": "alice@company.com",
+        "ip_address": "203.0.113.42"
+      },
+      "details": {
+        "auth_method": "password",
+        "failure_reason": "invalid_password",
+        "attempts_count": 3
+      },
+      "verification": {
+        "hash": "sha256:abc123...",
+        "verified": true
+      }
+    }
+  ],
+  "next_page": "/api/enterprise/audit-logs?page=2"
+}
+```
+
+---
+
+## SIEM Integration
+
+### Splunk Integration
+
+```json
+{
+    "audit_logs": {
+      "siem_integration": {
+        "splunk": {
+          "enabled": true,
+          "hec_endpoint": "https://splunk.company.com:8088/services/collector",
+          "hec_token": "${SPLUNK_HEC_TOKEN}",
+          "source_type": "bifrost:audit",
+          "index": "security",
+          "batch_size": 100,
+          "flush_interval": "10s"
+        }
+      }
+    }
+}
+```
+
+### Datadog Integration
+
+```json
+{  
+    "audit_logs": {
+        "siem_integration": {
+        "datadog": {
+                "enabled": true,
+                "api_key": "${DATADOG_API_KEY}",
+                "site": "datadoghq.com",
+                "service": "bifrost",
+                "tags": ["env:production", "team:security"]
+            }
+        }
+    }  
+}
+```
+
+### Elastic Security Integration
+
+```json
+{  
+    "audit_logs": {
+      "siem_integration": {
+        "elastic": {
+          "enabled": true,
+          "endpoint": "https://elastic.company.com:9200",
+          "api_key": "${ELASTIC_API_KEY}",
+          "index": "bifrost-audit-logs",
+          "pipeline": "security-enrichment"
+        }
+      }
+    }
+}
+```
+
+### Webhook Integration
+
+```json
+{
+    "audit_logs": {
+      "webhooks": {
+        "enabled": true,
+        "endpoints": [
+          {
+            "name": "security_incidents",
+            "url": "https://security.company.com/webhooks/audit",
+            "auth": {
+              "type": "bearer",
+              "token": "${WEBHOOK_AUTH_TOKEN}"
+            },
+            "filters": {
+              "event_types": ["security_incident"],
+              "severity": ["high", "critical"]
+            },
+            "retry": {
+              "max_attempts": 3,
+              "backoff": "exponential"
+            }
+          }
+        ]
+      }
+    }
+}
+```
+
+---
+
+## Compliance Reporting
+
+### Generate Audit Reports
+
+```bash
+curl -X POST http://localhost:8080/api/enterprise/audit-logs/reports \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer admin-token" \
+  -d '{
+    "report_type": "compliance_audit",
+    "compliance_framework": "soc2_type2",
+    "date_range": {
+      "start_date": "2024-01-01T00:00:00Z",
+      "end_date": "2024-03-31T23:59:59Z"
+    },
+    "include_sections": [
+      "authentication_events",
+      "authorization_events",
+      "configuration_changes",
+      "security_incidents"
+    ],
+    "format": "pdf",
+    "include_evidence": true
+  }'
+```
+
+### Report Types
+
+| Report Type | Description | Use Case |
+|------------|-------------|----------|
+| **Access Audit** | All user authentication and access events | SOC 2, ISO 27001 |
+| **Change Audit** | Configuration and permission changes | Change management |
+| **Security Audit** | Security incidents and violations | Security reviews |
+| **Compliance Report** | Framework-specific compliance evidence | Regulatory audits |
+| **User Activity** | Individual user activity summary | HR investigations |

@@ -1,0 +1,86 @@
+# OpenAI Integration - Image Generation Endpoints
+
+image-generation:
+  post:
+    operationId: openaiCreateImage
+    summary: Create image
+    description: |
+      Generates images from text prompts using OpenAI-compatible format.
+      
+      Supports streaming via Server-Sent Events (SSE) when `stream=true`.
+      When streaming, images are sent as base64-encoded chunks.
+      
+      **Supported Models:**
+      - `dall-e-2` - OpenAI DALL-E 2
+      - `dall-e-3` - OpenAI DALL-E 3
+      - `gpt-image-1` - OpenAI GPT Image model
+      
+      **Note:** Azure OpenAI deployments are also supported via the Azure integration endpoint.
+      
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/images/generations`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageGenerationRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns JSON for non-streaming requests, or Server-Sent Events (SSE) stream when `stream=true`.
+          When streaming, each event contains a chunk of the image as base64 data, with the final event having type `image_generation.completed`.
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageGenerationResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-image-generation:
+  post:
+    operationId: azureCreateImage
+    summary: Create image (Azure OpenAI)
+    description: |
+      Generates images from text prompts using Azure OpenAI deployment.
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+        description: Azure API version
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageGenerationResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/images.yaml#/OpenAIImageStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

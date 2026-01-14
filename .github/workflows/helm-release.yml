@@ -1,0 +1,94 @@
+name: Release Helm Chart
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'helm-charts/bifrost/**'
+      - '.github/workflows/helm-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write  
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.0.0
+
+      - name: Run chart-testing (lint)
+        run: |
+          helm lint helm-charts/bifrost
+
+      - name: Get chart version
+        id: chart-version
+        run: |
+          VERSION=$(grep '^version:' helm-charts/bifrost/Chart.yaml | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Chart version: $VERSION"
+
+      - name: Check if release exists
+        id: check-release
+        run: |
+          if gh release view "helm-chart-v${{ steps.chart-version.outputs.version }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package Helm chart
+        run: |
+          cd helm-charts
+          helm package bifrost
+
+      - name: Create GitHub Release
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          cd helm-charts
+          gh release create "helm-chart-v${{ steps.chart-version.outputs.version }}" \
+            bifrost-${{ steps.chart-version.outputs.version }}.tgz \
+            --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
+            --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Helm repository index
+        run: |
+          cd helm-charts
+          # Download existing index if it exists
+          curl -sLO https://maximhq.github.io/bifrost/helm-charts/index.yaml || true
+          # Merge with new chart only if index.yaml exists
+          if [ -f index.yaml ]; then
+            helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v${{ steps.chart-version.outputs.version }} --merge index.yaml
+          else
+            helm repo index . --url https://github.com/maximhq/bifrost/releases/download/helm-chart-v${{ steps.chart-version.outputs.version }}
+          fi
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./helm-charts
+          destination_dir: helm-charts
+          keep_files: false
+          enable_jekyll: false
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'

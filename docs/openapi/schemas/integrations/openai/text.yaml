@@ -1,0 +1,74 @@
+# OpenAI Integration Text Completions Schemas (Legacy Completions API)
+
+OpenAITextCompletionRequest:
+  type: object
+  required:
+    - model
+    - prompt
+  properties:
+    model:
+      type: string
+      description: Model identifier
+      example: gpt-3.5-turbo-instruct
+    prompt:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+      description: The prompt(s) to generate completions for
+    stream:
+      type: boolean
+      description: Whether to stream the response
+    max_tokens:
+      type: integer
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 2
+    top_p:
+      type: number
+    frequency_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    presence_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    logit_bias:
+      type: object
+      additionalProperties:
+        type: number
+    logprobs:
+      type: integer
+    n:
+      type: integer
+    stop:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+    suffix:
+      type: string
+    echo:
+      type: boolean
+    best_of:
+      type: integer
+    user:
+      type: string
+    seed:
+      type: integer
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+# Response reuses inference schema
+OpenAITextCompletionResponse:
+  $ref: '../../inference/text.yaml#/TextCompletionResponse'
+
+OpenAITextCompletionStreamResponse:
+  $ref: '../../inference/text.yaml#/TextCompletionStreamResponse'

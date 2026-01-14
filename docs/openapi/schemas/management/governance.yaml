@@ -1,0 +1,420 @@
+# Governance API schemas
+
+Budget:
+  type: object
+  description: Budget configuration
+  properties:
+    id:
+      type: string
+    max_limit:
+      type: number
+      description: Maximum budget in dollars
+    reset_duration:
+      type: string
+      description: Reset duration (e.g., "30s", "5m", "1h", "1d", "1w", "1M")
+    last_reset:
+      type: string
+      format: date-time
+    current_usage:
+      type: number
+
+RateLimit:
+  type: object
+  description: Rate limit configuration
+  properties:
+    id:
+      type: string
+    token_max_limit:
+      type: integer
+      format: int64
+    token_reset_duration:
+      type: string
+    request_max_limit:
+      type: integer
+      format: int64
+    request_reset_duration:
+      type: string
+    token_last_reset:
+      type: string
+      format: date-time
+    request_last_reset:
+      type: string
+      format: date-time
+    token_current_usage:
+      type: integer
+      format: int64
+    request_current_usage:
+      type: integer
+      format: int64
+
+CreateBudgetRequest:
+  type: object
+  description: Create budget request
+  required:
+    - max_limit
+    - reset_duration
+  properties:
+    max_limit:
+      type: number
+    reset_duration:
+      type: string
+
+UpdateBudgetRequest:
+  type: object
+  description: Update budget request
+  properties:
+    max_limit:
+      type: number
+    reset_duration:
+      type: string
+
+CreateRateLimitRequest:
+  type: object
+  description: Create rate limit request
+  properties:
+    token_max_limit:
+      type: integer
+      format: int64
+    token_reset_duration:
+      type: string
+    request_max_limit:
+      type: integer
+      format: int64
+    request_reset_duration:
+      type: string
+
+UpdateRateLimitRequest:
+  type: object
+  description: Update rate limit request
+  properties:
+    token_max_limit:
+      type: integer
+      format: int64
+    token_reset_duration:
+      type: string
+    request_max_limit:
+      type: integer
+      format: int64
+    request_reset_duration:
+      type: string
+
+VirtualKeyProviderConfig:
+  type: object
+  description: Provider configuration for a virtual key
+  properties:
+    id:
+      type: integer
+    provider:
+      type: string
+    weight:
+      type: number
+    allowed_models:
+      type: array
+      items:
+        type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    key_ids:
+      type: array
+      items:
+        type: string
+
+VirtualKeyMCPConfig:
+  type: object
+  description: MCP configuration for a virtual key
+  properties:
+    id:
+      type: integer
+    mcp_client_name:
+      type: string
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+
+VirtualKey:
+  type: object
+  description: Virtual key configuration
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    value:
+      type: string
+    description:
+      type: string
+    team_id:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    rate_limit:
+      $ref: '#/RateLimit'
+    provider_configs:
+      type: array
+      items:
+        $ref: '#/VirtualKeyProviderConfig'
+    mcp_configs:
+      type: array
+      items:
+        $ref: '#/VirtualKeyMCPConfig'
+    is_active:
+      type: boolean
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateVirtualKeyRequest:
+  type: object
+  description: Create virtual key request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    provider_configs:
+      type: array
+      items:
+        type: object
+        properties:
+          provider:
+            type: string
+          weight:
+            type: number
+          allowed_models:
+            type: array
+            items:
+              type: string
+          budget:
+            $ref: '#/CreateBudgetRequest'
+          rate_limit:
+            $ref: '#/CreateRateLimitRequest'
+          key_ids:
+            type: array
+            items:
+              type: string
+    mcp_configs:
+      type: array
+      items:
+        type: object
+        properties:
+          mcp_client_name:
+            type: string
+          tools_to_execute:
+            type: array
+            items:
+              type: string
+    team_id:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/CreateBudgetRequest'
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+    is_active:
+      type: boolean
+
+UpdateVirtualKeyRequest:
+  type: object
+  description: Update virtual key request
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    provider_configs:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: integer
+          provider:
+            type: string
+          weight:
+            type: number
+          allowed_models:
+            type: array
+            items:
+              type: string
+          budget:
+            $ref: '#/UpdateBudgetRequest'
+          rate_limit:
+            $ref: '#/UpdateRateLimitRequest'
+          key_ids:
+            type: array
+            items:
+              type: string
+    mcp_configs:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: integer
+          mcp_client_name:
+            type: string
+          tools_to_execute:
+            type: array
+            items:
+              type: string
+    team_id:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+    is_active:
+      type: boolean
+
+ListVirtualKeysResponse:
+  type: object
+  description: List virtual keys response
+  properties:
+    virtual_keys:
+      type: array
+      items:
+        $ref: '#/VirtualKey'
+    count:
+      type: integer
+
+VirtualKeyResponse:
+  type: object
+  description: Virtual key operation response
+  properties:
+    message:
+      type: string
+    virtual_key:
+      $ref: '#/VirtualKey'
+
+Team:
+  type: object
+  description: Team configuration
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateTeamRequest:
+  type: object
+  description: Create team request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/CreateBudgetRequest'
+
+UpdateTeamRequest:
+  type: object
+  description: Update team request
+  properties:
+    name:
+      type: string
+    customer_id:
+      type: string
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+
+ListTeamsResponse:
+  type: object
+  description: List teams response
+  properties:
+    teams:
+      type: array
+      items:
+        $ref: '#/Team'
+    count:
+      type: integer
+
+TeamResponse:
+  type: object
+  description: Team operation response
+  properties:
+    message:
+      type: string
+    team:
+      $ref: '#/Team'
+
+Customer:
+  type: object
+  description: Customer configuration
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    budget:
+      $ref: '#/Budget'
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+CreateCustomerRequest:
+  type: object
+  description: Create customer request
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    budget:
+      $ref: '#/CreateBudgetRequest'
+
+UpdateCustomerRequest:
+  type: object
+  description: Update customer request
+  properties:
+    name:
+      type: string
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+
+ListCustomersResponse:
+  type: object
+  description: List customers response
+  properties:
+    customers:
+      type: array
+      items:
+        $ref: '#/Customer'
+    count:
+      type: integer
+
+CustomerResponse:
+  type: object
+  description: Customer operation response
+  properties:
+    message:
+      type: string
+    customer:
+      $ref: '#/Customer'

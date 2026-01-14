@@ -1,0 +1,151 @@
+---
+title: "t3.xlarge"
+description: "Detailed performance metrics and analysis for Bifrost running on AWS t3.xlarge instances (4 vCPUs, 16GB RAM)."
+icon: "server"
+---
+
+## Instance Configuration
+
+**AWS t3.xlarge Specifications:**
+- **vCPUs**: 4
+- **Memory**: 16GB RAM
+- **Network Performance**: Up to 5 Gigabit
+
+**Bifrost Configuration:**
+- **Buffer Size**: 20,000
+- **Initial Pool Size**: 15,000
+- **Test Load**: 5,000 requests per second (RPS)
+
+---
+
+## Performance Results
+
+### **Overall Performance Metrics**
+
+| Metric | Value | Notes |
+|--------|-------|--------|
+| **Success Rate** | 100.00% | Perfect reliability under high load |
+| **Average Request Size** | 0.13 KB | Lightweight request payload |
+| **Average Response Size** | 10.32 KB | **Large response payload testing** |
+| **Average Latency** | 1.61s | Total end-to-end response time |
+| **Peak Memory Usage** | 3,340.44 MB | ~21% of available 16GB RAM |
+
+> **Note**: t3.xlarge tests used significantly larger response payloads (~10 KB vs ~1 KB on t3.medium) to stress-test performance with realistic production data sizes.
+
+### **Detailed Performance Breakdown**
+
+| Operation | Latency | Performance Notes |
+|-----------|---------|-------------------|
+| **Queue Wait Time** | 1.67 µs | **96% faster** than t3.medium |
+| **Key Selection Time** | 10 ns | **37% faster** weighted API key selection |
+| **Message Formatting** | 2.11 µs | Consistent with t3.medium performance |
+| **Params Preparation** | 417 ns | Slight improvement over t3.medium |
+| **Request Body Preparation** | 2.36 µs | **11% faster** request assembly |
+| **JSON Marshaling** | 26.80 µs | **58% faster** serialization |
+| **Request Setup** | 7.17 µs | Comparable to t3.medium |
+| **HTTP Request** | 1.50s | **4% faster** provider API calls |
+| **Error Handling** | 162 ns | **14% faster** error processing |
+| **Response Parsing** | 2.11 ms | **81% faster** despite 7.5x larger payloads |
+
+**Bifrost's Total Overhead: 11 µs***
+
+*\*Excludes JSON marshalling and HTTP calls, which are required in any implementation. 81% reduction compared to t3.medium (59 µs → 11 µs)*
+
+---
+
+## Performance Analysis
+
+### **Exceptional Performance Improvements**
+
+1. **Dramatic Overhead Reduction**: 81% lower Bifrost overhead (59 µs → 11 µs)
+2. **Superior Queue Management**: 96% faster queue wait times (47.13 µs → 1.67 µs)  
+3. **Faster JSON Processing**: 58% improvement in marshaling despite larger payloads
+4. **Efficient Response Parsing**: 81% faster parsing even with 7.5x larger responses
+5. **Perfect Reliability**: 100% success rate maintained under high load
+
+### **Resource Utilization**
+
+- **Memory Efficiency**: Uses only 21% of available RAM (3,340.44 MB / 16GB)
+- **CPU Performance**: Excellent multi-core utilization for 5,000 RPS
+- **Headroom**: Substantial capacity for traffic spikes and growth
+
+---
+
+## Scalability and Headroom
+
+### **Exceptional Scaling Characteristics**
+
+The t3.xlarge configuration demonstrates **excellent scaling potential**:
+
+**Current Utilization:**
+- **Memory**: 21% used (13GB available headroom)
+- **Queue Performance**: 1.67 µs wait time (near-optimal)
+- **Processing Speed**: Sub-microsecond for most operations
+
+**Scaling Potential:**
+- **Traffic Spikes**: Can likely handle 15,000+ RPS bursts
+- **Response Size Growth**: Efficiently handles 10 KB responses
+- **Concurrent Users**: Supports thousands of simultaneous users
+
+---
+
+## Advanced Configuration
+
+### **Optimal Settings for t3.xlarge**
+
+Based on test results, these configurations provide excellent performance:
+
+```json
+{
+  "client": {
+    "initial_pool_size": 15000,
+    "buffer_size": 20000
+  }
+}
+```
+
+### **Performance Tuning Opportunities**
+
+**For Maximum Performance:**
+- Increase `initial_pool_size` to 18,000-20,000
+- Increase `buffer_size` to 25,000-30,000
+- Trade-off: Higher memory usage (still well within limits)
+
+**For Memory Optimization:**
+- Current config already very efficient at 21% RAM usage
+- Could reduce settings if needed, but performance gains would be lost
+
+**For Extreme Workloads:**
+- Consider `initial_pool_size` up to 25,000
+- Increase `buffer_size` to 35,000+
+- Monitor memory usage approaching 50% of available RAM
+
+---
+
+## Performance Comparison
+
+### **vs. t3.medium Performance**
+
+| Metric | t3.medium | t3.xlarge | Improvement |
+|--------|-----------|-----------|-------------|
+| **Bifrost Overhead** | 59 µs | 11 µs | **-81%** |
+| **Average Latency** | 2.12s | 1.61s | **-24%** |
+| **Queue Wait Time** | 47.13 µs | 1.67 µs | **-96%** |
+| **JSON Marshaling** | 63.47 µs | 26.80 µs | **-58%** |
+| **Response Parsing** | 11.30 ms | 2.11 ms | **-81%** |
+| **Response Size Handled** | 1.37 KB | 10.32 KB | **+7.5x** |
+| **Peak Memory Usage** | 1,312.79 MB | 3,340.44 MB | +155% |
+| **Memory Utilization** | 33% | 21% | **-36%** |
+
+**Key Insights:**
+- **81% overhead reduction** while handling 7.5x larger responses
+- **Exceptional efficiency** with only 21% memory utilization
+- **Dramatic queue performance** improvements
+- **Substantial headroom** for growth and traffic spikes
+
+---
+
+## Next Steps
+
+- **[Run Your Own Benchmarks](./run-your-own-benchmarks)** with your specific payload sizes
+- **[Compare with t3.medium](./t3.medium)** for cost-optimization analysis

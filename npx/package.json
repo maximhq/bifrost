@@ -1,0 +1,24 @@
+{
+  "name": "@maximhq/bifrost",
+  "version": "1.6.2",
+  "description": "High-performance AI gateway CLI - connect to 12+ providers through a single API",
+  "keywords": ["ai", "gateway", "openai", "anthropic", "cli", "bifrost"],
+  "homepage": "https://github.com/maximhq/bifrost",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maximhq/bifrost.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Maxim HQ",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "bifrost": "bin.js"
+  },
+  "type": "module",
+  "dependencies": {}
+}

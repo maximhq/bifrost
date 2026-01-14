@@ -1,0 +1,89 @@
+---
+title: "v1.3.12"
+description: "v1.3.12 changelog"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.12
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.12
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.12
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: add azure provider native responses API support
+- chore: suppress irrelevant warnings in ListModels
+- feat: refactored all plugin operations to completely async to prevent any blocking behavior
+- feat: added provider level budget and rate limits using virtual keys
+- feat: added streaming support in maxim plugin
+
+</Update>
+<Update label="Core" description="v1.3.12">
+
+- feat: add azure provider native responses API support
+- feat: improve retry logic for rate limiting errors
+- feat: add retries on list models request
+- chore: suppress irrelevant warnings in ListModels
+
+</Update>
+<Update label="Framework" description="v1.3.12">
+
+- chore: version update core to 1.2.15
+- [BREAKING] feat: renamed pricing module to modelcatalog and added list models population support for model pool
+- feat: added chunk index based sorting for streaming responses in streaming package
+- feat: added budget and rate limit to provider configs in virtual key table
+
+</Update>
+<Update label="governance" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: added provider level budget and rate limits
+
+</Update>
+<Update label="jsonparser" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: creates deep copy of the response in PostHook to avoid modifying the original response pointer
+
+</Update>
+<Update label="logging" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: all operations moved async to prevent any blocking behavior
+
+</Update>
+<Update label="maxim" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: added support for streaming responses
+
+</Update>
+<Update label="mocker" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+
+</Update>
+<Update label="otel" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+- feat: all operations moved async to prevent any blocking behavior
+
+</Update>
+<Update label="semanticcache" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+
+</Update>
+<Update label="telemetry" description="v1.3.12">
+
+- chore: version update core to 1.2.15 and framework to 1.1.17
+
+</Update>

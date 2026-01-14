@@ -1,0 +1,94 @@
+# Google GenAI (Gemini) Files API Schemas
+
+GeminiFileUploadRequest:
+  type: object
+  description: >
+    Multipart upload for Gemini Files API. Send two parts:
+    - "metadata": JSON object {"file": {"displayName": "<optional label>"}}
+    - "file": binary content
+    Note: Direct file content download is not supported by Gemini Files API.
+    Use the file.uri field from the response to access the file.
+  required:
+    - file
+  properties:
+    metadata:
+      type: object
+      description: JSON metadata part; see encoding at the path for contentType application/json.
+      properties:
+        file:
+          type: object
+          properties:
+            displayName:
+              type: string
+          additionalProperties: false
+      additionalProperties: false
+    file:
+      type: string
+      format: binary
+  additionalProperties: false
+
+GeminiFile:
+  type: object
+  properties:
+    name:
+      type: string
+      description: File resource name (e.g., files/abc123)
+    displayName:
+      type: string
+    mimeType:
+      type: string
+    sizeBytes:
+      type: string
+      description: Size in bytes (returned as string by Gemini API)
+    createTime:
+      type: string
+      format: date-time
+    updateTime:
+      type: string
+      format: date-time
+    expirationTime:
+      type: string
+      format: date-time
+    sha256Hash:
+      type: string
+    uri:
+      type: string
+      description: URI for accessing the file content
+    state:
+      type: string
+      enum: [STATE_UNSPECIFIED, PROCESSING, ACTIVE, FAILED]
+    error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+    videoMetadata:
+      type: object
+      properties:
+        videoDuration:
+          type: string
+
+GeminiFileUploadResponse:
+  type: object
+  properties:
+    file:
+      $ref: '#/GeminiFile'
+
+GeminiFileListResponse:
+  type: object
+  properties:
+    files:
+      type: array
+      items:
+        $ref: '#/GeminiFile'
+    nextPageToken:
+      type: string
+
+GeminiFileRetrieveResponse:
+  $ref: '#/GeminiFile'
+
+GeminiFileDeleteResponse:
+  type: object
+  description: Empty response on successful deletion

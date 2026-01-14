@@ -1,0 +1,5 @@
+# Snyk (https://snyk.io) policy file
+# Manages vulnerability ignores and patches for this repository.
+version: v1.25.0
+ignore: {}
+patch: {}

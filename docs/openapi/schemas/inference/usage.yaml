@@ -1,0 +1,65 @@
+# Usage and cost related schemas
+
+BifrostLLMUsage:
+  type: object
+  description: Token usage information
+  properties:
+    prompt_tokens:
+      type: integer
+    prompt_tokens_details:
+      $ref: '#/ChatPromptTokensDetails'
+    completion_tokens:
+      type: integer
+    completion_tokens_details:
+      $ref: '#/ChatCompletionTokensDetails'
+    total_tokens:
+      type: integer
+    cost:
+      $ref: '#/BifrostCost'
+
+ChatPromptTokensDetails:
+  type: object
+  properties:
+    text_tokens:
+      type: integer
+    audio_tokens:
+      type: integer
+    image_tokens:
+      type: integer
+    cached_tokens:
+      type: integer
+
+ChatCompletionTokensDetails:
+  type: object
+  properties:
+    text_tokens:
+      type: integer
+    accepted_prediction_tokens:
+      type: integer
+    audio_tokens:
+      type: integer
+    citation_tokens:
+      type: integer
+    num_search_queries:
+      type: integer
+    reasoning_tokens:
+      type: integer
+    image_tokens:
+      type: integer
+    rejected_prediction_tokens:
+      type: integer
+    cached_tokens:
+      type: integer
+
+BifrostCost:
+  type: object
+  description: Cost breakdown for the request
+  properties:
+    input_tokens_cost:
+      type: number
+    output_tokens_cost:
+      type: number
+    request_cost:
+      type: number
+    total_cost:
+      type: number

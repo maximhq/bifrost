@@ -1,0 +1,105 @@
+# Anthropic Integration Batch API Schemas
+
+AnthropicBatchCreateRequest:
+  type: object
+  required:
+    - requests
+  properties:
+    requests:
+      type: array
+      items:
+        $ref: '#/AnthropicBatchRequestItem'
+      description: Array of batch request items
+
+AnthropicBatchRequestItem:
+  type: object
+  required:
+    - custom_id
+    - params
+  properties:
+    custom_id:
+      type: string
+      description: Unique identifier for this request
+    params:
+      type: object
+      description: Request parameters (same as AnthropicMessageRequest)
+
+AnthropicBatchCreateResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    type:
+      type: string
+      default: message_batch
+    processing_status:
+      type: string
+      enum: [in_progress, ended, canceling]
+    request_counts:
+      $ref: '#/AnthropicBatchRequestCounts'
+    ended_at:
+      type: string
+      format: date-time
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    expires_at:
+      type: string
+      format: date-time
+    archived_at:
+      type: string
+      format: date-time
+      nullable: true
+    cancel_initiated_at:
+      type: string
+      format: date-time
+      nullable: true
+    results_url:
+      type: string
+      nullable: true
+
+AnthropicBatchRequestCounts:
+  type: object
+  properties:
+    processing:
+      type: integer
+    succeeded:
+      type: integer
+    errored:
+      type: integer
+    canceled:
+      type: integer
+    expired:
+      type: integer
+
+AnthropicBatchListRequest:
+  type: object
+  properties:
+    page_size:
+      type: integer
+      default: 20
+    page_token:
+      type: string
+      description: Cursor for pagination
+
+AnthropicBatchListResponse:
+  type: object
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/AnthropicBatchCreateResponse'
+    has_more:
+      type: boolean
+    first_id:
+      type: string
+    last_id:
+      type: string
+
+AnthropicBatchRetrieveResponse:
+  $ref: '#/AnthropicBatchCreateResponse'
+
+AnthropicBatchCancelResponse:
+  $ref: '#/AnthropicBatchCreateResponse'
+

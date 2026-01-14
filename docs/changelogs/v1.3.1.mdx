@@ -1,0 +1,74 @@
+---
+title: "v1.3.1"
+description: "v1.3.1 changelog"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.1
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="v1.3.1">
+
+- Bug: "x-bf-vk" missing error fixed.
+
+</Update>
+<Update label="Core" description="v1.3.1">
+
+- Refactor: Bifrost Response structure seggragated.
+
+</Update>
+<Update label="Framework" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7
+- Fix: Added missing migration for `parent_request_id_column` in logs table.
+
+</Update>
+<Update label="governance" description="v1.3.1">
+
+- Chore: taking context key from core package instead of governance package
+
+</Update>
+<Update label="jsonparser" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>
+<Update label="logging" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>
+<Update label="maxim" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>
+<Update label="mocker" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>
+<Update label="otel" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.6 and framework to 1.1.6
+
+</Update>
+<Update label="semanticcache" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>
+<Update label="telemetry" description="v1.3.1">
+
+- Upgrade dependency: core to 1.2.7 and framework to 1.1.7
+
+</Update>

@@ -1,0 +1,120 @@
+---
+title: "Parasail"
+description: "Parasail API conversion guide - OpenAI-compatible format, streaming support, tool calling, and parameter handling"
+icon: "p"
+---
+
+## Overview
+
+Parasail is an **OpenAI-compatible provider** offering high-performance inference. Bifrost delegates to the OpenAI implementation with standard parameter handling. Key characteristics:
+- **OpenAI API compatibility** - Identical request/response format
+- **Full streaming support** - Server-Sent Events with usage tracking
+- **Tool calling** - Complete function definition and execution
+- **Parameter filtering** - Removes unsupported OpenAI-specific fields
+- **Responses API** - Fallback to Chat Completions
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Parasail API. These return `UnsupportedOperationError`.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Parasail supports all standard OpenAI chat completion parameters. For full parameter reference and behavior, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Filtered Parameters
+
+Removed for Parasail compatibility:
+- `prompt_cache_key` - Not supported
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - Not supported
+
+### Reasoning Parameter
+
+Reasoning via standard OpenAI format:
+
+```json
+{
+  "model": "parasail-llama-33-70b-fp8",
+  "messages": [...],
+  "reasoning_effort": "high"
+}
+```
+
+Parasail supports all standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support as Chat Completions.
+
+---
+
+# 3. List Models
+
+Lists available Parasail models with capabilities and context information.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Parasail API |
+| Embedding | Not offered by Parasail API |
+| Image Generation | Not offered by Parasail API |
+| Speech/TTS | Not offered by Parasail API |
+| Transcription/STT | Not offered by Parasail API |
+| Batch Operations | Not offered by Parasail API |
+| File Management | Not offered by Parasail API |
+
+---
+
+## Caveats
+
+<Accordion title="Cache Control Stripped">
+**Severity**: Medium
+**Behavior**: Cache control directives are removed from messages
+**Impact**: Prompt caching features don't work
+**Code**: Stripped during JSON marshaling
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered out
+**Impact**: prompt_cache_key, verbosity, store removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: SanitizeUserField enforces 64-char max
+</Accordion>

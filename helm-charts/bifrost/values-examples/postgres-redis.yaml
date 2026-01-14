@@ -1,0 +1,75 @@
+# Configuration: PostgreSQL for config/logs + Redis for vector store
+# Usage: helm install bifrost ./bifrost -f values-examples/postgres-redis.yaml
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# Deploy PostgreSQL
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    password: bifrost_password
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+# Deploy Redis for vector store
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    enabled: true
+    auth:
+      enabled: true
+      password: "redis_password"
+    master:
+      persistence:
+        enabled: true
+        size: 8Gi
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 250m
+          memory: 256Mi
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+  
+  # Enable semantic cache plugin to use Redis vector store
+  plugins:
+    semanticCache:
+      enabled: true
+      # Reference to external Kubernetes Secret for OpenAI API key
+      # Create the secret with: kubectl create secret generic bifrost-semantic-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+      secretRef:
+        name: "bifrost-semantic-cache"
+        key: "openai-key"
+      config:
+        provider: "openai"
+        # keys are injected from the secret via environment variable
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"
+

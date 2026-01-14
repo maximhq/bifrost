@@ -1,0 +1,77 @@
+---
+title: "Adding a log store"
+description: "Learn how to contribute a backend for the log store in Bifrost"
+icon: "database"
+---
+
+The Log store in Bifrost is designed to be extensible, allowing support for different database backends. This guide outlines the philosophy, architecture, and steps to add support for a new database.
+
+This guide will help you add a new custom backend for the log store. Currently, Bifrost supports PostgreSQL and SQLite.
+
+## Setup
+
+We assume you have some idea about how Bifrost works and you have already [set up bifrost for local development](./setting-up-repo).
+
+## Architecture
+
+The system is built around a few key components:
+
+1.  **`LogStore` Interface**: This is the heart of the system. It defines all the methods required to create, read, search, and manage log entries (e.g., `Create`, `SearchLogs`, `GetStats`, `Flush`). Any valid store must implement this interface.
+2.  **`RDBLogStore`**: A reusable implementation for Relational Databases (RDBs). It uses an ORM (GORM) to map the interface methods to SQL queries. If your target database is supported by GORM, you can likely reuse this implementation entirely.
+3.  **Configuration Structs**: Each database type has its own configuration struct (e.g., `SQLiteConfig`, `PostgresConfig`) that defines how to connect to it.
+
+## Log store structure
+
+The log store is used to persist all request/response logs from your Bifrost proxy. This can be a lightweight SQLite database or a production-grade Postgres database. Bifrost exposes a single interface (`LogStore`) for all logging operations.
+
+Any custom backend for log store should implement the `LogStore` interface. The interface is defined in [logstore/store.go](https://github.com/maximhq/bifrost/blob/main/framework/logstore/store.go).
+
+## Using GORM
+
+It is recommended to use GORM for the log store. GORM is a popular ORM (Object-Relational Mapping) library for Go. It provides a simple and efficient way to interact with databases.
+
+GORM provides implementations for the functions listed in the `LogStore` interface. This significantly simplifies the implementation of the log store (see [postgres.go](https://github.com/maximhq/bifrost/blob/main/framework/logstore/postgres.go) as an example).
+
+## Conventions
+
+When adding a new database, please follow these conventions:
+
+### File Placement
+*   The main interface and factory method are in `framework/logstore/store.go`.
+*   Shared RDB implementation details are in `framework/logstore/rdb.go`.
+*   Create a new file for your database implementation, named after the database (e.g., `framework/logstore/postgres.go`).
+
+### Naming Conventions
+*   Define a constant for your database type in `store.go` following the pattern `LogStoreType[DatabaseName]` (e.g., `LogStoreTypePostgres`).
+*   Name your config struct as `[DatabaseName]Config` (e.g., `PostgresConfig`).
+*   Name your constructor function as `new[DatabaseName]LogStore` (e.g., `newPostgresLogStore`).
+
+### Implementation Steps
+
+1.  Add a new constant to the `LogStoreType` in `store.go`.
+2.  Define a struct in your new database file that contains all connection parameters (host, port, credentials, etc.).
+3.  Create a function that:
+    *   Accepts the configuration struct and a logger
+    *   Opens a GORM database connection using your database's GORM driver
+    *   Returns an instance of `RDBLogStore` with the database connection
+    *   Runs migrations to ensure the schema is up-to-date
+4.  Add a new case in the `NewLogStore` function in `store.go` to handle your new database type.
+5.  If needed, update the `Config` struct's `UnmarshalJSON` method in `config.go` to properly parse your configuration.
+
+### Error Handling
+
+Make sure to properly handle errors during:
+*   Database connection establishment
+*   Migration execution
+*   Connection cleanup (especially important if migrations fail)
+
+### Testing Considerations
+
+*   Ensure your implementation can handle concurrent access to the database
+*   Consider connection pooling and timeout settings appropriate for your database
+*   Test with both empty and populated databases
+*   Verify that all `LogStore` interface methods work correctly with your backend
+
+## Getting Help
+
+If you need help, please reach out to the Bifrost team on [Discord](https://getmax.im/bifrost-discord).

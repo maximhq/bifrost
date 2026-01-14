@@ -1,0 +1,409 @@
+---
+title: "Pydantic AI SDK"
+description: "Use Bifrost as a drop-in proxy for Pydantic AI agents with zero code changes."
+icon: "triangle"
+---
+
+Pydantic AI is a Python agent framework that brings FastAPI-like ergonomics to GenAI development. Since Pydantic AI uses standard provider SDKs under the hood, Bifrost adds enterprise features like governance, semantic caching, MCP tools, observability, etc, on top of your existing agent setup.
+
+**Endpoint:** `/pydanticai`
+
+<Warning>
+**Provider Compatibility:** This integration only works for AI providers that both Pydantic AI and Bifrost support. Currently supported: OpenAI, Anthropic, and Google Gemini.
+</Warning>
+---
+
+## Setup
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {7-8}
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+# Configure provider to use Bifrost
+provider = OpenAIProvider(
+    base_url="http://localhost:8080/pydanticai/v1",  # Point to Bifrost
+    api_key="dummy-key"  # Keys managed by Bifrost, Or add virtual key
+)
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+# Create agent with Bifrost-routed model
+agent = Agent(model, instructions="Be concise and helpful.")
+
+result = agent.run_sync("Hello! How are you?")
+print(result.output)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Your existing Pydantic AI provider switching works unchanged through Bifrost:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {7,10,14}
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.google import GoogleProvider
+
+base_url = "http://localhost:8080/pydanticai"
+
+# OpenAI models via Pydantic AI
+openai_provider = OpenAIProvider(base_url=f"{base_url}/v1")
+openai_model = OpenAIChatModel("gpt-4o-mini", provider=openai_provider)
+openai_agent = Agent(openai_model)
+
+# Anthropic models via Pydantic AI
+# Note: Anthropic SDK adds /v1 internally, so we don't append it here
+anthropic_provider = AnthropicProvider(base_url=base_url)
+anthropic_model = AnthropicModel("claude-3-haiku-20240307", provider=anthropic_provider)
+anthropic_agent = Agent(anthropic_model)
+
+# Google Gemini models via Pydantic AI
+google_provider = GoogleProvider(base_url=base_url, api_key="dummy-key")
+google_model = GoogleModel("gemini-2.0-flash", provider=google_provider)
+google_agent = Agent(google_model)
+
+# All work the same way
+openai_result = openai_agent.run_sync("Hello GPT!")
+anthropic_result = anthropic_agent.run_sync("Hello Claude!")
+gemini_result = google_agent.run_sync("Hello Gemini!")
+
+print(openai_result.output)
+print(anthropic_result.output)
+print(gemini_result.output)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Tool Calling
+
+Pydantic AI's powerful tool system works seamlessly through Bifrost:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {7}
+from pydantic_ai import Agent, RunContext, Tool
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from dataclasses import dataclass
+
+# Configure Bifrost
+provider = OpenAIProvider(base_url="http://localhost:8080/pydanticai/v1")
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+# Define tools as functions
+def get_weather(location: str) -> str:
+    """Get the current weather for a location."""
+    return f"The weather in {location} is 72°F and sunny."
+
+def calculate(expression: str) -> str:
+    """Perform a mathematical calculation."""
+    result = eval(expression)  # Use safe evaluation in production
+    return f"The result is {result}"
+
+# Create agent with tools
+agent = Agent(
+    model,
+    tools=[get_weather, calculate],
+    instructions="You can check weather and do calculations."
+)
+
+result = agent.run_sync("What's the weather in Boston?")
+print(result.output)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Tools with Dependency Injection
+
+Use `RunContext` to pass dependencies to your tools:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {12}
+from pydantic_ai import Agent, RunContext, Tool
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from dataclasses import dataclass
+
+@dataclass
+class UserContext:
+    user_id: int
+    user_name: str
+
+# Configure Bifrost
+provider = OpenAIProvider(base_url="http://localhost:8080/pydanticai/v1")
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+def get_user_info(ctx: RunContext[UserContext]) -> str:
+    """Get information about the current user."""
+    return f"User: {ctx.deps.user_name} (ID: {ctx.deps.user_id})"
+
+agent = Agent(
+    model,
+    deps_type=UserContext,
+    tools=[Tool(get_user_info, takes_ctx=True)],
+    instructions="You can look up user information."
+)
+
+# Pass dependencies at runtime
+deps = UserContext(user_id=123, user_name="Alice")
+result = agent.run_sync("What is my user information?", deps=deps)
+print(result.output)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Structured Output
+
+Define response types using Pydantic models:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {13}
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+# Define structured output type
+class CityInfo(BaseModel):
+    city: str = Field(description="Name of the city")
+    country: str = Field(description="Country where the city is located")
+    population: int = Field(description="Approximate population")
+
+# Configure Bifrost
+provider = OpenAIProvider(base_url="http://localhost:8080/pydanticai/v1")
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+# Agent with typed output
+agent = Agent(
+    model,
+    output_type=CityInfo,
+    instructions="Extract city information from user queries."
+)
+
+result = agent.run_sync("Tell me about Tokyo, Japan")
+
+# result.output is typed as CityInfo
+print(f"City: {result.output.city}")
+print(f"Country: {result.output.country}")
+print(f"Population: {result.output.population}")
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Streaming Responses
+
+Stream responses in real-time for better UX:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {7}
+import asyncio
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+# Configure Bifrost
+provider = OpenAIProvider(base_url="http://localhost:8080/pydanticai/v1")
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+agent = Agent(model, instructions="Tell engaging stories.")
+
+async def stream_story():
+    async with agent.run_stream("Tell me a short story about a robot.") as response:
+        async for chunk in response.stream_text():
+            print(chunk, end="", flush=True)
+    print()  # Newline at end
+
+asyncio.run(stream_story())
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Add Bifrost-specific headers for governance and tracking:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {15}
+from httpx import AsyncClient
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+# Create HTTP client with custom headers
+http_client = AsyncClient(
+    headers={
+        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+    }
+)
+
+# Configure provider with custom client
+provider = OpenAIProvider(
+    base_url="http://localhost:8080/pydanticai/v1",
+    http_client=http_client
+)
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+agent = Agent(model)
+result = agent.run_sync("Hello!")
+print(result.output)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly to bypass Bifrost's key management. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {8,15,26}
+from httpx import AsyncClient
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.anthropic import AnthropicProvider
+
+base_url = "http://localhost:8080/pydanticai"
+
+# Using OpenAI key directly
+openai_client = AsyncClient(
+    headers={"Authorization": "Bearer sk-your-openai-key"}
+)
+openai_provider = OpenAIProvider(
+    base_url=f"{base_url}/v1",
+    http_client=openai_client
+)
+openai_model = OpenAIChatModel("gpt-4o-mini", provider=openai_provider)
+openai_agent = Agent(openai_model)
+
+# Using Anthropic key directly
+# Note: Anthropic SDK adds /v1 internally, so we don't append it here
+anthropic_client = AsyncClient(
+    headers={"x-api-key": "sk-ant-your-anthropic-key"}
+)
+anthropic_provider = AnthropicProvider(
+    base_url=base_url,
+    http_client=anthropic_client
+)
+anthropic_model = AnthropicModel("claude-3-haiku-20240307", provider=anthropic_provider)
+anthropic_agent = Agent(anthropic_model)
+
+# Both work through Bifrost with your own keys
+openai_result = openai_agent.run_sync("Hello GPT!")
+anthropic_result = anthropic_agent.run_sync("Hello Claude!")
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Multi-turn Conversations
+
+Maintain conversation history across multiple turns:
+
+<Tabs group="pydanticai-sdk">
+<Tab title="Python">
+
+```python {6}
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+
+# Configure Bifrost
+provider = OpenAIProvider(base_url="http://localhost:8080/pydanticai/v1")
+model = OpenAIChatModel("gpt-4o-mini", provider=provider)
+
+agent = Agent(model, instructions="Remember context from previous messages.")
+
+# First turn
+result1 = agent.run_sync("My name is Alice and I live in Paris.")
+
+# Second turn - pass message history to maintain context
+result2 = agent.run_sync(
+    "What is my name and where do I live?",
+    message_history=result1.all_messages()
+)
+
+print(result2.output)  # Should mention Alice and Paris
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Supported Features
+
+The Pydantic AI integration supports all features available in both the Pydantic AI SDK and Bifrost core functionality:
+
+| Feature | Supported |
+|---------|-----------|
+| Chat Completions | ✅ |
+| Tool/Function Calling | ✅ |
+| Structured Output | ✅ |
+| Streaming | ✅ |
+| Multi-turn Conversations | ✅ |
+| Dependency Injection | ✅ |
+| OpenAI Models | ✅ |
+| Anthropic Models | ✅ |
+| Google Gemini Models | ✅ |
+| Embeddings | ✅ |
+| Speech/TTS | ✅ |
+| Transcription | ✅ |
+
+Your existing Pydantic AI agents work seamlessly with Bifrost's enterprise features. 😄
+
+---
+
+## Next Steps
+
+- **[Governance Features](../features/governance)** - Virtual keys and team management
+- **[Semantic Caching](../features/semantic-caching)** - Intelligent response caching
+- **[Configuration](../quickstart/README)** - Provider setup and API key management
+

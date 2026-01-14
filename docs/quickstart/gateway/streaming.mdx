@@ -1,0 +1,174 @@
+---
+title: "Streaming Responses"
+description: "Receive AI responses in real-time via Server-Sent Events. Perfect for chat applications, audio processing, and real-time transcription where you want immediate results."
+icon: "water"
+---
+
+
+## Streaming Text Completion
+
+Request text completions with streaming enabled to receive partial `text` chunks as they are generated.
+
+```bash
+curl --location 'http://localhost:8080/v1/completions' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "prompt": "Write a short haiku about the ocean",
+    "stream": true
+}'
+```
+
+**Response Format (Server-Sent Events):**
+```
+data: {"choices":[{"text":"Waves whisper soft"}],"model":"gpt-4o-mini"}
+
+data: {"choices":[{"text":" on distant shores, the moon calls"}],"model":"gpt-4o-mini"}
+
+data: {"choices":[{"text":" tides to rise."}],"model":"gpt-4o-mini"}
+
+data: [DONE]
+```
+
+## Streaming Chat Responses
+
+Receive AI responses in real-time as they're generated. Perfect for chat applications where you want to show responses as they're being typed, improving user experience.
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "user", "content": "Tell me a story about a robot learning to paint"}
+    ],
+    "stream": true
+}'
+```
+
+**Response Format (Server-Sent Events):**
+```
+data: {"choices":[{"delta":{"content":"Once"}}],"model":"gpt-4o-mini"}
+
+data: {"choices":[{"delta":{"content":" upon"}}],"model":"gpt-4o-mini"}
+
+data: {"choices":[{"delta":{"content":" a"}}],"model":"gpt-4o-mini"}
+
+data: [DONE]
+```
+
+Each chunk contains partial content that you can append to build the complete response in real-time.
+
+> **Note:** Streaming requests also follow the default timeout setting defined in provider configuration, which defaults to **30 seconds**.
+
+<Note>
+Bifrost standardizes all stream responses to send usage and finish reason only in the last chunk, and content in the previous chunks.
+</Note>
+
+## Responses API Streaming
+
+Stream the OpenAI-style Responses API with event-based SSE. This includes `event:` lines and does not use the `[DONE]` marker; the stream ends when the connection closes.
+
+```bash
+curl --location 'http://localhost:8080/v1/responses' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "input": "Tell me one interesting fact about Mars",
+    "stream": true
+}'
+```
+
+**Response Format (Server-Sent Events):**
+```
+event: response.created
+data: {"type":"response.created"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta": /* partial text delta payload */ }
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta": * more text delta */ }
+
+event: response.completed
+data: {"type":"response.completed","response":{ /* usage, finish_reason, etc. */ }}
+```
+
+## Text-to-Speech Streaming: Real-time Audio Generation
+
+Stream audio generation in real-time as text is converted to speech. Ideal for long texts or when you need immediate audio playback.
+
+```bash
+curl --location 'http://localhost:8080/v1/audio/speech' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini-tts",
+    "input": "Hello this is a sample test, respond with hello for my Bifrost",
+    "voice": "alloy",
+    "stream_format": "sse"
+}'
+```
+
+**Response:** Audio chunks are delivered via Server-Sent Events. Each chunk contains base64-encoded audio data that you can decode and play or save progressively.
+
+```
+data: {"audio":"UklGRigAAABXQVZFZm10IBAAAAABAAEA..."}
+
+data: {"audio":"AKlFQVZFZm10IBAAAAABAAEAq..."}
+
+data: [DONE]
+```
+
+**To save the stream:** Add `> audio_stream.txt` to redirect output to a file.
+
+## Speech-to-Text Streaming: Real-time Audio Transcription
+
+Stream audio transcription results as they're processed. Get immediate text output for real-time applications or long audio files.
+
+```bash
+curl --location 'http://localhost:8080/v1/audio/transcriptions' \
+--form 'file=@"/path/to/your/audio.mp3"' \
+--form 'model="openai/gpt-4o-transcribe"' \
+--form 'stream="true"' \
+--form 'response_format="json"'
+```
+
+**Response Format:**
+```
+data: {"text":"Hello"}
+
+data: {"text":" this"}
+
+data: {"text":" is"}
+
+data: {"text":" a sample"}
+
+data: [DONE]
+```
+
+**Additional options:** Add `--form 'language="en"'` or `--form 'prompt="context hint"'` for better accuracy.
+
+## Audio Format Support
+
+**Speech Synthesis:** Supports `"response_format": "mp3"` (default) and `"response_format": "wav"`
+
+**Transcription Input:** Accepts MP3, WAV, M4A, and other common audio formats
+
+> **Note:** Streaming capabilities vary by provider and model. Check each provider's documentation for specific streaming support and limitations.
+
+## Next Steps
+
+Now that you understand streaming responses, explore these related topics:
+
+### Essential Topics
+
+- **[Tool Calling](./tool-calling)** - Enable AI models to use external tools and functions
+- **[Multimodal AI](./multimodal)** - Process images, audio, and multimedia content
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for redundancy
+- **[Integrations](./integrations)** - Drop-in compatibility with existing SDKs
+
+### Advanced Topics
+
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+- **[Architecture](../../architecture/)** - How Bifrost works internally
+- **[Deployment](../../deployment-guides)** - Production setup and scaling

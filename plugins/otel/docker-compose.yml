@@ -1,0 +1,229 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    configs:
+      - source: otel-collector-config
+        target: /etc/otelcol/config.yaml
+    ports:
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+      - "8888:8888" # Collector /metrics
+      - "9464:9464" # Prometheus scrape endpoint
+      - "13133:13133" # Health check
+      - "1777:1777" # pprof
+      - "55679:55679" # zpages
+    restart: unless-stopped
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    configs:
+      - source: tempo-config
+        target: /etc/tempo.yaml
+    ports:
+      - "3200:3200" # tempo HTTP/gRPC API (multiplexed)
+    expose:
+      - "4317" # OTLP gRPC (internal)
+    volumes:
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    depends_on:
+      - otel-collector
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-remote-write-receiver"
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+      - tempo
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: "grafana-pyroscope-app,grafana-exploretraces-app,grafana-metricsdrilldown-app"
+      GF_PLUGINS_ENABLE_ALPHA: "true"
+      GF_INSTALL_PLUGINS: ""
+      GF_LOG_LEVEL: "warn"
+      GF_FEATURE_TOGGLES_ENABLE: ""
+    ports:
+      - "4000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    configs:
+      - source: grafana-datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yml
+    restart: unless-stopped
+
+configs:
+  otel-collector-config:
+    content: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+      processors:
+        batch:
+
+      exporters:
+        prometheus:
+          endpoint: 0.0.0.0:9464
+          namespace: otel
+          const_labels:
+            source: otelcol
+            
+        otlp/tempo:
+          endpoint: tempo:4317
+          tls:
+            insecure: true
+            
+        debug:
+          verbosity: detailed
+
+      extensions:
+        health_check:
+          endpoint: 0.0.0.0:13133
+        pprof:
+          endpoint: 0.0.0.0:1777
+        zpages:
+          endpoint: 0.0.0.0:55679
+
+      service:
+        extensions: [health_check, pprof, zpages]
+        telemetry:
+          logs:
+            level: debug
+          metrics:
+            level: detailed
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [debug, otlp/tempo]
+          metrics:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [debug, prometheus]
+          logs:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [debug]
+
+  tempo-config:
+    content: |
+      server:
+        http_listen_port: 3200
+        grpc_listen_port: 3201
+        log_level: info
+
+      distributor:
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+
+      ingester:
+        max_block_duration: 5m
+        trace_idle_period: 10s
+
+      compactor:
+        compaction:
+          block_retention: 1h
+
+      storage:
+        trace:
+          backend: local
+          wal:
+            path: /var/tempo/wal
+          local:
+            path: /var/tempo/blocks
+
+      metrics_generator:
+        registry:
+          external_labels:
+            source: tempo
+        storage:
+          path: /var/tempo/generator/wal
+          remote_write:
+            - url: http://prometheus:9090/api/v1/write
+
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 15s
+      scrape_configs:
+        - job_name: "otelcol-internal"
+          static_configs:
+            - targets: ["otel-collector:8888"]
+        - job_name: "otelcol-exporter"
+          static_configs:
+            - targets: ["otel-collector:9464"]
+        - job_name: "tempo"
+          static_configs:
+            - targets: ["tempo:3200"]
+
+  grafana-datasources:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          uid: prometheus
+          type: prometheus
+          access: proxy
+          orgId: 1
+          url: http://prometheus:9090
+          isDefault: true
+          editable: true
+        - name: Tempo
+          uid: tempo
+          type: tempo
+          access: proxy
+          orgId: 1
+          url: http://tempo:3200
+          editable: true
+          jsonData:
+            nodeGraph:
+              enabled: true
+            tracesToLogs:
+              datasourceUid: prometheus
+            tracesToMetrics:
+              datasourceUid: prometheus
+            serviceMap:
+              datasourceUid: prometheus
+            search:
+              hide: false
+            lokiSearch:
+              datasourceUid: prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  tempo-data:

@@ -1,0 +1,72 @@
+---
+title: "Adding config store"
+description: "Learn how to contribute a backend for the config store in Bifrost"
+icon: "database"
+---
+
+The Config store in Bifrost is designed to be extensible, allowing support for different database backends. This guide outlines the philosophy, architecture, and steps to add support for a new database.
+
+This guide will help you add a new custom backend for the config store. Currently, bifrost supports PostgreSQL and SQLite.
+
+## Setup
+
+We assume you have some idea about how Bifrost works and you have already [set up bifrost for local development](./setting-up-repo).
+
+## Architecture
+
+The system is built around a few key components:
+
+1.  **`ConfigStore` Interface**: This is the heart of the system. It defines all the methods required to read and write configuration data (e.g., `GetClientConfig`, `UpdateProvider`). Any valid store must implement this interface.
+2.  **`RDBConfigStore`**: A reusable implementation for Relational Databases (RDBs). It uses an ORM (GORM) to map the interface methods to SQL queries. If your target database is supported by GORM, you can likely reuse this implementation entirely.
+3.  **Configuration Structs**: Each database type has its own configuration struct (e.g., `SQLiteConfig`, `PostgresConfig`) that defines how to connect to it.
+
+## Config store structure
+
+The config store is used to save all your bifrost configurations. This can be a simple in-memory store or a postgres database. Bifrost exposes a single interface (ConfigStore) for all configuration CRUD (Create, Read, Update, Delete) operations.
+
+Any custom backend for config store should implement the `ConfigStore` interface. The interface is defined in [configstore/store.go](https://github.com/maximhq/bifrost/blob/main/framework/configstore/store.go).
+
+## Using GORM
+
+It is recommended to use GORM for the config store. GORM is a popular ORM (Object-Relational Mapping) library for Go. It provides a simple and efficient way to interact with databases.
+
+GORM provides implementations for the functions listed in the `ConfigStore` interface. This significantly simplifies the implementation of the config store (see [postgres.go](https://github.com/maximhq/bifrost/blob/main/framework/configstore/postgres.go) as an example).
+
+## Conventions
+
+When adding a new database, please follow these conventions:
+
+### File Placement
+*   The main interface and factory method are in `framework/configstore/store.go`.
+*   Shared RDB implementation details are in `framework/configstore/rdb.go`.
+*   Create a new file for your database implementation, named after the database (e.g., `framework/configstore/postgres.go`).
+
+### Implementation Steps
+
+1.  Add a new constant to the `ConfigStoreType` in `store.go`.
+2.  Define a struct in your new database file that contains all connection parameters (host, port, credentials, etc.).
+3.  Implement the Factory Function: Create a function that:
+    *   Accepts the configuration struct and a logger
+    *   Opens a GORM database connection using your database's GORM driver
+    *   Returns an instance of `RDBConfigStore` with the database connection
+    *   Runs migrations to ensure the schema is up-to-date
+4.  Update the Factory: Add a new case in the `NewConfigStore` function in `store.go` to handle your new database type.
+5.  If needed, update the `Config` struct's `UnmarshalJSON` method in `config.go` to properly parse your configuration.
+
+### Error Handling
+
+Make sure to properly handle errors during:
+*   Database connection establishment
+*   Migration execution
+*   Connection cleanup (especially important if migrations fail)
+
+### Testing Considerations
+
+*   Ensure your implementation can handle concurrent access to the database
+*   Consider connection pooling and timeout settings appropriate for your database
+*   Test with both empty and populated databases
+*   Verify that all `ConfigStore` interface methods work correctly with your backend
+
+## Getting Help
+
+If you need help, please reach out to the Bifrost team on [Discord](https://getmax.im/bifrost-discord).

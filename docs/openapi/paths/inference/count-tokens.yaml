@@ -1,0 +1,25 @@
+count-tokens:
+  post:
+    operationId: countTokens
+    summary: Count tokens
+    description: |
+      Counts the number of tokens in the provided messages.
+    tags:
+      - Count Tokens
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/count-tokens.yaml#/CountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/count-tokens.yaml#/CountTokensResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

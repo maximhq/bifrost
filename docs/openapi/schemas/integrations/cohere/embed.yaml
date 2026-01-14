@@ -1,0 +1,172 @@
+# Cohere v2 Embed API Schemas
+
+CohereEmbeddingRequest:
+  type: object
+  required:
+    - model
+    - input_type
+  properties:
+    model:
+      type: string
+      description: ID of an available embedding model
+      example: embed-english-v3.0
+    input_type:
+      type: string
+      description: Specifies the type of input passed to the model. Required for embedding models v3 and higher.
+    texts:
+      type: array
+      items:
+        type: string
+      description: Array of strings to embed. Maximum 96 texts per call. At least one of texts, images, or inputs is required.
+      maxItems: 96
+    images:
+      type: array
+      items:
+        type: string
+      description: Array of image data URIs for multimodal embedding. Maximum 1 image per call. Supports JPEG, PNG, WebP, GIF up to 5MB.
+      maxItems: 1
+    inputs:
+      type: array
+      items:
+        $ref: '#/CohereEmbeddingInput'
+      description: Array of mixed text/image components for embedding. Maximum 96 per call.
+      maxItems: 96
+    embedding_types:
+      type: array
+      items:
+        type: string
+      description: Specifies the return format types (float, int8, uint8, binary, ubinary, base64). Defaults to float if unspecified.
+    output_dimension:
+      type: integer
+      description: Number of dimensions for output embeddings (256, 512, 1024, 1536). Available only for embed-v4 and newer models.
+    max_tokens:
+      type: integer
+      description: Maximum tokens to embed per input before truncation.
+    truncate:
+      type: string
+      description: Handling for inputs exceeding token limits. Defaults to END.
+
+CohereEmbeddingInput:
+  type: object
+  properties:
+    content:
+      type: array
+      items:
+        $ref: './chat.yaml#/CohereContentBlock'
+      description: Array of content blocks (reuses chat content blocks)
+
+CohereEmbeddingResponse:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Response ID
+    embeddings:
+      $ref: '#/CohereEmbeddingData'
+    response_type:
+      type: string
+      description: Response type (embeddings_floats, embeddings_by_type)
+    texts:
+      type: array
+      items:
+        type: string
+      description: Original text entries
+    images:
+      type: array
+      items:
+        $ref: '#/CohereEmbeddingImageInfo'
+      description: Original image entries
+    meta:
+      $ref: '#/CohereEmbeddingMeta'
+
+CohereEmbeddingData:
+  type: object
+  description: Embedding data object with different types
+  properties:
+    float:
+      type: array
+      items:
+        type: array
+        items:
+          type: number
+      description: Float embeddings
+    int8:
+      type: array
+      items:
+        type: array
+        items:
+          type: integer
+      description: Int8 embeddings
+    uint8:
+      type: array
+      items:
+        type: array
+        items:
+          type: integer
+      description: Uint8 embeddings
+    binary:
+      type: array
+      items:
+        type: array
+        items:
+          type: integer
+      description: Binary embeddings
+    ubinary:
+      type: array
+      items:
+        type: array
+        items:
+          type: integer
+      description: Unsigned binary embeddings
+    base64:
+      type: array
+      items:
+        type: string
+      description: Base64-encoded embeddings
+
+CohereEmbeddingImageInfo:
+  type: object
+  description: Image information in the response
+  properties:
+    width:
+      type: integer
+      description: Width in pixels
+    height:
+      type: integer
+      description: Height in pixels
+    format:
+      type: string
+      description: Image format
+    bit_depth:
+      type: integer
+      description: Bit depth
+
+CohereEmbeddingMeta:
+  type: object
+  description: Metadata in embedding response
+  properties:
+    api_version:
+      $ref: '#/CohereEmbeddingAPIVersion'
+    billed_units:
+      $ref: './chat.yaml#/CohereBilledUnits'
+    tokens:
+      $ref: './chat.yaml#/CohereTokenUsage'
+    warnings:
+      type: array
+      items:
+        type: string
+      description: Any warnings
+
+CohereEmbeddingAPIVersion:
+  type: object
+  description: API version information
+  properties:
+    version:
+      type: string
+      description: API version
+    is_deprecated:
+      type: boolean
+      description: Deprecation status
+    is_experimental:
+      type: boolean
+      description: Experimental status

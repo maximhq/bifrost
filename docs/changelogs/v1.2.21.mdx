@@ -1,0 +1,64 @@
+---
+title: "v1.2.21"
+description: "v1.2.21 changelog"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.2.21
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.2.21
+    docker run -p 8080:8080 maximhq/bifrost:v1.2.21
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="v1.2.21">
+
+- Fixes pricing computation for nested model names i.e. groq/openai/gpt-oss-20b.
+
+</Update>
+<Update label="Framework" description="v1.2.21">
+
+- Pricing module now accommodates nested model names i.e. groq/openai/gpt-oss-20b was getting skipped while computing costs.
+
+</Update>
+<Update label="governance" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>
+<Update label="jsonparser" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>
+<Update label="logging" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+- Fixes pricing computation for nested model names.
+
+</Update>
+<Update label="maxim" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>
+<Update label="mocker" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>
+<Update label="semanticcache" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>
+<Update label="telemetry" description="v1.2.21">
+
+- Upgrades framework to 1.0.23
+
+</Update>

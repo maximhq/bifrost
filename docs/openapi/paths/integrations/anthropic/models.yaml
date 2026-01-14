@@ -1,0 +1,45 @@
+# Anthropic Integration - Models Endpoints
+
+models:
+  get:
+    operationId: anthropicListModels
+    summary: List models (Anthropic format)
+    description: |
+      Lists available models in Anthropic format.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+        description: Maximum number of models to return
+      - name: before_id
+        in: query
+        schema:
+          type: string
+        description: Return models before this ID
+      - name: after_id
+        in: query
+        schema:
+          type: string
+        description: Return models after this ID
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicListModelsResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

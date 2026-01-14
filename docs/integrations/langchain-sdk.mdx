@@ -1,0 +1,724 @@
+---
+title: "Langchain SDK"
+description: "Use Bifrost as a drop-in proxy for Langchain applications with zero code changes."
+icon: "crow"
+---
+
+Since Langchain already provides multi-provider abstraction and chaining capabilities, Bifrost adds enterprise features like governance, semantic caching, MCP tools, observability, etc, on top of your existing setup.
+
+**Endpoint:** `/langchain`
+
+<Warning>
+**Provider Compatibility:** This integration only works for AI providers that both Langchain and Bifrost support. If you're using a provider specific to Langchain that Bifrost doesn't support (or vice versa), those requests will fail.
+</Warning>
+---
+
+## Setup
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python {7}
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# Configure client to use Bifrost
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",  # Point to Bifrost
+    openai_api_key="dummy-key"  # Keys managed by Bifrost
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {7}
+import { ChatOpenAI } from "@langchain/openai";
+
+// Configure client to use Bifrost
+const llm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",  // Point to Bifrost
+  },
+  openAIApiKey: "dummy-key"  // Keys managed by Bifrost
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+</Tab>
+
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Your existing Langchain provider switching works unchanged through Bifrost:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+base_url = "http://localhost:8080/langchain"
+
+# OpenAI models via Langchain
+openai_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base=base_url
+)
+
+# Anthropic models via Langchain  
+anthropic_llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url=base_url
+)
+
+# Google models via Langchain
+google_llm = ChatGoogleGenerativeAI(
+    model="gemini-1.5-flash",
+    google_api_base=base_url
+)
+
+# All work the same way
+openai_response = openai_llm.invoke([HumanMessage(content="Hello GPT!")])
+anthropic_response = anthropic_llm.invoke([HumanMessage(content="Hello Claude!")])
+google_response = google_llm.invoke([HumanMessage(content="Hello Gemini!")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+
+const baseURL = "http://localhost:8080/langchain";
+
+// OpenAI models via Langchain
+const openaiLlm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: { baseURL }
+});
+
+// Anthropic models via Langchain
+const anthropicLlm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: { baseURL }
+});
+
+// Google models via Langchain
+const googleLlm = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash",
+  baseURL
+});
+
+// All work the same way
+const openaiResponse = await openaiLlm.invoke("Hello GPT!");
+const anthropicResponse = await anthropicLlm.invoke("Hello Claude!");
+const googleResponse = await googleLlm.invoke("Hello Gemini!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Add Bifrost-specific headers for governance and tracking. Different LangChain provider classes support different methods for adding custom headers:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+### ChatOpenAI
+
+Use `default_headers` parameter for OpenAI models:
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",
+    default_headers={
+        "x-bf-vk": "your-virtual-key",
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+### ChatAnthropic
+
+Use `default_headers` parameter for Anthropic models:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+
+llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url="http://localhost:8080/langchain",
+    default_headers={
+        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+### ChatGoogleGenerativeAI
+
+Use `additional_headers` parameter for Google/Gemini models:
+
+```python
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash",
+    google_api_base="http://localhost:8080/langchain",
+    additional_headers={
+        "x-bf-vk": "your-virtual-key",  # Virtual key for governance
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+### ChatBedrockConverse
+
+For Bedrock models, there are two approaches:
+
+**Method 1: Using the client's event system (after initialization)**
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    region_name="us-west-2",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key",
+    max_tokens=2000
+)
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom headers to Bedrock requests"""
+    request.headers.add_header("x-bf-vk", "your-virtual-key")
+
+# Register header injection for all Bedrock operations
+llm.client.meta.events.register_first(
+    "before-sign.bedrock-runtime.*",
+    add_bifrost_headers
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+**Method 2: Pre-configuring a boto3 client**
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+import boto3
+
+# Create and configure boto3 client
+bedrock_client = boto3.client(
+    service_name="bedrock-runtime",
+    region_name="us-west-2",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key"
+)
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom headers to Bedrock requests"""
+    request.headers.add_header("x-bf-vk", "your-virtual-key")
+
+# Register header injection before creating LLM
+bedrock_client.meta.events.register_first(
+    "before-sign.bedrock-runtime.*",
+    add_bifrost_headers
+)
+
+# Pass the configured client to ChatBedrockConverse
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    client=bedrock_client,
+    max_tokens=2000
+)
+
+response = llm.invoke([HumanMessage(content="Hello!")])
+print(response.content)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+### ChatOpenAI
+
+Use `defaultHeaders` in configuration for OpenAI models:
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+const llm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+    }
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+### ChatAnthropic
+
+Use `defaultHeaders` in clientOptions for Anthropic models:
+
+```javascript
+import { ChatAnthropic } from "@langchain/anthropic";
+
+const llm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+    }
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+### ChatGoogleGenerativeAI
+
+Use `additionalHeaders` for Google/Gemini models:
+
+```javascript
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+
+const llm = new ChatGoogleGenerativeAI({
+  model: "gemini-2.5-flash",
+  baseURL: "http://localhost:8080/langchain",
+  additionalHeaders: {
+    "x-bf-vk": "your-virtual-key",  // Virtual key for governance
+  }
+});
+
+const response = await llm.invoke("Hello!");
+console.log(response.content);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly to bypass Bifrost's key management. You can pass any provider's API key since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
+
+# Using OpenAI key directly
+openai_llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    openai_api_base="http://localhost:8080/langchain",
+    default_headers={
+        "Authorization": "Bearer sk-your-openai-key"
+    }
+)
+
+# Using Anthropic key for Claude models
+anthropic_llm = ChatAnthropic(
+    model="claude-3-sonnet-20240229",
+    anthropic_api_url="http://localhost:8080/langchain",
+    default_headers={
+        "x-api-key": "sk-ant-your-anthropic-key"
+    }
+)
+
+# Using Azure with direct Azure key
+from langchain_openai import AzureChatOpenAI
+
+azure_llm = AzureChatOpenAI(
+    deployment_name="gpt-4o-aug",
+    api_key="your-azure-api-key",
+    azure_endpoint="http://localhost:8080/langchain",
+    api_version="2024-05-01-preview",
+    max_tokens=100,
+    default_headers={
+        "x-bf-azure-endpoint": "https://your-resource.openai.azure.com",
+    }
+)
+
+openai_response = openai_llm.invoke([HumanMessage(content="Hello GPT!")])
+anthropic_response = anthropic_llm.invoke([HumanMessage(content="Hello Claude!")])
+azure_response = azure_llm.invoke([HumanMessage(content="Hello from Azure!")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
+
+// Using OpenAI key directly
+const openaiLlm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "Authorization": "Bearer sk-your-openai-key"
+    }
+  }
+});
+
+// Using Anthropic key for Claude models
+const anthropicLlm = new ChatAnthropic({
+  model: "claude-3-sonnet-20240229",
+  clientOptions: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "x-api-key": "sk-ant-your-anthropic-key"
+    }
+  }
+});
+
+// Using Azure with direct Azure key
+import { AzureChatOpenAI } from "@langchain/openai";
+
+const azureLlm = new AzureChatOpenAI({
+  deploymentName: "gpt-4o-aug",
+  apiKey: "your-azure-api-key",
+  azureOpenAIEndpoint: "http://localhost:8080/langchain",
+  apiVersion: "2024-05-01-preview",
+  maxTokens: 100,
+  configuration: {
+    defaultHeaders: {
+      "x-bf-azure-endpoint": "https://your-resource.openai.azure.com",
+    }
+  }
+});
+
+const openaiResponse = await openaiLlm.invoke("Hello GPT!");
+const anthropicResponse = await anthropicLlm.invoke("Hello Claude!");
+const azureResponse = await azureLlm.invoke("Hello from Azure!");
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Reasoning/Thinking Models
+
+Control extended reasoning capabilities for models that support thinking/reasoning modes.
+
+### Azure OpenAI Models
+
+For Azure OpenAI reasoning models, use `ChatOpenAI` with the `reasoning` parameter and Azure-specific headers:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# Azure OpenAI with reasoning control
+llm = ChatOpenAI(
+    model="azure/gpt-5.1",  # Azure deployment name
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    reasoning={
+        "effort": "high",      # "minimal" | "low" | "medium" | "high"
+        "summary": "detailed"  # "auto" | "concise" | "detailed"
+    },
+    default_headers={
+        "authorization": "Bearer your-azure-api-key",
+        "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Solve this complex problem...")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+// Azure OpenAI with reasoning control
+const llm = new ChatOpenAI({
+  model: "azure/gpt-5.1",  // Azure deployment name
+  configuration: {
+    baseURL: "http://localhost:8080/langchain",
+    defaultHeaders: {
+      "authorization": "Bearer your-azure-api-key",
+      "x-bf-azure-endpoint": "https://your-resource.openai.azure.com"
+    }
+  },
+  openAIApiKey: "dummy-key",
+  reasoning: {
+    effort: "high",
+    summary: "detailed"
+  }
+});
+
+const response = await llm.invoke("Solve this complex problem...");
+```
+
+</Tab>
+</Tabs>
+
+### OpenAI Models
+
+For OpenAI reasoning models, use `ChatOpenAI` with the `reasoning` parameter:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+
+# OpenAI with reasoning control
+llm = ChatOpenAI(
+    model="gpt-5",
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    max_tokens=2000,
+    reasoning={
+        "effort": "high",
+        "summary": "detailed"
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Solve this complex problem...")])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { ChatOpenAI } from "@langchain/openai";
+
+const llm = new ChatOpenAI({
+  model: "gpt-5",
+  configuration: {
+    baseURL: "http://localhost:8080/langchain"
+  },
+  openAIApiKey: "dummy-key",
+  reasoning: {
+    effort: "high",
+    summary: "detailed"
+  }
+});
+
+const response = await llm.invoke("Solve this complex problem...");
+```
+
+</Tab>
+</Tabs>
+
+### Bedrock Models (Anthropic & Nova)
+
+Both Anthropic Claude and Amazon Nova models support reasoning/thinking capabilities via Bedrock. Use `ChatBedrockConverse` with model-specific configuration formats.
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+#### Anthropic Claude Models
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+# Bedrock Claude with reasoning control
+llm = ChatBedrockConverse(
+    model="us.anthropic.claude-opus-4-5-20251101-v1:0",
+    region_name="dummy-region",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key",
+    max_tokens=2000,
+    additional_model_request_fields={  # Anthropic format
+        "reasoning_config": {
+            "type": "enabled",
+            "budget_tokens": 1500,  # Control thinking token budget
+        }
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+
+#### Amazon Nova Models
+
+```python
+from langchain_aws import ChatBedrockConverse
+from langchain_core.messages import HumanMessage
+
+# Bedrock Nova with reasoning control
+llm = ChatBedrockConverse(
+    model="global.amazon.nova-2-lite-v1:0",
+    region_name="dummy-region",
+    endpoint_url="http://localhost:8080/langchain",
+    aws_access_key_id="dummy-access-key",
+    aws_secret_access_key="dummy-secret-key",
+    max_tokens=2000,
+    additional_model_request_fields={  # Nova format
+        "reasoningConfig": {
+            "type": "enabled",
+            "maxReasoningEffort": "high",  # "low" | "medium" | "high"
+        }
+    }
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Model-Specific Configuration:**
+- **Anthropic Claude models** use `reasoning_config` (snake_case) with `budget_tokens` to control the token budget for reasoning
+- **Amazon Nova models** use `reasoningConfig` (camelCase) with `maxReasoningEffort` to control reasoning intensity ("low", "medium", "high")
+</Note>
+
+### Google/Vertex AI Models
+
+For Google Gemini 2.5 models (Pro, Flash) and Gemini 3, use `ChatGoogleGenerativeAI` with the `thinking_budget` parameter:
+
+<Tabs group="langchain-sdk">
+<Tab title="Python">
+
+```python
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
+
+# Gemini with thinking budget control
+llm = ChatGoogleGenerativeAI(
+    model="gemini/gemini-2.5-flash",  # or "vertex/gemini-2.5-flash"
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key",
+    max_tokens=4000,
+    thinking_budget=1024,    # 0=disable, -1=dynamic, >0=constrained token budget
+    include_thoughts=True,   # Include reasoning in response
+)
+
+response = llm.invoke([HumanMessage(content="Reason through this problem...")])
+```
+</Tab>
+</Tabs>
+
+<Warning>
+**Experimental Module:** `ChatGoogleGenerativeAI` is a recently released module that deprecates `ChatVertexAI`. It may have some issues or breaking changes. If you encounter problems, you can use `ChatAnthropic` with `model="gemini/..."` or `model="vertex/..."` as an alternative, which provides stable access to Gemini and Vertex AI models through Bifrost.
+</Warning>
+
+---
+
+## Embeddings
+
+LangChain's `OpenAIEmbeddings` class can be used to generate embeddings through Bifrost:
+
+```python
+from langchain_openai import OpenAIEmbeddings
+
+# Create embeddings instance
+embeddings = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key"
+)
+
+# Embed a single query
+query_embedding = embeddings.embed_query("What is machine learning?")
+
+# Embed multiple documents
+doc_embeddings = embeddings.embed_documents([
+    "Machine learning is a subset of AI",
+    "Deep learning uses neural networks",
+    "NLP helps computers understand text"
+])
+```
+
+<Warning>
+**Provider Compatibility Limitation:** LangChain's `OpenAIEmbeddings` class converts text to int array before sending to the API. While OpenAI's API supports both text strings and int arrays as input, other providers like Cohere, Bedrock, and Gemini only accept text strings.
+
+**This means `OpenAIEmbeddings` only works reliably with OpenAI embedding models.** Using it with other providers (e.g., `model="cohere/embed-v4.0"`) will fail because those providers cannot process int array inputs.
+</Warning>
+
+### Cross-Provider Embeddings
+
+For embedding models from other providers (Cohere, Bedrock, Gemini, etc.), you can use `GoogleGenerativeAIEmbeddings` from the `langchain_google_genai` package. This module sends text strings directly and works across multiple providers:
+
+```python
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+# Works with any provider's embedding models
+embeddings = GoogleGenerativeAIEmbeddings(
+    model="cohere/cohere-embed-v4.0",  # or bedrock/..., gemini/..., etc.
+    base_url="http://localhost:8080/langchain",
+    api_key="dummy-key"
+)
+
+query_embedding = embeddings.embed_query("What is machine learning?")
+doc_embeddings = embeddings.embed_documents([
+    "Machine learning is a subset of AI",
+    "Deep learning uses neural networks"
+])
+```
+
+---
+
+## Supported Features
+
+The Langchain integration supports all features that are available in both the Langchain SDK and Bifrost core functionality. Your existing Langchain chains and workflows work seamlessly with Bifrost's enterprise features. 😄
+
+---
+
+## Next Steps
+
+- **[Governance Features](../features/governance)** - Virtual keys and team management
+- **[Semantic Caching](../features/semantic-caching)** - Intelligent response caching
+- **[Configuration](../quickstart/README)** - Provider setup and API key management

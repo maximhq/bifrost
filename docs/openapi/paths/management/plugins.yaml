@@ -1,0 +1,146 @@
+plugins:
+  get:
+    operationId: listPlugins
+    summary: List all plugins
+    description: Returns a list of all plugins with their configurations and status.
+    tags:
+      - Plugins
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/plugins.yaml#/ListPluginsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createPlugin
+    summary: Create a new plugin
+    description: Creates a new plugin with the specified configuration.
+    tags:
+      - Plugins
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
+    responses:
+      '201':
+        description: Plugin created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/plugins.yaml#/PluginResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: Plugin already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+/plugins/{name}:
+  get:
+    operationId: getPlugin
+    summary: Get a specific plugin
+    description: Returns the configuration for a specific plugin.
+    tags:
+      - Plugins
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Plugin name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/plugins.yaml#/Plugin'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Plugin not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updatePlugin
+    summary: Update a plugin
+    description: Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
+    tags:
+      - Plugins
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Plugin name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
+    responses:
+      '200':
+        description: Plugin updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/plugins.yaml#/PluginResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Plugin not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deletePlugin
+    summary: Delete a plugin
+    description: Removes a plugin from the configuration and stops it if running.
+    tags:
+      - Plugins
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: Plugin name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Plugin deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Plugin not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

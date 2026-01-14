@@ -1,0 +1,144 @@
+---
+title: "Setting Up"
+description: "Get Bifrost running in your Go application in 30 seconds with minimal setup and direct code integration."
+icon: "play"
+---
+
+<video width="100%" controls>
+  <source src="https://github.com/maximhq/bifrost/raw/refs/heads/main/docs/media/package-demo.mp4" type="video/mp4" />
+  Your browser does not support the video tag.
+</video>
+
+
+## 30-Second Setup
+
+Get Bifrost running in your Go application with minimal setup. This guide shows you how to integrate multiple AI providers through a single, unified interface.
+
+### 1. Install Package
+
+```bash
+go mod init my-bifrost-app
+go get github.com/maximhq/bifrost/core
+```
+
+### 2. Set Environment Variable
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+```
+
+### 3. Create `main.go`
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+
+    "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+type MyAccount struct{}
+
+// Account interface needs to implement these 3 methods
+func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+    return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    if provider == schemas.OpenAI {
+    return []schemas.Key{{
+        Value:  os.Getenv("OPENAI_API_KEY"),
+            Models: []string{}, // Keep Models empty to use any model
+            Weight: 1.0,
+        }}, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    if provider == schemas.OpenAI {
+        // Return default config (can be customized for advanced use cases)
+        return &schemas.ProviderConfig{
+                NetworkConfig:            schemas.DefaultNetworkConfig,
+                ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+// Main function implement to initialize bifrost and make a request
+func main() {
+	client, initErr := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &MyAccount{},
+	})
+	if initErr != nil {
+		panic(initErr)
+	}
+	defer client.Shutdown()
+
+	messages := []schemas.ChatMessage{
+		{
+            Role:    schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentStr: schemas.Ptr("Hello, Bifrost!"),
+            },
+        },
+	}
+
+	response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    messages,
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+    fmt.Println("Response:", *response.Choices[0].Message.Content.ContentStr)
+}
+```
+
+### 4. Run Your App
+
+```bash
+go run main.go
+# Output: Response: Hello! I'm Bifrost, your AI model gateway...
+```
+
+**🎉 That's it!** You're now running Bifrost in your Go application.
+
+### What Just Happened?
+
+1. **Account Interface**: `MyAccount` provides API keys and list of providers to Bifrost for initialisation and key lookups.
+2. **Provider Resolution**: `schemas.OpenAI` tells Bifrost to use OpenAI as the provider.
+3. **Model Selection**: `"gpt-4o-mini"` specifies which model to use.
+4. **Unified API**: Same interface works for any provider/model combination (OpenAI, Anthropic, Vertex etc.)
+
+---
+
+## Next Steps
+
+Now that you have Bifrost running, explore these focused guides:
+
+### Essential Topics
+
+- **[Provider Configuration](./provider-configuration)** - Multiple providers & automatic failovers
+- **[Streaming Responses](./streaming)** - Real-time chat, audio, and transcription
+- **[Tool Calling](./tool-calling)** - Functions & MCP server integration  
+- **[Multimodal AI](./multimodal)** - Images, speech synthesis, and vision
+
+### Advanced Topics
+
+- **[Core Features](../../features/)** - Caching, observability, and governance
+- **[Integrations](../../integrations/)** - Drop-in replacements for existing SDKs
+- **[Architecture](../../architecture/)** - How Bifrost works internally
+- **[Deployment](../../deployment-guides)** - Production setup and scaling
+
+---
+
+**Happy coding with Bifrost!** 🚀

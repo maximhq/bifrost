@@ -1,0 +1,69 @@
+---
+title: "Integrations"
+description: "Use Bifrost as a drop-in replacement for existing AI provider SDKs with zero code changes. Just change the base URL and unlock advanced features."
+icon: "plug"
+---
+
+## What are Integrations?
+
+Integrations are protocol adapters that make Bifrost **100% compatible** with existing AI provider SDKs. They translate between provider-specific API formats (OpenAI, Anthropic, Google GenAI) and Bifrost's unified API, enabling you to:
+
+- **Drop-in replacement** - Change only the base URL in your existing code
+- **Zero migration effort** - Keep your current SDK and request/response handling
+- **Instant feature access** - Get governance, caching, fallbacks, and monitoring without code changes
+
+## Quick Example
+
+### Before (Direct Provider)
+```python
+import openai
+
+client = openai.OpenAI(
+    api_key="your-openai-key"
+)
+```
+
+### After (Bifrost Integration)
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8080/openai",  # Point to Bifrost
+    api_key="dummy-key"  # Keys handled by Bifrost
+)
+```
+
+**That's it!** Your application now has automatic fallbacks, governance, monitoring, and all Bifrost features.
+
+## Available Integrations
+
+Bifrost provides complete compatibility with these popular AI SDKs:
+
+- **[OpenAI SDK](../../integrations/openai-sdk)**
+- **[Anthropic SDK](../../integrations/anthropic-sdk)**
+- **[Google GenAI SDK](../../integrations/genai-sdk)**
+- **[LiteLLM](../../integrations/litellm-sdk)**
+- **[LangChain](../../integrations/langchain-sdk)**
+
+## Learn More
+
+For detailed setup guides, compatibility information, and advanced usage:
+
+**➜ [Complete Integration Documentation](../../integrations/what-is-an-integration)**
+
+## Next Steps
+
+Now that you understand integrations, explore these related topics:
+
+### Essential Topics
+
+- **[Provider Configuration](./provider-configuration)** - Set up multiple AI providers for redundancy
+- **[Tool Calling](./tool-calling)** - Enable AI models to use external functions
+- **[Streaming Responses](./streaming)** - Real-time response generation
+- **[Multimodal AI](./multimodal)** - Process images, audio, and multimedia content
+
+### Advanced Topics
+
+- **[Core Features](../../features/)** - Governance, caching, and observability
+- **[Architecture](../../architecture/)** - How Bifrost works internally
+- **[Deployment](../../deployment-guides)** - Production setup and scaling

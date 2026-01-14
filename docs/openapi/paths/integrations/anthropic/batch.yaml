@@ -1,0 +1,205 @@
+# Anthropic Integration - Batch API Endpoints
+
+batches:
+  post:
+    operationId: anthropicCreateBatch
+    summary: Create batch job (Anthropic format)
+    description: |
+      Creates a batch processing job using Anthropic format.
+      Use x-model-provider header to specify the provider.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider to use (defaults to anthropic)
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/batch.yaml#/AnthropicBatchCreateRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/batch.yaml#/AnthropicBatchCreateResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+  get:
+    operationId: anthropicListBatches
+    summary: List batch jobs (Anthropic format)
+    description: |
+      Lists batch processing jobs.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider to use (defaults to anthropic)
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+        description: Maximum number of batches to return
+      - name: page_token
+        in: query
+        schema:
+          type: string
+        description: Cursor for pagination
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/batch.yaml#/AnthropicBatchListResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+
+batches-by-id:
+  get:
+    operationId: anthropicRetrieveBatch
+    summary: Retrieve batch job (Anthropic format)
+    description: |
+      Retrieves details of a batch processing job.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Batch job ID
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider for the batch
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/batch.yaml#/AnthropicBatchRetrieveResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+
+batches-cancel:
+  post:
+    operationId: anthropicCancelBatch
+    summary: Cancel batch job (Anthropic format)
+    description: |
+      Cancels a batch processing job.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Batch job ID to cancel
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider for the batch
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/batch.yaml#/AnthropicBatchCancelResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+
+batches-results:
+  get:
+    operationId: anthropicGetBatchResults
+    summary: Get batch results (Anthropic format)
+    description: |
+      Retrieves results of a completed batch job.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Batch job ID
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider for the batch
+    responses:
+      '200':
+        description: Successful response (JSONL stream)
+        content:
+          application/x-ndjson:
+            schema:
+              type: string
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

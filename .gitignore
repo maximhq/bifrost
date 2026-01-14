@@ -1,0 +1,58 @@
+.env
+.vscode
+.DS_Store
+*_creds*
+**/venv/
+**/__pycache__/**
+private.*
+.venv
+bifrost-data
+test-coverage-local.sh
+
+# Enterprise
+ui/app/enterprise
+ui/components/enterprise
+
+# Temporary directories
+**/temp/
+/transports/ui
+/transports/bifrost-http/lib/ui
+/transports/bifrost-http/ui/
+transports/bifrost-http/logs/
+transports/bifrost-http/tmp/
+node_modules
+/dist
+**/tmp/
+temp*/
+tmp/
+tmp-*
+private
+
+# Go workspaces (local only)
+go.work
+go.work.sum
+
+# Sqlite DBs
+*.db
+*.db-shm
+*.db-wal
+
+# Test reports
+test-reports
+
+# Cursor specific
+.claude
+
+# Python specific
+**/__pycache__/**
+**/venv/
+**/.venv/
+**/.pytest_cache/
+**/.coverage/
+**/.pytest_cache/
+
+
+# Cursor specific
+.cursor/
+build/
+target/

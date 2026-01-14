@@ -1,0 +1,50 @@
+# AWS Bedrock Invoke API Schemas (Legacy/Raw Model Invocation)
+
+BedrockInvokeRequest:
+  type: object
+  description: |
+    Raw model invocation request. The body format depends on the model provider.
+    For Anthropic models, use Anthropic format. For other models, use their native format.
+  properties:
+    prompt:
+      type: string
+      description: Text prompt to complete
+    max_tokens:
+      type: integer
+    max_tokens_to_sample:
+      type: integer
+      description: Anthropic-style max tokens
+    temperature:
+      type: number
+    top_p:
+      type: number
+    top_k:
+      type: integer
+    stop:
+      type: array
+      items:
+        type: string
+    stop_sequences:
+      type: array
+      items:
+        type: string
+      description: Anthropic-style stop sequences
+    messages:
+      type: array
+      items:
+        type: object
+      description: For Claude 3 models
+    system:
+      description: System prompt (string or array of strings)
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+    anthropic_version:
+      type: string
+
+BedrockInvokeResponse:
+  type: object
+  description: Raw model response. Format depends on the model provider.
+  additionalProperties: true

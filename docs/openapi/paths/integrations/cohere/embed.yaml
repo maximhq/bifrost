@@ -1,0 +1,35 @@
+# Cohere - Embed Endpoints
+
+embed:
+  post:
+    operationId: cohereEmbedV2
+    summary: Create embeddings (Cohere v2 format)
+    description: |
+      Creates embeddings using Cohere v2 API format.
+    tags:
+      - Cohere Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/embed.yaml#/CohereEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/embed.yaml#/CohereEmbeddingResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'

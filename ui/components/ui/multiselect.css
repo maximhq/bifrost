@@ -1,0 +1,14 @@
+.multiselect-control {
+	border-color: #d4d4d8;
+	box-shadow: none;
+
+	&:hover {
+		border-color: #d4d4d8 !important;
+	}
+}
+
+.multiselect-option {
+	&:hover {
+		background-color: #f4f4f5 !important;
+	}
+}

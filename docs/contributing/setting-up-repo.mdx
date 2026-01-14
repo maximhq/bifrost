@@ -1,0 +1,402 @@
+---
+title: "Setting up the repository"
+description: "Complete guide to setting up the Bifrost repository for local development."
+icon: "hammer"
+---
+
+This guide walks you through setting up the Bifrost repository for local development, from prerequisites to running your first development server.
+
+## Prerequisites
+
+Before setting up the repository, ensure you have the following tools installed:
+- [Go](https://go.dev/doc/install) (1.25.5)
+- [Node.js](https://nodejs.org/en/download) (>= 18.0.0) and npm
+- [Make](/deployment-guides/how-to/install-make)
+- [Docker](https://www.docker.com) (optional, for containerized development)
+- [Air](https://github.com/air-verse/air?tab=readme-ov-file#installation) (for hot reloading, auto-installed by Makefile when needed)
+- [golangci-lint](https://golangci-lint.run/usage/install/) (optional, for linting)
+- [goimports](https://pkg.go.dev/golang.org/x/tools/cmd/goimports) (optional, for code formatting)
+
+<Note>`gotestsum` and `junit-viewer` are auto-installed by make commands when needed for test reporting.</Note>
+
+## Clone the Repository
+
+```bash
+# Clone the repository
+git clone https://github.com/maximhq/bifrost.git
+cd bifrost
+
+# Verify the repository structure
+ls -la
+```
+
+You should see the main directories: `core/`, `framework/`, `transports/`, `ui/`, `plugins/`, `docs/`, etc.
+
+## Repository Structure
+
+Bifrost uses a modular architecture with the following structure:
+
+```
+bifrost/
+├── core/                # Core functionality and shared components
+│   ├── providers/       # Provider-specific implementations (OpenAI, Anthropic, etc.)
+│   ├── schemas/         # Interfaces and structs used throughout Bifrost
+│   └── bifrost.go       # Main Bifrost implementation
+├── framework/           # Framework components for common functionality
+│   ├── configstore/     # Configuration storages
+│   ├── logstore/        # Request logging storages
+│   └── vectorstore/     # Vector storages
+├── transports/          # HTTP gateway and other interface layers
+│   └── bifrost-http/    # HTTP transport implementation
+├── ui/                  # Web interface for HTTP gateway
+├── plugins/             # First party plugins
+├── docs/                # Documentation and guides
+└── tests/               # Comprehensive test suites
+```
+
+The system uses a provider-agnostic approach with well-defined interfaces in `core/schemas/` for easy extension to new AI providers.
+
+**Learn More About the Architecture:**
+- **[Request Flow](/architecture/core/request-flow)** - Deep dive into how requests are processed from transport to provider
+- **[Plugin System](/architecture/core/plugins)** - How plugins extend functionality
+- **[Framework Components](/architecture/framework/what-is-framework)** - Shared storage and utilities
+- **[MCP Integration](/architecture/core/mcp)** - Model Context Protocol implementation
+
+## Development Environment Setup
+
+### Quick Start (Recommended)
+
+The fastest way to get started is using the complete development environment:
+
+```bash
+# Start complete development environment (UI + API with hot reload)
+make dev
+```
+
+This command will:
+1. Install UI dependencies automatically
+2. Install Air for hot reloading
+3. Set up the Go workspace with local modules
+4. Start the Next.js development server (port 3000)
+5. Start the API server with UI proxy (port 8080)
+
+
+If you're setting up the repo for the first time, you may need to build the project at least once:
+```bash
+make build
+```
+
+**Access the application at:** http://localhost:8080
+
+<Note>The `make dev` command handles all setup automatically. You can skip the manual setup steps below if this works for you.</Note>
+
+### Manual Setup (Alternative)
+
+If you prefer to set up components manually:
+
+#### 1. Install UI Dependencies
+
+```bash
+# Install UI dependencies and tools
+make install-ui
+```
+
+#### 2. Install Air for Hot Reloading
+
+```bash
+# Install Air if not already installed
+make install-air
+```
+
+#### 3. Set Up Go Workspace
+
+```bash
+# Set up Go workspace with all local modules
+make setup-workspace
+```
+
+This creates a `go.work` file that links all local modules for development.
+
+#### 4. Build the Application
+
+```bash
+# Build UI and binary
+make build
+
+# Build with local go.work modules (for development)
+make build LOCAL=1
+
+# Build with specific version
+make build VERSION=1.0.0
+
+# Cross-compile for different platforms
+make build GOOS=linux GOARCH=amd64
+
+# Build with dynamic linking (Linux only)
+make build DYNAMIC=1
+```
+
+#### 5. Run the Application
+
+```bash
+# Run without hot reload
+make run
+
+# Or with hot reload (development)
+make dev
+```
+
+## Available Make Commands
+
+The Makefile provides numerous commands for development:
+
+### Development Commands
+
+```bash
+make dev          # Start complete development environment (recommended)
+make build        # Build UI and bifrost-http binary
+make run          # Build and run (no hot reload)
+make clean        # Clean build artifacts
+```
+
+### Testing Commands
+
+```bash
+make test         # Run bifrost-http tests
+make test-core    # Run all core tests
+make test-core PROVIDER=openai  # Run specific provider tests
+make test-core PROVIDER=openai TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo  # Run specific test case
+make test-plugins # Run plugin tests
+make test-all     # Run all tests
+make clean-test-reports  # Clean test reports
+make generate-html-reports  # Convert XML to HTML reports
+```
+
+<Note>
+- **TESTCASE must use forward-slash separated nested path format** (e.g., `ParentTest/SubTest/SpecificTest`)
+- See the Makefile comment at line 311 for the expected format and additional examples
+- HTML test reports are automatically generated when `junit-viewer` is available
+- Reports are saved to `test-reports/` directory
+- View with: `open test-reports/index.html`
+</Note>
+
+### Workspace Management
+
+```bash
+make setup-workspace  # Set up Go workspace for local development
+make work-clean       # Remove local go.work files
+```
+
+<Note>`make work-init` is deprecated. Use `make setup-workspace` instead.</Note>
+
+### UI Commands
+
+```bash
+make install-ui   # Install UI dependencies
+make build-ui     # Build UI for production
+```
+
+### Docker Commands
+
+```bash
+make build-docker-image  # Build Docker image
+make docker-run         # Run Docker container
+```
+
+### Documentation
+
+```bash
+make docs         # Start local documentation server
+```
+
+### Code Quality
+
+```bash
+make lint         # Run linter for Go code
+make fmt          # Format Go code
+```
+
+### Tool Installation
+
+```bash
+make install-gotestsum     # Install gotestsum for test reporting
+make install-junit-viewer  # Install junit-viewer for HTML reports
+```
+
+## Environment Variables
+
+You can customize the development environment with these variables:
+
+```bash
+# Server configuration
+HOST=localhost                    # Server host (default: localhost)
+PORT=8080                        # Server port (default: 8080)
+
+# Logging
+LOG_STYLE=json                   # Logger format: json|pretty (default: json)
+LOG_LEVEL=info                   # Logger level: debug|info|warn|error (default: info)
+
+# Prometheus
+PROMETHEUS_LABELS="env=dev"      # Labels for Prometheus metrics
+
+# App directory
+APP_DIR=                         # App data directory (empty by default, /app/data recommended for containers)
+
+# Build configuration
+VERSION=dev-build                # Build version (default: dev-build)
+LOCAL=                           # Use local go.work for builds (e.g., make build LOCAL=1)
+```
+
+Example with custom settings:
+
+```bash
+PORT=3001 LOG_STYLE=pretty LOG_LEVEL=debug APP_DIR=/app/data make dev
+```
+
+## Understanding Bifrost Architecture
+
+Before diving into development, it's helpful to understand how Bifrost works internally. The architecture documentation provides detailed insights into:
+
+### Core Components
+- **[Request Flow](/architecture/core/request-flow)** - How requests flow through the system from transport to provider and back
+- **[Concurrency](/architecture/core/concurrency)** - Worker pools and threading model
+- **[MCP Integration](/architecture/core/mcp)** - Model Context Protocol implementation
+- **[Plugin System](/architecture/core/plugins)** - How plugins extend core functionality
+
+### Framework Layer
+- **[What is Framework](/architecture/framework/what-is-framework)** - Shared storage and utilities overview
+- **[Config Store](/architecture/framework/config-store)** - Configuration persistence patterns
+- **[Log Store](/architecture/framework/log-store)** - Request logging and analytics
+- **[Vector Store](/architecture/framework/vector-store)** - Semantic search and caching
+
+### Plugins & Transports
+- **[Plugin Architecture](/architecture/core/plugins)** - Plugin development patterns and execution model
+- **[Transport Layer](/architecture/transports/in-memory-store)** - HTTP and other transport implementations
+
+<Note>Reading the architecture documentation will help you understand where to make changes and how different components interact.</Note>
+
+## Development Workflow
+
+### 1. Start Development Environment
+
+```bash
+make dev
+```
+
+### 2. Make Your Changes
+
+- **Core changes**: Edit files in `core/`
+- **API changes**: Edit files in `transports/bifrost-http/`
+- **UI changes**: Edit files in `ui/`
+- **Plugin changes**: Edit files in `plugins/`
+
+### 3. Test Your Changes
+
+```bash
+# Run all tests
+make test-all
+
+# Run specific provider tests
+make test-core PROVIDER=openai
+
+# Run specific test case (TESTCASE must be a slash-delimited nested path matching the test hierarchy)
+make test-core PROVIDER=elevenlabs TESTCASE=SpeechSynthesisStreamAdvanced/MultipleVoices_Streaming/StreamingVoice_echo
+
+# Run HTTP transport tests
+make test
+
+# Run plugin tests
+make test-plugins
+
+# View test reports (after running tests)
+open test-reports/index.html
+```
+
+### 4. Verify Code Quality
+
+```bash
+# Format code
+make fmt
+
+# Run linter
+make lint
+```
+
+### 5. Build for Production
+
+```bash
+# Build everything
+make build
+
+# Or build Docker image
+make build-docker-image
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Go workspace issues:**
+```bash
+# Reset the workspace
+make work-clean
+make setup-workspace
+```
+
+**UI dependency issues:**
+```bash
+# Clean and reinstall UI dependencies
+rm -rf ui/node_modules ui/.next
+make install-ui
+```
+
+**Port conflicts:**
+```bash
+# Use different ports
+PORT=9090 make dev
+```
+
+If an process is running on a port you need to use, you may need to terminate or kill it first:
+```bash
+# Kill the process on port 8080
+kill -9 $(lsof -t -i:8080)
+```
+
+**Hot reload not working:**
+```bash
+# Ensure Air is installed
+which air || go install github.com/air-verse/air@latest
+
+# Check if .air.toml exists in transports/bifrost-http/
+ls transports/bifrost-http/.air.toml
+```
+
+### Getting Help
+
+- **Check logs**: Development logs appear in your terminal
+- **Verify prerequisites**: Ensure Go, Node.js, and make are properly installed
+- **Clean build**: Run `make clean` and try again
+- **Discord**: Join our [Discord community](https://discord.gg/bifrost) for real-time help
+
+## Next Steps
+
+Once your development environment is running:
+
+1. **Explore the UI**: Visit http://localhost:8080 to see the web interface
+2. **Make API calls**: Test the API endpoints at http://localhost:8080/v1/
+3. **Understand the architecture**: Read our [request flow documentation](/architecture/core/request-flow) to understand how Bifrost works internally
+4. **Read the documentation**: Check out our [complete documentation](https://docs.getbifrost.ai)
+5. **Review contribution guidelines**: See our [code conventions](/contributing/code-conventions) and [PR guidelines](/contributing/raising-a-pr)
+
+## Quick Reference
+
+```bash
+# Essential commands for daily development
+make dev          # Start development environment
+make test-all     # Run all tests  
+make fmt          # Format code
+make clean        # Clean build artifacts
+make help         # Show all available commands
+```
+
+Happy coding! 🚀

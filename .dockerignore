@@ -1,0 +1,69 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+*.env
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+
+# Cache directories
+.cache/
+.parcel-cache/
+
+# Documentation that's not needed for build
+docs/
+README.md
+*.md
+
+# CI/CD
+ci/
+
+# Plugin build artifacts
+plugins/*/dist/
+
+# Test directories
+tests/
+test/
+__tests__/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Go workspaces (local only)
+go.work
+go.work.sum

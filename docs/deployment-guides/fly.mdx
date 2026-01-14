@@ -1,0 +1,34 @@
+---
+title: fly.io
+description: "This guide explains how to deploy Bifrost on fly.io"
+icon: "fly"
+---
+
+As `Bifrost` uses multiple sub-modules (`core`, `framework`, etc.) and also embeds the front-end into a single binary (embed.FS), we use a custom Docker build step before we hand over the deployment to flyctl.
+
+There are two ways to deploy Bifrost on Fly.io:
+
+1. By cloning the repo
+2. Using flyctl + Docker Hub image
+
+## By cloning the repo
+
+1. Clone https://github.com/maximhq/bifrost
+2. Ensure [Make](/deployment-guides/how-to/install-make) is installed.
+3. Run `make deploy-to-fly-io APP_NAME=<your-fly-app-name>`
+
+
+## Using flyctl + Docker Hub image
+
+1. Update your `fly.toml` to specify the Bifrost Docker Hub image.
+
+```toml
+[build]
+image = "maximhq/bifrost:latest"
+```
+
+2. Or you can specify the Docker Hub image path in the command:
+
+```
+fly deploy --app <your-app-name> --image docker.io/maximhq/bifrost:latest
+```

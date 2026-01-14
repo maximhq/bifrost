@@ -1,0 +1,15 @@
+{
+  "name": "hello-world-wasm-typescript",
+  "version": "0.1.0",
+  "description": "A Bifrost WASM plugin example in TypeScript (AssemblyScript)",
+  "scripts": {
+    "build": "asc assembly/index.ts --outFile build/hello-world.wasm --optimize --runtime stub --use abort=",
+    "build:debug": "asc assembly/index.ts --outFile build/hello-world.wasm --debug --runtime stub --use abort="
+  },
+  "dependencies": {
+    "json-as": "^1.0.0"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.29"
+  }
+}

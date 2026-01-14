@@ -1,0 +1,97 @@
+// Package schemas defines the core schemas and types used by the Bifrost system.
+package schemas
+
+import "context"
+
+// Key represents an API key and its associated configuration for a provider.
+// It contains the key value, supported models, and a weight for load balancing.
+type Key struct {
+	ID                   string                `json:"id"`                               // The unique identifier for the key (used by bifrost to identify the key)
+	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
+	Value                string                `json:"value"`                            // The actual API key value
+	Models               []string              `json:"models"`                           // List of models this key can access
+	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
+	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
+	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration
+	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
+	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
+	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
+	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
+	ConfigHash           string                `json:"-"`                                // Internal: hash of config.json version, used for change detection
+}
+
+// AzureKeyConfig represents the Azure-specific configuration.
+// It contains Azure-specific settings required for service access and deployment management.
+type AzureKeyConfig struct {
+	Endpoint    string            `json:"endpoint"`              // Azure service endpoint URL
+	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
+	APIVersion  *string           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+
+	ClientID     *string `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *string `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *string `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+}
+
+// VertexKeyConfig represents the Vertex-specific configuration.
+// It contains Vertex-specific settings required for authentication and service access.
+type VertexKeyConfig struct {
+	ProjectID       string            `json:"project_id,omitempty"`
+	ProjectNumber   string            `json:"project_number,omitempty"`
+	Region          string            `json:"region,omitempty"`
+	AuthCredentials string            `json:"auth_credentials,omitempty"`
+	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
+}
+
+// NOTE: To use Vertex IAM role authentication, set AuthCredentials to empty string.
+
+// S3BucketConfig represents a single S3 bucket configuration for batch operations.
+type S3BucketConfig struct {
+	BucketName string `json:"bucket_name"`          // S3 bucket name
+	Prefix     string `json:"prefix,omitempty"`     // S3 key prefix for batch files
+	IsDefault  bool   `json:"is_default,omitempty"` // Whether this is the default bucket for batch operations
+}
+
+// BatchS3Config holds S3 bucket configurations for Bedrock batch operations.
+// Supports multiple buckets to allow flexible batch job routing.
+type BatchS3Config struct {
+	Buckets []S3BucketConfig `json:"buckets,omitempty"` // List of S3 bucket configurations
+}
+
+// BedrockKeyConfig represents the AWS Bedrock-specific configuration.
+// It contains AWS-specific settings required for authentication and service access.
+type BedrockKeyConfig struct {
+	AccessKey     string            `json:"access_key,omitempty"`      // AWS access key for authentication
+	SecretKey     string            `json:"secret_key,omitempty"`      // AWS secret access key for authentication
+	SessionToken  *string           `json:"session_token,omitempty"`   // AWS session token for temporary credentials
+	Region        *string           `json:"region,omitempty"`          // AWS region for service access
+	ARN           *string           `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
+	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
+	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
+}
+
+// NOTE: To use Bedrock IAM role authentication, set both AccessKey and SecretKey to empty strings.
+// To use Bedrock API Key authentication, set Value in Key struct instead.
+
+type HuggingFaceKeyConfig struct {
+	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+// Account defines the interface for managing provider accounts and their configurations.
+// It provides methods to access provider-specific settings, API keys, and configurations.
+type Account interface {
+	// GetConfiguredProviders returns a list of providers that are configured
+	// in the account. This is used to determine which providers are available for use.
+	GetConfiguredProviders() ([]ModelProvider, error)
+
+	// GetKeysForProvider returns the API keys configured for a specific provider.
+	// The keys include their values, supported models, and weights for load balancing.
+	// The context can carry data from any source that sets values before the Bifrost request,
+	// including but not limited to plugin pre-hooks, application logic, or any in app middleware sharing the context.
+	// This enables dynamic key selection based on any context values present during the request.
+	GetKeysForProvider(ctx context.Context, providerKey ModelProvider) ([]Key, error)
+
+	// GetConfigForProvider returns the configuration for a specific provider.
+	// This includes network settings, authentication details, and other provider-specific
+	// configurations.
+	GetConfigForProvider(providerKey ModelProvider) (*ProviderConfig, error)
+}

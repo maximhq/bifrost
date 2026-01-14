@@ -1,0 +1,107 @@
+services:
+  postgres:
+    image: postgres:16-alpine    
+    environment:
+      POSTGRES_USER: bifrost
+      POSTGRES_PASSWORD: bifrost_password
+      POSTGRES_DB: bifrost
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bifrost -d bifrost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bifrost_network
+
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+    command:
+        - --host
+        - 0.0.0.0
+        - --port
+        - '8080'
+        - --scheme
+        - http
+    environment:
+        - CLUSTER_HOSTNAME=weaviate
+        - CLUSTER_ADVERTISE_ADDR=172.38.0.12
+        - CLUSTER_GOSSIP_BIND_PORT=7946
+        - CLUSTER_DATA_BIND_PORT=7947
+        - DISABLE_TELEMETRY=true
+        - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+        - DEFAULT_VECTORIZER_MODULE=none
+        - ENABLE_MODULES=
+        - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+        - LOG_LEVEL=info
+    ports:
+        - "9000:8080"
+    volumes:
+        - weaviate_data:/var/lib/weaviate
+    healthcheck:
+        test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/.well-known/ready"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+    networks:
+        bifrost_network:
+            ipv4_address: 172.38.0.12
+
+  # Redis Stack instance for vector store tests
+  redis-stack:
+    image: redis/redis-stack:7.4.0-v6
+    command: redis-stack-server --protected-mode no
+    ports:
+        - "6379:6379"
+        - "8001:8001"  # RedisInsight web UI
+    volumes:
+        - redis_data:/data
+    networks:
+        bifrost_network:
+            ipv4_address: 172.38.0.13
+    healthcheck:
+        test: ["CMD", "redis-cli", "ping"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  # Qdrant instance for vector store tests
+  qdrant:
+    image: qdrant/qdrant:v1.16.0
+    ports:
+        - "6333:6333"  # REST API
+        - "6334:6334"  # gRPC API
+    volumes:
+        - qdrant_data:/qdrant/storage
+    networks:
+        bifrost_network:
+            ipv4_address: 172.38.0.14
+    healthcheck:
+        test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+networks:
+  bifrost_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.38.0.0/16
+          gateway: 172.38.0.1
+
+volumes:
+  postgres_data:
+    driver: local
+  weaviate_data:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+

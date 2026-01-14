@@ -1,0 +1,125 @@
+# Models API schemas
+
+ListModelsResponse:
+  type: object
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Model'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+    next_page_token:
+      type: string
+
+Model:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Model ID in provider/model format
+    canonical_slug:
+      type: string
+    name:
+      type: string
+    deployment:
+      type: string
+    created:
+      type: integer
+      format: int64
+    context_length:
+      type: integer
+    max_input_tokens:
+      type: integer
+    max_output_tokens:
+      type: integer
+    architecture:
+      $ref: '#/Architecture'
+    pricing:
+      $ref: '#/Pricing'
+    top_provider:
+      $ref: '#/TopProvider'
+    per_request_limits:
+      $ref: '#/PerRequestLimits'
+    supported_parameters:
+      type: array
+      items:
+        type: string
+    default_parameters:
+      $ref: '#/DefaultParameters'
+    hugging_face_id:
+      type: string
+    description:
+      type: string
+    owned_by:
+      type: string
+    supported_methods:
+      type: array
+      items:
+        type: string
+
+Architecture:
+  type: object
+  properties:
+    modality:
+      type: string
+    tokenizer:
+      type: string
+    instruct_type:
+      type: string
+    input_modalities:
+      type: array
+      items:
+        type: string
+    output_modalities:
+      type: array
+      items:
+        type: string
+
+Pricing:
+  type: object
+  properties:
+    prompt:
+      type: string
+    completion:
+      type: string
+    request:
+      type: string
+    image:
+      type: string
+    web_search:
+      type: string
+    internal_reasoning:
+      type: string
+    input_cache_read:
+      type: string
+    input_cache_write:
+      type: string
+
+TopProvider:
+  type: object
+  properties:
+    is_moderated:
+      type: boolean
+    context_length:
+      type: integer
+    max_completion_tokens:
+      type: integer
+
+PerRequestLimits:
+  type: object
+  properties:
+    prompt_tokens:
+      type: integer
+    completion_tokens:
+      type: integer
+
+DefaultParameters:
+  type: object
+  properties:
+    temperature:
+      type: number
+    top_p:
+      type: number
+    frequency_penalty:
+      type: number

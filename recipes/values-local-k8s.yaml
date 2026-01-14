@@ -1,0 +1,159 @@
+# Bifrost Local Kubernetes Values
+# Configurable Storage + Secrets + HTTPS configuration
+#
+# Usage:
+#   make deploy-local-k8s         # Interactive prompts for storage options
+#   make deploy-local-k8s-helm    # Direct helm deployment with prompts
+#
+# Storage options are prompted at runtime:
+#   - Config Store: no / sqlite / postgres
+#   - Log Store: no / sqlite / postgres
+
+# Image configuration
+image:
+  repository: docker.io/maximhq/bifrost
+  pullPolicy: IfNotPresent
+  tag: "v1.3.38"  # Override with --set image.tag=vX.X.X
+
+replicaCount: 1
+
+# Service
+service:
+  type: ClusterIP
+  port: 8080
+
+# Ingress with TLS
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+  hosts:
+    - host: bifrost.local  # Override with --set ingress.hosts[0].host=your.host
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: bifrost-tls-secret
+      hosts:
+        - bifrost.local  # Override with --set ingress.tls[0].hosts[0]=your.host
+
+# Storage configuration (defaults to sqlite, can be overridden to postgres via --set flags)
+storage:
+  mode: sqlite  # Override with --set storage.mode=postgres
+  persistence:
+    enabled: true
+    size: 5Gi
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# PostgreSQL (deployed when storage.mode=postgres and postgresql.enabled=true)
+postgresql:
+  enabled: false  # Override with --set postgresql.enabled=true
+  external:
+    enabled: false
+  auth:
+    username: bifrost
+    database: bifrost
+    # password: set via --set postgresql.auth.password=xxx (persisted in bifrost-postgresql-password secret)
+  primary:
+    persistence:
+      enabled: true
+      size: 5Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+# No vector store for basic setup
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  appDir: /app/data
+  port: 8080
+  host: 0.0.0.0
+  logLevel: info
+  logStyle: json
+  
+  # Encryption key - optional, uncomment if you have the secret
+  # encryptionKeySecret:
+  #   name: "bifrost-encryption-key"
+  #   key: "encryption-key"
+  
+  client:
+    dropExcessRequests: false
+    initialPoolSize: 100
+    allowedOrigins:
+      - "*"
+    enableLogging: true
+    enableGovernance: false
+    enforceGovernanceHeader: false
+    allowDirectKeys: true
+    maxRequestBodySizeMb: 100
+  
+  # Provider configuration - empty by default, configure via UI or uncomment below
+  # To use secrets, first create them:
+  #   kubectl create secret generic bifrost-provider-keys --from-literal=openai-api-key='sk-...' -n bifrost
+  # Then uncomment:
+  # providers:
+  #   openai:
+  #     keys:
+  #       - value: "env.OPENAI_API_KEY"
+  #         weight: 1
+  # providerSecrets:
+  #   openai:
+  #     existingSecret: "bifrost-provider-keys"
+  #     key: "openai-api-key"
+  #     envVar: "OPENAI_API_KEY"
+  
+  providers: {}
+  providerSecrets: {}
+  
+  plugins:
+    telemetry:
+      enabled: false
+    logging:
+      enabled: true
+    governance:
+      enabled: false
+
+# Resource limits for local environment
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false
+

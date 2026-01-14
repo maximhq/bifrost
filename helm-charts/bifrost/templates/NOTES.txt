@@ -1,0 +1,59 @@
+Bifrost has been installed!
+
+{{- if .Values.ingress.enabled }}
+
+1. Access Bifrost at:
+{{- range .Values.ingress.hosts }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+1. Get the LoadBalancer IP:
+   kubectl get svc {{ include "bifrost.fullname" . }} -n {{ .Release.Namespace }}
+
+2. Access Bifrost at:
+   http://<EXTERNAL-IP>:{{ .Values.service.port }}
+
+{{- else if eq .Values.service.type "NodePort" }}
+
+1. Get the NodePort:
+   export NODE_PORT=$(kubectl get svc {{ include "bifrost.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.ports[0].nodePort}')
+   export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' || kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+
+2. Access Bifrost at:
+   http://$NODE_IP:$NODE_PORT
+
+{{- else }}
+
+1. Port-forward to access Bifrost:
+   kubectl port-forward svc/{{ include "bifrost.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+
+2. Access Bifrost at:
+   http://localhost:8080
+
+{{- end }}
+
+Configuration:
+- Storage Mode: {{ .Values.storage.mode }}
+{{- if eq .Values.storage.mode "postgres" }}
+{{- if .Values.postgresql.enabled }}
+- PostgreSQL: Deployed
+{{- else }}
+- PostgreSQL: External ({{ .Values.postgresql.external.host }})
+{{- end }}
+{{- else }}
+- SQLite: Using persistent volume ({{ .Values.storage.persistence.size }})
+{{- end }}
+{{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
+- Vector Store: {{ .Values.vectorStore.type }}
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+- Autoscaling: Enabled ({{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} replicas)
+{{- else }}
+- Replicas: {{ .Values.replicaCount }}
+{{- end }}
+
+Metrics: http://{{ include "bifrost.fullname" . }}:{{ .Values.service.port }}/metrics
+
+For documentation, visit: https://www.getbifrost.ai/docs

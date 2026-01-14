@@ -1,0 +1,78 @@
+---
+title: "v1.3.37"
+description: "v1.3.37 changelog - 2025-11-28"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.37
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.37
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.37
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.3.37">
+- feat: pydantic SDK support
+- feat: bedrock SDK support
+- feat: adds versioning support for plugins
+- **breaking change**: plugins now accept *schemas.BifrostContext instead of *context.Context
+- fix: gemini tts fixes with audio encoding for cross SDK compatibility
+- feat: improved virtual key configuration flows
+- chore: improved test coverage
+- feat: check allowed models from model catalog for provider routing using virtual keys
+- fix: log cleanup timestamp in UTC to match log entry timestamps for processing logs
+- fix: prompt caching issue fixes for openai chat completions
+
+</Update>
+<Update label="Core" description="1.2.31">
+- **breaking change**: plugins now accept *schemas.BifrostContext instead of *context.Context
+- feat: adds support for bedrock, pydantic and cohere SDK.
+- fix: minor fixes around audio streaming for gemini and vertex
+- fix: prompt caching issue fixes for openai chat completions
+- feat: add versioning support for plugins
+- [BREAKING CHANGE]: ToolFunctionParameters.Properties is now an *OrderedMap instead of *map[string]interface{}
+
+</Update>
+<Update label="Framework" description="1.1.40">
+- feat: adds audio encoding flows for gemini tts workflows
+
+</Update>
+<Update label="governance" description="1.3.41">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+- feat: check allowed models from model catalog for provider configs
+
+</Update>
+<Update label="jsonparser" description="1.3.41">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>
+<Update label="logging" description="1.3.41">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+- fix: log cleanup timestamp in UTC to match log entry timestamps
+
+</Update>
+<Update label="maxim" description="1.4.40">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>
+<Update label="mocker" description="1.3.40">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>
+<Update label="otel" description="1.0.40">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>
+<Update label="semanticcache" description="1.3.40">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>
+<Update label="telemetry" description="1.3.40">
+- chore: upgrades core to 1.2.31 and framework to 1.1.40
+
+</Update>

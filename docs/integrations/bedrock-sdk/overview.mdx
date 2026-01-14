@@ -1,0 +1,269 @@
+---
+title: "Overview"
+description: "Use Bifrost as a Bedrock-compatible gateway for the Converse and Invoke APIs, with Bifrost features on top."
+icon: "book"
+---
+
+## Overview
+
+Bifrost provides a Bedrock-compatible endpoint for the **Converse** and **Invoke** APIs via protocol adaptation. The integration handles request transformation, response normalization, and error mapping between AWS Bedrock's API specification and Bifrost's internal processing pipeline.
+
+This integration enables you to utilize Bifrost's features like governance, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing Bedrock SDK-based architecture.
+
+**Endpoint:** `/bedrock`
+
+## Setup
+
+<Tabs group="bedrock-sdk">
+<Tab title="Python">
+
+```python {6}
+import boto3
+
+# Configure boto3 Bedrock client to use Bifrost
+# Note: When using Bifrost keys, dummy credentials are required
+# because boto3 needs credentials to sign requests, even though
+# Bifrost will use its own configured keys.
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",  # Required when using Bifrost keys
+    aws_secret_access_key="bifrost-dummy-secret"  # Required when using Bifrost keys
+)
+
+# Make requests as usual
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[
+        {
+            "role": "user",
+            "content": [{"text": "Hello!"}]
+        }
+    ]
+)
+
+print(response)
+```
+</Tab>
+</Tabs>
+
+## Provider/Model Usage Examples
+
+Because Bedrock itself is a multi-provider platform, you can use any Bedrock-supported model ID and still route through Bifrost. Bifrost will handle governance, observability, and other cross-cutting concerns.
+
+```python
+import boto3
+import json
+
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
+)
+
+# Anthropic via Bedrock (Converse API)
+anthropic_response = client.converse(
+    modelId="anthropic.claude-3-sonnet-20240229",
+    messages=[{"role": "user", "content": [{"text": "Hello from Claude!"}]}]
+)
+
+# Mistral via Bedrock (Converse API)
+mistral_response = client.converse(
+    modelId="mistral.mistral-large-2407",
+    messages=[{"role": "user", "content": [{"text": "Hello from Mistral!"}]}]
+)
+
+# Mistral via Bedrock (Invoke API)
+mistral_invoke_response = client.invoke_model(
+    modelId="mistral.mistral-large-2407",
+    contentType="application/json",
+    accept="application/json",
+    body=json.dumps({
+        "prompt": "Say hello from Mistral using Invoke API.",
+        "max_tokens": 50,
+        "temperature": 0.7
+    }),
+)
+```
+
+---
+
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.) using boto3's event system:
+
+<Tabs group="bedrock-sdk">
+<Tab title="Python">
+
+```python
+import boto3
+
+def add_bifrost_headers(request, **kwargs):
+    """Add custom Bifrost headers to the request before signing."""
+    request.headers.add_header("x-bf-vk", "vk_12345")  # Virtual key for governance
+    request.headers.add_header("x-bf-env", "production")  # Environment tag
+
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
+)
+
+# Register the header injection for all Bedrock API calls
+client.meta.events.register_first(
+    "before-sign.bedrock-runtime.*",
+    add_bifrost_headers,
+)
+
+# Now make requests with custom headers
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[{"role": "user", "content": [{"text": "Hello with custom headers!"}]}]
+)
+```
+
+> **Note:** Use `register_first` to ensure headers are added before request signing. The event name format is `before-sign.<service-name>.<operation-name>`. You need to register for each API operation you plan to use (Converse, ConverseStream, InvokeModel, etc.).
+
+</Tab>
+</Tabs>
+
+---
+
+## Streaming Examples
+
+### Converse Stream
+
+Use `converse_stream` for chat-based streaming with a unified interface across models.
+
+```python
+import boto3
+
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
+)
+
+response = client.converse_stream(
+    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[{"role": "user", "content": [{"text": "Tell me a story about a brave knight."}]}],
+    inferenceConfig={"maxTokens": 512, "temperature": 0.5}
+)
+
+print("Response:")
+for chunk in response["stream"]:
+    if "contentBlockDelta" in chunk:
+        text = chunk["contentBlockDelta"]["delta"]["text"]
+        print(text, end="", flush=True)
+```
+
+### Invoke Stream
+
+Use `invoke_model_with_response_stream` for model-specific streaming payloads.
+
+```python
+import boto3
+import json
+
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="bifrost-dummy-key",
+    aws_secret_access_key="bifrost-dummy-secret"
+)
+
+# Example for Claude 3 (Messages API format)
+body = json.dumps({
+    "anthropic_version": "bedrock-2023-05-31",
+    "max_tokens": 1024,
+    "messages": [
+        {"role": "user", "content": "Write a haiku about coding."}
+    ]
+})
+
+response = client.invoke_model_with_response_stream(
+    modelId="anthropic.claude-3-haiku-20240307-v1:0",
+    body=body,
+    contentType="application/json",
+    accept="application/json"
+)
+
+print("Response:")
+for event in response.get("body"):
+    if "chunk" in event:
+        chunk = event["chunk"]
+        if "bytes" in chunk:
+            # The chunk bytes contain the model-specific JSON response
+            result = json.loads(chunk["bytes"].decode("utf-8"))
+            
+            # Extract content based on model (e.g., Claude)
+            if "delta" in result and "text" in result["delta"]:
+                print(result["delta"]["text"], end="", flush=True)
+            elif "completion" in result:
+                print(result["completion"], end="", flush=True)
+```
+
+## Using Direct Keys
+
+Pass AWS credentials or Bedrock API keys directly in requests to bypass Bifrost's load balancing. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+When direct keys are enabled, you can pass your AWS credentials directly to the boto3 client instead of using dummy credentials.
+
+<Tabs group="bedrock-sdk">
+<Tab title="Python">
+
+```python
+import boto3
+
+# When direct keys are enabled, pass real AWS credentials to boto3
+client = boto3.client(
+    service_name="bedrock-runtime",
+    endpoint_url="http://localhost:8080/bedrock",
+    region_name="us-west-2",
+    aws_access_key_id="your-aws-access-key",  # Real credentials when direct keys enabled
+    aws_secret_access_key="your-aws-secret-key"  # Real credentials when direct keys enabled
+)
+
+response = client.converse(
+    modelId="anthropic.claude-3-5-sonnet-20240620-v1:0",
+    messages=[{"role": "user", "content": [{"text": "Hello!"}]}]
+)
+```
+
+</Tab>
+</Tabs>
+
+> **Note:** When using Bifrost's configured keys (not direct keys), you must provide dummy AWS credentials (`aws_access_key_id` and `aws_secret_access_key`) to the boto3 client. This is because boto3 requires credentials to sign requests, even though Bifrost will use its own configured keys. The dummy values can be any string (e.g., `"bifrost-dummy-key"` and `"bifrost-dummy-secret"`).
+
+---
+
+## Supported Features
+
+The Bedrock integration currently supports:
+
+- **Converse** API (`/bedrock/model/{modelId}/converse`) for text/chat-style workloads  
+- **Invoke** API (`/bedrock/model/{modelId}/invoke`) for model-specific text completion workloads
+- **Streaming** via `converse_stream` and `invoke_model_with_response_stream`
+- **Tools** via `toolConfig`, `toolUse`, and `toolResult` inside Converse requests  
+- **Image and multimodal** responses where supported by the underlying Bedrock model  
+- All Bifrost core features that apply to these flows (governance, load balancing, semantic cache, observability, etc.)
+
+---
+
+## Next Steps
+
+- **[Files and Batch API](./files-and-batch)** - S3-based file operations and batch processing
+- **[What is an integration?](../what-is-an-integration)** - Core integration concepts  
+- **[Configuration](../../quickstart/gateway/provider-configuration)** - Bedrock provider setup and API key management  
+- **[Core Features](../../features/)** - Governance, semantic caching, and more
+

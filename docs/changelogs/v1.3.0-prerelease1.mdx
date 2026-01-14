@@ -1,0 +1,95 @@
+---
+title: "v1.3.0-prerelease1"
+description: "v1.3.0-prerelease1 changelog"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.0-prerelease1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.0-prerelease1
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.0-prerelease1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="v1.3.0-prerelease1">
+
+- Fix: Token count no longer displays as N/A in certain streaming response cases
+- Fix: Streaming responses now properly display errors on the UI instead of getting stuck in processing state
+- Feat: UI for configuring external observability connectors
+- Feat: OTLP collector
+- Feat: UI-driven Maxim observability configuration
+- Fix: Fixes Bifrost specific error logging in first party and third party logging plugins
+
+</Update>
+<Update label="Core" description="v1.3.0-prerelease1">
+
+- Feature: Adds dynamic reloads for plugins. This removes the requirement for restarts when updating plugins.
+- Feature: Adds responses API support.
+- This release contains multiple breaking changes for Bifrost Core. These were necessary to ensure we incorporate responses without compromising on speed or architecture.
+
+</Update>
+<Update label="Framework" description="v1.3.0-prerelease1">
+
+- Chore: Adds ctx to each function to gracefully shutdown ongoing tasks and bring better concurrency management
+- Fix: Fixes pricing sync to make sure latest updates are synced at every restart.
+- Feat: Adds new accumulator for accumulating all streaming responses from LLMs.
+
+</Update>
+<Update label="governance" description="v1.3.0-prerelease1">
+
+- Feat: Now Bifrost supports provider level fallbacks
+- Chore: Dependency upgrades
+
+</Update>
+<Update label="jsonparser" description="v1.3.0-prerelease1">
+
+- Upgrade dependency: core to 1.2.0
+
+</Update>
+<Update label="logging" description="v1.3.0-prerelease1">
+
+- Fix: Captures Bifrost-specific errors in logs (e.g. provider not configured)
+- Fix: Fixes audio streaming captures
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.1.0
+
+</Update>
+<Update label="maxim" description="v1.3.0-prerelease1">
+
+- Fix: Maxim plugin now captures Bifrost gateway specific errors.
+- Upgrade dependency: maxim-go to 0.1.11
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.1.0
+
+</Update>
+<Update label="mocker" description="v1.3.0-prerelease1">
+
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.1.0
+
+</Update>
+<Update label="otel" description="v1.3.0-prerelease1">
+
+- First version cut 🚀
+- Feature: Support OTLP collector over HTTP or gRPC protocol.
+
+</Update>
+<Update label="semanticcache" description="v1.3.0-prerelease1">
+
+- Feat: Adds support for Responses and Text completions
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.1.0
+
+</Update>
+<Update label="telemetry" description="v1.3.0-prerelease1">
+
+- Fix: Adds support for Responses and Text completions.
+- Upgrade dependency: core to 1.2.0
+- Upgrade dependency: framework to 1.2.0
+
+</Update>

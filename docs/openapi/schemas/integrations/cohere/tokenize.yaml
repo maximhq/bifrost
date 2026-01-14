@@ -1,0 +1,48 @@
+# Cohere Tokenize API Schemas
+
+CohereCountTokensRequest:
+  type: object
+  required:
+    - text
+    - model
+  properties:
+    model:
+      type: string
+      description: Model whose tokenizer should be used
+      example: command-r-plus
+    text:
+      type: string
+      description: Text to tokenize (1-65536 characters)
+      minLength: 1
+      maxLength: 65536
+
+CohereCountTokensResponse:
+  type: object
+  properties:
+    tokens:
+      type: array
+      items:
+        type: integer
+      description: Token IDs
+    token_strings:
+      type: array
+      items:
+        type: string
+      description: Token strings
+    meta:
+      $ref: '#/CohereTokenizeMeta'
+
+CohereTokenizeMeta:
+  type: object
+  description: Metadata returned by the tokenize endpoint
+  properties:
+    api_version:
+      $ref: '#/CohereTokenizeAPIVersion'
+
+CohereTokenizeAPIVersion:
+  type: object
+  description: API version metadata
+  properties:
+    version:
+      type: string
+      description: API version

@@ -1,0 +1,163 @@
+# Config API schemas
+
+Version:
+  type: object
+  description: Version information
+  properties:
+    version:
+      type: string
+      example: "1.0.0"
+    commit:
+      type: string
+    build_time:
+      type: string
+
+ClientConfig:
+  type: object
+  description: Client configuration
+  properties:
+    drop_excess_requests:
+      type: boolean
+      description: Whether to drop excess requests when rate limited
+    prometheus_labels:
+      type: array
+      items:
+        type: string
+      description: Custom Prometheus labels
+    allowed_origins:
+      type: array
+      items:
+        type: string
+      description: Allowed CORS origins
+    initial_pool_size:
+      type: integer
+      description: Initial connection pool size
+    enable_logging:
+      type: boolean
+      description: Whether logging is enabled
+    disable_content_logging:
+      type: boolean
+      description: Whether content logging is disabled
+    enable_governance:
+      type: boolean
+      description: Whether governance is enabled
+    enforce_governance_header:
+      type: boolean
+      description: Whether to enforce governance header
+    allow_direct_keys:
+      type: boolean
+      description: Whether to allow direct API keys
+    max_request_body_size_mb:
+      type: integer
+      description: Maximum request body size in MB
+    enable_litellm_fallbacks:
+      type: boolean
+      description: Whether LiteLLM fallbacks are enabled
+    log_retention_days:
+      type: integer
+      description: Number of days to retain logs
+    header_filter_config:
+      $ref: '#/HeaderFilterConfig'
+
+FrameworkConfig:
+  type: object
+  description: Framework configuration
+  properties:
+    pricing_url:
+      type: string
+      description: URL for pricing data
+    pricing_sync_interval:
+      type: integer
+      format: int64
+      description: Pricing sync interval in seconds
+
+AuthConfig:
+  type: object
+  description: Authentication configuration
+  properties:
+    admin_username:
+      type: string
+    admin_password:
+      type: string
+      description: Password (redacted as <redacted> in responses)
+    is_enabled:
+      type: boolean
+    disable_auth_on_inference:
+      type: boolean
+
+HeaderFilterConfig:
+  type: object
+  description: Header filter configuration
+  properties:
+    allowlist:
+      type: array
+      items:
+        type: string
+    denylist:
+      type: array
+      items:
+        type: string
+
+ProxyConfig:
+  type: object
+  description: Global proxy configuration
+  properties:
+    enabled:
+      type: boolean
+    type:
+      type: string
+      enum: [http, socks5, tcp]
+    url:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+      description: Password (redacted as <redacted> in responses)
+    no_proxy:
+      type: string
+    timeout:
+      type: integer
+    skip_tls_verify:
+      type: boolean
+
+RestartRequiredConfig:
+  type: object
+  description: Restart required configuration
+  properties:
+    required:
+      type: boolean
+    reason:
+      type: string
+
+GetConfigResponse:
+  type: object
+  description: Configuration response
+  properties:
+    client_config:
+      $ref: '#/ClientConfig'
+    framework_config:
+      $ref: '#/FrameworkConfig'
+    auth_config:
+      $ref: '#/AuthConfig'
+    is_db_connected:
+      type: boolean
+    is_cache_connected:
+      type: boolean
+    is_logs_connected:
+      type: boolean
+    proxy_config:
+      $ref: '#/ProxyConfig'
+    restart_required:
+      $ref: '#/RestartRequiredConfig'
+
+UpdateConfigRequest:
+  type: object
+  description: Update configuration request
+  properties:
+    client_config:
+      $ref: '#/ClientConfig'
+    framework_config:
+      $ref: '#/FrameworkConfig'
+    auth_config:
+      $ref: '#/AuthConfig'

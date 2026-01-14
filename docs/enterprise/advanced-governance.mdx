@@ -1,0 +1,395 @@
+---
+title: "Getting started"
+description: "Advanced governance features with enhanced security, compliance reporting, audit trails, and enterprise-grade access controls for large-scale deployments."
+icon: "play"
+---
+
+## Overview
+
+Enterprise Governance extends Bifrost's [core governance capabilities](../features/governance) with advanced security, compliance, and user management features designed for large-scale enterprise deployments. This module provides comprehensive identity management, regulatory compliance, and detailed audit capabilities.
+
+**Enterprise Extensions:**
+- **Identity & Access Management** - OpenID Connect integration with Okta and Microsoft Entra
+- **User-Level Governance** - Individual user authentication and budget allocation
+- **[Role-Based Access Control](./rbac)** - Fine-grained permissions with custom roles and resource-level controls
+- **Team Synchronization** - Automatic team membership based on identity provider groups
+- **Compliance Framework** - SOC 2 Type II, GDPR, ISO 27001, and HIPAA compliance
+- **Advanced Auditing** - Comprehensive audit reports and compliance dashboards
+
+**Builds Upon Core Governance:**
+- All standard [Virtual Keys, Teams, and Customers](../features/governance) functionality
+- Hierarchical budget management and rate limiting
+- Model and provider access controls
+- Usage tracking and cost management
+
+---
+
+## Identity Provider Integration
+
+Bifrost Enterprise supports OpenID Connect (OIDC) integration with popular identity providers for single sign-on (SSO) authentication. Users are automatically provisioned on first login, with roles and team memberships synchronized from your identity provider.
+
+**Supported Identity Providers:**
+- **[Okta](./setting-up-okta)** - Full OIDC integration with custom roles and group sync
+- **[Microsoft Entra ID](./setting-up-entra)** - Azure AD integration with app roles and group claims
+
+**Key Features:**
+- **Automatic User Provisioning** - Users are created on first SSO login
+- **Role Synchronization** - Admin, Developer, and Viewer roles mapped from identity provider
+- **Team Membership** - Groups from your identity provider automatically create and sync teams
+- **Secure Token Handling** - JWT validation with automatic token refresh
+
+### Role Hierarchy
+
+Bifrost uses a three-tier role hierarchy that maps to your identity provider roles:
+
+| Role | Privilege Level | Description |
+|------|-----------------|-------------|
+| **Admin** | Highest | Full access to all Bifrost features and settings |
+| **Developer** | Medium | Access to development features, API keys, and logs |
+| **Viewer** | Lowest | Read-only access to dashboards and reports |
+
+When a user has multiple roles, Bifrost automatically assigns the highest privilege role.
+
+For detailed information on managing roles and permissions, including creating custom roles and assigning granular permissions, see [Role-Based Access Control](./rbac).
+
+### Configuration
+
+Identity provider configuration is done through the Bifrost UI:
+
+1. Navigate to **Governance** → **User Provisioning** in the Bifrost dashboard
+2. Select your identity provider (Okta or Microsoft Entra)
+3. Enter the required credentials from your identity provider
+4. Enable the provider and save
+
+For detailed setup instructions, see the provider-specific guides:
+- **[Setting up Okta](./setting-up-okta)**
+- **[Setting up Microsoft Entra](./setting-up-entra)**
+
+---
+
+## User-Level Authentication & Budgeting
+
+Enterprise Governance extends the hierarchical governance model to include individual user-level controls, providing granular access management and personalized budget allocation.
+
+### User Management
+
+**Enhanced Hierarchy:**
+```
+Customer (organization-level budget)
+    ↓
+Team (department-level budget)
+    ↓  
+User (individual-level budget + authentication)
+    ↓
+Virtual Key (API-level budget + rate limits)
+```
+
+**User Features:**
+- **Individual Authentication** - SSO-based login credentials
+- **Personal Budgets** - User-specific cost allocation
+- **Access Controls** - Per-user model and provider restrictions
+- **Usage Tracking** - Individual consumption monitoring
+- **Audit Trails** - User-specific activity logging
+
+### User Authentication Flow
+
+**SSO Authentication:**
+```bash
+# 1. User visits Bifrost login page
+# 2. Redirected to identity provider (Okta/Entra)
+# 3. After successful authentication, redirected back with tokens
+# 4. Use access token for API requests
+
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+**Virtual Key with User Context:**
+```bash
+# Use virtual key with user tracking
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-vk: vk-alice-personal" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+---
+
+## Compliance Framework
+
+Enterprise Governance includes built-in compliance capabilities for major regulatory frameworks including **SOC 2 Type II**, **GDPR**, **ISO 27001**, and **HIPAA** compliance. These features provide automated compliance monitoring, policy enforcement, and audit trail generation to meet enterprise security and regulatory requirements.
+
+---
+
+## Audit Reports & Compliance Dashboards
+
+Enterprise Governance provides comprehensive audit reporting and compliance dashboards for regulatory requirements and internal governance.
+
+### Audit Report Types
+
+**1. Access Audit Reports**
+- User login/logout activities
+- Failed authentication attempts
+- Privilege escalation events
+- Unusual access patterns
+
+**2. Usage Audit Reports**
+- API request tracking
+- Model and provider usage
+- Budget consumption patterns
+- Rate limit violations
+
+**3. Data Audit Reports**
+- Data access and modification
+- Data export activities
+- Data deletion requests
+- Consent management tracking
+
+**4. Compliance Reports**
+- SOC 2 Type II control evidence
+- GDPR compliance status  
+- ISO 27001 risk assessments
+- HIPAA safeguard compliance
+
+### Report Generation
+
+<Tabs group="audit-reports">
+<Tab title="Web UI">
+
+1. **Navigate to Audit Reports**
+   - Go to **Enterprise** → **Audit & Compliance**
+   - Select **Generate Report**
+
+2. **Report Configuration**
+
+**Report Type:**
+- **Access Report**: Authentication and authorization events
+- **Usage Report**: API consumption and cost analysis
+- **Compliance Report**: Regulatory compliance status
+- **Security Report**: Security events and incidents
+
+**Date Range:**
+- **Last 24 Hours**: Recent activity
+- **Last 7 Days**: Weekly summary
+- **Last 30 Days**: Monthly analysis
+- **Custom Range**: Specific date range
+
+**Filters:**
+- **Users**: Specific users or all users
+- **Teams**: Specific teams or all teams
+- **Customers**: Specific customers or all customers
+- **Event Types**: Filter by event categories
+
+**Export Options:**
+- **PDF**: Formatted compliance report
+- **CSV**: Raw data for analysis
+- **JSON**: Structured data export
+
+</Tab>
+<Tab title="API">
+
+**Generate Access Audit Report:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/audit/reports \
+  -H "Content-Type: application/json" \
+  -d '{
+    "report_type": "access_audit",
+    "date_range": {
+      "start_date": "2024-01-01T00:00:00Z",
+      "end_date": "2024-01-31T23:59:59Z"
+    },
+    "filters": {
+      "users": ["user-alice-001", "user-bob-002"],
+      "event_types": ["login", "logout", "failed_login", "privilege_escalation"]
+    },
+    "format": "pdf",
+    "include_summary": true
+  }'
+```
+
+**Generate Usage Audit Report:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/audit/reports \
+  -H "Content-Type: application/json" \
+  -d '{
+    "report_type": "usage_audit",
+    "date_range": {
+      "start_date": "2024-01-01T00:00:00Z",
+      "end_date": "2024-01-31T23:59:59Z"
+    },
+    "filters": {
+      "customers": ["customer-corp"],
+      "models": ["gpt-4o", "claude-3-sonnet-20240229"],
+      "providers": ["openai", "anthropic"]
+    },
+    "format": "csv",
+    "include_cost_analysis": true
+  }'
+```
+
+**Generate Compliance Report:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/audit/reports \
+  -H "Content-Type: application/json" \
+  -d '{
+    "report_type": "compliance",
+    "compliance_framework": "soc2_type2",
+    "date_range": {
+      "start_date": "2024-01-01T00:00:00Z",
+      "end_date": "2024-01-31T23:59:59Z"
+    },
+    "control_objectives": ["security", "availability", "confidentiality"],
+    "format": "pdf",
+    "include_evidence": true
+  }'
+```
+
+</Tab>
+</Tabs>
+
+### Compliance Dashboards
+
+**Real-Time Monitoring:**
+- **Security Posture**: Current security status and alerts
+- **Compliance Status**: Regulatory compliance health check
+- **Risk Assessment**: Identified risks and mitigation status
+- **Audit Trail**: Recent audit events and activities
+
+**Dashboard Widgets:**
+```bash
+curl -X GET http://localhost:8080/api/enterprise/dashboard/compliance \
+  -H "Authorization: Bearer admin-token"
+
+# Response includes:
+{
+  "security_posture": {
+    "overall_score": 95,
+    "active_alerts": 2,
+    "failed_logins_24h": 5,
+    "privilege_escalations": 0
+  },
+  "compliance_status": {
+    "soc2_type2_compliance": "compliant",
+    "gdpr_compliance": "compliant",
+    "iso27001_compliance": "in_progress",
+    "hipaa_compliance": "not_applicable"
+  },
+  "risk_assessment": {
+    "high_risk_items": 0,
+    "medium_risk_items": 3,
+    "low_risk_items": 12,
+    "mitigation_progress": "85%"
+  },
+  "recent_activities": [
+    {
+      "timestamp": "2024-01-15T10:30:00Z",
+      "type": "user_login",
+      "user": "alice@company.com",
+      "status": "success"
+    }
+  ]
+}
+```
+
+### Automated Compliance Monitoring
+
+**Continuous Monitoring:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/compliance/monitoring \
+  -H "Content-Type: application/json" \
+  -d '{
+    "monitoring_rules": [
+      {
+        "name": "Failed Login Monitoring",
+        "type": "security_event",
+        "condition": "failed_logins > 10 in 1h",
+        "action": "alert_security_team",
+        "severity": "high"
+      },
+      {
+        "name": "Data Export Monitoring",
+        "type": "data_access",
+        "condition": "data_export_size > 1GB",
+        "action": "require_approval",
+        "severity": "medium"
+      },
+      {
+        "name": "Budget Threshold Alert",
+        "type": "budget_usage",
+        "condition": "usage > 80% of budget",
+        "action": "notify_manager",
+        "severity": "low"
+      }
+    ],
+    "notification_channels": {
+      "email": ["security@company.com", "compliance@company.com"],
+      "slack": "#security-alerts",
+      "webhook": "https://company.com/security-webhook"
+    }
+  }'
+```
+
+---
+
+## Error Responses
+
+Enterprise Governance extends standard governance errors with additional authentication and compliance-related responses:
+
+**Authentication Errors:**
+```json
+{
+  "error": {
+    "type": "authentication_required",
+    "message": "SSO authentication required"
+  }
+}
+```
+
+```json
+{
+  "error": {
+    "type": "mfa_required", 
+    "message": "Multi-factor authentication required"
+  }
+}
+```
+
+**Authorization Errors:**
+```json
+{
+  "error": {
+    "type": "user_not_authorized",
+    "message": "User does not have permission to access this model"
+  }
+}
+```
+
+**Compliance Errors:**
+```json
+{
+  "error": {
+    "type": "compliance_violation",
+    "message": "Request violates GDPR data minimization requirements"
+  }
+}
+```
+
+---
+
+## Next Steps
+
+- **[Role-Based Access Control](./rbac)** - Manage roles and fine-grained permissions
+- **[Setting up Okta](./setting-up-okta)** - Configure Okta as your identity provider
+- **[Setting up Microsoft Entra](./setting-up-entra)** - Configure Microsoft Entra ID as your identity provider
+- **[Core Governance](../features/governance)** - Understand base governance concepts
+- **[Clustering](./clustering)** - Deploy enterprise governance across multiple nodes
+- **[Vault Support](./vault-support)** - Secure credential management
+- **[Custom Plugins](./custom-plugins)** - Extend enterprise governance capabilities

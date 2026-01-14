@@ -1,0 +1,22 @@
+---
+title: "v1.3.40"
+description: "v1.3.40 changelog - 2025-12-04"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.40
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.40
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.40
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.3.40">
+- security: upgrades React and Next against [CVE-2025-66478](https://nextjs.org/blog/CVE-2025-66478)
+
+</Update>

@@ -1,0 +1,36 @@
+# OpenAI Integration Embeddings Schemas
+
+OpenAIEmbeddingRequest:
+  type: object
+  required:
+    - model
+    - input
+  properties:
+    model:
+      type: string
+      description: Model identifier
+      example: text-embedding-3-small
+    input:
+      oneOf:
+        - type: string
+        - type: array
+          items:
+            type: string
+      description: Input text to embed
+    encoding_format:
+      type: string
+      enum: [float, base64]
+    dimensions:
+      type: integer
+      description: Number of dimensions for the embedding
+    user:
+      type: string
+    # Bifrost-specific
+    fallbacks:
+      type: array
+      items:
+        type: string
+
+# Response reuses inference schema
+OpenAIEmbeddingResponse:
+  $ref: '../../inference/embeddings.yaml#/EmbeddingResponse'

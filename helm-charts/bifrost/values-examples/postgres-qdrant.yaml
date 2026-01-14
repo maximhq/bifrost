@@ -1,0 +1,82 @@
+# Configuration: PostgreSQL for config/logs + Qdrant for vector store
+# Usage: helm install bifrost ./bifrost -f values-examples/postgres-qdrant.yaml
+#
+# SECURITY NOTE: This example contains placeholder values that MUST be replaced
+# before deployment. Specifically:
+# - PostgreSQL password must be set to a strong, randomly generated value
+# - Provider API keys must be replaced with real keys
+# See inline comments for specific requirements.
+
+# Storage configuration
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    # REQUIRED: Replace with a strong, randomly generated password
+    # Example: Use `openssl rand -base64 32` to generate a secure password
+    # Or set via Helm: --set postgresql.auth.password="$(openssl rand -base64 32)"
+    password: "REPLACE_ME_WITH_STRONG_PASSWORD"
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Deploy Qdrant for vector store
+vectorStore:
+  enabled: true
+  type: qdrant
+  qdrant:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+
+  # Enable semantic cache plugin to use Qdrant vector store
+  plugins:
+    semanticCache:
+      enabled: true
+      # OPTION 1 (Recommended): Reference to external Kubernetes Secret for OpenAI API key
+      # Create the secret with: kubectl create secret generic bifrost-semantic-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+      secretRef:
+        name: "bifrost-semantic-cache"
+        key: "openai-key"
+      # OPTION 2 (Not recommended): Or uncomment to provide keys directly (not secure)
+      # Remove secretRef above and uncomment the keys below:
+      config:
+        provider: "openai"
+        # keys:
+        #   - "REPLACE_WITH_OPENAI_API_KEY"  # Not recommended: use secretRef instead
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"

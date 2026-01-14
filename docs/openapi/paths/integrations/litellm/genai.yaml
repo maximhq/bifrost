@@ -1,0 +1,123 @@
+# LiteLLM - GenAI (Gemini) compatible Endpoints
+# Reuses GenAI integration schemas
+
+models:
+  get:
+    operationId: litellmGeminiListModels
+    summary: List models (LiteLLM - Gemini format)
+    description: |
+      Lists available models in Google Gemini API format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    parameters:
+      - name: pageSize
+        in: query
+        schema:
+          type: integer
+        description: Maximum number of models to return
+      - name: pageToken
+        in: query
+        schema:
+          type: string
+        description: Page token for pagination
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiListModelsResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+generate-content:
+  post:
+    operationId: litellmGeminiGenerateContent
+    summary: Generate content (LiteLLM - Gemini format)
+    description: |
+      Generates content using Google Gemini-compatible format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+stream-generate-content:
+  post:
+    operationId: litellmGeminiStreamGenerateContent
+    summary: Stream generate content (LiteLLM - Gemini format)
+    description: |
+      Streams content generation using Google Gemini-compatible format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model name with action
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: Successful streaming response
+        content:
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'

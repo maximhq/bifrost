@@ -1,0 +1,141 @@
+# Common schemas used across the API
+
+ModelProvider:
+  type: string
+  description: AI model provider identifier
+  enum:
+    - openai
+    - azure
+    - anthropic
+    - bedrock
+    - cohere
+    - vertex
+    - mistral
+    - ollama
+    - groq
+    - sgl
+    - parasail
+    - perplexity
+    - cerebras
+    - gemini
+    - openrouter
+    - elevenlabs
+    - huggingface
+    - nebius
+    - xai
+
+Fallback:
+  type: object
+  description: Fallback model configuration
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      $ref: '#/ModelProvider'
+    model:
+      type: string
+      description: Model name
+
+BifrostError:
+  type: object
+  description: Error response from Bifrost
+  properties:
+    event_id:
+      type: string
+    type:
+      type: string
+    is_bifrost_error:
+      type: boolean
+    status_code:
+      type: integer
+    error:
+      $ref: '#/ErrorField'
+    extra_fields:
+      $ref: '#/BifrostErrorExtraFields'
+
+ErrorField:
+  type: object
+  properties:
+    type:
+      type: string
+    code:
+      type: string
+    message:
+      type: string
+    param:
+      type: string
+    event_id:
+      type: string
+
+BifrostErrorExtraFields:
+  type: object
+  properties:
+    provider:
+      $ref: '#/ModelProvider'
+    model_requested:
+      type: string
+    request_type:
+      type: string
+
+BifrostResponseExtraFields:
+  type: object
+  description: Additional fields included in responses
+  properties:
+    request_type:
+      type: string
+      description: Type of request that was made
+    provider:
+      $ref: '#/ModelProvider'
+    model_requested:
+      type: string
+      description: The model that was requested
+    model_deployment:
+      type: string
+      description: The actual model deployment used
+    latency:
+      type: integer
+      format: int64
+      description: Request latency in milliseconds
+    chunk_index:
+      type: integer
+      description: Index of the chunk for streaming responses
+    raw_request:
+      type: object
+      description: Raw request if enabled
+    raw_response:
+      type: object
+      description: Raw response if enabled
+    cache_debug:
+      $ref: '#/BifrostCacheDebug'
+
+BifrostCacheDebug:
+  type: object
+  properties:
+    cache_hit:
+      type: boolean
+    cache_id:
+      type: string
+    hit_type:
+      type: string
+    provider_used:
+      type: string
+    model_used:
+      type: string
+    input_tokens:
+      type: integer
+    threshold:
+      type: number
+    similarity:
+      type: number
+
+CacheControl:
+  type: object
+  description: Cache control settings for content blocks
+  properties:
+    type:
+      type: string
+      enum: [ephemeral]
+    ttl:
+      type: string
+      description: Time to live (e.g., "1m", "1h")

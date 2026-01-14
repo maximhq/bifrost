@@ -1,0 +1,16 @@
+.monaco-editor-background {
+	background: transparent !important;
+}
+
+.overflow-guard {
+	background: transparent !important;
+}
+
+.monaco-editor {
+	outline-style: none !important;
+	background: transparent !important;
+}
+
+.margin {
+	background: transparent !important;
+}

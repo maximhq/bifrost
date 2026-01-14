@@ -1,0 +1,309 @@
+# Batch API schemas
+
+BatchStatus:
+  type: string
+  enum:
+    - validating
+    - failed
+    - in_progress
+    - finalizing
+    - completed
+    - expired
+    - cancelling
+    - canceled
+    - ended
+
+BatchEndpoint:
+  type: string
+  enum:
+    - /v1/chat/completions
+    - /v1/embeddings
+    - /v1/completions
+    - /v1/responses
+    - /v1/messages
+
+BatchCreateRequest:
+  type: object
+  required:
+    - model
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    input_file_id:
+      type: string
+      description: OpenAI-style file ID
+    requests:
+      type: array
+      items:
+        $ref: '#/BatchRequestItem'
+      description: Anthropic-style inline requests
+    endpoint:
+      $ref: '#/BatchEndpoint'
+    completion_window:
+      type: string
+      description: e.g., "24h"
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+
+BatchRequestItem:
+  type: object
+  required:
+    - custom_id
+  properties:
+    custom_id:
+      type: string
+    method:
+      type: string
+    url:
+      type: string
+    body:
+      type: object
+    params:
+      type: object
+
+BatchCreateResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    endpoint:
+      type: string
+    input_file_id:
+      type: string
+    completion_window:
+      type: string
+    status:
+      $ref: '#/BatchStatus'
+    request_counts:
+      $ref: '#/BatchRequestCounts'
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+    created_at:
+      type: integer
+      format: int64
+    expires_at:
+      type: integer
+      format: int64
+    output_file_id:
+      type: string
+    error_file_id:
+      type: string
+    processing_status:
+      type: string
+    results_url:
+      type: string
+    operation_name:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BatchRequestCounts:
+  type: object
+  properties:
+    total:
+      type: integer
+    completed:
+      type: integer
+    failed:
+      type: integer
+    succeeded:
+      type: integer
+    expired:
+      type: integer
+    canceled:
+      type: integer
+    pending:
+      type: integer
+
+BatchListResponse:
+  type: object
+  properties:
+    object:
+      type: string
+    data:
+      type: array
+      items:
+        $ref: '#/BatchRetrieveResponse'
+    first_id:
+      type: string
+    last_id:
+      type: string
+    has_more:
+      type: boolean
+    next_cursor:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BatchRetrieveResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    endpoint:
+      type: string
+    input_file_id:
+      type: string
+    completion_window:
+      type: string
+    status:
+      $ref: '#/BatchStatus'
+    request_counts:
+      $ref: '#/BatchRequestCounts'
+    metadata:
+      type: object
+      additionalProperties:
+        type: string
+    created_at:
+      type: integer
+      format: int64
+    expires_at:
+      type: integer
+      format: int64
+    in_progress_at:
+      type: integer
+      format: int64
+    finalizing_at:
+      type: integer
+      format: int64
+    completed_at:
+      type: integer
+      format: int64
+    failed_at:
+      type: integer
+      format: int64
+    expired_at:
+      type: integer
+      format: int64
+    cancelling_at:
+      type: integer
+      format: int64
+    cancelled_at:
+      type: integer
+      format: int64
+    output_file_id:
+      type: string
+    error_file_id:
+      type: string
+    errors:
+      $ref: '#/BatchErrors'
+    processing_status:
+      type: string
+    results_url:
+      type: string
+    archived_at:
+      type: integer
+      format: int64
+    operation_name:
+      type: string
+    done:
+      type: boolean
+    progress:
+      type: integer
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BatchErrors:
+  type: object
+  properties:
+    object:
+      type: string
+    data:
+      type: array
+      items:
+        $ref: '#/BatchError'
+
+BatchError:
+  type: object
+  properties:
+    code:
+      type: string
+    message:
+      type: string
+    param:
+      type: string
+    line:
+      type: integer
+
+BatchCancelResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    object:
+      type: string
+    status:
+      $ref: '#/BatchStatus'
+    request_counts:
+      $ref: '#/BatchRequestCounts'
+    cancelling_at:
+      type: integer
+      format: int64
+    cancelled_at:
+      type: integer
+      format: int64
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BatchResultsResponse:
+  type: object
+  properties:
+    batch_id:
+      type: string
+    results:
+      type: array
+      items:
+        $ref: '#/BatchResultItem'
+    has_more:
+      type: boolean
+    next_cursor:
+      type: string
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+BatchResultItem:
+  type: object
+  properties:
+    custom_id:
+      type: string
+    response:
+      $ref: '#/BatchResultResponse'
+    result:
+      $ref: '#/BatchResultData'
+    error:
+      $ref: '#/BatchResultError'
+
+BatchResultResponse:
+  type: object
+  properties:
+    status_code:
+      type: integer
+    request_id:
+      type: string
+    body:
+      type: object
+
+BatchResultData:
+  type: object
+  properties:
+    type:
+      type: string
+    message:
+      type: object
+
+BatchResultError:
+  type: object
+  properties:
+    code:
+      type: string
+    message:
+      type: string

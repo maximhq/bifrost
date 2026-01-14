@@ -1,0 +1,594 @@
+# Chat Completions API schemas
+
+ChatCompletionRequest:
+  type: object
+  required:
+    - model
+    - messages
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format (e.g., openai/gpt-4)
+      example: openai/gpt-4
+    messages:
+      type: array
+      items:
+        $ref: '#/ChatMessage'
+      description: List of messages in the conversation
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+    stream:
+      type: boolean
+      description: Whether to stream the response
+    frequency_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    logit_bias:
+      type: object
+      additionalProperties:
+        type: number
+    logprobs:
+      type: boolean
+    max_completion_tokens:
+      type: integer
+    metadata:
+      type: object
+      additionalProperties: true
+    modalities:
+      type: array
+      items:
+        type: string
+    parallel_tool_calls:
+      type: boolean
+    presence_penalty:
+      type: number
+      minimum: -2.0
+      maximum: 2.0
+    prompt_cache_key:
+      type: string
+    reasoning:
+      $ref: '#/ChatReasoning'
+    response_format:
+      type: object
+      description: Format for the response
+    safety_identifier:
+      type: string
+    service_tier:
+      type: string
+    stream_options:
+      $ref: '#/ChatStreamOptions'
+    store:
+      type: boolean
+    temperature:
+      type: number
+      minimum: 0
+      maximum: 2
+    tool_choice:
+      $ref: '#/ChatToolChoice'
+    tools:
+      type: array
+      items:
+        $ref: '#/ChatTool'
+    truncation:
+      type: string
+    user:
+      type: string
+    verbosity:
+      type: string
+      enum: [low, medium, high]
+
+ChatMessage:
+  type: object
+  required:
+    - role
+  properties:
+    role:
+      $ref: '#/ChatMessageRole'
+    name:
+      type: string
+    content:
+      $ref: '#/ChatMessageContent'
+    tool_call_id:
+      type: string
+      description: For tool messages
+    refusal:
+      type: string
+    audio:
+      $ref: '#/ChatAudioMessageAudio'
+    reasoning:
+      type: string
+    reasoning_details:
+      type: array
+      items:
+        $ref: '#/ChatReasoningDetails'
+    annotations:
+      type: array
+      items:
+        $ref: '#/ChatAssistantMessageAnnotation'
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/ChatAssistantMessageToolCall'
+
+ChatMessageRole:
+  type: string
+  enum:
+    - assistant
+    - user
+    - system
+    - tool
+    - developer
+
+ChatMessageContent:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        $ref: '#/ChatContentBlock'
+  description: Message content - can be a string or array of content blocks
+
+ChatContentBlock:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [text, image_url, input_audio, file, refusal]
+    text:
+      type: string
+    refusal:
+      type: string
+    image_url:
+      $ref: '#/ChatInputImage'
+    input_audio:
+      $ref: '#/ChatInputAudio'
+    file:
+      $ref: '#/ChatInputFile'
+    cache_control:
+      $ref: './common.yaml#/CacheControl'
+
+ChatInputImage:
+  type: object
+  required:
+    - url
+  properties:
+    url:
+      type: string
+    detail:
+      type: string
+      enum: [low, high, auto]
+
+ChatInputAudio:
+  type: object
+  required:
+    - data
+  properties:
+    data:
+      type: string
+    format:
+      type: string
+
+ChatInputFile:
+  type: object
+  properties:
+    file_data:
+      type: string
+    file_id:
+      type: string
+    filename:
+      type: string
+    file_type:
+      type: string
+
+ChatReasoning:
+  type: object
+  properties:
+    effort:
+      type: string
+      description: Reasoning effort level
+      enum: [none, minimal, low, medium, high, xhigh]
+    max_tokens:
+      type: integer
+
+ChatStreamOptions:
+  type: object
+  properties:
+    include_obfuscation:
+      type: boolean
+    include_usage:
+      type: boolean
+
+ChatToolChoice:
+  oneOf:
+    - type: string
+      enum: [none, auto, required]
+    - $ref: '#/ChatToolChoiceStruct'
+
+ChatToolChoiceStruct:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [none, any, required, function, allowed_tools, custom]
+    function:
+      $ref: '#/ChatToolChoiceFunction'
+    allowed_tools:
+      $ref: '#/ChatToolChoiceAllowedTools'
+
+ChatToolChoiceFunction:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+
+ChatToolChoiceAllowedTools:
+  type: object
+  properties:
+    mode:
+      type: string
+      enum: [auto, required]
+    tools:
+      type: array
+      items:
+        $ref: '#/ChatToolChoiceAllowedToolsTool'
+
+ChatToolChoiceAllowedToolsTool:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+    function:
+      $ref: '#/ChatToolChoiceFunction'
+
+ChatTool:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [function, custom]
+    function:
+      $ref: '#/ChatToolFunction'
+    custom:
+      $ref: '#/ChatToolCustom'
+    cache_control:
+      $ref: './common.yaml#/CacheControl'
+
+ChatToolFunction:
+  type: object
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    parameters:
+      $ref: '#/ToolFunctionParameters'
+    strict:
+      type: boolean
+
+ToolFunctionParameters:
+  type: object
+  properties:
+    type:
+      type: string
+    description:
+      type: string
+    required:
+      type: array
+      items:
+        type: string
+    properties:
+      type: object
+      additionalProperties: true
+    enum:
+      type: array
+      items:
+        type: string
+    additionalProperties:
+      type: boolean
+
+ChatToolCustom:
+  type: object
+  properties:
+    format:
+      $ref: '#/ChatToolCustomFormat'
+
+ChatToolCustomFormat:
+  type: object
+  required:
+    - type
+  properties:
+    type:
+      type: string
+    grammar:
+      $ref: '#/ChatToolCustomGrammarFormat'
+
+ChatToolCustomGrammarFormat:
+  type: object
+  required:
+    - definition
+    - syntax
+  properties:
+    definition:
+      type: string
+    syntax:
+      type: string
+      enum: [lark, regex]
+
+ChatReasoningDetails:
+  type: object
+  properties:
+    id:
+      type: string
+    index:
+      type: integer
+    type:
+      type: string
+      enum: [reasoning.summary, reasoning.encrypted, reasoning.text]
+    summary:
+      type: string
+    text:
+      type: string
+    signature:
+      type: string
+    data:
+      type: string
+
+ChatAssistantMessageAnnotation:
+  type: object
+  properties:
+    type:
+      type: string
+    url_citation:
+      $ref: '#/ChatAssistantMessageAnnotationCitation'
+
+ChatAssistantMessageAnnotationCitation:
+  type: object
+  properties:
+    start_index:
+      type: integer
+    end_index:
+      type: integer
+    title:
+      type: string
+    url:
+      type: string
+    sources:
+      type: object
+    type:
+      type: string
+
+ChatAssistantMessageToolCall:
+  type: object
+  required:
+    - function
+  properties:
+    index:
+      type: integer
+    type:
+      type: string
+    id:
+      type: string
+    function:
+      $ref: '#/ChatAssistantMessageToolCallFunction'
+
+ChatAssistantMessageToolCallFunction:
+  type: object
+  properties:
+    name:
+      type: string
+    arguments:
+      type: string
+
+ChatAudioMessageAudio:
+  type: object
+  properties:
+    id:
+      type: string
+    data:
+      type: string
+    expires_at:
+      type: integer
+    transcript:
+      type: string
+
+ChatCompletionResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    choices:
+      type: array
+      items:
+        $ref: '#/BifrostResponseChoice'
+    created:
+      type: integer
+    model:
+      type: string
+    object:
+      type: string
+    service_tier:
+      type: string
+    system_fingerprint:
+      type: string
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+    search_results:
+      type: array
+      items:
+        $ref: '#/PerplexitySearchResult'
+    videos:
+      type: array
+      items:
+        $ref: '#/VideoResult'
+    citations:
+      type: array
+      items:
+        type: string
+
+BifrostResponseChoice:
+  type: object
+  properties:
+    index:
+      type: integer
+    finish_reason:
+      type: string
+    log_probs:
+      $ref: '#/BifrostLogProbs'
+    text:
+      type: string
+      description: For text completions
+    message:
+      $ref: '#/ChatMessage'
+      description: For non-streaming chat completions
+    delta:
+      $ref: '#/ChatStreamResponseChoiceDelta'
+      description: For streaming chat completions
+
+BifrostLogProbs:
+  type: object
+  properties:
+    content:
+      type: array
+      items:
+        $ref: '#/ContentLogProb'
+    refusal:
+      type: array
+      items:
+        $ref: '#/LogProb'
+    text_offset:
+      type: array
+      items:
+        type: integer
+    token_logprobs:
+      type: array
+      items:
+        type: number
+    tokens:
+      type: array
+      items:
+        type: string
+    top_logprobs:
+      type: array
+      items:
+        type: object
+        additionalProperties:
+          type: number
+
+ContentLogProb:
+  type: object
+  properties:
+    bytes:
+      type: array
+      items:
+        type: integer
+    logprob:
+      type: number
+    token:
+      type: string
+    top_logprobs:
+      type: array
+      items:
+        $ref: '#/LogProb'
+
+LogProb:
+  type: object
+  properties:
+    bytes:
+      type: array
+      items:
+        type: integer
+    logprob:
+      type: number
+    token:
+      type: string
+
+ChatStreamResponseChoiceDelta:
+  type: object
+  properties:
+    role:
+      type: string
+    content:
+      type: string
+    refusal:
+      type: string
+    audio:
+      $ref: '#/ChatAudioMessageAudio'
+    reasoning:
+      type: string
+    reasoning_details:
+      type: array
+      items:
+        $ref: '#/ChatReasoningDetails'
+    tool_calls:
+      type: array
+      items:
+        $ref: '#/ChatAssistantMessageToolCall'
+
+ChatCompletionStreamResponse:
+  type: object
+  description: Streaming chat completion response (SSE format)
+  properties:
+    id:
+      type: string
+    choices:
+      type: array
+      items:
+        $ref: '#/BifrostResponseChoice'
+    created:
+      type: integer
+    model:
+      type: string
+    object:
+      type: string
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+PerplexitySearchResult:
+  type: object
+  description: Search result from Perplexity AI search
+  properties:
+    title:
+      type: string
+    url:
+      type: string
+    date:
+      type: string
+    last_updated:
+      type: string
+    snippet:
+      type: string
+    source:
+      type: string
+
+VideoResult:
+  type: object
+  properties:
+    url:
+      type: string
+    thumbnail_url:
+      type: string
+    thumbnail_width:
+      type: integer
+    thumbnail_height:
+      type: integer
+    duration:
+      type: number

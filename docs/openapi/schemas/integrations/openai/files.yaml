@@ -1,0 +1,95 @@
+# OpenAI Integration Files API Schemas
+# Reuses inference files schemas since OpenAI integration uses Bifrost format
+
+OpenAIFileUploadRequest:
+  type: object
+  required:
+    - file
+    - purpose
+  properties:
+    file:
+      type: string
+      format: binary
+      description: File to upload
+    purpose:
+      type: string
+      enum: [assistants, assistants_output, batch, batch_output, fine-tune, fine-tune-results, vision, user_data, evals]
+      description: Purpose of the file
+    provider:
+      type: string
+      description: Provider for file storage
+    storage_config:
+      $ref: '../../inference/files.yaml#/FileStorageConfig'
+
+OpenAIFileUploadResponse:
+  $ref: '../../inference/files.yaml#/FileUploadResponse'
+
+OpenAIFileListRequest:
+  type: object
+  properties:
+    purpose:
+      type: string
+      description: Filter by purpose
+    limit:
+      type: integer
+      description: Maximum files to return
+    after:
+      type: string
+      description: Cursor for pagination
+    order:
+      type: string
+      enum: [asc, desc]
+    provider:
+      type: string
+      description: Filter by provider
+
+OpenAIFileListResponse:
+  $ref: '../../inference/files.yaml#/FileListResponse'
+
+OpenAIFileRetrieveRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string
+      description: File ID to retrieve
+    provider:
+      type: string
+      description: Provider for the file
+    storage_config:
+      $ref: '../../inference/files.yaml#/FileStorageConfig'
+
+OpenAIFileRetrieveResponse:
+  $ref: '../../inference/files.yaml#/FileRetrieveResponse'
+
+OpenAIFileDeleteRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string
+      description: File ID to delete
+    provider:
+      type: string
+      description: Provider for the file
+    storage_config:
+      $ref: '../../inference/files.yaml#/FileStorageConfig'
+
+OpenAIFileDeleteResponse:
+  $ref: '../../inference/files.yaml#/FileDeleteResponse'
+
+OpenAIFileContentRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string
+      description: File ID to get content for
+    provider:
+      type: string
+      description: Provider for the file
+    storage_config:
+      $ref: '../../inference/files.yaml#/FileStorageConfig'

@@ -1,0 +1,23 @@
+---
+title: "v1.4.0-prerelease5"
+description: "v1.4.0-prerelease5 changelog - 2026-01-05"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.0-prerelease5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.0-prerelease5
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.0-prerelease5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.0-prerelease5">
+fix: non-streaming integration LLM calls requiring virtual keys
+fix: UI crash when disabling new plugin
+
+</Update>

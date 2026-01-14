@@ -1,0 +1,355 @@
+---
+title: "Run Your Own Benchmarks"
+description: "Step-by-step guide to benchmark Bifrost in your own environment using the official benchmarking tool."
+icon: "stopwatch"
+---
+
+## Overview
+
+Want to see Bifrost's performance in your specific environment? The [**Bifrost Benchmarking Repository**](https://github.com/maximhq/bifrost-benchmarking) provides everything you need to conduct comprehensive performance tests tailored to your infrastructure and workload requirements.
+
+**What You Can Test:**
+- **Custom Instance Sizes** - Test on your preferred AWS/GCP/Azure instances  
+- **Your Workload Patterns** - Use your actual request/response sizes
+- **Different Configurations** - Compare various Bifrost settings
+- **Provider Comparisons** - Benchmark against other AI gateways
+- **Load Scenarios** - Test burst loads, sustained traffic, and endurance
+
+> **💡 Open Source**: The benchmarking tool is completely open source! Feel free to submit pull requests if you think anything is missing or could be improved.
+
+---
+
+## Prerequisites
+
+Before running benchmarks, ensure you have:
+
+- **Go 1.23+** installed on your testing machine
+- **Bifrost instance** running and accessible
+- **Target API providers** configured (OpenAI, Anthropic, etc.)
+- **Network access** between benchmark tool and Bifrost
+- **Sufficient resources** on the testing machine to generate load
+
+---
+
+## Quick Start
+
+### **1. Clone the Repository**
+
+```bash
+git clone https://github.com/maximhq/bifrost-benchmarking.git
+cd bifrost-benchmarking
+```
+
+### **2. Build the Benchmark Tool**
+
+```bash
+go build benchmark.go
+```
+
+This creates a `benchmark` executable (or `benchmark.exe` on Windows).
+
+### **3. Run Your First Benchmark**
+
+```bash
+# Basic benchmark: 500 RPS for 10 seconds
+./benchmark -provider bifrost -port 8080
+
+# Custom benchmark: 1000 RPS for 30 seconds  
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 30 -output my_results.json
+```
+
+---
+
+## Configuration Options
+
+The benchmark tool offers extensive configuration through command-line flags:
+
+### **Basic Configuration**
+
+| Flag | Required | Description | Default |
+|------|----------|-------------|---------|
+| `-provider <name>` | ✅ | Provider name (e.g., `bifrost`, `litellm`) | None |
+| `-port <number>` | ✅ | Port number of your Bifrost instance | None |
+| `-endpoint <path>` | ❌ | API endpoint path | `v1/chat/completions` |
+| `-rate <number>` | ❌ | Requests per second | `500` |
+| `-duration <seconds>` | ❌ | Test duration in seconds | `10` |
+| `-output <filename>` | ❌ | Results output file | `results.json` |
+
+### **Advanced Configuration**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-include-provider-in-request` | Include provider name in request payload | `false` |
+| `-big-payload` | Use larger, more complex request payloads | `false` |
+
+---
+
+## Benchmark Scenarios
+
+### **1. Basic Performance Test**
+
+Test standard performance with typical request sizes:
+
+```bash
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output basic_test.json
+```
+
+**Use Case**: General performance validation
+
+### **2. High-Load Stress Test**
+
+Push your instance to its limits:
+
+```bash
+./benchmark -provider bifrost -port 8080 -rate 5000 -duration 120 -output stress_test.json
+```
+
+**Use Case**: Capacity planning and SLA validation
+
+### **3. Large Payload Test**
+
+Test with bigger request/response sizes:
+
+```bash
+./benchmark -provider bifrost -port 8080 -rate 500 -duration 60 -big-payload=true -output large_payload.json
+```
+
+**Use Case**: Document processing, code generation workloads
+
+### **4. Endurance Test**
+
+Long-running stability test:
+
+```bash
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 1800 -output endurance_test.json
+```
+
+**Use Case**: Production readiness validation (30-minute test)
+
+### **5. Comparative Benchmarking**
+
+Compare Bifrost against other providers:
+
+```bash
+# Test Bifrost
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output bifrost_results.json
+
+# Test LiteLLM
+./benchmark -provider litellm -port 8000 -rate 1000 -duration 60 -output litellm_results.json
+
+# Test direct OpenAI (if available)
+./benchmark -provider openai -port 443 -endpoint chat/completions -rate 1000 -duration 60 -output openai_results.json
+```
+
+---
+
+## Understanding Results
+
+The benchmark tool generates detailed JSON results with comprehensive metrics:
+
+### **Key Metrics Explained**
+
+```json
+{
+  "bifrost": {
+    "request_counts": {
+      "total_sent": 30000,
+      "successful": 30000,
+      "failed": 0
+    },
+    "success_rate": 100.0,
+    "latency_metrics": {
+      "mean_ms": 245.5,
+      "p50_ms": 230.2,
+      "p99_ms": 520.8,
+      "max_ms": 845.3
+    },
+    "throughput_rps": 5000.0,
+    "memory_usage": {
+      "before_mb": 512.5,
+      "after_mb": 1312.8,
+      "peak_mb": 1405.2,
+      "average_mb": 1156.7
+    },
+    "timestamp": "2025-01-14T10:30:00Z",
+    "status_codes": {
+      "200": 30000
+    }
+  }
+}
+```
+
+### **Critical Performance Indicators**
+
+**Success Rate:**
+- **Target**: >99.9% for production readiness
+- **Excellent**: 100% (perfect reliability)
+
+**Latency Metrics:**
+- **P50 (Median)**: Typical user experience
+- **P99**: Worst-case user experience  
+- **Mean**: Overall average performance
+
+**Memory Usage:**
+- **Peak**: Maximum memory consumption
+- **Average**: Sustained memory usage
+- **After - Before**: Memory growth during test
+
+---
+
+## Instance Sizing Recommendations
+
+Based on your benchmark results, use these guidelines for production sizing:
+
+### **Resource Planning Matrix**
+
+| Target RPS | Memory Usage | Recommended Instance | Notes |
+|------------|--------------|---------------------|--------|
+| **< 1,000** | < 1GB | t3.small | Cost-effective for light loads |
+| **1,000 - 3,000** | 1-2GB | t3.medium | Balanced performance/cost |
+| **3,000 - 5,000** | 2-4GB | t3.large | High-performance production |
+| **5,000+** | 3-6GB | t3.xlarge+ | Enterprise/mission-critical |
+
+### **Configuration Tuning Based on Results**
+
+**If seeing high latency:**
+- Increase `initial_pool_size`
+- Increase `buffer_size`
+- Consider larger instance
+
+**If memory usage is high:**
+- Decrease `initial_pool_size`
+- Optimize `buffer_size`
+- Monitor for memory leaks
+
+**If success rate < 100%:**
+- Reduce request rate
+- Increase timeout settings
+- Check provider limits
+
+---
+
+## Advanced Testing Scenarios
+
+### **Burst Load Testing**
+
+Simulate traffic spikes:
+
+```bash
+# Normal load
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 300 -output normal_load.json
+
+# Burst load (simulate 5x spike)
+./benchmark -provider bifrost -port 8080 -rate 5000 -duration 60 -output burst_load.json
+```
+
+### **Multi-Instance Testing**
+
+Test horizontal scaling:
+
+```bash
+# Instance 1
+./benchmark -provider bifrost-1 -port 8080 -rate 2500 -duration 120 -output instance_1.json &
+
+# Instance 2  
+./benchmark -provider bifrost-2 -port 8081 -rate 2500 -duration 120 -output instance_2.json &
+
+# Wait for both to complete
+wait
+```
+
+### **Different Payload Sizes**
+
+Compare performance across payload sizes:
+
+```bash
+# Small payloads (default)
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -output small_payload.json
+
+# Large payloads
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 60 -big-payload=true -output large_payload.json
+```
+
+---
+
+## Continuous Benchmarking
+
+### **Automated Testing Pipeline**
+
+Set up regular performance regression testing:
+
+```bash
+#!/bin/bash
+# daily_benchmark.sh
+
+DATE=$(date +%Y%m%d_%H%M%S)
+OUTPUT_DIR="benchmarks/$DATE"
+mkdir -p $OUTPUT_DIR
+
+# Run standard benchmarks
+./benchmark -provider bifrost -port 8080 -rate 1000 -duration 300 -output "$OUTPUT_DIR/standard.json"
+./benchmark -provider bifrost -port 8080 -rate 3000 -duration 180 -output "$OUTPUT_DIR/high_load.json"  
+./benchmark -provider bifrost -port 8080 -rate 500 -duration 600 -big-payload=true -output "$OUTPUT_DIR/large_payload.json"
+
+echo "Benchmarks completed: $OUTPUT_DIR"
+```
+
+### **Performance Monitoring Integration**
+
+Monitor key metrics over time:
+- **Success rate trends**
+- **Latency percentile changes**
+- **Memory usage patterns**
+- **Throughput capacity**
+
+---
+
+## Troubleshooting
+
+### **Common Issues**
+
+**Connection Refused:**
+```bash
+# Check if Bifrost is running
+curl http://localhost:8080/health
+
+# Verify port configuration
+netstat -an | grep 8080
+```
+- Check PORT is defined in `.env` file at root.
+
+**High Error Rates:**
+- Check provider API key limits
+- Verify Bifrost configuration
+- Monitor upstream provider status
+- Reduce request rate for baseline test
+
+**Memory Issues:**
+- Monitor system resources during testing
+- Check for memory leaks in long tests
+- Adjust Bifrost pool sizes
+
+**Inconsistent Results:**
+- Run multiple test iterations
+- Account for network variability  
+- Use longer test durations (60+ seconds)
+- Isolate testing environment
+- Try hitting gateway requests to a Mock provider
+
+---
+
+## Next Steps
+
+### **After Running Benchmarks**
+
+1. **Analyze Results**: Compare against [official benchmarks](./getting-started)
+2. **Optimize Configuration**: Tune based on your specific results
+3. **Plan Capacity**: Size instances based on measured performance
+4. **Set Up Monitoring**: Track key metrics in production
+
+### **Compare Results**
+
+- **[t3.medium Performance](./t3.medium)** - Compare against medium instance results
+- **[t3.xlarge Performance](./t3.xl)** - Compare against high-performance configuration
+
+**Ready to benchmark? Clone the [repository](https://github.com/maximhq/bifrost-benchmarking) and start testing!**

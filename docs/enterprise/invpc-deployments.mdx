@@ -1,0 +1,108 @@
+---
+title: "In-VPC Deployments"
+description: "Deploy Bifrost within your private cloud infrastructure with VPC isolation, custom networking, and enhanced security controls for enterprise environments."
+icon: "cloud"
+---
+
+In-VPC (Virtual Private Cloud) deployments allow you to run Bifrost entirely within your private cloud infrastructure, providing maximum security, compliance, and control over your AI gateway deployment.
+
+## Supported Cloud Providers
+
+Bifrost supports INVPC deployments across all major cloud providers:
+
+<div className="grid grid-cols-2 md:grid-cols-3 gap-4 my-6">
+  <div className="flex items-center gap-2 p-3 border rounded-lg">
+    <span>Google Cloud Platform</span>
+  </div>
+  <div className="flex items-center gap-2 p-3 border rounded-lg">
+    <span>Amazon Web Services</span>
+  </div>
+  <div className="flex items-center gap-2 p-3 border rounded-lg">
+    <span>Microsoft Azure</span>
+  </div>
+  <div className="flex items-center gap-2 p-3 border rounded-lg">
+    <span>Cloudflare</span>
+  </div>
+  <div className="flex items-center gap-2 p-3 border rounded-lg">
+    <span>Vercel</span>
+  </div>
+</div>
+
+## Architecture Benefits
+
+### Security & Compliance
+- **Network Isolation**: Complete isolation within your VPC with no external network dependencies
+- **Data Sovereignty**: All data processing occurs within your controlled environment
+- **Compliance Ready**: Meets requirements for HIPAA, SOC2, GDPR, and other regulatory frameworks
+- **Zero Trust Architecture**: Implements principle of least privilege with granular access controls
+
+### Performance & Reliability
+- **Low Latency**: Direct communication between services within your network
+- **High Availability**: Multi-zone deployment with automatic failover capabilities
+- **Guaranteed Uptime**: 99.95% SLA with comprehensive monitoring and alerting
+
+### Control & Customization
+- **Custom Networking**: Configure subnets, routing, and security groups to your specifications
+- **Resource Management**: Full control over compute, storage, and network resources
+- **Scaling Policies**: Define auto-scaling rules based on your usage patterns
+
+## Service Level Agreement
+
+### Availability Commitment
+- **Uptime Guarantee**: 99.95% monthly uptime for all core components
+- **Downtime Calculation**: `(Total Minutes - Downtime Minutes) / Total Minutes × 100`
+- **Partial Downtime**: Reduced functionality counted as 50% downtime
+
+### Core Components Covered
+The following components are monitored for SLA compliance:
+- Gateway instance
+- Log ingestion pipeline
+
+### Exclusions
+SLA excludes downtime due to:
+- Scheduled maintenance (14-day advance notice)
+- Downstream provider incidents
+- Client hardware/software/network issues
+- Third-party AI provider outages
+- Client misuse or unauthorized modifications
+
+## Support & Maintenance
+
+### Technical Support
+- **24/7 Critical Support**: Available for core component issues
+- **Multiple Channels**: Platform, email (contact@getmaxim.ai), or Slack Connect
+- **Audit Trail**: Detailed logs for any data access during troubleshooting
+
+### Maintenance Windows
+- **Scheduled Maintenance**: 14-day advance notice for major updates
+- **Security Patches**: Immediate or 14-day delayed application (your choice)
+- **Continuous Updates**: Regular feature improvements with 7-day advance notice
+
+## Getting Started
+
+### Prerequisites
+- VPC with appropriate CIDR ranges
+- Kubernetes cluster (GKE, EKS, or AKS)
+- Container registry access
+- DNS configuration for internal routing
+
+### Deployment Process
+1. **Infrastructure Setup**: Configure VPC, subnets, and security groups
+2. **Cluster Preparation**: Set up Kubernetes cluster with required permissions
+3. **Bifrost Installation**: Deploy using provided Helm charts or manifests
+4. **Configuration**: Apply your specific settings and integrations
+5. **Validation**: Run connectivity and performance tests
+6. **Go Live**: Begin routing production traffic
+
+
+## Cost Optimization
+
+### Resource Sizing
+- **Development**: 2 vCPU, 4GB RAM minimum
+- **Production**: 4+ vCPU, 8GB+ RAM recommended
+- **High Availability**: Multi-zone deployment with load balancing
+
+### Scaling Strategies
+- **Horizontal Pod Autoscaling**: Based on CPU/memory utilization
+- **Vertical Pod Autoscaling**: Automatic resource adjustment
+- **Cluster Autoscaling**: Node pool expansion/contraction

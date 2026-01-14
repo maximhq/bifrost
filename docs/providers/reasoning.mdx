@@ -1,0 +1,1546 @@
+---
+title: "Reasoning"
+description: "Cross-provider reference for reasoning and thinking capabilities in AI models"
+icon: "brain"
+---
+
+## Overview
+
+Reasoning (also called "thinking" in some providers) allows AI models to show their step-by-step thought process before providing a final answer. This feature is available across multiple providers with different implementations.
+
+<Info>
+Bifrost normalizes all provider-specific reasoning formats to a consistent OpenAI-compatible structure using `reasoning` in requests and `reasoning_details` in responses.
+</Info>
+
+---
+
+## Provider Support Matrix
+
+| Provider | Request Field | Response Field | Min Budget | Effort Levels | Streaming |
+|----------|--------------|----------------|------------|---------------|-----------|
+| OpenAI | `reasoning` | `reasoning_details` | None | `minimal`, `low`, `medium`, `high` | ✅ |
+| Anthropic | `thinking` | Content blocks | **1024 tokens** | `enabled` only | ✅ |
+| Bedrock (Anthropic) | `thinking` | Content blocks | **1024 tokens** | `enabled` only | ✅ |
+| Gemini 2.5+ | `thinking_config` | `thought` parts | 1024 | Budget-only | ✅ |
+| Gemini 3.0+ | `thinking_config` | `thought` parts | 1024 | `minimal`, `low`, `medium`, `high` + Budget | ✅ |
+
+---
+
+## Request Configuration
+
+### Chat Completions API
+
+<Tabs>
+<Tab title="JSON">
+
+```json
+{
+  "model": "provider/model-name",
+  "messages": [...],
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 4096
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+	"github.com/maximhq/bifrost"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+chatReq := &schemas.BifrostChatRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o",
+	Input: []schemas.ChatMessage{
+		{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: schemas.Ptr("Explain quantum computing"),
+			},
+		},
+	},
+	Params: &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(4096),
+		Reasoning: &schemas.ChatReasoning{
+			Effort:    schemas.Ptr("high"),
+			MaxTokens: schemas.Ptr(4096),
+		},
+	},
+}
+```
+
+</Tab>
+</Tabs>
+
+### Responses API
+
+<Tabs>
+<Tab title="JSON">
+
+```json
+{
+  "model": "provider/model-name",
+  "input": [...],
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 4096,
+    "summary": "detailed"
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+responsesReq := &schemas.BifrostResponsesRequest{
+	Provider: schemas.Anthropic,
+	Model:    "claude-3-5-sonnet-20241022",
+	Input: []schemas.ResponsesMessage{
+		{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("Explain quantum computing"),
+			},
+		},
+	},
+	Params: &schemas.ResponsesParameters{
+		MaxOutputTokens: schemas.Ptr(4096),
+		Reasoning: &schemas.ResponsesParametersReasoning{
+			Effort:    schemas.Ptr("high"),
+			MaxTokens: schemas.Ptr(4096),
+			Summary:   schemas.Ptr("detailed"),
+		},
+	},
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Responses API supports both `effort` + `max_tokens` (like Chat Completions) and adds the optional `summary` parameter for output summarization.
+</Note>
+
+### Parameter Reference
+
+#### Chat Completions API Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `effort` | `string` | Reasoning intensity level |
+| `max_tokens` | `int` | Maximum tokens for reasoning (budget) |
+
+#### Responses API Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `effort` | `string` | Reasoning intensity level |
+| `max_tokens` | `int` | Maximum tokens for reasoning (budget) |
+| `summary` | `string` | Summary level: `brief`, `detailed`, or `json` |
+
+<Note>
+**Responses API** accepts the same `effort` and `max_tokens` parameters as Chat Completions, but adds an optional `summary` parameter for reasoning output summarization.
+</Note>
+
+---
+
+## Provider-Specific Conversions
+
+### OpenAI
+
+OpenAI uses effort-based reasoning only. Bifrost applies priority logic:
+
+1. If `reasoning.effort` is provided → use it directly
+2. Else if `reasoning.max_tokens` is provided → estimate effort from it
+3. The `max_tokens` field is cleared before sending to OpenAI
+
+**Conversion Examples**:
+
+<Tabs>
+<Tab title="Effort (JSON)">
+
+```json
+// Bifrost Request (with effort)
+{
+  "reasoning": {
+    "effort": "high"
+  }
+}
+
+// OpenAI Request Sent
+{
+  "reasoning": {
+    "effort": "high"
+  }
+}
+```
+
+</Tab>
+<Tab title="Effort (Go)">
+
+```go
+// Bifrost request with effort (native field)
+chatReq := &schemas.BifrostChatRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o",
+	Input:    messages,
+	Params: &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(4096),
+		Reasoning: &schemas.ChatReasoning{
+			Effort: schemas.Ptr("high"),
+		},
+	},
+}
+
+// OpenAI receives effort directly, max_tokens is cleared
+```
+
+</Tab>
+<Tab title="Max Tokens (JSON)">
+
+```json
+// Bifrost Request (with max_tokens only)
+{
+  "max_completion_tokens": 4096,
+  "reasoning": {
+    "max_tokens": 3000
+  }
+}
+
+// Estimation: ratio = 3000/4096 ≈ 0.73 → "high"
+// OpenAI Request Sent
+{
+  "reasoning": {
+    "effort": "high"
+  }
+}
+```
+
+</Tab>
+<Tab title="Max Tokens (Go)">
+
+```go
+// Bifrost request with max_tokens only
+chatReq := &schemas.BifrostChatRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o",
+	Input:    messages,
+	Params: &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(4096),
+		Reasoning: &schemas.ChatReasoning{
+			MaxTokens: schemas.Ptr(3000),
+		},
+	},
+}
+
+// Bifrost estimates effort from max_tokens
+// ratio = 3000/4096 ≈ 0.73 → effort = "high"
+// OpenAI receives effort, max_tokens cleared
+```
+
+</Tab>
+</Tabs>
+
+**Supported Effort Levels**: `minimal`, `low`, `medium`, `high`
+
+<Note>
+When `minimal` is encountered, it's converted to `low` for non-OpenAI providers. OpenAI receives only: `low`, `medium`, `high`.
+</Note>
+
+---
+
+### Anthropic
+
+Anthropic uses a `thinking` parameter with different structure.
+
+<Tabs>
+<Tab title="Request Conversion (JSON)">
+
+```json
+// Bifrost Request
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 4096
+  }
+}
+
+// Anthropic Request
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 4096
+  }
+}
+```
+
+</Tab>
+<Tab title="Request Conversion (Go)">
+
+```go
+// Using Bifrost Go SDK
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Anthropic,
+  Model:    "claude-3-5-sonnet-20241022",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      MaxTokens: schemas.Ptr(4096), // Anthropic native field
+    },
+  },
+}
+
+// Bifrost converts to Anthropic format:
+// {
+//   "thinking": {
+//     "type": "enabled",
+//     "budget_tokens": 4096
+//   }
+// }
+```
+
+</Tab>
+<Tab title="Response Conversion (JSON)">
+
+```json
+// Anthropic Response (content blocks)
+{
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Let me analyze this step by step...",
+      "signature": "EqoBCkgIAR..."
+    },
+    {
+      "type": "text",
+      "text": "The answer is 42."
+    }
+  ]
+}
+
+// Bifrost Response
+{
+  "choices": [{
+    "message": {
+      "content": "The answer is 42.",
+      "reasoning": "Let me analyze this step by step...",
+      "reasoning_details": [{
+        "index": 0,
+        "type": "text",
+        "text": "Let me analyze this step by step...",
+        "signature": "EqoBCkgIAR..."
+      }]
+    }
+  }]
+}
+```
+
+</Tab>
+<Tab title="Response Conversion (Go)">
+
+```go
+// After calling Bifrost Chat Completions with reasoning
+resp, err := client.ChatCompletionRequest(ctx, chatReq)
+if err != nil {
+  log.Fatal(err)
+}
+
+// Extract reasoning from response
+choice := resp.Choices[0]
+message := choice.Message
+
+// Access combined reasoning text
+reasoningText := message.Reasoning
+
+// Access detailed reasoning blocks
+for i, details := range message.ReasoningDetails {
+  fmt.Printf("Block %d: %s\n", i, details.Text)
+  if details.Signature != "" {
+    fmt.Printf("  Signature: %s\n", details.Signature)
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+**Conversion Rules**:
+
+| Bifrost | Anthropic | Notes |
+|---------|-----------|-------|
+| `reasoning.effort` | `thinking.type` | Always mapped to `"enabled"` |
+| `reasoning.max_tokens` | `thinking.budget_tokens` | Token budget for reasoning |
+
+<Warning>
+**Critical Constraint**: Anthropic requires `reasoning.max_tokens >= 1024`. Requests with lower values will **fail with an error**.
+</Warning>
+
+**Dynamic Budget Handling**:
+
+| Input Value | Converted To |
+|-------------|--------------|
+| `-1` (dynamic) | `1024` (minimum default) |
+| `< 1024` | **Error** |
+| `>= 1024` | Pass-through |
+
+**Code Reference**: `core/providers/anthropic/chat.go:104-134`
+
+---
+
+### Bedrock (Anthropic Models)
+
+Bedrock uses the same structure as Anthropic for Claude models.
+
+<Tabs>
+<Tab title="Request (JSON)">
+
+```json
+// Bifrost Request
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 4096
+  }
+}
+
+// Bedrock Request (for Anthropic/Claude models)
+{
+  "additionalModelRequestFields": {
+    "reasoning_config": {
+      "type": "enabled",
+      "budget_tokens": 4096
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Request (Go)">
+
+```go
+// Using Bifrost Go SDK with Bedrock provider
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Bedrock,
+  Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      MaxTokens: schemas.Ptr(4096), // Bedrock Anthropic native field
+    },
+  },
+}
+
+// Bifrost converts to Bedrock format with reasoning_config
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+The same 1024 minimum token budget constraint applies to Bedrock Anthropic models. Attempts to set `max_tokens` below 1024 will result in an error.
+</Note>
+
+**Code Reference**: `core/providers/bedrock/utils.go:34-47`
+
+---
+
+### Bedrock (Nova Models)
+
+Bedrock Nova models use an effort-based approach similar to OpenAI.
+
+<Tabs>
+<Tab title="Request Conversion (JSON)">
+
+```json
+// Bifrost Request
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 4096
+  }
+}
+
+// Bedrock Request (for Nova models)
+{
+  "additionalModelRequestFields": {
+    "reasoningConfig": {
+      "type": "enabled",
+      "maxReasoningEffort": "high"
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Request Conversion (Go)">
+
+```go
+// Using Bifrost Go SDK with Bedrock Nova
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Bedrock,
+  Model:    "us.amazon.nova-pro-v1:0",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      Effort: schemas.Ptr("high"), // Nova native field
+    },
+  },
+}
+
+// Bifrost converts to Bedrock Nova format:
+// reasoningConfig: {
+//   type: "enabled",
+//   maxReasoningEffort: "high"
+// }
+```
+
+</Tab>
+<Tab title="Effort Levels">
+
+| Bifrost Effort | Nova Effort | Configuration |
+|---|---|---|
+| `minimal`, `low` | `"low"` | Normal parameters allowed |
+| `medium` | `"medium"` | Normal parameters allowed |
+| `high` | `"high"` | Clears `maxTokens`, `temperature`, `topP` |
+
+</Tab>
+</Tabs>
+
+**Key Differences from Anthropic**:
+
+- No minimum token budget constraint
+- Uses effort levels instead of token budgets
+- High effort mode automatically clears conflicting parameters
+
+**Code Reference**: `core/providers/bedrock/utils.go:48-89`
+
+---
+
+### Gemini
+
+Gemini uses `thinking_config` with dual support for both token budgets and effort levels, depending on the model version.
+
+#### Model Version Support
+
+| Gemini Version | `thinkingBudget` | `thinkingLevel` | Notes |
+|----------------|------------------|-----------------|-------|
+| **2.5+** | ✅ | ❌ | Budget-only models |
+| **3.0+** | ✅ | ✅ | Support both budget and level |
+
+<Warning>
+**Important**: Only ONE parameter (`thinkingBudget` or `thinkingLevel`) should be sent to Gemini at a time. When both `reasoning.max_tokens` and `reasoning.effort` are provided in a Bifrost request, `max_tokens` takes priority and is converted to `thinkingBudget`.
+</Warning>
+
+#### Priority Rules
+
+When both `reasoning.max_tokens` and `reasoning.effort` are present:
+
+```
+1. If max_tokens is provided → USE thinkingBudget (ignores effort)
+2. Else if effort is provided:
+   - Gemini 3.0+ → USE thinkingLevel (more native)
+   - Gemini 2.5 → CONVERT effort to thinkingBudget
+3. Else → disable reasoning
+```
+
+<Tabs>
+<Tab title="Budget Priority (JSON)">
+
+```json
+// Bifrost Request - Both fields provided
+{
+  "model": "gemini-3.0-flash",
+  "reasoning": {
+    "effort": "high",        // Ignored
+    "max_tokens": 4096      // Takes priority
+  }
+}
+
+// Gemini 3.0+ Request - Only budget sent
+{
+  "generation_config": {
+    "thinking_config": {
+      "include_thoughts": true,
+      "thinking_budget": 4096
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Effort to Level (Gemini 3.0+)">
+
+```json
+// Bifrost Request - Effort only
+{
+  "model": "gemini-3.0-flash",
+  "reasoning": {
+    "effort": "high"
+  }
+}
+
+// Gemini 3.0+ Request - Converted to level
+{
+  "generation_config": {
+    "thinking_config": {
+      "include_thoughts": true,
+      "thinking_level": "high"
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Effort to Budget (Gemini 2.5)">
+
+```json
+// Bifrost Request - Effort only
+{
+  "model": "gemini-2.5-flash",
+  "max_completion_tokens": 4096,
+  "reasoning": {
+    "effort": "high"
+  }
+}
+
+// Gemini 2.5 Request - Converted to budget
+// Calculation: 1024 + (0.80 × (4096 - 1024)) = 3482
+{
+  "generation_config": {
+    "thinking_config": {
+      "include_thoughts": true,
+      "thinking_budget": 3482
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+#### Model-Specific Level Conversions
+
+Gemini Pro models have stricter constraints on thinking levels:
+
+| Bifrost Effort | Non-Pro Models | Pro Models | Notes |
+|----------------|----------------|------------|-------|
+| `"none"` | Empty string | Empty string | Disables thinking |
+| `"minimal"` | `"minimal"` | `"low"` | Pro doesn't support minimal |
+| `"low"` | `"low"` | `"low"` | Supported on all |
+| `"medium"` | `"medium"` | `"high"` | Pro doesn't support medium |
+| `"high"` | `"high"` | `"high"` | Supported on all |
+
+**Example**:
+```go
+// For "gemini-3.0-flash-thinking-exp" (non-Pro)
+effort: "medium" → thinkingLevel: "medium"
+
+// For "gemini-3.0-pro" (Pro model)
+effort: "medium" → thinkingLevel: "high"  // Converted up
+```
+
+#### Special Values
+
+| Value | Field | Behavior | Use Case |
+|-------|-------|----------|----------|
+| `0` | `max_tokens` | `thinking_budget: 0`, `include_thoughts: false` | Explicitly disable reasoning |
+| `-1` | `max_tokens` | `thinking_budget: -1` | **Dynamic budget** (Gemini decides) |
+| `"none"` | `effort` | `thinking_budget: 0`, `include_thoughts: false` | Disable reasoning |
+
+<Tabs>
+<Tab title="Dynamic Budget (JSON)">
+
+```json
+// Bifrost Request - Dynamic budget
+{
+  "reasoning": {
+    "max_tokens": -1
+  }
+}
+
+// Gemini Request - Sent as-is
+{
+  "generation_config": {
+    "thinking_config": {
+      "include_thoughts": true,
+      "thinking_budget": -1
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Disable Reasoning (JSON)">
+
+```json
+// Bifrost Request - Method 1
+{
+  "reasoning": {
+    "max_tokens": 0
+  }
+}
+
+// Bifrost Request - Method 2
+{
+  "reasoning": {
+    "effort": "none"
+  }
+}
+
+// Gemini Request - Both become
+{
+  "generation_config": {
+    "thinking_config": {
+      "include_thoughts": false,
+      "thinking_budget": 0
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK Examples">
+
+```go
+// Using Bifrost Go SDK with Gemini
+// Example 1: Dynamic budget
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Gemini,
+  Model:    "gemini-2.0-flash-thinking-exp-1219",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      MaxTokens: schemas.Ptr(-1), // Let Gemini decide
+    },
+  },
+}
+
+// Example 2: Effort-based for Gemini 3.0+
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Gemini,
+  Model:    "gemini-3.0-flash",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      Effort: schemas.Ptr("high"), // Converts to thinkingLevel
+    },
+  },
+}
+
+// Example 3: Budget-based (all versions)
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Gemini,
+  Model:    "gemini-2.5-flash",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      MaxTokens: schemas.Ptr(3000), // Direct budget
+    },
+  },
+}
+```
+
+</Tab>
+</Tabs>
+
+#### Response Conversion
+
+<Tabs>
+<Tab title="Response (JSON)">
+
+```json
+// Gemini Response
+{
+  "candidates": [{
+    "content": {
+      "parts": [
+        {
+          "thought": true,
+          "text": "Analyzing the problem..."
+        },
+        {
+          "text": "The answer is 42."
+        }
+      ]
+    }
+  }]
+}
+
+// Bifrost Response
+{
+  "choices": [{
+    "message": {
+      "content": "The answer is 42.",
+      "reasoning": "Analyzing the problem...",
+      "reasoning_details": [{
+        "index": 0,
+        "type": "text",
+        "text": "Analyzing the problem..."
+      }]
+    }
+  }]
+}
+```
+
+</Tab>
+<Tab title="Response (Go)">
+
+```go
+// After calling Bifrost Chat Completions with Gemini
+resp, err := client.ChatCompletionRequest(ctx, chatReq)
+if err != nil {
+  log.Fatal(err)
+}
+
+// Extract reasoning from response
+choice := resp.Choices[0]
+message := choice.Message
+
+// Access combined reasoning text
+fmt.Printf("Reasoning: %s\n", message.Reasoning)
+
+// Access detailed reasoning blocks
+for i, details := range message.ReasoningDetails {
+  if details.Type == "text" {
+    fmt.Printf("Thinking block %d:\n%s\n", i, details.Text)
+  }
+}
+
+// Access final answer
+fmt.Printf("Answer:\n%s\n", message.Content)
+```
+
+</Tab>
+</Tabs>
+
+#### Conversion Summary
+
+**Bifrost → Gemini (Request)**:
+
+| Input | Gemini 2.5 | Gemini 3.0+ | Note |
+|-------|------------|-------------|------|
+| `max_tokens: 4096` | `thinking_budget: 4096` | `thinking_budget: 4096` | Direct pass-through |
+| `max_tokens: -1` | `thinking_budget: -1` | `thinking_budget: -1` | Dynamic budget |
+| `max_tokens: 0` | `thinking_budget: 0` | `thinking_budget: 0` | Disabled |
+| `effort: "high"` only | `thinking_budget: 3482`* | `thinking_level: "high"` | Estimated or native |
+| `effort: "medium"` only | `thinking_budget: 2330`* | `thinking_level: "medium"` or `"high"`** | Estimated or native |
+| Both `effort` + `max_tokens` | Uses `max_tokens` | Uses `max_tokens` | Priority rule |
+
+\* Assumes `max_completion_tokens: 8192` (default), uses estimation formula  
+\*\* Pro models convert `"medium"` to `"high"`
+
+**Gemini → Bifrost (Response)**:
+
+| Gemini Field | Bifrost Field | Conversion |
+|--------------|---------------|------------|
+| `thinking_budget` | `reasoning.max_tokens` | Direct mapping |
+| `thinking_level` | `reasoning.effort` | Level → effort mapping |
+| `thought: true` parts | `reasoning_details[]` | Array of reasoning blocks |
+
+**Code References**: 
+- `core/providers/gemini/utils.go` (Chat Completions)
+- `core/providers/gemini/responses.go` (Responses API)
+- `core/providers/gemini/types.go` (Constants)
+
+---
+
+## Two Reasoning Methods: Effort vs. Max Tokens
+
+Bifrost supports two distinct reasoning models across different providers:
+
+### Reasoning Model Types
+
+| Model | Providers | Request Field | Native Format |
+|-------|-----------|---------------|---------------|
+| **Effort-Based** | OpenAI, AWS Bedrock Nova | `reasoning.effort` | `reasoning_effort` (Chat) / `effort` (Responses) |
+| **Max-Tokens-Based** | Anthropic, Cohere, Gemini | `reasoning.max_tokens` | `thinking.budget_tokens` |
+
+**Important**: Both effort and max_tokens can be specified in a single request. Bifrost uses a **priority hierarchy** to determine which field is used.
+
+### Priority Logic: Native vs. Estimated
+
+When both `effort` and `max_tokens` are present in a request, Bifrost prioritizes the **native compatible field** for the target provider:
+
+#### **For Max-Tokens-Based Providers** (Anthropic, Cohere, Gemini)
+
+```
+1. If reasoning.max_tokens is provided → USE IT (native field)
+2. Else if reasoning.effort is provided → ESTIMATE max_tokens from effort
+3. Else → disable reasoning
+```
+
+**Example** (Cohere):
+```json
+// Request with both fields
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 2000
+  }
+}
+```
+
+**Result**: Uses `max_tokens: 2000` directly, ignores `effort`
+
+#### **For Effort-Based Providers** (OpenAI, AWS Bedrock Nova)
+
+```
+1. If reasoning.effort is provided → USE IT (native field)
+2. Else if reasoning.max_tokens is provided → ESTIMATE effort from max_tokens
+3. Else → disable reasoning
+```
+
+**Example** (OpenAI Chat Completions):
+```json
+// Request with both fields
+{
+  "reasoning": {
+    "effort": "high",
+    "max_tokens": 2000
+  }
+}
+```
+
+**Result**: Uses `effort: "high"` directly, strips `max_tokens` from JSON
+
+<Accordion title="Why Priority Matters">
+
+**Reason 1: Accuracy** - Native fields provide direct control without estimation loss
+
+**Reason 2: Consistency** - Using native fields ensures the exact user intent is preserved
+
+**Reason 3: Performance** - Avoids unnecessary conversions when native field is already provided
+
+</Accordion>
+
+---
+
+## Estimator Functions
+
+Bifrost provides two estimator functions to convert between reasoning methods. These are used when the native field is not available.
+
+### Function 1: Effort → Max Tokens
+
+**Function**: `GetBudgetTokensFromReasoningEffort()`
+
+**File**: `core/providers/utils/utils.go:1350-1387`
+
+**Signature**:
+```go
+func GetBudgetTokensFromReasoningEffort(
+    effort string,           // "minimal", "low", "medium", "high"
+    minBudgetTokens int,     // Provider-specific minimum (e.g., 1024 for Anthropic)
+    maxTokens int,           // Total completion tokens available
+) (int, error)
+```
+
+**Algorithm**:
+
+```
+1. Define ratio for effort level:
+   - "minimal"  → 2.5%  (0.025)
+   - "low"      → 15%   (0.15)
+   - "medium"   → 42.5% (0.425)
+   - "high"     → 80%   (0.80)
+
+2. Calculate budget:
+   budget = minBudgetTokens + (ratio × (maxTokens - minBudgetTokens))
+
+3. Clamp to valid range:
+   if budget < minBudgetTokens → budget = minBudgetTokens
+   if budget > maxTokens → budget = maxTokens
+```
+
+**Conversion Examples** (with `minBudgetTokens=1024`, `maxTokens=4096`):
+
+| Effort | Ratio | Calculation | Result |
+|--------|-------|-------------|--------|
+| `minimal` | 2.5% | 1024 + 0.025 × 3072 | 1101 → 1024* |
+| `low` | 15% | 1024 + 0.15 × 3072 | 1485 |
+| `medium` | 42.5% | 1024 + 0.425 × 3072 | 2330 |
+| `high` | 80% | 1024 + 0.80 × 3072 | 3482 |
+
+<Note>
+*When result is below minimum, clamped to minBudgetTokens (for Anthropic minimum of 1024)
+</Note>
+
+**Error Handling**:
+```go
+if minBudgetTokens > maxTokens {
+    return 0, fmt.Errorf("max_tokens must be > minBudgetTokens")
+}
+```
+
+**Code Example**:
+```go
+// Cohere: Convert effort to token budget
+budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
+    "high",                    // effort
+    1,                         // Cohere min
+    4096,                      // max completion tokens
+)
+// Returns: 3277 tokens
+```
+
+### Function 2: Max Tokens → Effort
+
+**Function**: `GetReasoningEffortFromBudgetTokens()`
+
+**File**: `core/providers/utils/utils.go:1308-1345`
+
+**Signature**:
+```go
+func GetReasoningEffortFromBudgetTokens(
+    budgetTokens int,        // Reasoning token budget
+    minBudgetTokens int,     // Provider-specific minimum
+    maxTokens int,           // Total completion tokens available
+) string                     // Returns: "low", "medium", "high"
+```
+
+**Algorithm**:
+
+```
+1. Normalize budget to valid range:
+   if budget < min → budget = min
+   if budget > max → budget = max
+
+2. Calculate ratio:
+   ratio = (budgetTokens - minBudgetTokens) / (maxTokens - minBudgetTokens)
+
+3. Map ratio to effort level:
+   if ratio ≤ 0.25  → "low"
+   if ratio ≤ 0.60  → "medium"
+   if ratio > 0.60  → "high"
+```
+
+**Conversion Examples** (with `minBudgetTokens=1024`, `maxTokens=4096`):
+
+| Budget Tokens | Ratio | Effort |
+|---|---|---|
+| 1024 | 0% | `low` |
+| 1101 | 2.5% | `low` |
+| 1500 | 15.6% | `low` |
+| 1900 | 28.6% | `medium` |
+| 2500 | 48.1% | `medium` |
+| 3000 | 64.5% | `high` |
+| 3400 | 77.6% | `high` |
+
+**Defensive Defaults**:
+```go
+if budgetTokens <= 0 {
+    return "none"
+}
+if maxTokens <= 0 {
+    return "medium"  // Safe default
+}
+if maxTokens <= minBudgetTokens {
+    return "high"    // Can't calculate ratio
+}
+```
+
+**Code Example**:
+```go
+// Convert Anthropic budget back to effort for display
+effort := providerUtils.GetReasoningEffortFromBudgetTokens(
+    3000,   // budget tokens from Anthropic response
+    1024,   // Anthropic minimum
+    4096,   // max tokens
+)
+// Returns: "high"
+```
+
+---
+
+## Provider-Specific Constants
+
+Different providers have different constraints on reasoning budget:
+
+### Min Budget Constants
+
+| Provider | File | MinBudgetTokens | Reason |
+|----------|------|---|---|
+| Anthropic | `core/providers/anthropic/types.go` | **1024** | Anthropic API requirement |
+| Bedrock Anthropic | `core/providers/bedrock/types.go` | **1024** | Same as Anthropic |
+| Bedrock Nova | `core/providers/bedrock/types.go` | 1 | More flexible |
+| Cohere | `core/providers/cohere/types.go` | 1 | Flexible |
+| Gemini | `core/providers/gemini/types.go` | 1024 | Default minimum for conversions |
+
+### Default Completion Tokens (for ratio calculation)
+
+When `max_completion_tokens` is not provided, these defaults are used for ratio calculations:
+
+| Provider | Default | File |
+|----------|---------|------|
+| OpenAI, Anthropic, Cohere, Bedrock | 4096 | `core/providers/*/types.go` |
+| Gemini | 8192 | `core/providers/gemini/types.go` |
+
+---
+
+## Effort-to-Token Conversion Examples
+
+### Example 1: Estimate tokens from effort (Anthropic)
+
+<Tabs>
+<Tab title="JSON">
+
+**Input**:
+```json
+{
+  "model": "anthropic/claude-3-5-sonnet",
+  "max_completion_tokens": 2000,
+  "reasoning": {
+    "effort": "high"
+  }
+}
+```
+
+**Conversion Process**:
+1. `effort = "high"` → `ratio = 0.80`
+2. `minBudgetTokens = 1024` (Anthropic)
+3. `maxCompletionTokens = 2000`
+4. `budget = 1024 + (0.80 × (2000 - 1024))`
+5. `budget = 1024 + (0.80 × 976)`
+6. `budget = 1024 + 780`
+7. **Result: 1804 tokens**
+
+**Anthropic Request Generated**:
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1804
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+import (
+  "github.com/maximhq/bifrost/core/providers/utils"
+  "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Using Bifrost Go SDK
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Anthropic,
+  Model:    "claude-3-5-sonnet-20241022",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(2000),
+    Reasoning: &schemas.ChatReasoning{
+      Effort: schemas.Ptr("high"), // Effort provided, max_tokens not set
+    },
+  },
+}
+
+// Bifrost automatically converts effort to budget tokens:
+// 1. Get ratio for "high": 0.80
+// 2. Calculate: 1024 + (0.80 × (2000 - 1024)) = 1804
+// 3. Send to Anthropic with budget_tokens: 1804
+
+// Alternatively, manually call the estimator function:
+budgetTokens, _ := utils.GetBudgetTokensFromReasoningEffort(
+  "high",     // effort
+  1024,       // Anthropic minimum
+  2000,       // max completion tokens
+)
+// Returns: 1804
+```
+
+</Tab>
+</Tabs>
+
+### Example 2: Estimate effort from tokens (Bedrock Nova)
+
+<Tabs>
+<Tab title="JSON">
+
+**Input**:
+```json
+{
+  "model": "bedrock/us.amazon.nova-pro-v1:0",
+  "max_completion_tokens": 4096,
+  "reasoning": {
+    "max_tokens": 2000
+  }
+}
+```
+
+**Conversion Process**:
+1. `budgetTokens = 2000`
+2. `minBudgetTokens = 1` (Nova)
+3. `maxCompletionTokens = 4096`
+4. `ratio = (2000 - 1) / (4096 - 1)`
+5. `ratio = 1999 / 4095`
+6. `ratio = 0.488` (48.8%)
+7. Since `0.25 < 0.488 ≤ 0.60` → **Result: "medium"**
+
+**Bedrock Nova Request Generated**:
+```json
+{
+  "reasoningConfig": {
+    "type": "enabled",
+    "maxReasoningEffort": "medium"
+  }
+}
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+import (
+  "github.com/maximhq/bifrost/core/providers/utils"
+  "github.com/maximhq/bifrost/core/schemas"
+)
+
+// Using Bifrost Go SDK with max_tokens (not effort)
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Bedrock,
+  Model:    "us.amazon.nova-pro-v1:0",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      MaxTokens: schemas.Ptr(2000), // Max tokens provided, effort not set
+    },
+  },
+}
+
+// Bifrost automatically estimates effort from max_tokens:
+// 1. Calculate ratio: (2000 - 1) / (4096 - 1) = 0.488
+// 2. Since 0.25 < 0.488 ≤ 0.60 → "medium"
+// 3. Send to Bedrock Nova with effort: "medium"
+
+// Alternatively, manually call the estimator function:
+effort := utils.GetReasoningEffortFromBudgetTokens(
+  2000,  // budget tokens
+  1,     // Nova minimum
+  4096,  // max completion tokens
+)
+// Returns: "medium"
+```
+
+</Tab>
+</Tabs>
+
+### Example 3: Both fields provided (priority used)
+
+<Tabs>
+<Tab title="JSON">
+
+**Input**:
+```json
+{
+  "model": "anthropic/claude-3-5-sonnet",
+  "max_completion_tokens": 4096,
+  "reasoning": {
+    "effort": "medium",
+    "max_tokens": 2500
+  }
+}
+```
+
+**Logic for Max-Tokens-Based Provider**:
+1. Check: Is `max_tokens` provided? → **YES**
+2. Use `max_tokens` directly (ignore `effort`)
+3. Validate: `2500 >= 1024`? → **YES**
+
+**Anthropic Request Generated**:
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 2500
+  }
+}
+```
+
+**Note**: The `effort: "medium"` is completely ignored because `max_tokens` takes priority.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+import "github.com/maximhq/bifrost/core/schemas"
+
+// Using Bifrost Go SDK with BOTH effort and max_tokens
+chatReq := &schemas.BifrostChatRequest{
+  Provider: schemas.Anthropic,
+  Model:    "claude-3-5-sonnet-20241022",
+  Input:    messages,
+  Params: &schemas.ChatParameters{
+    MaxCompletionTokens: schemas.Ptr(4096),
+    Reasoning: &schemas.ChatReasoning{
+      Effort:    schemas.Ptr("medium"),   // Provided but ignored
+      MaxTokens: schemas.Ptr(2500),       // This takes priority
+    },
+  },
+}
+
+// Bifrost Priority Logic:
+// 1. For max-tokens-based providers (Anthropic):
+//    → Check if max_tokens is provided? YES
+//    → Use it directly: 2500
+//    → Ignore effort: "medium"
+//    → Validate: 2500 >= 1024? YES ✓
+// 2. Send to Anthropic with budget_tokens: 2500
+
+// Result: effort is completely ignored, max_tokens is used
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Response Format
+
+### Bifrost Standard Response
+
+All providers return reasoning in a normalized `reasoning_details` array:
+
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": "Final response text",
+      "reasoning_details": [
+        {
+          "index": 0,
+          "type": "text",
+          "text": "Step-by-step reasoning content...",
+          "signature": "optional_signature_for_verification"
+        }
+      ]
+    }
+  }]
+}
+```
+
+### Reasoning Details Fields
+
+| Field | Type | Description | Present In |
+|-------|------|-------------|------------|
+| `index` | `int` | Position in reasoning sequence | All |
+| `type` | `string` | Content type (`text`, `encrypted`, `summary`) | All |
+| `text` | `string` | Reasoning content | Chat Completions |
+| `summary` | `string` | Reasoning summary | Responses API |
+| `signature` | `string` | Cryptographic signature for verification | Anthropic, Bedrock |
+
+### Type Mappings
+
+| Reasoning Type | When Used | Source |
+|---|---|---|
+| `reasoning.text` | Direct thinking/reasoning content | Anthropic, Gemini, Bedrock |
+| `reasoning.encrypted` | Signature-verified reasoning | Anthropic, Bedrock Nova |
+| `reasoning.summary` | Summarized reasoning (Responses API) | All providers |
+
+<Note>
+**OpenAI Implementation**: OpenAI (both Chat Completions and Responses API) is effort-based, following the standard priority logic: if `effort` is provided, it's used directly; if only `max_tokens` is provided, effort is estimated from it. The `max_tokens` field is then cleared before JSON serialization via `MarshalJSON` (`core/providers/openai/types.go:383-453`), since OpenAI's APIs don't accept it.
+</Note>
+
+---
+
+## Streaming
+
+### Stream Event Types
+
+| Provider | Reasoning Event | Signature Event |
+|----------|-----------------|-----------------|
+| OpenAI | `reasoning` (top-level) | N/A |
+| Anthropic | `thinking_delta` | `signature_delta` |
+| Bedrock | `thinking_delta` | `signature_delta` |
+| Gemini | `thought` (in content) | `thought_signature` |
+
+### Anthropic Streaming Example
+
+```
+// Stream events
+event: content_block_start
+data: {"type": "content_block_start", "content_block": {"type": "thinking"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Let me"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": " analyze..."}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "delta": {"type": "signature_delta", "signature": "EqoB..."}}
+
+event: content_block_stop
+data: {"type": "content_block_stop"}
+```
+
+### Bifrost Stream Response
+
+```json
+// Thinking delta
+{
+  "choices": [{
+    "delta": {
+      "reasoning_details": [{
+        "index": 0,
+        "type": "text",
+        "text": "Let me analyze..."
+      }]
+    }
+  }]
+}
+
+// Signature delta
+{
+  "choices": [{
+    "delta": {
+      "reasoning_details": [{
+        "index": 0,
+        "signature": "EqoB..."
+      }]
+    }
+  }]
+}
+```
+
+---
+
+## Caveats Summary
+
+<Accordion title="Minimum Budget (Anthropic/Bedrock)">
+**Severity**: High
+**Behavior**: `reasoning.max_tokens` must be >= 1024
+**Impact**: Requests with lower values fail with error
+**Workaround**: Always set max_tokens >= 1024 for Anthropic/Bedrock
+</Accordion>
+
+<Accordion title="Dynamic Budget Not Supported">
+**Severity**: Medium
+**Behavior**: `reasoning.max_tokens = -1` converted to `1024`
+**Impact**: Dynamic budgeting not available on Anthropic/Bedrock
+**Workaround**: Set explicit token budget
+</Accordion>
+
+<Accordion title="Effort Level Normalization">
+**Severity**: Low
+**Behavior**: OpenAI's `minimal` converted to `low` when routing to other providers
+**Impact**: Slightly different reasoning behavior
+</Accordion>
+
+<Accordion title="Signature Field Provider-Specific">
+**Severity**: Low
+**Behavior**: `signature` field only present in Anthropic/Bedrock responses
+**Impact**: Signature-based verification only available for these providers
+</Accordion>
+
+<Accordion title="Thinking Type Always Enabled">
+**Severity**: Low
+**Behavior**: Anthropic's `thinking.type` always set to `"enabled"` regardless of effort
+**Impact**: Cannot disable thinking once reasoning param is present
+</Accordion>
+
+<Accordion title="Gemini: Only One Parameter Sent">
+**Severity**: Medium
+**Behavior**: When both `effort` and `max_tokens` are provided, only `thinkingBudget` is sent to Gemini (effort is dropped)
+**Impact**: Effort value is completely ignored when max_tokens is present
+**Workaround**: Provide only the parameter you want to use
+</Accordion>
+
+<Accordion title="Gemini: Model Version Differences">
+**Severity**: Medium
+**Behavior**: Gemini 2.5 only supports `thinkingBudget`, while 3.0+ supports both `thinkingBudget` and `thinkingLevel`
+**Impact**: Effort-only requests on 2.5 are converted to budget; on 3.0+ they use native levels
+**Note**: Bifrost automatically detects version and uses appropriate conversion
+</Accordion>
+
+<Accordion title="Gemini Pro: Limited Level Support">
+**Severity**: Low
+**Behavior**: Pro models only support "low" and "high" thinking levels
+**Impact**: `"minimal"` → `"low"`, `"medium"` → `"high"` for Pro models
+**Note**: Non-Pro models support all four levels: minimal, low, medium, high
+</Accordion>
+
+---
+
+## Complete Provider Comparison
+
+### Reasoning Model
+
+| Provider | Model Type | Budget Type | Min Budget | Signature Support |
+|----------|-----------|-------------|------------|------------------|
+| OpenAI | Effort-based | Effort-based | None | ❌ |
+| Anthropic | Thinking blocks | Token budget | **1024** | ✅ |
+| Bedrock (Anthropic) | Reasoning config | Token budget | **1024** | ✅ |
+| Bedrock (Nova) | Reasoning config | Effort-based | None | ❌ |
+| Gemini 2.5+ | Thinking config | Token budget | 1024 | ✅ |
+| Gemini 3.0+ | Thinking config | Dual (budget + level) | 1024 | ✅ |
+
+### Parameter Support
+
+| Provider | `effort` | `max_tokens` | `summary` | Streaming |
+|----------|----------|------------|----------|-----------|
+| OpenAI | ✅ (4 levels) | ✅ | ❌ | ✅ |
+| Anthropic | ❌ (binary) | ✅ | ✅ | ✅ |
+| Bedrock (Anthropic) | ❌ (binary) | ✅ | ✅ | ✅ |
+| Bedrock (Nova) | ✅ (3 levels) | ⚠️ (ignored) | ❌ | ✅ |
+| Gemini 2.5+ | ⚠️ (converts to budget) | ✅ | ❌ | ✅ |
+| Gemini 3.0+ | ✅ (4 levels) | ✅ | ❌ | ✅ |
+
+---
+
+## Troubleshooting
+
+### Anthropic: "reasoning.max_tokens must be >= 1024"
+
+**Cause**: Attempting to use reasoning with `max_tokens < 1024`
+
+**Solution**: Ensure `reasoning.max_tokens >= 1024` for Anthropic/Bedrock Anthropic models
+
+```json
+// ❌ Invalid
+{"reasoning": {"effort": "high", "max_tokens": 500}}
+
+// ✅ Valid
+{"reasoning": {"effort": "high", "max_tokens": 1024}}
+```
+
+### OpenAI: Model doesn't support reasoning
+
+**Cause**: Using an older model that doesn't support reasoning (e.g., `gpt-4-turbo`)
+
+**Solution**: Use models with reasoning support: `gpt-4o`, `gpt-4o-mini` (o1 series with native reasoning)
+
+### Bedrock Nova: `max_tokens` parameter being ignored
+
+**Expected Behavior**: Bedrock Nova uses effort-based reasoning only
+
+**Solution**: Provide `effort` parameter instead of `max_tokens` for Nova models
+
+```json
+// ✅ Correct for Nova
+{"reasoning": {"effort": "high"}}
+```
+
+---

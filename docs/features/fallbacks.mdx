@@ -1,0 +1,187 @@
+---
+title: "Fallbacks"
+description: "Automatic failover between AI providers and models. When your primary provider fails, Bifrost seamlessly switches to backup providers without interrupting your application."
+icon: "list-check"
+---
+
+## Automatic Provider Failover
+
+Fallbacks provide automatic failover when your primary AI provider experiences issues. Whether it's rate limiting, outages, or model unavailability, Bifrost automatically tries backup providers in the order you specify until one succeeds.
+
+When a fallback is triggered, Bifrost treats it as a completely new request - all configured plugins (caching, governance, logging, etc.) run again for the fallback provider, ensuring consistent behavior across all providers.
+
+## How Fallbacks Work
+
+When you configure fallbacks, Bifrost follows this process:
+
+1. **Primary Attempt**: Tries your main provider/model first
+2. **Automatic Detection**: If the primary fails (network error, rate limit, model unavailable), Bifrost detects the failure
+3. **Sequential Fallbacks**: Tries each fallback provider in order until one succeeds
+4. **Success Response**: Returns the response from the first successful provider
+5. **Complete Failure**: If all providers fail, returns the original error from the primary provider
+
+Each fallback attempt is treated as a fresh request, so all your configured plugins (semantic caching, governance rules, monitoring) apply to whichever provider ultimately handles the request.
+
+## Implementation Examples
+
+<Tabs group="fallbacks">
+<Tab title="Gateway">
+
+```bash
+# Chat completion with multiple fallbacks
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Explain quantum computing in simple terms"
+      }
+    ],
+    "fallbacks": [
+      "anthropic/claude-3-5-sonnet-20241022",
+      "bedrock/anthropic.claude-3-sonnet-20240229-v1:0"
+    ],
+    "max_tokens": 1000,
+    "temperature": 0.7
+  }'
+```
+
+**Response (from whichever provider succeeded):**
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant", 
+        "content": "Quantum computing is like having a super-powered calculator..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 12,
+    "completion_tokens": 150,
+    "total_tokens": 162
+  },
+  "extra_fields": {
+    "provider": "anthropic",
+    "latency": 1.2
+  }
+}
+```
+
+</Tab>
+
+<Tab title="Go SDK">
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "github.com/maximhq/bifrost"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func chatWithFallbacks(client *bifrost.Bifrost) {
+    ctx := context.Background()
+    
+    // Chat request with multiple fallbacks
+    response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini",
+        Input: []schemas.ChatMessage{
+            {
+                Role: schemas.ChatMessageRoleUser,
+                Content: schemas.ChatMessageContent{
+                    ContentStr: bifrost.Ptr("Explain quantum computing in simple terms"),
+                },
+            },
+        },
+        // Fallback chain: OpenAI → Anthropic → Bedrock
+        Fallbacks: []schemas.Fallback{
+            {
+                Provider: schemas.Anthropic,
+                Model:    "claude-3-5-sonnet-20241022",
+            },
+            {
+                Provider: schemas.Bedrock,
+                Model:    "anthropic.claude-3-sonnet-20240229-v1:0",
+            },
+        },
+        Params: &schemas.ChatParameters{
+            MaxCompletionTokens:   bifrost.Ptr(1000),
+            Temperature: bifrost.Ptr(0.7),
+        },
+    })
+    
+    if err != nil {
+        fmt.Printf("All providers failed: %v\n", err)
+        return
+    }
+    
+    // Success! Response came from whichever provider worked
+    fmt.Printf("Response from %s: %s\n", 
+        response.ExtraFields.Provider, 
+        *response.Choices[0].BifrostNonStreamResponseChoice.Message.Content.ContentStr)
+}
+```
+
+</Tab>
+
+</Tabs>
+
+## Real-World Scenarios
+
+**Scenario 1: Rate Limiting**
+- Primary: OpenAI hits rate limit → Fallback: Anthropic succeeds
+- Your application continues without interruption
+
+**Scenario 2: Model Unavailability** 
+- Primary: Specific model unavailable → Fallback: Different provider with similar model
+- Seamless transition to equivalent capability
+
+**Scenario 3: Provider Outage**
+- Primary: Provider experiencing downtime → Fallback: Alternative provider
+- Business continuity maintained
+
+**Scenario 4: Cost Optimization**
+- Primary: Premium model for quality → Fallback: Cost-effective alternative if budget exceeded
+- Governance rules can trigger fallbacks based on usage
+
+## Fallback Behavior Details
+
+**What Triggers Fallbacks:**
+- Network connectivity issues
+- Provider API errors (500, 502, 503, 504)
+- Rate limiting (429 errors)
+- Model unavailability
+- Request timeouts
+- Authentication failures
+
+**What Preserves Original Error:**
+- Request validation errors (malformed requests)
+- Plugin-enforced blocks (governance violations)
+- Certain provider-specific errors marked as non-retryable
+
+**Plugin Execution:**
+When a fallback is triggered, the fallback request is treated as completely new:
+- Semantic cache checks run again (different provider might have cached responses)
+- Governance rules apply to the new provider
+- Logging captures the fallback attempt
+- All configured plugins execute fresh for the fallback provider
+
+**Plugin Fallback Control:**
+Plugins can control whether fallbacks should be triggered based on their specific logic. For example:
+- A custom plugin might prevent fallbacks for certain types of errors
+- Security plugins might disable fallbacks for compliance reasons
+
+When a plugin determines that fallbacks should not be attempted, it can prevent the fallback mechanism entirely, ensuring the original error is returned immediately.
+
+This ensures consistent behavior regardless of which provider ultimately handles your request, while giving plugins full control over the fallback decision process. And you can always know which provider handled your request via `extra_fields`.

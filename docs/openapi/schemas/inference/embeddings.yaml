@@ -1,0 +1,76 @@
+# Embeddings API schemas
+
+EmbeddingRequest:
+  type: object
+  required:
+    - model
+    - input
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    input:
+      $ref: '#/EmbeddingInput'
+    fallbacks:
+      type: array
+      items:
+        type: string
+    encoding_format:
+      type: string
+      enum: [float, base64]
+    dimensions:
+      type: integer
+
+EmbeddingInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        type: string
+    - type: array
+      items:
+        type: integer
+    - type: array
+      items:
+        type: array
+        items:
+          type: integer
+  description: Input for embedding - text or token arrays
+
+EmbeddingResponse:
+  type: object
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/EmbeddingData'
+    model:
+      type: string
+    object:
+      type: string
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+EmbeddingData:
+  type: object
+  properties:
+    index:
+      type: integer
+    object:
+      type: string
+    embedding:
+      $ref: '#/EmbeddingStruct'
+
+EmbeddingStruct:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        type: number
+    - type: array
+      items:
+        type: array
+        items:
+          type: number

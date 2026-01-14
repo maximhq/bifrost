@@ -1,0 +1,49 @@
+name: PR Test Notifier
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  # Check if pipeline should be skipped based on first line of commit message
+  check-skip:
+    runs-on: ubuntu-latest
+    outputs:
+      should-skip: ${{ steps.check.outputs.should-skip }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if pipeline should be skipped
+        id: check
+        run: |
+          COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
+          if [[ "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
+            echo "should-skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-skip=false" >> $GITHUB_OUTPUT
+          fi
+
+  notify:
+    needs: [check-skip]
+    if: needs.check-skip.outputs.should-skip != 'true'
+    name: Post Test Instructions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post comment with test trigger instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "## 🧪 Test Suite Available
+
+          This PR can be tested by a repository admin.
+
+          [Run tests for PR #${{ github.event.pull_request.number }}](https://github.com/${{ github.repository }}/actions/workflows/pr-tests.yml)"

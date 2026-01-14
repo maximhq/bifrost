@@ -1,0 +1,51 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "config_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../tests/configs/partial/config.db"
+        }
+    },
+    "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../tests/configs/partial/logs.db"
+        }
+    },
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "anthropic": {
+            "keys": [
+                {
+                    "name": "anthropic-key-1",
+                    "value": "sk-456",
+                    "weight": 1
+                }
+            ]
+        },
+        "bedrock": {
+            "keys": [
+                {
+                    "name": "bedrock-key-1",
+                    "value": "ak-123",
+                    "weight": 1
+                },
+                {
+                    "name": "bedrock-key-2",
+                    "value": "ak-456",
+                    "weight": 1
+                }
+            ]
+        }
+    }
+}

@@ -1,0 +1,251 @@
+# Configuration: Multiple Providers with API Keys and Virtual Keys
+# Usage: helm install bifrost ./bifrost -f values-examples/providers-and-virtual-keys.yaml
+#
+# This example demonstrates:
+# - Multiple providers (OpenAI, Anthropic, Groq) with 2-3 API keys each
+# - Virtual keys with provider restrictions
+# - Budgets and rate limits for governance
+#
+# Note: API keys in this example are dummy values for demonstration purposes.
+# Replace with real keys in production.
+
+# Image configuration
+image:
+  repository: docker.io/maximhq/bifrost
+  pullPolicy: IfNotPresent
+  tag: "v1.3.55"
+
+replicaCount: 1
+
+# Service
+service:
+  type: ClusterIP
+  port: 8080
+
+# Storage configuration - using SQLite for simplicity
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 5Gi
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# No PostgreSQL needed for this example
+postgresql:
+  enabled: false
+
+# No vector store for this example
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  appDir: /app/data
+  port: 8080
+  host: 0.0.0.0
+  logLevel: info
+  logStyle: json
+  
+  client:
+    dropExcessRequests: false
+    initialPoolSize: 100
+    allowedOrigins:
+      - "*"
+    enableLogging: true
+    enableGovernance: true
+    enforceGovernanceHeader: false
+    allowDirectKeys: false
+    maxRequestBodySizeMb: 100
+  
+  # ==========================================================================
+  # PROVIDERS CONFIGURATION
+  # ==========================================================================
+  # Configure multiple providers with 2-3 API keys each.
+  # Keys have weights for load balancing - higher weight = more traffic.
+  # Replace dummy values with real API keys in production.
+  
+  providers:
+    # OpenAI - 3 API keys with different weights
+    openai:
+      keys:
+        - name: "openai-primary"
+          value: "sk-dummy-openai-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 2  # Gets 50% of traffic (2 out of 4 total weight)
+          models:          
+        - name: "openai-secondary"
+          value: "sk-dummy-openai-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1  # Gets 25% of traffic
+          models:
+        - name: "openai-backup"
+          value: "sk-dummy-openai-key-3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1  # Gets 25% of traffic
+          models:
+    
+    # Anthropic - 2 API keys
+    anthropic:
+      keys:
+        - name: "anthropic-primary"
+          value: "sk-ant-dummy-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1
+          models:
+        - name: "anthropic-secondary"
+          value: "sk-ant-dummy-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1
+          models:
+    
+    # Groq - 2 API keys
+    groq:
+      keys:
+        - name: "groq-primary"
+          value: "gsk_dummy_groq_key_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1
+          models:
+        - name: "groq-secondary"
+          value: "gsk_dummy_groq_key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          weight: 1
+          models:
+  
+  # ==========================================================================
+  # GOVERNANCE CONFIGURATION
+  # ==========================================================================
+  # Configure budgets, rate limits, and virtual keys for access control
+  
+  governance:
+    # Budget configurations - limit spending per period
+    budgets:
+      - id: "budget-dev"
+        max_limit: 50  # $50 limit
+        reset_duration: "1M"  # Resets monthly
+      - id: "budget-production"
+        max_limit: 500  # $500 limit
+        reset_duration: "1M"
+      - id: "budget-testing"
+        max_limit: 10  # $10 limit
+        reset_duration: "1d"  # Resets daily
+    
+    # Rate limit configurations - limit requests/tokens per period
+    rateLimits:
+      - id: "rate-limit-standard"
+        token_max_limit: 100000
+        token_reset_duration: "1h"
+        request_max_limit: 1000
+        request_reset_duration: "1h"
+      - id: "rate-limit-high"
+        token_max_limit: 500000
+        token_reset_duration: "1h"
+        request_max_limit: 5000
+        request_reset_duration: "1h"
+      - id: "rate-limit-testing"
+        token_max_limit: 10000
+        token_reset_duration: "1h"
+        request_max_limit: 100
+        request_reset_duration: "1h"
+    
+    # Virtual Keys - access tokens for different use cases
+    virtualKeys:
+      # Development virtual key - access to ALL providers (no restrictions)
+      - id: "vk-development"
+        name: "Development Key"
+        value: "vk-dev-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        is_active: true
+        budget_id: "budget-dev"
+        rate_limit_id: "rate-limit-standard"
+        # No provider_configs means all providers are accessible
+      
+      # OpenAI-only virtual key - restricted to OpenAI provider with specific keys
+      - id: "vk-openai-only"
+        name: "OpenAI Only Key"
+        value: "vk-openai-yyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            # Restrict to primary and secondary keys only (exclude backup)
+            keys:
+              - name: "openai-primary"
+              - name: "openai-secondary"
+      
+      # Anthropic + Groq virtual key - access to both providers with key restrictions
+      - id: "vk-anthropic-groq"
+        name: "Anthropic and Groq Key"
+        value: "vk-anthgroq-zzzzzzzzzzzzzzzzzzzzzzzzzz"
+        is_active: true
+        budget_id: "budget-production"
+        rate_limit_id: "rate-limit-high"
+        provider_configs:
+          - provider: "anthropic"
+            weight: 1
+            # Only use primary anthropic key
+            keys:
+              - name: "anthropic-primary"
+          - provider: "groq"
+            weight: 1
+            # Use both groq keys
+            keys:
+              - name: "groq-primary"
+              - name: "groq-secondary"
+      
+      # Testing virtual key - limited budget and rate for testing
+      - id: "vk-testing"
+        name: "Testing Key"
+        value: "vk-test-tttttttttttttttttttttttttttt"
+        is_active: true
+        budget_id: "budget-testing"
+        rate_limit_id: "rate-limit-testing"
+        provider_configs:
+          - provider: "openai"
+            weight: 1
+            allowed_models:
+              - "gpt-4o-mini"  # Only allow the cheaper model for testing
+            # Use only the backup key for testing purposes
+            keys:
+              - name: "openai-backup"
+  
+  # Plugins configuration
+  plugins:
+    telemetry:
+      enabled: false
+    logging:
+      enabled: true
+      config: {}
+    governance:
+      enabled: true
+      config:
+        is_vk_mandatory: false  # Set to true to require virtual key on all requests
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /metrics
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+autoscaling:
+  enabled: false

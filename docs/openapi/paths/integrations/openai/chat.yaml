@@ -1,0 +1,76 @@
+# OpenAI Integration - Chat Completions Endpoints
+
+chat-completions:
+  post:
+    operationId: openaiCreateChatCompletion
+    summary: Create chat completion (OpenAI format)
+    description: |
+      Creates a chat completion using OpenAI-compatible format.
+      Supports streaming via SSE.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/chat/completions`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+# Azure deployment path
+azure-chat-completions:
+  post:
+    operationId: azureCreateChatCompletion
+    summary: Create chat completion (Azure OpenAI)
+    description: |
+      Creates a chat completion using Azure OpenAI deployment.
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+        description: Azure API version
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

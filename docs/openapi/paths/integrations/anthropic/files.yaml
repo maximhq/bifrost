@@ -1,0 +1,189 @@
+# Anthropic Integration - Files API Endpoints
+
+files:
+  post:
+    operationId: anthropicUploadFile
+    summary: Upload file (Anthropic format)
+    description: |
+      Uploads a file. Use x-model-provider header to specify the provider.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider to use (defaults to anthropic)
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/files.yaml#/AnthropicFileUploadRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/files.yaml#/AnthropicFileUploadResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+  get:
+    operationId: anthropicListFiles
+    summary: List files (Anthropic format)
+    description: |
+      Lists uploaded files.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider to use (defaults to anthropic)
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 30
+        description: Maximum files to return
+      - name: after_id
+        in: query
+        schema:
+          type: string
+        description: Cursor for pagination
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/files.yaml#/AnthropicFileListResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+
+files-content:
+  get:
+    operationId: anthropicGetFileContent
+    summary: Get file content (Anthropic format)
+    description: |
+      Retrieves file content. Returns raw binary file data when Accept header is set to application/octet-stream,
+      or file metadata as JSON when Accept header is set to application/json.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider for the file
+      - name: Accept
+        in: header
+        schema:
+          type: string
+          enum: [application/json, application/octet-stream]
+          default: application/json
+        description: Response content type - use application/octet-stream for binary download
+    responses:
+      '200':
+        description: |
+          Successful response. Returns file metadata as JSON or raw binary file content.
+          When returning binary content, the Content-Type header indicates the file's MIME type
+          and Content-Disposition header may include the filename.
+        headers:
+          Content-Type:
+            schema:
+              type: string
+            description: MIME type of the file (e.g., application/pdf, image/png, text/plain)
+          Content-Disposition:
+            schema:
+              type: string
+            description: Attachment filename directive (e.g., attachment; filename="document.pdf")
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/files.yaml#/AnthropicFileRetrieveResponse'
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              description: Raw binary file content
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+
+files-by-id:
+  delete:
+    operationId: anthropicDeleteFile
+    summary: Delete file (Anthropic format)
+    description: |
+      Deletes an uploaded file.
+    tags:
+      - Anthropic Integration
+    parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: File ID to delete
+      - name: x-model-provider
+        in: header
+        schema:
+          type: string
+        description: Provider for the file
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/files.yaml#/AnthropicFileDeleteResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

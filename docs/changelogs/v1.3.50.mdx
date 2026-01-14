@@ -1,0 +1,80 @@
+---
+title: "v1.3.50"
+description: "v1.3.50 changelog - 2025-12-17"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.3.50
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.3.50
+    docker run -p 8080:8080 maximhq/bifrost:v1.3.50
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.3.50">
+- feat: added handling for HTML and empty responses from providers
+- feat: added transcription support for mistral
+- feat: added transcription and speech support for azure
+- feat: adds new parameter for each provider key config `use_for_batch_apis`. This helps users to select which APIs or accounts to be used for Batch APIs.
+- feat: adds recalculate missing costs for logs - [@hpbyte](https://github.com/hpbyte)
+- chore: increased provider-level timeout limit to 48 hours
+- chore: bumped up Go version to 1.25.5
+- docs: updates key management links for integration docs - [@Georgehe4](https://github.com/Georgehe4)
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+- feat: prompt caching support for anthropic and bedrock(claude and nova models)
+- feat: reasoning support for bedrock nova 2 models
+- docs: updated langchain docs for reasoning and embedding
+
+</Update>
+<Update label="Core" description="1.2.39">
+- feat: added handling for HTML and empty responses from providers
+- feat: added transcription support for mistral
+- feat: added transcription and speech support for azure
+- feat: add audio token pricing support for models
+- feat: adds new parameter for each provider key config `use_for_batch_apis`. This helps users to select which APIs or accounts to be used for Batch APIs.
+- feat: adds s3 bucket config support for Bedrock provider. 
+- feat: prompt caching support for anthropic and bedrock(claude and nova models)
+- feat: reasoning support for bedrock nova 2 models
+
+</Update>
+<Update label="Framework" description="1.1.49">
+- chore: update core version to 1.2.39
+
+</Update>
+<Update label="governance" description="1.3.50">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="jsonparser" description="1.3.50">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="logging" description="1.3.50">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="maxim" description="1.4.50">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="mocker" description="1.3.49">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="otel" description="1.0.49">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="semanticcache" description="1.3.49">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>
+<Update label="telemetry" description="1.3.49">
+- chore: update core version to 1.2.39 and framework version to 1.1.49
+
+</Update>

@@ -1,0 +1,84 @@
+# LiteLLM - Bedrock-compatible Endpoints
+# Reuses Bedrock integration schemas
+
+converse:
+  post:
+    operationId: litellmBedrockConverse
+    summary: Converse with model (LiteLLM - Bedrock format)
+    description: |
+      Sends messages using AWS Bedrock Converse-compatible format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model ID
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+
+converse-stream:
+  post:
+    operationId: litellmBedrockConverseStream
+    summary: Stream converse with model (LiteLLM - Bedrock format)
+    description: |
+      Streams messages using AWS Bedrock Converse-compatible format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Model ID
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockConverseRequest'
+    responses:
+      '200':
+        description: Successful streaming response
+        content:
+          application/x-amz-eventstream:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/converse.yaml#/BedrockStreamEvent'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/bedrock/common.yaml#/BedrockError'

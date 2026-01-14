@@ -1,0 +1,24 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "config_store": {
+        "enabled": false
+    },
+    "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../tests/configs/withlogstore/logs.db"
+        }
+    },
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "sk-proj-abc",
+                    "weight": 1
+                }
+            ]
+        }
+    }
+}

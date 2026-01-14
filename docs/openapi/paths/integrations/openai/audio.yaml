@@ -1,0 +1,168 @@
+# OpenAI Integration - Audio Endpoints (Speech and Transcription)
+
+speech:
+  post:
+    operationId: openaiCreateSpeech
+    summary: Create speech (OpenAI TTS)
+    description: |
+      Generates audio from text using OpenAI TTS.
+      Supports streaming via SSE when stream_format is set to 'sse'.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/audio/speech`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          audio/opus:
+            schema:
+              type: string
+              format: binary
+          audio/aac:
+            schema:
+              type: string
+              format: binary
+          audio/flac:
+            schema:
+              type: string
+              format: binary
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-speech:
+  post:
+    operationId: azureCreateSpeech
+    summary: Create speech (Azure OpenAI TTS)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          audio/opus:
+            schema:
+              type: string
+              format: binary
+          audio/aac:
+            schema:
+              type: string
+              format: binary
+          audio/flac:
+            schema:
+              type: string
+              format: binary
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+transcriptions:
+  post:
+    operationId: openaiCreateTranscription
+    summary: Create transcription (OpenAI Whisper)
+    description: |
+      Transcribes audio into text using OpenAI Whisper.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/audio/transcriptions`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-transcriptions:
+  post:
+    operationId: azureCreateTranscription
+    summary: Create transcription (Azure OpenAI)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

@@ -1,0 +1,270 @@
+---
+title: "Mistral"
+description: "Mistral API conversion guide - parameter mapping, message handling, tool support, transcription, and streaming behavior"
+icon: "m"
+---
+
+## Overview
+
+Mistral is an **OpenAI-compatible provider** with custom compatibility handling for specific features. Bifrost converts requests to Mistral's expected format while supporting their unique API endpoints. Key characteristics:
+- **OpenAI-compatible format** - Chat and streaming endpoints
+- **Transcription API** - Native audio transcription support
+- **Tool calling support** - Function definitions with string-based tool choice
+- **Streaming support** - Server-Sent Events for chat and transcription
+- **Parameter compatibility** - max_completion_tokens → max_tokens conversion
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| List Models | ✅ | - | `/v1/models` |
+| Image Generation | ❌ | ❌ | - |
+| Text Completions | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Speech (TTS), Files, and Batch are not supported by the upstream Mistral API. Image Generation is not currently supported by Bifrost's Mistral integration (Mistral API supports image generation, but Bifrost has not yet implemented this feature). These return `UnsupportedOperationError`.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+Mistral supports most OpenAI chat completion parameters with some conversions. For standard OpenAI parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+### Parameter Mapping & Conversions
+
+| Parameter | OpenAI | Mistral | Notes |
+|-----------|--------|---------|-------|
+| `max_completion_tokens` | ✅ | `max_tokens` | **Conversion required** |
+| `temperature` | ✅ | ✅ | Direct pass-through |
+| `top_p` | ✅ | ✅ | Direct pass-through |
+| `stop` | ✅ | ✅ | Stop sequences |
+| `tools` | ✅ | ✅ | Function definitions |
+| `tool_choice` | String only | String only | **Limitations apply** |
+| `user` | ✅ | ✅ | Max 64 characters |
+| `frequency_penalty`, `presence_penalty` | ✅ | ✅ | Direct pass-through |
+
+### Critical Conversions
+
+**max_completion_tokens → max_tokens:**
+```json
+// Bifrost request
+{"max_completion_tokens": 4096}
+
+// Mistral API
+{"max_tokens": 4096}
+```
+
+**Tool Choice Simplification:**
+Mistral only supports simple string tool choice, not structured constraints:
+```json
+// OpenAI supports specific tool forcing
+{"tool_choice": {"type": "function", "function": {"name": "specific_tool"}}}
+
+// Mistral only supports
+{"tool_choice": "any"}  // or "none", "auto"
+```
+
+### Filtered Parameters
+
+Removed for Mistral compatibility:
+- `prompt_cache_key` - Not supported
+- `cache_control` - Stripped from content blocks
+- `verbosity` - Anthropic-specific
+- `store` - Not supported
+- `service_tier` - Not supported
+
+## Message Conversion
+
+Full OpenAI message support:
+- All roles: user, assistant, system, tool, developer
+- Content types: text, images, audio, files
+
+## Tool Conversion
+
+Tool definitions supported with constraints:
+
+| Aspect | Support | Notes |
+|--------|---------|-------|
+| Function definitions | ✅ | Full parameter schema support |
+| Tool choice "auto" | ✅ | Default mode |
+| Tool choice "any" | ✅ | Requires any tool |
+| Tool choice "none" | ✅ | No tools |
+| Specific tool forcing | ❌ | Not supported - simplified to "any" |
+| Parallel tools | ✅ | Multiple tools in one turn |
+
+**Limitation Caveat:**
+```go
+// Bifrost allows specifying a specific tool
+{
+  "tool_choice": {
+    "type": "function",
+    "function": {"name": "get_weather"}  // ❌ Not supported
+  }
+}
+
+// Mistral compatibility - converted to generic "any"
+{
+  "tool_choice": "any"
+}
+```
+
+## Response Conversion
+
+Standard OpenAI-compatible response:
+- `choices[].message.content` - Response text
+- `choices[].message.tool_calls` - Function calls
+- `usage` - Token counts (prompt_tokens, completion_tokens)
+- `finish_reason` - stop, tool_calls, length
+
+---
+
+# 2. Responses API
+
+Converted internally to Chat Completions with format transformation:
+
+```
+ResponsesRequest → ChatRequest → ChatCompletion → ResponsesResponse
+```
+
+Same parameter support and tool handling as Chat Completions.
+
+---
+
+# 3. Transcription
+
+Mistral provides native audio transcription with streaming support.
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Bifrost | Mistral | Notes |
+|-----------|---------|---------|-------|
+| `file` | Binary audio | Multipart form | Converted to multipart |
+| `model` | Model name | model | |
+| `language` | ISO-639-1 | language | Optional language hint |
+| `prompt` | Optional | prompt | Context for recognition |
+| `response_format` | Format type | response_format | json, text, etc. |
+| `temperature` | float | temperature | Sampling temperature |
+| `timestamp_granularities` | Array | Array field | Segment/word timestamps |
+
+### Multipart Form Structure
+
+Transcription requests are sent as multipart/form-data:
+
+```
+--boundary
+Content-Disposition: form-data; name="file"; filename="audio.mp3"
+[binary audio data]
+--boundary
+Content-Disposition: form-data; name="model"
+voxtral-mini-latest
+--boundary
+Content-Disposition: form-data; name="language"
+en
+--boundary--
+```
+
+## Transcription Response
+
+```json
+{
+  "text": "transcribed text",
+  "language": "en",
+  "duration": 3.5,
+  "segments": [{
+    "id": 0,
+    "start": 0.0,
+    "end": 1.5,
+    "text": "transcribed segment",
+    "temperature": 0.0,
+    "avg_logprob": -0.45,
+    "compression_ratio": 1.2,
+    "no_speech_prob": 0.001
+  }],
+  "words": [{
+    "word": "transcribed",
+    "start": 0.0,
+    "end": 0.8
+  }]
+}
+```
+
+## Transcription Streaming
+
+Mistral supports SSE streaming for transcription with custom event types:
+
+| Event Type | Content | Notes |
+|-----------|---------|-------|
+| `transcription.language` | Language code | Language detected |
+| `transcription.text.delta` | Text delta | Incremental text |
+| `transcription.segment` | Full segment | Complete segment data |
+| `transcription.done` | Final usage | Completion with tokens |
+
+---
+
+# 4. Embeddings
+
+Mistral supports text embeddings:
+
+| Parameter | Notes |
+|-----------|-------|
+| `input` | Text or array of texts |
+| `model` | Embedding model name |
+| `dimensions` | Custom output dimensions (optional) |
+| `encoding_format` | "float" or "base64" |
+
+Response returns embedding vectors with token usage.
+
+---
+
+# 5. List Models
+
+Lists available Mistral models with context length and capabilities.
+
+---
+
+## Unsupported Features
+
+| Feature | Reason |
+|---------|--------|
+| Text Completions | Not offered by Mistral API |
+| Image Generation | Not yet implemented in Bifrost integration (Mistral API supports this) |
+| Speech/TTS | Not offered by Mistral API |
+| File Management | Not offered by Mistral API |
+| Batch Operations | Not offered by Mistral API |
+
+---
+
+## Caveats
+
+<Accordion title="Cache Control Stripped">
+**Severity**: Medium
+**Behavior**: Cache control directives removed from messages
+**Impact**: Prompt caching features unavailable
+**Code**: Stripped during JSON marshaling
+</Accordion>
+
+<Accordion title="Parameter Filtering">
+**Severity**: Low
+**Behavior**: OpenAI-specific parameters filtered
+**Impact**: prompt_cache_key, verbosity, store removed
+**Code**: filterOpenAISpecificParameters
+</Accordion>
+
+<Accordion title="User Field Size Limit">
+**Severity**: Low
+**Behavior**: User field > 64 characters silently dropped
+**Impact**: Longer user identifiers are lost
+**Code**: SanitizeUserField enforces 64-char max
+</Accordion>

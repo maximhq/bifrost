@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bifrost.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    {{- if .Values.bifrost.cluster.enabled }}
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip
+      protocol: TCP
+      name: gossip
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip-udp
+      protocol: UDP
+      name: gossip-udp
+    {{- end }}
+  selector:
+    {{- include "bifrost.selectorLabels" . | nindent 4 }}

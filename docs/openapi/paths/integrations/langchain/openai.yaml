@@ -1,0 +1,222 @@
+# LangChain - OpenAI-compatible Endpoints
+# Reuses OpenAI integration schemas
+
+text-completions:
+  post:
+    operationId: langchainOpenAITextCompletions
+    summary: Text completions (LangChain - OpenAI format)
+    description: |
+      Creates a text completion using OpenAI-compatible format via LangChain.
+      This is the legacy completions API.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+chat-completions:
+  post:
+    operationId: langchainOpenAIChatCompletions
+    summary: Chat completions (LangChain - OpenAI format)
+    description: |
+      Creates a chat completion using OpenAI-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/chat.yaml#/OpenAIChatRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/chat.yaml#/ChatCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/inference/chat.yaml#/ChatCompletionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+embeddings:
+  post:
+    operationId: langchainOpenAIEmbeddings
+    summary: Create embeddings (LangChain - OpenAI format)
+    description: |
+      Creates embeddings using OpenAI-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/embeddings.yaml#/OpenAIEmbeddingRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/embeddings.yaml#/EmbeddingResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+models:
+  get:
+    operationId: langchainOpenAIListModels
+    summary: List models (LangChain - OpenAI format)
+    description: |
+      Lists available models using OpenAI-compatible format via LangChain.
+    tags:
+      - LangChain Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/common.yaml#/OpenAIListModelsResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+responses:
+  post:
+    operationId: langchainOpenAIResponses
+    summary: Create response (LangChain - OpenAI Responses API)
+    description: |
+      Creates a response using OpenAI Responses API format via LangChain.
+      Supports streaming via SSE.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+responses-input-tokens:
+  post:
+    operationId: langchainOpenAICountInputTokens
+    summary: Count input tokens (LangChain - OpenAI format)
+    description: |
+      Counts the number of tokens in a Responses API request via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/responses.yaml#/OpenAIResponsesRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/inference/count-tokens.yaml#/CountTokensResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+speech:
+  post:
+    operationId: langchainOpenAISpeech
+    summary: Create speech (LangChain - OpenAI TTS)
+    description: |
+      Generates audio from text using OpenAI TTS via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          audio/mpeg:
+            schema:
+              type: string
+              format: binary
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAISpeechStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+transcriptions:
+  post:
+    operationId: langchainOpenAITranscriptions
+    summary: Create transcription (LangChain - OpenAI Whisper)
+    description: |
+      Transcribes audio into text using OpenAI Whisper via LangChain.
+    tags:
+      - LangChain Integration
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/audio.yaml#/OpenAITranscriptionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

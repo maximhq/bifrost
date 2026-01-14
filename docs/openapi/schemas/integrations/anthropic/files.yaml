@@ -1,0 +1,102 @@
+# Anthropic Integration Files API Schemas
+
+AnthropicFileUploadRequest:
+  type: object
+  required:
+    - file
+  properties:
+    file:
+      type: string
+      format: binary
+      description: File to upload (raw file content)
+    filename:
+      type: string
+      description: Original filename
+    purpose:
+      type: string
+      description: Purpose of the file (e.g., "batch")
+
+AnthropicFileUploadResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    type:
+      type: string
+      default: file
+    filename:
+      type: string
+    mime_type:
+      type: string
+      description: MIME type of the file
+    size_bytes:
+      type: integer
+      description: Size of the file in bytes
+    created_at:
+      type: string
+      format: date-time
+    downloadable:
+      type: boolean
+
+AnthropicFileListRequest:
+  type: object
+  properties:
+    limit:
+      type: integer
+      default: 30
+    after:
+      type: string
+      description: Cursor for pagination (after_id)
+    order:
+      type: string
+      enum: [asc, desc]
+
+AnthropicFileListResponse:
+  type: object
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/AnthropicFileUploadResponse'
+    has_more:
+      type: boolean
+    first_id:
+      type: string
+    last_id:
+      type: string
+
+AnthropicFileRetrieveRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string
+
+AnthropicFileRetrieveResponse:
+  $ref: '#/AnthropicFileUploadResponse'
+
+AnthropicFileDeleteRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string
+
+AnthropicFileDeleteResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    type:
+      type: string
+      default: file_deleted
+
+AnthropicFileContentRequest:
+  type: object
+  required:
+    - file_id
+  properties:
+    file_id:
+      type: string

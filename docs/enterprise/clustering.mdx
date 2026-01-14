@@ -1,0 +1,1536 @@
+---
+title: "Clustering"
+description: "Enterprise-grade high-availability clustering with automatic service discovery, intelligent traffic distribution, and gossip-based state synchronization for production deployments."
+icon: "circle-nodes"
+---
+
+## Overview
+
+**Bifrost Clustering** delivers production-ready high availability through a peer-to-peer network architecture with automatic service discovery. The clustering system uses gossip protocols to maintain consistent state across nodes while providing seamless scaling, automatic failover, and zero-downtime deployments.
+
+### Why Clustering Matters
+
+Modern AI gateway deployments require robust infrastructure to handle production workloads:
+
+| Challenge | Impact | Clustering Solution |
+|-----------|--------|-------------------|
+| **Single Point of Failure** | Complete service outage if gateway fails | Distributed architecture with automatic failover |
+| **Traffic Spikes** | Performance degradation under high load | Dynamic load distribution across multiple nodes |
+| **Provider Rate Limits** | Request throttling and service interruption | Distributed rate limit tracking across cluster |
+| **Regional Latency** | Poor user experience in distant regions | Geographic distribution with local processing |
+| **Maintenance Windows** | Service downtime during updates | Rolling updates with zero-downtime deployment |
+| **Capacity Planning** | Over/under-provisioning resources | Elastic scaling based on real-time demand |
+
+### Core Features
+
+| Feature | Description |
+|---------|-------------|
+| **Automatic Service Discovery** | 6 discovery methods for any infrastructure (K8s, Consul, etcd, DNS, UDP, mDNS) |
+| **Peer-to-Peer Architecture** | No single point of failure with equal node participation |
+| **Gossip-Based State Sync** | Real-time synchronization of traffic patterns and limits |
+| **Automatic Failover** | Seamless traffic redistribution when nodes fail |
+| **Zero-Downtime Updates** | Rolling deployments without service interruption |
+
+---
+
+## Architecture
+
+### Peer-to-Peer Network Design
+
+Bifrost clustering uses a **peer-to-peer (P2P) network** where all nodes are equal participants. Each node:
+- Discovers peers automatically using configured discovery method
+- Synchronizes state via gossip protocol
+- Shares traffic patterns and rate limits
+- Handles failover automatically
+
+### Gossip Protocol
+
+The gossip protocol ensures all nodes maintain consistent views of:
+- **Traffic Patterns**: Request volume, latency metrics, error rates
+- **Rate Limit States**: Current usage counters for each provider/model
+- **Node Health**: CPU, memory, network status of all peers
+- **Configuration Changes**: Provider updates, routing rules, policies
+
+**Convergence**: All nodes converge to the same state within seconds with eventual consistency guarantees.
+
+### Minimum Node Requirements
+
+<Note>
+**Recommended: 3+ nodes minimum** for optimal fault tolerance.
+</Note>
+
+| Cluster Size | Fault Tolerance | Use Case |
+|--------------|-----------------|----------|
+| **3 nodes** | 1 node failure | Small production deployments |
+| **5 nodes** | 2 node failures | Medium production deployments |
+| **7+ nodes** | 3+ node failures | Large enterprise deployments |
+
+---
+
+## Configuration Basics
+
+### Core Configuration Structure
+
+The new clustering configuration uses a `cluster_config` object with integrated service discovery:
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "kubernetes",
+      "service_name": "bifrost-cluster",
+      // Discovery-specific configuration here
+    },
+    "gossip": {
+      "port": 10101,
+      "config": {
+        "timeout_seconds": 10,
+        "success_threshold": 3,
+        "failure_threshold": 3
+      }
+    }
+  }
+}
+```
+
+### Common Discovery Configuration Fields
+
+All discovery methods support these common fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | boolean | Yes | Enable/disable discovery |
+| `type` | string | Yes | Discovery type: `kubernetes`, `consul`, `etcd`, `dns`, `udp`, `mdns` |
+| `service_name` | string | Yes | Service name for discovery |
+| `bind_port` | integer | No | Port for cluster communication (default: 10101) |
+| `dial_timeout` | duration | No | Discovery timeout (default: 10s) |
+| `allowed_address_space` | array | No | CIDR ranges to filter discovered nodes (e.g., `["10.0.0.0/8"]`) |
+
+### Gossip Configuration
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `port` | Gossip protocol port | 10101 |
+| `timeout_seconds` | Health check timeout | 10 |
+| `success_threshold` | Successful checks to mark healthy | 3 |
+| `failure_threshold` | Failed checks to mark unhealthy | 3 |
+
+---
+
+## Service Discovery Methods
+
+Bifrost supports 6 service discovery methods to fit any infrastructure. Choose based on your deployment environment:
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes" icon="dharmachakra" href="#kubernetes-discovery">
+    Native K8s pod discovery via label selectors
+  </Card>
+  <Card title="Consul" icon="diamond" href="#consul-discovery">
+    HashiCorp Consul service mesh integration
+  </Card>
+  <Card title="etcd" icon="database" href="#etcd-discovery">
+    etcd-based distributed discovery
+  </Card>
+  <Card title="DNS" icon="globe" href="#dns-discovery">
+    Traditional DNS SRV record discovery
+  </Card>
+  <Card title="UDP Broadcast" icon="tower-broadcast" href="#udp-broadcast-discovery">
+    Local network broadcast discovery
+  </Card>
+  <Card title="mDNS" icon="wifi" href="#mdns-discovery">
+    Multicast DNS for local development
+  </Card>
+</CardGroup>
+
+---
+
+## Kubernetes Discovery
+
+**Best for:** Kubernetes deployments with StatefulSets or Deployments
+
+Kubernetes discovery uses the K8s API to automatically discover pods based on label selectors. This is the most common method for cloud-native deployments.
+
+### How It Works
+
+1. Each Bifrost pod queries the Kubernetes API for pods matching the label selector
+2. Discovers pod IPs automatically as pods scale up/down
+3. Works seamlessly with StatefulSets, Deployments, and DaemonSets
+4. No external dependencies required
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "kubernetes",
+      "service_name": "bifrost-cluster",
+      "k8s_namespace": "default",
+      "k8s_label_selector": "app=bifrost"
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `k8s_namespace` | No | Kubernetes namespace to search | `"default"`, `"production"` |
+| `k8s_label_selector` | Yes | Label selector for pod discovery | `"app=bifrost"`, `"app=bifrost,env=prod"` |
+
+### Kubernetes Deployment Example
+
+<Tabs>
+  <Tab title="StatefulSet">
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bifrost
+  namespace: default
+spec:
+  serviceName: bifrost-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bifrost
+  template:
+    metadata:
+      labels:
+        app: bifrost
+    spec:
+      serviceAccountName: bifrost
+      containers:
+      - name: bifrost
+        image: <enterprise_repo_base_url>/bifrost:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 10101
+          name: gossip
+        volumeMounts:
+        - name: config
+          mountPath: /etc/bifrost
+      volumes:
+      - name: config
+        configMap:
+          name: bifrost-config
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bifrost
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bifrost-pod-reader
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bifrost-pod-reader
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: bifrost
+  namespace: default
+roleRef:
+  kind: Role
+  name: bifrost-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+  </Tab>
+  <Tab title="Deployment">
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+  namespace: default
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bifrost
+  template:
+    metadata:
+      labels:
+        app: bifrost
+    spec:
+      serviceAccountName: bifrost
+      containers:
+      - name: bifrost
+        image: <enterprise_repo_base_url>/bifrost:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 10101
+          name: gossip
+        volumeMounts:
+        - name: config
+          mountPath: /etc/bifrost
+      volumes:
+      - name: config
+        configMap:
+          name: bifrost-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-cluster
+  namespace: default
+spec:
+  clusterIP: None
+  selector:
+    app: bifrost
+  ports:
+  - port: 10101
+    name: gossip
+```
+  </Tab>
+</Tabs>
+
+### Troubleshooting
+
+<Accordion title="Pods not discovering each other">
+**Symptoms**: Cluster shows only 1 member, pods running in isolation
+
+**Solutions**:
+- Verify ServiceAccount has RBAC permissions to list pods
+- Check label selector matches pod labels exactly
+- Ensure namespace is correct (defaults to "default")
+- Verify gossip port (10101) is not blocked by NetworkPolicies
+- Check logs for "error listing pods" messages
+</Accordion>
+
+<Accordion title="Permission denied errors">
+**Symptoms**: "error getting kubernetes config" or "forbidden" errors
+
+**Solutions**:
+- Create ServiceAccount for Bifrost pods
+- Create Role with `get`, `list`, `watch` permissions on pods
+- Create RoleBinding linking ServiceAccount to Role
+- Verify RBAC is enabled in cluster
+</Accordion>
+
+<Accordion title="Cluster forms but nodes show as unhealthy">
+**Symptoms**: Nodes discovered but marked as "suspect" or "dead"
+
+**Solutions**:
+- Verify gossip port (10101) is accessible between pods
+- Check for NetworkPolicies blocking pod-to-pod communication
+- Increase `timeout_seconds` in gossip config if network is slow
+- Verify pods are in Running state with `kubectl get pods`
+</Accordion>
+
+---
+
+## Consul Discovery
+
+**Best for:** Consul service mesh environments, multi-datacenter deployments
+
+Consul discovery integrates with HashiCorp Consul for service registration and discovery. Ideal for environments already using Consul for service mesh or service discovery.
+
+### How It Works
+
+1. Each Bifrost node registers itself with Consul on startup
+2. Nodes query Consul to discover other Bifrost instances
+3. Consul performs health checks on each node
+4. Unhealthy nodes are automatically deregistered
+5. Supports multi-datacenter deployments
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "consul",
+      "service_name": "bifrost-cluster",
+      "consul_address": "consul.service.consul:8500"
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `consul_address` | No | Consul agent address | `"localhost:8500"`, `"consul.service.consul:8500"` (default: `localhost:8500`) |
+
+<Note>
+Consul discovery automatically registers each node with health checks. The health check monitors the gossip port (TCP).
+</Note>
+
+### Docker Compose with Consul
+
+```yaml
+version: '3.8'
+
+services:
+  consul:
+    image: hashicorp/consul:latest
+    command: agent -dev -client=0.0.0.0
+    ports:
+      - "8500:8500"
+    networks:
+      - bifrost-net
+
+  bifrost-1:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config-node1.json:/etc/bifrost/config.json
+    ports:
+      - "8080:8080"
+    depends_on:
+      - consul
+    networks:
+      - bifrost-net
+
+  bifrost-2:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config-node2.json:/etc/bifrost/config.json
+    ports:
+      - "8081:8080"
+    depends_on:
+      - consul
+    networks:
+      - bifrost-net
+
+  bifrost-3:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config-node3.json:/etc/bifrost/config.json
+    ports:
+      - "8082:8080"
+    depends_on:
+      - consul
+    networks:
+      - bifrost-net
+
+networks:
+  bifrost-net:
+    driver: bridge
+```
+
+### Troubleshooting
+
+<Accordion title="Failed to register with Consul">
+**Symptoms**: "failed to register service with Consul" errors
+
+**Solutions**:
+- Verify Consul agent is accessible at configured address
+- Check Consul agent logs for registration errors
+- Ensure Consul ACL token has write permissions if ACLs enabled
+- Verify network connectivity between Bifrost and Consul
+- Check firewall rules allow connections to port 8500
+</Accordion>
+
+<Accordion title="Services registered but not discovered">
+**Symptoms**: Consul UI shows services but nodes don't join cluster
+
+**Solutions**:
+- Verify `service_name` matches across all nodes
+- Check Consul service health checks are passing
+- Ensure gossip port is accessible between nodes
+- Verify nodes are registered in correct datacenter
+- Check for DNS resolution issues if using service DNS names
+</Accordion>
+
+<Accordion title="Health checks failing">
+**Symptoms**: Services show as critical in Consul UI
+
+**Solutions**:
+- Verify gossip port (10101) is accessible
+- Check Consul agent can reach node's gossip port
+- Increase health check timeout in Consul if needed
+- Review Bifrost logs for startup errors
+- Ensure nodes have correct IP addresses registered
+</Accordion>
+
+---
+
+## etcd Discovery
+
+**Best for:** etcd-based distributed systems, existing etcd infrastructure
+
+etcd discovery uses etcd's distributed key-value store for service registration and discovery. Perfect for environments already using etcd or requiring strong consistency.
+
+### How It Works
+
+1. Each Bifrost node registers itself in etcd with a lease
+2. Nodes maintain lease through keepalive messages
+3. Nodes query etcd prefix to discover other instances
+4. Failed nodes' leases expire and are automatically removed
+5. Provides strongly consistent service registry
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "etcd",
+      "service_name": "bifrost-cluster",
+      "etcd_endpoints": [
+        "http://etcd-1:2379",
+        "http://etcd-2:2379",
+        "http://etcd-3:2379"
+      ],
+      "dial_timeout": "10s"
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `etcd_endpoints` | Yes | Array of etcd endpoint URLs | `["http://localhost:2379"]`, `["https://etcd1:2379", "https://etcd2:2379"]` |
+| `dial_timeout` | No | Connection timeout | `"10s"` (default), `"30s"` |
+
+<Note>
+Each node registers under `/services/{service_name}/{node_id}` with a 30-second TTL lease.
+</Note>
+
+### Docker Compose with etcd
+
+```yaml
+version: '3.8'
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:latest
+    command:
+      - etcd
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-cluster=etcd=http://etcd:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    networks:
+      - bifrost-net
+
+  bifrost-1:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8080:8080"
+    depends_on:
+      - etcd
+    networks:
+      - bifrost-net
+
+  bifrost-2:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8081:8080"
+    depends_on:
+      - etcd
+    networks:
+      - bifrost-net
+
+  bifrost-3:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8082:8080"
+    depends_on:
+      - etcd
+    networks:
+      - bifrost-net
+
+networks:
+  bifrost-net:
+    driver: bridge
+```
+
+### Troubleshooting
+
+<Accordion title="Failed to create etcd client">
+**Symptoms**: "etcd client error" on startup
+
+**Solutions**:
+- Verify etcd endpoints are accessible
+- Check URL format (http:// or https://)
+- Ensure etcd cluster is healthy and running
+- Verify network connectivity to etcd endpoints
+- Check firewall rules allow connections to port 2379
+- Increase `dial_timeout` if network is slow
+</Accordion>
+
+<Accordion title="Failed to register with etcd">
+**Symptoms**: "failed to register with etcd" errors
+
+**Solutions**:
+- Verify etcd cluster is accepting writes
+- Check etcd cluster has available space
+- Ensure authentication credentials if etcd has auth enabled
+- Review etcd logs for permission or quota errors
+- Verify node can resolve etcd hostnames
+</Accordion>
+
+<Accordion title="Lease keepalive failures">
+**Symptoms**: Nodes repeatedly registering/deregistering
+
+**Solutions**:
+- Check network stability between nodes and etcd
+- Verify etcd cluster is not overloaded
+- Monitor etcd metrics for high latency
+- Increase lease TTL if network has high latency
+- Check for etcd leader election issues
+</Accordion>
+
+---
+
+## DNS Discovery
+
+**Best for:** Traditional infrastructure, static node addresses, cloud DNS services
+
+DNS discovery uses standard DNS resolution to discover cluster nodes. Works with any DNS server and is ideal for static deployments or cloud environments with DNS integration.
+
+### How It Works
+
+1. Configure DNS A records or SRV records for cluster nodes
+2. Bifrost queries DNS to resolve configured names
+3. All returned IP addresses are treated as potential cluster members
+4. Supports multiple DNS names for different node groups
+5. Works with internal DNS, cloud DNS, or public DNS
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "dns",
+      "service_name": "bifrost-cluster",
+      "dns_names": [
+        "bifrost-cluster.local",
+        "bifrost-nodes.internal.company.com"
+      ],
+      "bind_port": 10101
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `dns_names` | Yes | Array of DNS names to resolve | `["bifrost.local"]`, `["node1.local", "node2.local", "node3.local"]` |
+| `bind_port` | No | Port appended to discovered IPs | `10101` (default) |
+
+<Tip>
+DNS discovery is passive - it doesn't register nodes. You must manage DNS records externally (via DNS server, cloud DNS, or Kubernetes DNS).
+</Tip>
+
+### Setup Examples
+
+<Tabs>
+  <Tab title="Cloud DNS (AWS Route53)">
+```bash
+# Create A records for each node
+aws route53 change-resource-record-sets \
+  --hosted-zone-id Z1234567890ABC \
+  --change-batch '{
+    "Changes": [{
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "bifrost-cluster.internal.company.com",
+        "Type": "A",
+        "TTL": 60,
+        "ResourceRecords": [
+          {"Value": "10.0.1.10"},
+          {"Value": "10.0.1.11"},
+          {"Value": "10.0.1.12"}
+        ]
+      }
+    }]
+  }'
+```
+  </Tab>
+  <Tab title="Kubernetes Headless Service">
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-cluster
+  namespace: default
+spec:
+  clusterIP: None  # Headless service
+  selector:
+    app: bifrost
+  ports:
+  - port: 10101
+    name: gossip
+---
+# DNS will resolve bifrost-cluster.default.svc.cluster.local
+# to all pod IPs matching the selector
+```
+  </Tab>
+  <Tab title="Local DNS (dnsmasq)">
+```bash
+# /etc/dnsmasq.conf
+address=/bifrost-cluster.local/192.168.1.10
+address=/bifrost-cluster.local/192.168.1.11
+address=/bifrost-cluster.local/192.168.1.12
+
+# Or use /etc/hosts on each node
+echo "192.168.1.10 node1.bifrost.local" >> /etc/hosts
+echo "192.168.1.11 node2.bifrost.local" >> /etc/hosts
+echo "192.168.1.12 node3.bifrost.local" >> /etc/hosts
+```
+  </Tab>
+</Tabs>
+
+### Troubleshooting
+
+<Accordion title="DNS lookup errors">
+**Symptoms**: "dns lookup error" in logs, no nodes discovered
+
+**Solutions**:
+- Verify DNS names are resolvable: `nslookup bifrost-cluster.local`
+- Check DNS server is accessible from Bifrost nodes
+- Verify `/etc/resolv.conf` has correct nameserver
+- Test DNS resolution from inside container if using Docker
+- Check for DNS caching issues (try flushing DNS cache)
+</Accordion>
+
+<Accordion title="No nodes discovered via DNS">
+**Symptoms**: DNS resolves but cluster has 0 members
+
+**Solutions**:
+- Verify DNS returns multiple A records (not CNAME)
+- Check that returned IPs are correct and reachable
+- Ensure `bind_port` matches actual gossip port on nodes
+- Verify nodes are listening on returned IP addresses
+- Use `dig` or `nslookup` to verify DNS response format
+</Accordion>
+
+<Accordion title="Nodes discovered but can't connect">
+**Symptoms**: IPs discovered but gossip connection fails
+
+**Solutions**:
+- Verify gossip port (10101) is open on all nodes
+- Check firewall rules between nodes
+- Ensure nodes are listening on correct network interface
+- Verify IP addresses match node's actual network addresses
+- Test connectivity: `telnet <ip> 10101`
+</Accordion>
+
+---
+
+## UDP Broadcast Discovery
+
+**Best for:** Local network deployments, on-premise infrastructure, development clusters
+
+UDP broadcast discovery automatically finds nodes on the same local network using broadcast packets. No external dependencies required.
+
+### How It Works
+
+1. Nodes broadcast UDP discovery beacons on configured port
+2. Other nodes on the same network respond with acknowledgments
+3. Nodes discover each other's IP addresses automatically
+4. Limited to nodes on the same broadcast domain (subnet)
+5. Requires `allowed_address_space` for security
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "udp",
+      "service_name": "bifrost-cluster",
+      "udp_broadcast_port": 9999,
+      "allowed_address_space": [
+        "192.168.1.0/24",
+        "10.0.0.0/8"
+      ],
+      "dial_timeout": "10s"
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `udp_broadcast_port` | Yes | Port for broadcast discovery | `9999`, `8888` |
+| `allowed_address_space` | Yes | CIDR ranges to limit discovery scope | `["192.168.1.0/24"]`, `["10.0.0.0/8", "172.16.0.0/12"]` |
+| `dial_timeout` | No | Time to wait for responses | `"10s"` (default) |
+
+<Warning>
+UDP broadcast discovery requires `allowed_address_space` to be configured. This prevents scanning arbitrary networks and limits discovery to trusted subnets.
+</Warning>
+
+### Docker Compose Example
+
+```yaml
+version: '3.8'
+
+services:
+  bifrost-1:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    network_mode: bridge
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8080:8080"
+      - "9999:9999/udp"
+      - "10101:10101"
+
+  bifrost-2:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    network_mode: bridge
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8081:8080"
+      - "9999:9999/udp"
+      - "10101:10101"
+
+  bifrost-3:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    network_mode: bridge
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8082:8080"
+      - "9999:9999/udp"
+      - "10101:10101"
+```
+
+<Note>
+Use `network_mode: bridge` (default) or `host` for UDP broadcast. Custom networks may not support broadcast.
+</Note>
+
+### Troubleshooting
+
+<Accordion title="No nodes discovered via UDP broadcast">
+**Symptoms**: Discovery runs but finds 0 nodes
+
+**Solutions**:
+- Verify `allowed_address_space` includes node IP addresses
+- Check UDP broadcast port is open (firewall/security groups)
+- Ensure nodes are on same subnet/broadcast domain
+- Verify broadcast is enabled on network interface
+- Test with `tcpdump -i any -n udp port 9999`
+- Check Docker network mode supports broadcast (use bridge or host)
+</Accordion>
+
+<Accordion title="Address space filtering issues">
+**Symptoms**: "not in allowed address space" warnings
+
+**Solutions**:
+- Verify CIDR notation is correct (e.g., `192.168.1.0/24`)
+- Ensure `allowed_address_space` covers all node IPs
+- Check node IP addresses: `ip addr` or `ifconfig`
+- Remember to use network address, not host address
+- Test CIDR match online or with ipcalc
+</Accordion>
+
+<Accordion title="Permission denied on UDP port">
+**Symptoms**: "permission denied" or "address already in use"
+
+**Solutions**:
+- Check if another process is using the UDP broadcast port
+- Verify port number is > 1024 (non-privileged) or run as root
+- Use `netstat -tulpn | grep 9999` to check port usage
+- Change `udp_broadcast_port` to different value
+- Ensure firewall isn't blocking UDP on that port
+</Accordion>
+
+---
+
+## mDNS Discovery
+
+**Best for:** Local development, testing, zero-configuration setups
+
+mDNS (Multicast DNS) provides zero-configuration service discovery on local networks. Perfect for development and testing without requiring any infrastructure setup.
+
+### How It Works
+
+1. Nodes advertise themselves via mDNS (Bonjour/Avahi)
+2. Other nodes browse for mDNS services
+3. Automatic discovery within the same local network
+4. No DNS server or configuration required
+5. Limited to local network segment
+
+### Configuration
+
+```json
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "mdns",
+      "service_name": "bifrost",
+      "mdns_service": "_bifrost._tcp",
+      "dial_timeout": "10s"
+    },
+    "gossip": {
+      "port": 10101
+    }
+  }
+}
+```
+
+### Configuration Parameters
+
+| Parameter | Required | Description | Example |
+|-----------|----------|-------------|---------|
+| `mdns_service` | No | mDNS service type | `"_bifrost._tcp"` (default), `"_myapp._tcp"` |
+| `dial_timeout` | No | Time to wait for mDNS responses | `"10s"` (default) |
+
+<Warning>
+mDNS is designed for development and testing. For production, use Kubernetes, Consul, or etcd discovery.
+</Warning>
+
+### Local Development Example
+
+```bash
+# Start first node
+docker run -p 8080:8080 -p 10101:10101 \
+  -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
+  <enterprise_repo_base_url>/bifrost:latest
+
+# Start second node (discovers first automatically)
+docker run -p 8081:8080 -p 10102:10101 \
+  -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
+  <enterprise_repo_base_url>/bifrost:latest
+
+# Start third node (discovers both automatically)
+docker run -p 8082:8080 -p 10103:10101 \
+  -v $(pwd)/config-mdns.json:/etc/bifrost/config.json \
+  <enterprise_repo_base_url>/bifrost:latest
+```
+
+### Troubleshooting
+
+<Accordion title="mDNS services not discovered">
+**Symptoms**: Nodes don't discover each other via mDNS
+
+**Solutions**:
+- Verify mDNS is enabled on network (check firewall)
+- Ensure multicast is enabled on network interface
+- Check nodes are on same local network segment
+- Verify mDNS port 5353 is not blocked
+- Test mDNS resolution: `avahi-browse -a` (Linux) or `dns-sd -B` (macOS)
+- Increase `dial_timeout` if discovery is slow
+</Accordion>
+
+<Accordion title="Network address validation errors">
+**Symptoms**: "skipping invalid host address" warnings
+
+**Solutions**:
+- This is normal - mDNS returns network/broadcast addresses
+- mDNS automatically filters invalid addresses (127.x.x.x, *.0, *.255)
+- Check that nodes have valid non-loopback IP addresses
+- Ensure nodes are not using 127.0.0.1 for binding
+- Verify network interface has proper IP configuration
+</Accordion>
+
+<Accordion title="Discovery works but cluster unstable">
+**Symptoms**: Nodes discover then disconnect repeatedly
+
+**Solutions**:
+- mDNS has eventual consistency, allow time for propagation
+- Check gossip port accessibility between nodes
+- Verify network doesn't drop multicast packets
+- Consider using a more robust discovery method for production
+- Check for network congestion or packet loss
+</Accordion>
+
+---
+
+## Deployment Patterns
+
+### Docker Compose Deployment
+
+Complete example using Kubernetes-style discovery with a shared config store:
+
+```yaml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: bifrost
+      POSTGRES_USER: bifrost
+      POSTGRES_PASSWORD: bifrost_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bifrost-net
+
+  consul:
+    image: hashicorp/consul:latest
+    command: agent -dev -client=0.0.0.0
+    ports:
+      - "8500:8500"
+    networks:
+      - bifrost-net
+
+  bifrost-1:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - consul
+    networks:
+      - bifrost-net
+
+  bifrost-2:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+      - consul
+    networks:
+      - bifrost-net
+
+  bifrost-3:
+    image: <enterprise_repo_base_url>/bifrost:latest
+    environment:
+      - BIFROST_CONFIG=/etc/bifrost/config.json
+    volumes:
+      - ./config.json:/etc/bifrost/config.json
+    ports:
+      - "8082:8080"
+    depends_on:
+      - postgres
+      - consul
+    networks:
+      - bifrost-net
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - bifrost-1
+      - bifrost-2
+      - bifrost-3
+    networks:
+      - bifrost-net
+
+volumes:
+  postgres_data:
+
+networks:
+  bifrost-net:
+    driver: bridge
+```
+
+**nginx.conf** for load balancing:
+
+```nginx
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream bifrost_cluster {
+        least_conn;
+        server bifrost-1:8080 max_fails=3 fail_timeout=30s;
+        server bifrost-2:8080 max_fails=3 fail_timeout=30s;
+        server bifrost-3:8080 max_fails=3 fail_timeout=30s;
+    }
+
+    server {
+        listen 80;
+        
+        location / {
+            proxy_pass http://bifrost_cluster;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Timeouts
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+        }
+        
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}
+```
+
+### Kubernetes Production Deployment
+
+Production-ready Kubernetes deployment with StatefulSet:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bifrost-config
+  namespace: bifrost
+data:
+  config.json: |
+    {
+      "cluster_config": {
+        "enabled": true,
+        "discovery": {
+          "enabled": true,
+          "type": "kubernetes",
+          "service_name": "bifrost-cluster",
+          "k8s_namespace": "bifrost",
+          "k8s_label_selector": "app=bifrost,component=gateway"
+        },
+        "gossip": {
+          "port": 10101,
+          "config": {
+            "timeout_seconds": 10,
+            "success_threshold": 3,
+            "failure_threshold": 3
+          }
+        }
+      },
+      "config_store": {
+        "enabled": true,
+        "type": "postgres",
+        "config": {
+          "host": "postgres.bifrost.svc.cluster.local",
+          "port": "5432",
+          "user": "bifrost",
+          "password": "changeme",
+          "db_name": "bifrost",
+          "ssl_mode": "require"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bifrost
+  namespace: bifrost
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bifrost-pod-reader
+  namespace: bifrost
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bifrost-pod-reader
+  namespace: bifrost
+subjects:
+- kind: ServiceAccount
+  name: bifrost
+  namespace: bifrost
+roleRef:
+  kind: Role
+  name: bifrost-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: bifrost
+  namespace: bifrost
+spec:
+  serviceName: bifrost-cluster
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bifrost
+      component: gateway
+  template:
+    metadata:
+      labels:
+        app: bifrost
+        component: gateway
+    spec:
+      serviceAccountName: bifrost
+      containers:
+      - name: bifrost
+        image: <enterprise_repo_base_url>/bifrost:latest
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 10101
+          name: gossip
+          protocol: TCP
+        env:
+        - name: BIFROST_CONFIG
+          value: /etc/bifrost/config.json
+        volumeMounts:
+        - name: config
+          mountPath: /etc/bifrost
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: bifrost-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost-cluster
+  namespace: bifrost
+spec:
+  clusterIP: None
+  selector:
+    app: bifrost
+    component: gateway
+  ports:
+  - port: 10101
+    name: gossip
+    protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bifrost
+  namespace: bifrost
+spec:
+  type: LoadBalancer
+  selector:
+    app: bifrost
+    component: gateway
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: bifrost-pdb
+  namespace: bifrost
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: bifrost
+      component: gateway
+```
+
+### Bare Metal / VM Deployment
+
+For bare metal or VM deployments using systemd:
+
+**Step 1: Install Bifrost on each node**
+
+```bash
+# Download Bifrost Enterprise binary
+curl -O https://releases.getmaxim.ai/bifrost-enterprise/latest/bifrost-enterprise-linux-amd64
+chmod +x bifrost-enterprise-linux-amd64
+sudo mv bifrost-enterprise-linux-amd64 /usr/local/bin/bifrost-enterprise
+```
+
+**Step 2: Create configuration file**
+
+```bash
+sudo mkdir -p /etc/bifrost
+sudo cat > /etc/bifrost/config.json <<EOF
+{
+  "cluster_config": {
+    "enabled": true,
+    "discovery": {
+      "enabled": true,
+      "type": "dns",
+      "service_name": "bifrost-cluster",
+      "dns_names": ["bifrost-cluster.internal.company.com"]
+    },
+    "gossip": {
+      "port": 10101
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgres.internal.company.com",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "secure_password",
+      "db_name": "bifrost",
+      "ssl_mode": "require"
+    }
+  }
+}
+EOF
+```
+
+**Step 3: Create systemd service**
+
+```bash
+sudo cat > /etc/systemd/system/bifrost.service <<EOF
+[Unit]
+Description=Bifrost Enterprise API Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=bifrost
+Group=bifrost
+Environment="BIFROST_CONFIG=/etc/bifrost/config.json"
+ExecStart=/usr/local/bin/bifrost-enterprise
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/bifrost
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+**Step 4: Setup DNS records**
+
+```bash
+# Add A records for bifrost-cluster.internal.company.com
+# pointing to all node IPs:
+# 10.0.1.10  (node1)
+# 10.0.1.11  (node2)
+# 10.0.1.12  (node3)
+```
+
+**Step 5: Start and enable service**
+
+```bash
+sudo useradd -r -s /bin/false bifrost
+sudo mkdir -p /var/lib/bifrost
+sudo chown bifrost:bifrost /var/lib/bifrost
+sudo systemctl daemon-reload
+sudo systemctl enable bifrost
+sudo systemctl start bifrost
+sudo systemctl status bifrost
+```
+
+**Step 6: Verify cluster formation**
+
+```bash
+# Check logs on each node
+sudo journalctl -u bifrost -f
+
+# Look for messages like:
+# "successfully joined X peers on startup"
+# "cluster health: HEALTHY"
+```
+
+---
+
+## Troubleshooting
+
+### General Clustering Issues
+
+<Accordion title="Cluster forms but only has 1 member">
+**Symptoms**: Each node thinks it's the only member
+
+**Common Causes & Solutions**:
+- **Discovery not configured**: Verify `discovery.enabled: true` and `discovery.type` is set
+- **Service name mismatch**: Ensure all nodes have identical `service_name`
+- **Gossip port blocked**: Check firewall allows TCP port 10101 between nodes
+- **Discovery method issues**: See method-specific troubleshooting above
+- **Network isolation**: Verify nodes can reach each other on gossip port
+</Accordion>
+
+<Accordion title="Split brain - nodes form separate clusters">
+**Symptoms**: Nodes divided into separate clusters
+
+**Common Causes & Solutions**:
+- **Network partition**: Check network connectivity between all nodes
+- **Different discovery configs**: Ensure all nodes use same discovery settings
+- **Firewall blocking gossip**: Verify bidirectional connectivity on port 10101
+- **Discovery scoped incorrectly**: Check label selectors, DNS names, or address spaces
+- **Restart all nodes**: Sometimes requires simultaneous restart to reform cluster
+</Accordion>
+
+<Accordion title="High memory usage in cluster">
+**Symptoms**: Memory grows over time, especially in large clusters
+
+**Common Causes & Solutions**:
+- **Large gossip messages**: Check size of gossiped data
+- **Too many nodes**: Optimize for clusters with 3-7 nodes typically
+- **Message deduplication cache**: This is normal, cache TTL is 2 minutes
+- **Increase node resources**: Ensure adequate memory allocation
+</Accordion>
+
+<Accordion title="Cluster unstable - nodes flapping">
+**Symptoms**: Nodes repeatedly join and leave cluster
+
+**Common Causes & Solutions**:
+- **Network instability**: Check for packet loss or high latency
+- **Resource constraints**: Ensure nodes have adequate CPU/memory
+- **Timeout too aggressive**: Increase `timeout_seconds` in gossip config
+- **Health check failures**: Review liveness probe configuration
+- **Discovery intervals**: Check discovery isn't running too frequently
+</Accordion>
+
+<Accordion title="Cannot broadcast messages to cluster">
+**Symptoms**: Broadcast queue errors, messages not propagating
+
+**Common Causes & Solutions**:
+- **Queue not initialized**: Check logs for initialization errors
+- **No active members**: Verify cluster has multiple healthy members
+- **Gossip port unreachable**: Test connectivity between all nodes
+- **Message too large**: Check size of broadcast messages
+</Accordion>
+
+**Key log messages to look for**:
+
+```
+✅ Successful cluster formation:
+- "successfully joined X peers on startup"
+- "cluster health: HEALTHY"
+- "discovered X nodes"
+
+⚠️ Warning signs:
+- "no new nodes discovered"
+- "failed to join cluster"
+- "cluster health: NOT HEALTHY"
+- "node marked as suspect"
+
+❌ Errors:
+- "discovery failed"
+- "failed to broadcast"
+- "timeout waiting for response"
+```
+
+### Health Check Endpoints
+
+Monitor cluster health via HTTP endpoints:
+
+```bash
+# Check if node is healthy
+curl http://localhost:8080/health
+
+# Get cluster status (if exposed)
+curl http://localhost:8080/cluster/status
+
+# Expected response shows all cluster members
+{
+  "local_node": "bifrost-remote-10101-...",
+  "members": 3,
+  "healthy_members": 3,
+  "cluster_health": "HEALTHY"
+}
+```
+
+---
+
+This clustering implementation ensures Bifrost can handle enterprise-scale deployments with high availability, automatic service discovery, and intelligent traffic distribution across any infrastructure.

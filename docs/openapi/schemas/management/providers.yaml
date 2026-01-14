@@ -1,0 +1,338 @@
+# Providers API schemas
+
+ProviderStatus:
+  type: string
+  enum: [active, error, deleted]
+  description: Status of the provider
+
+NetworkConfig:
+  type: object
+  description: Network configuration for provider connections
+  properties:
+    base_url:
+      type: string
+      description: Base URL for the provider (optional)
+    extra_headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: Additional headers to include in requests
+    default_request_timeout_in_seconds:
+      type: integer
+      description: Default timeout for requests
+    max_retries:
+      type: integer
+      description: Maximum number of retries
+    retry_backoff_initial:
+      type: integer
+      format: int64
+      description: Initial backoff duration in milliseconds
+    retry_backoff_max:
+      type: integer
+      format: int64
+      description: Maximum backoff duration in milliseconds
+
+ConcurrencyAndBufferSize:
+  type: object
+  description: Concurrency settings
+  properties:
+    concurrency:
+      type: integer
+      description: Number of concurrent operations
+    buffer_size:
+      type: integer
+      description: Size of the buffer
+
+ProxyConfig:
+  type: object
+  description: Proxy configuration
+  properties:
+    type:
+      type: string
+      enum: [none, http, socks5, environment]
+    url:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+    ca_cert_pem:
+      type: string
+
+AzureKeyConfig:
+  type: object
+  description: Azure-specific key configuration
+  properties:
+    endpoint:
+      type: string
+    deployments:
+      type: object
+      additionalProperties:
+        type: string
+    api_version:
+      type: string
+
+VertexKeyConfig:
+  type: object
+  description: Vertex-specific key configuration
+  properties:
+    project_id:
+      type: string
+    project_number:
+      type: string
+    region:
+      type: string
+    auth_credentials:
+      type: string
+    deployments:
+      type: object
+      additionalProperties:
+        type: string
+
+BedrockKeyConfig:
+  type: object
+  description: AWS Bedrock-specific key configuration
+  properties:
+    access_key:
+      type: string
+    secret_key:
+      type: string
+    session_token:
+      type: string
+    region:
+      type: string
+    arn:
+      type: string
+    deployments:
+      type: object
+      additionalProperties:
+        type: string
+    batch_s3_config:
+      type: object
+      properties:
+        buckets:
+          type: array
+          items:
+            type: object
+            properties:
+              bucket_name:
+                type: string
+              prefix:
+                type: string
+              is_default:
+                type: boolean
+
+HuggingFaceKeyConfig:
+  type: object
+  description: Hugging Face-specific key configuration
+  properties:
+    deployments:
+      type: object
+      additionalProperties:
+        type: string
+
+Key:
+  type: object
+  description: API key configuration
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the key
+    name:
+      type: string
+      description: Name of the key
+    value:
+      type: string
+      description: API key value (redacted in responses)
+    models:
+      type: array
+      items:
+        type: string
+      description: List of models this key can access
+    weight:
+      type: number
+      description: Weight for load balancing
+    azure_key_config:
+      $ref: '#/AzureKeyConfig'
+    vertex_key_config:
+      $ref: '#/VertexKeyConfig'
+    bedrock_key_config:
+      $ref: '#/BedrockKeyConfig'
+    huggingface_key_config:
+      $ref: '#/HuggingFaceKeyConfig'
+    enabled:
+      type: boolean
+    use_for_batch_api:
+      type: boolean
+
+AllowedRequests:
+  type: object
+  description: Allowed request types for custom providers
+  properties:
+    list_models:
+      type: boolean
+    text_completion:
+      type: boolean
+    text_completion_stream:
+      type: boolean
+    chat_completion:
+      type: boolean
+    chat_completion_stream:
+      type: boolean
+    responses:
+      type: boolean
+    responses_stream:
+      type: boolean
+    count_tokens:
+      type: boolean
+    embedding:
+      type: boolean
+    speech:
+      type: boolean
+    speech_stream:
+      type: boolean
+    transcription:
+      type: boolean
+    transcription_stream:
+      type: boolean
+    batch_create:
+      type: boolean
+    batch_list:
+      type: boolean
+    batch_retrieve:
+      type: boolean
+    batch_cancel:
+      type: boolean
+    batch_results:
+      type: boolean
+    file_upload:
+      type: boolean
+    file_list:
+      type: boolean
+    file_retrieve:
+      type: boolean
+    file_delete:
+      type: boolean
+    file_content:
+      type: boolean
+
+CustomProviderConfig:
+  type: object
+  description: Custom provider configuration
+  properties:
+    is_key_less:
+      type: boolean
+    base_provider_type:
+      $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    allowed_requests:
+      $ref: '#/AllowedRequests'
+    request_path_overrides:
+      type: object
+      additionalProperties:
+        type: string
+
+ProviderResponse:
+  type: object
+  description: Provider configuration response
+  properties:
+    name:
+      $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    keys:
+      type: array
+      items:
+        $ref: '#/Key'
+    network_config:
+      $ref: '#/NetworkConfig'
+    concurrency_and_buffer_size:
+      $ref: '#/ConcurrencyAndBufferSize'
+    proxy_config:
+      $ref: '#/ProxyConfig'
+    send_back_raw_request:
+      type: boolean
+    send_back_raw_response:
+      type: boolean
+    custom_provider_config:
+      $ref: '#/CustomProviderConfig'
+    status:
+      $ref: '#/ProviderStatus'
+
+ListProvidersResponse:
+  type: object
+  description: List providers response
+  properties:
+    providers:
+      type: array
+      items:
+        $ref: '#/ProviderResponse'
+    total:
+      type: integer
+
+AddProviderRequest:
+  type: object
+  description: Add provider request
+  required:
+    - provider
+  properties:
+    provider:
+      $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    keys:
+      type: array
+      items:
+        $ref: '#/Key'
+    network_config:
+      $ref: '#/NetworkConfig'
+    concurrency_and_buffer_size:
+      $ref: '#/ConcurrencyAndBufferSize'
+    proxy_config:
+      $ref: '#/ProxyConfig'
+    send_back_raw_request:
+      type: boolean
+    send_back_raw_response:
+      type: boolean
+    custom_provider_config:
+      $ref: '#/CustomProviderConfig'
+
+UpdateProviderRequest:
+  type: object
+  description: Update provider request
+  properties:
+    keys:
+      type: array
+      items:
+        $ref: '#/Key'
+    network_config:
+      $ref: '#/NetworkConfig'
+    concurrency_and_buffer_size:
+      $ref: '#/ConcurrencyAndBufferSize'
+    proxy_config:
+      $ref: '#/ProxyConfig'
+    send_back_raw_request:
+      type: boolean
+    send_back_raw_response:
+      type: boolean
+    custom_provider_config:
+      $ref: '#/CustomProviderConfig'
+
+ModelResponse:
+  type: object
+  description: Model information
+  properties:
+    name:
+      type: string
+    provider:
+      type: string
+    accessible_by_keys:
+      type: array
+      items:
+        type: string
+
+ListModelsResponse:
+  type: object
+  description: List models response
+  properties:
+    models:
+      type: array
+      items:
+        $ref: '#/ModelResponse'
+    total:
+      type: integer

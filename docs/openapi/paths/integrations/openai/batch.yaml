@@ -1,0 +1,134 @@
+# OpenAI Integration - Batch API Endpoints
+
+batches:
+  post:
+    operationId: openaiCreateBatch
+    summary: Create batch job (OpenAI format)
+    description: |
+      Creates a batch processing job.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/batches`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/batch.yaml#/OpenAIBatchCreateRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/batch.yaml#/OpenAIBatchCreateResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+  get:
+    operationId: openaiListBatches
+    summary: List batch jobs (OpenAI format)
+    description: |
+      Lists batch processing jobs.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/batches`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          default: 30
+        description: Maximum number of batches to return
+      - name: after
+        in: query
+        schema:
+          type: string
+        description: Cursor for pagination
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Filter by provider
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/batch.yaml#/OpenAIBatchListResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+batches-by-id:
+  get:
+    operationId: openaiRetrieveBatch
+    summary: Retrieve batch job (OpenAI format)
+    description: |
+      Retrieves details of a batch processing job.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/batches/{batch_id}`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Batch job ID
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Provider for the batch
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/batch.yaml#/OpenAIBatchRetrieveResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+batches-cancel:
+  post:
+    operationId: openaiCancelBatch
+    summary: Cancel batch job (OpenAI format)
+    description: |
+      Cancels a batch processing job.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/batches/{batch_id}/cancel`).
+    tags:
+      - OpenAI Integration
+    parameters:
+      - name: batch_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Batch job ID to cancel
+      - name: provider
+        in: query
+        schema:
+          type: string
+        description: Provider for the batch
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/batch.yaml#/OpenAIBatchCancelResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

@@ -1,0 +1,21 @@
+{
+	"printWidth": 140,
+	"singleQuote": false,
+	"bracketSpacing": true,
+	"semi": true,
+	"bracketSameLine": false,
+	"useTabs": true,
+	"tabWidth": 2,
+	"trailingComma": "all",
+	"plugins": [
+		"prettier-plugin-tailwindcss"
+	],
+	"tailwindAttributes": [
+		"buttonClassname"
+	],
+	"tailwindFunctions": [
+		"cn",
+		"classNames"
+	],
+	"endOfLine": "lf"
+}

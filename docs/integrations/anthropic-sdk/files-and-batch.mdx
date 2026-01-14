@@ -1,0 +1,618 @@
+---
+title: "Files and Batch API"
+tag: "Beta"
+description: "Upload files and create batch jobs for asynchronous processing using the Anthropic SDK through Bifrost across multiple providers."
+icon: "folder-open"
+---
+
+## Overview
+
+Bifrost supports the Anthropic Files API and Batch API (via the `beta` namespace) with **cross-provider routing**. This means you can use the Anthropic SDK to manage files and batch jobs across multiple providers including Anthropic, OpenAI, and Gemini.
+
+The provider is specified using the `x-model-provider` header in `default_headers`.
+
+<Note>
+**Bedrock Limitation:** Bedrock batch operations require file-based input with S3 storage, which is not supported via the Anthropic SDK's inline batch API. For Bedrock batch operations, use the [Bedrock SDK](../bedrock-sdk/files-and-batch) directly.
+</Note>
+
+---
+
+## Client Setup
+
+<Note>
+In API Key section, you can either send virtual key or a dummy key to escape client side validation.
+</Note>
+
+### Anthropic Provider (Default)
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+```
+
+### Cross-Provider Client
+
+To route requests to a different provider, set the `x-model-provider` header:
+
+<Tabs group="provider">
+<Tab title="OpenAI Provider">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+```
+
+</Tab>
+<Tab title="Bedrock Provider">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "bedrock"}
+)
+```
+
+<Warning>
+Bedrock can be used for chat completions via the Anthropic SDK, but **batch operations are not supported**. Bedrock requires file-based batch input with S3 storage. Use the [Bedrock SDK](../bedrock-sdk/files-and-batch) for batch operations.
+</Warning>
+
+</Tab>
+<Tab title="Gemini Provider">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "gemini"}
+)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Files API
+
+The Files API is accessed through the `beta.files` namespace. Note that file support varies by provider.
+
+### Upload a File
+
+<Tabs group="provider">
+<Tab title="Anthropic Provider">
+
+Upload a text file for use with Anthropic:
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+
+# Upload a text file
+text_content = b"This is a test file for Files API integration."
+
+response = client.beta.files.upload(
+    file=("test_upload.txt", text_content, "text/plain"),
+)
+
+print(f"File ID: {response.id}")
+print(f"Filename: {response.filename}")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+Upload a JSONL file for OpenAI batch processing:
+
+```python
+import anthropic
+
+# Client configured for OpenAI provider
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+
+# Create JSONL content in OpenAI batch format
+jsonl_content = b'''{"custom_id": "request-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 100}}
+{"custom_id": "request-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "How are you?"}], "max_tokens": 100}}'''
+
+response = client.beta.files.upload(
+    file=("batch_input.jsonl", jsonl_content, "application/jsonl"),
+)
+
+print(f"File ID: {response.id}")
+```
+
+</Tab>
+</Tabs>
+
+### List Files
+
+<Tabs group="provider">
+<Tab title="Anthropic Provider">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+
+# List all files
+response = client.beta.files.list()
+
+for file in response.data:
+    print(f"File ID: {file.id}")
+    print(f"Filename: {file.filename}")
+    print(f"Size: {file.size} bytes")
+    print("---")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+```python
+import anthropic
+
+# Client configured for OpenAI provider
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+
+# List all files from OpenAI
+response = client.beta.files.list()
+
+for file in response.data:
+    print(f"File ID: {file.id}, Name: {file.filename}")
+```
+
+</Tab>
+</Tabs>
+
+### Delete a File
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}  # or omit for anthropic
+)
+
+# Delete a file
+file_id = "file-abc123"
+response = client.beta.files.delete(file_id)
+
+print(f"Deleted file: {file_id}")
+```
+
+### Download File Content
+
+Note: Anthropic only allows downloading files created by certain tools (like code execution). OpenAI allows downloading batch output files.
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+
+# Download file content
+file_id = "file-abc123"
+response = client.beta.files.download(file_id)
+
+content = response.text()
+print(f"File content:\n{content}")
+```
+
+---
+
+## Batch API
+
+The Anthropic Batch API is accessed through `beta.messages.batches`. Anthropic's batch API uses **inline requests** rather than file uploads.
+
+### Create a Batch with Inline Requests
+
+<Tabs group="provider">
+<Tab title="Anthropic Provider">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+
+# Create batch with inline requests
+batch_requests = [
+    {
+        "custom_id": "request-1",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"}
+            ]
+        }
+    },
+    {
+        "custom_id": "request-2",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is the capital of France?"}
+            ]
+        }
+    }
+]
+
+batch = client.beta.messages.batches.create(requests=batch_requests)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.processing_status}")
+```
+
+</Tab>
+<Tab title="OpenAI Provider">
+
+When routing to OpenAI, use OpenAI-compatible models:
+
+```python
+import anthropic
+
+# Client configured for OpenAI provider
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+
+# Create batch with inline requests (using OpenAI models)
+batch_requests = [
+    {
+        "custom_id": "request-1",
+        "params": {
+            "model": "gpt-4o-mini",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"}
+            ]
+        }
+    },
+    {
+        "custom_id": "request-2",
+        "params": {
+            "model": "gpt-4o-mini",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is the capital of France?"}
+            ]
+        }
+    }
+]
+
+batch = client.beta.messages.batches.create(requests=batch_requests)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.processing_status}")
+```
+
+</Tab>
+<Tab title="Gemini Provider">
+
+When routing to Gemini:
+
+```python
+import anthropic
+
+# Client configured for Gemini provider
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "gemini"}
+)
+
+# Create batch with inline requests (using Gemini models)
+batch_requests = [
+    {
+        "custom_id": "request-1",
+        "params": {
+            "model": "gemini-1.5-flash",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"}
+            ]
+        }
+    },
+    {
+        "custom_id": "request-2",
+        "params": {
+            "model": "gemini-1.5-flash",
+            "max_tokens": 100,
+            "messages": [
+                {"role": "user", "content": "What is the capital of France?"}
+            ]
+        }
+    }
+]
+
+batch = client.beta.messages.batches.create(requests=batch_requests)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.processing_status}")
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+**Bedrock Note:** Bedrock requires file-based batch creation with S3 storage. When routing to Bedrock from the Anthropic SDK, you'll need to use the Bedrock SDK directly for batch operations. See the [Bedrock SDK documentation](../bedrock-sdk/files-and-batch) for details.
+</Note>
+
+### List Batches
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "anthropic"}  # or "openai", "gemini"
+)
+
+# List batches
+response = client.beta.messages.batches.list(limit=10)
+
+for batch in response.data:
+    print(f"Batch ID: {batch.id}")
+    print(f"Status: {batch.processing_status}")
+    if batch.request_counts:
+        print(f"Processing: {batch.request_counts.processing}")
+        print(f"Succeeded: {batch.request_counts.succeeded}")
+        print(f"Errored: {batch.request_counts.errored}")
+    print("---")
+```
+
+### Retrieve Batch Status
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "anthropic"}  # or "openai", "gemini"
+)
+
+# Retrieve batch status
+batch_id = "batch-abc123"
+batch = client.beta.messages.batches.retrieve(batch_id)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.processing_status}")
+
+if batch.request_counts:
+    print(f"Processing: {batch.request_counts.processing}")
+    print(f"Succeeded: {batch.request_counts.succeeded}")
+    print(f"Errored: {batch.request_counts.errored}")
+```
+
+### Cancel a Batch
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "anthropic"}  # or "openai", "gemini"
+)
+
+# Cancel batch
+batch_id = "batch-abc123"
+batch = client.beta.messages.batches.cancel(batch_id)
+
+print(f"Batch ID: {batch.id}")
+print(f"Status: {batch.processing_status}")  # "canceling" or "ended"
+```
+
+### Get Batch Results
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+
+# Get batch results (only available after batch is completed)
+batch_id = "batch-abc123"
+results = client.beta.messages.batches.results(batch_id)
+
+# Iterate over results
+for result in results:
+    print(f"Custom ID: {result.custom_id}")
+    if result.result.type == "succeeded":
+        message = result.result.message
+        print(f"Response: {message.content[0].text}")
+    elif result.result.type == "errored":
+        print(f"Error: {result.result.error}")
+    print("---")
+```
+
+---
+
+## End-to-End Workflows
+
+### Anthropic Batch Workflow
+
+```python
+import time
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key"
+)
+
+# Step 1: Create batch with inline requests
+print("Step 1: Creating batch...")
+batch_requests = [
+    {
+        "custom_id": "math-question",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is 15 * 7?"}]
+        }
+    },
+    {
+        "custom_id": "geography-question",
+        "params": {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is the largest ocean?"}]
+        }
+    }
+]
+
+batch = client.beta.messages.batches.create(requests=batch_requests)
+print(f"  Created batch: {batch.id}, status: {batch.processing_status}")
+
+# Step 2: Poll for completion
+print("Step 2: Polling batch status...")
+for i in range(20):
+    batch = client.beta.messages.batches.retrieve(batch.id)
+    print(f"  Poll {i+1}: status = {batch.processing_status}")
+    
+    if batch.processing_status == "ended":
+        print("  Batch completed!")
+        break
+    
+    if batch.request_counts:
+        print(f"    Processing: {batch.request_counts.processing}")
+        print(f"    Succeeded: {batch.request_counts.succeeded}")
+    
+    time.sleep(5)
+
+# Step 3: Verify batch is in list
+print("Step 3: Verifying batch in list...")
+batch_list = client.beta.messages.batches.list(limit=20)
+batch_ids = [b.id for b in batch_list.data]
+assert batch.id in batch_ids, f"Batch {batch.id} should be in list"
+print(f"  Verified batch {batch.id} is in list")
+
+# Step 4: Get results (if completed)
+if batch.processing_status == "ended":
+    print("Step 4: Getting results...")
+    try:
+        results = client.beta.messages.batches.results(batch.id)
+        for result in results:
+            print(f"  {result.custom_id}: ", end="")
+            if result.result.type == "succeeded":
+                print(result.result.message.content[0].text[:50] + "...")
+            else:
+                print(f"Error: {result.result.error}")
+    except Exception as e:
+        print(f"  Results not yet available: {e}")
+
+print(f"\nSuccess! Batch {batch.id} workflow completed.")
+```
+
+### Cross-Provider Batch Workflow (OpenAI via Anthropic SDK)
+
+```python
+import time
+import anthropic
+
+# Create client with OpenAI provider header
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="virtual-key-or-dummy-key",
+    default_headers={"x-model-provider": "openai"}
+)
+
+# Step 1: Create batch with OpenAI models
+print("Step 1: Creating batch for OpenAI provider...")
+batch_requests = [
+    {
+        "custom_id": "openai-request-1",
+        "params": {
+            "model": "gpt-4o-mini",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Explain AI in one sentence."}]
+        }
+    },
+    {
+        "custom_id": "openai-request-2",
+        "params": {
+            "model": "gpt-4o-mini",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "What is machine learning?"}]
+        }
+    }
+]
+
+batch = client.beta.messages.batches.create(requests=batch_requests)
+print(f"  Created batch: {batch.id}, status: {batch.processing_status}")
+
+# Step 2: Poll for completion
+print("Step 2: Polling batch status...")
+for i in range(10):
+    batch = client.beta.messages.batches.retrieve(batch.id)
+    print(f"  Poll {i+1}: status = {batch.processing_status}")
+    
+    if batch.processing_status in ["ended", "completed"]:
+        break
+    
+    time.sleep(5)
+
+print(f"\nSuccess! Cross-provider batch {batch.id} completed via Anthropic SDK.")
+```
+
+---
+
+## Provider-Specific Notes
+
+| Provider | Header Value | File Upload | Batch Type | Models |
+|----------|--------------|-------------|------------|--------|
+| **Anthropic** | `anthropic` or omit | ✅ Beta API | Inline requests | `claude-3-*` |
+| **OpenAI** | `openai` | ✅ Beta API | Inline requests | `gpt-4o-*`, `gpt-4-*` |
+| **Gemini** | `gemini` | ✅ Beta API | Inline requests | `gemini-1.5-*` |
+| **Bedrock** | `bedrock` | ❌ Use Bedrock SDK | File-based (S3) | `anthropic.claude-*` |
+
+---
+
+## Next Steps
+
+- **[Overview](./overview)** - Anthropic SDK integration basics
+- **[Configuration](../../quickstart/gateway/provider-configuration)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Governance, semantic caching, and more

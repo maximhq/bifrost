@@ -1,0 +1,55 @@
+name: OpenAPI Bundle
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/openapi/**"
+      - "!docs/openapi/openapi.json"
+  pull_request:
+    paths:
+      - "docs/openapi/**"
+      - "!docs/openapi/openapi.json"
+
+permissions:
+  contents: write
+
+jobs:
+  bundle-openapi:
+    name: Bundle OpenAPI Spec
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Bundle OpenAPI spec
+        working-directory: ./docs/openapi
+        run: python bundle.py
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet docs/openapi/openapi.json; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push changes
+        if: steps.changes.outputs.changed == 'true' && github.event_name == 'push'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add docs/openapi/openapi.json
+          git commit -m "chore: regenerate openapi.json --skip-pipeline"
+          git push

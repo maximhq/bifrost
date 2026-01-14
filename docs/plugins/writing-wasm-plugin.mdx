@@ -1,0 +1,982 @@
+---
+title: "Writing WASM Plugins"
+description: "Build cross-platform Bifrost plugins using WebAssembly with TypeScript, Go, or Rust"
+icon: "puzzle-piece"
+---
+
+<Warning>
+**Beta Feature - Enterprise Only**
+
+WASM plugins are currently in beta and only available in Bifrost Enterprise builds. Contact your account team for access.
+</Warning>
+
+## Overview
+
+WebAssembly (WASM) plugins offer a powerful alternative to native Go plugins, providing cross-platform compatibility and sandboxed execution. Unlike native `.so` plugins, WASM plugins:
+
+- **Run anywhere** - Single `.wasm` binary works on any OS/architecture
+- **No version matching** - No need to match Go versions or dependency versions
+- **Sandboxed execution** - WASM provides memory-safe, isolated execution
+- **Multi-language support** - Write plugins in TypeScript, Go, Rust, or any WASM-compatible language
+
+## Plugin Interface
+
+All WASM plugins must export these functions:
+
+| Export | Signature | Description |
+|--------|-----------|-------------|
+| `malloc` | `(size: u32) -> u32` | Allocate memory for host to write data |
+| `free` | `(ptr: u32)` or `(ptr: u32, size: u32)` | Free allocated memory (Rust requires size for dealloc) |
+| `get_name` | `() -> u64` | Returns packed ptr+len of plugin name |
+| `init` | `(config_ptr, config_len: u32) -> i32` | Initialize with config (0 = success) |
+| `http_intercept` | `(input_ptr, input_len: u32) -> u64` | HTTP transport intercept |
+| `pre_hook` | `(input_ptr, input_len: u32) -> u64` | Pre-request hook |
+| `post_hook` | `(input_ptr, input_len: u32) -> u64` | Post-response hook |
+| `cleanup` | `() -> i32` | Cleanup resources (0 = success) |
+
+### Return Value Format
+
+Functions returning data use a packed `u64` format:
+- **Upper 32 bits**: pointer to data in WASM memory
+- **Lower 32 bits**: length of data
+
+### Data Exchange
+
+All complex data is exchanged as JSON strings. The host allocates memory using `malloc`, writes JSON data, and passes pointers to the plugin functions.
+
+## Getting Started
+
+Choose your preferred language:
+
+<Tabs>
+  <Tab title="TypeScript">
+
+### Prerequisites
+
+Install Node.js (v18+) for AssemblyScript compilation:
+
+**macOS:**
+```bash
+brew install node
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+### Project Structure
+
+```
+my-wasm-plugin/
+├── assembly/
+│   ├── index.ts       # Plugin implementation
+│   ├── memory.ts      # Memory management utilities
+│   ├── types.ts       # Type definitions
+│   └── tsconfig.json  # AssemblyScript config
+├── package.json
+└── Makefile
+```
+
+### Step 1: Initialize Project
+
+```bash
+mkdir my-wasm-plugin && cd my-wasm-plugin
+npm init -y
+npm install --save-dev assemblyscript json-as
+npx asinit .
+```
+
+### Step 2: Implement the Plugin
+
+Create `assembly/index.ts`:
+
+```typescript
+import { JSON } from 'json-as'
+
+// Memory management (simplified)
+let heap: ArrayBuffer = new ArrayBuffer(65536)
+let heapOffset: u32 = 0
+
+export function malloc(size: u32): u32 {
+  const ptr = heapOffset
+  heapOffset += size
+  return ptr
+}
+
+export function free(ptr: u32): void {
+  // Simple allocator - no-op for free
+}
+
+function readString(ptr: u32, len: u32): string {
+  const bytes = new Uint8Array(len)
+  for (let i: u32 = 0; i < len; i++) {
+    bytes[i] = load<u8>(ptr + i)
+  }
+  return String.UTF8.decode(bytes.buffer)
+}
+
+function writeString(str: string): u64 {
+  const encoded = String.UTF8.encode(str)
+  const bytes = Uint8Array.wrap(encoded)
+  const ptr = malloc(bytes.length)
+  for (let i = 0; i < bytes.length; i++) {
+    store<u8>(ptr + i, bytes[i])
+  }
+  // Pack pointer (upper 32 bits) and length (lower 32 bits)
+  return (u64(ptr) << 32) | u64(bytes.length)
+}
+
+// Plugin configuration
+let pluginConfig: string = ''
+
+export function get_name(): u64 {
+  return writeString('my-typescript-wasm-plugin')
+}
+
+export function init(configPtr: u32, configLen: u32): i32 {
+  pluginConfig = readString(configPtr, configLen)
+  return 0 // Success
+}
+
+export function http_intercept(inputPtr: u32, inputLen: u32): u64 {
+  const input = readString(inputPtr, inputLen)
+  
+  // Parse and modify as needed
+  // For pass-through, return the input with has_response: false
+  const output = '{"context":{},"request":null,"response":null,"has_response":false,"error":""}'
+  
+  return writeString(output)
+}
+
+export function pre_hook(inputPtr: u32, inputLen: u32): u64 {
+  const input = readString(inputPtr, inputLen)
+  
+  // Parse and modify as needed
+  // For pass-through, return with has_short_circuit: false
+  const output = '{"context":{},"request":null,"short_circuit":null,"has_short_circuit":false,"error":""}'
+  
+  return writeString(output)
+}
+
+export function post_hook(inputPtr: u32, inputLen: u32): u64 {
+  const input = readString(inputPtr, inputLen)
+  
+  // Parse and modify as needed
+  // For pass-through, return with has_error matching input
+  const output = '{"context":{},"response":null,"error":null,"has_error":false,"hook_error":""}'
+  
+  return writeString(output)
+}
+
+export function cleanup(): i32 {
+  pluginConfig = ''
+  return 0 // Success
+}
+```
+
+### Step 3: Build
+
+Add to `package.json`:
+
+```json
+{
+  "scripts": {
+    "build": "asc assembly/index.ts -o build/plugin.wasm --runtime stub --optimize"
+  }
+}
+```
+
+Build:
+
+```bash
+npm run build
+```
+
+Output: `build/plugin.wasm`
+
+  </Tab>
+  <Tab title="Go (TinyGo)">
+
+### Prerequisites
+
+Install TinyGo for WASM compilation:
+
+**macOS:**
+```bash
+brew install tinygo
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+wget https://github.com/tinygo-org/tinygo/releases/download/v0.32.0/tinygo_0.32.0_amd64.deb
+sudo dpkg -i tinygo_0.32.0_amd64.deb
+```
+
+### Project Structure
+
+```
+my-wasm-plugin/
+├── main.go        # Plugin implementation
+├── memory.go      # Memory management utilities
+├── types.go       # Type definitions
+├── go.mod
+└── Makefile
+```
+
+### Step 1: Initialize Project
+
+```bash
+mkdir my-wasm-plugin && cd my-wasm-plugin
+go mod init github.com/yourusername/my-wasm-plugin
+```
+
+### Step 2: Implement Memory Management
+
+Create `memory.go`:
+
+```go
+package main
+
+import "unsafe"
+
+var heap = make([]byte, 1024*1024) // 1MB heap
+var heapOffset uint32 = 0
+
+//export plugin_malloc
+func plugin_malloc(size uint32) uint32 {
+	ptr := heapOffset
+	heapOffset += size
+	return ptr
+}
+
+//export plugin_free
+func plugin_free(ptr uint32) {
+	// Simple allocator - no-op
+}
+
+func readInput(ptr, length uint32) []byte {
+	if length == 0 {
+		return nil
+	}
+	data := make([]byte, length)
+	for i := uint32(0); i < length; i++ {
+		data[i] = *(*byte)(unsafe.Pointer(uintptr(ptr + i)))
+	}
+	return data
+}
+
+func writeBytes(data []byte) uint64 {
+	ptr := plugin_malloc(uint32(len(data)))
+	for i, b := range data {
+		*(*byte)(unsafe.Pointer(uintptr(ptr + uint32(i)))) = b
+	}
+	// Pack pointer (upper 32 bits) and length (lower 32 bits)
+	return (uint64(ptr) << 32) | uint64(len(data))
+}
+```
+
+### Step 3: Implement the Plugin
+
+Create `main.go`:
+
+```go
+package main
+
+import (
+	"encoding/json"
+)
+
+//export get_name
+func get_name() uint64 {
+	return writeBytes([]byte("my-go-wasm-plugin"))
+}
+
+//export init
+func init_plugin(configPtr, configLen uint32) int32 {
+	if configLen > 0 {
+		configData := readInput(configPtr, configLen)
+		// Parse and store config as needed
+		_ = configData
+	}
+	return 0 // Success
+}
+
+// HTTPInterceptInput represents the input to http_intercept
+type HTTPInterceptInput struct {
+	Context map[string]interface{} `json:"context"`
+	Request json.RawMessage        `json:"request"`
+}
+
+// HTTPInterceptOutput represents the output from http_intercept
+type HTTPInterceptOutput struct {
+	Context     map[string]interface{} `json:"context"`
+	Request     json.RawMessage        `json:"request,omitempty"`
+	Response    json.RawMessage        `json:"response,omitempty"`
+	HasResponse bool                   `json:"has_response"`
+	Error       string                 `json:"error"`
+}
+
+//export http_intercept
+func http_intercept(inputPtr, inputLen uint32) uint64 {
+	inputData := readInput(inputPtr, inputLen)
+	
+	var input HTTPInterceptInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		output := HTTPInterceptOutput{Error: err.Error()}
+		data, _ := json.Marshal(output)
+		return writeBytes(data)
+	}
+	
+	// Add custom context value
+	input.Context["from-http"] = "wasm-plugin"
+	
+	// Pass through
+	output := HTTPInterceptOutput{
+		Context:     input.Context,
+		Request:     input.Request,
+		HasResponse: false,
+	}
+	
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+// PreHookInput represents the input to pre_hook
+type PreHookInput struct {
+	Context map[string]interface{} `json:"context"`
+	Request json.RawMessage        `json:"request"`
+}
+
+// PreHookOutput represents the output from pre_hook
+type PreHookOutput struct {
+	Context         map[string]interface{} `json:"context"`
+	Request         json.RawMessage        `json:"request,omitempty"`
+	ShortCircuit    json.RawMessage        `json:"short_circuit,omitempty"`
+	HasShortCircuit bool                   `json:"has_short_circuit"`
+	Error           string                 `json:"error"`
+}
+
+//export pre_hook
+func pre_hook(inputPtr, inputLen uint32) uint64 {
+	inputData := readInput(inputPtr, inputLen)
+	
+	var input PreHookInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		output := PreHookOutput{Error: err.Error()}
+		data, _ := json.Marshal(output)
+		return writeBytes(data)
+	}
+	
+	// Add custom context value
+	input.Context["from-pre-hook"] = "wasm-plugin"
+	
+	// Pass through
+	output := PreHookOutput{
+		Context:         input.Context,
+		Request:         input.Request,
+		HasShortCircuit: false,
+	}
+	
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+// PostHookInput represents the input to post_hook
+type PostHookInput struct {
+	Context  map[string]interface{} `json:"context"`
+	Response json.RawMessage        `json:"response"`
+	Error    json.RawMessage        `json:"error"`
+	HasError bool                   `json:"has_error"`
+}
+
+// PostHookOutput represents the output from post_hook
+type PostHookOutput struct {
+	Context   map[string]interface{} `json:"context"`
+	Response  json.RawMessage        `json:"response,omitempty"`
+	Error     json.RawMessage        `json:"error,omitempty"`
+	HasError  bool                   `json:"has_error"`
+	HookError string                 `json:"hook_error"`
+}
+
+//export post_hook
+func post_hook(inputPtr, inputLen uint32) uint64 {
+	inputData := readInput(inputPtr, inputLen)
+	
+	var input PostHookInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		output := PostHookOutput{HookError: err.Error()}
+		data, _ := json.Marshal(output)
+		return writeBytes(data)
+	}
+	
+	// Add custom context value
+	input.Context["from-post-hook"] = "wasm-plugin"
+	
+	// Pass through
+	output := PostHookOutput{
+		Context:  input.Context,
+		Response: input.Response,
+		Error:    input.Error,
+		HasError: input.HasError,
+	}
+	
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+//export cleanup
+func cleanup() int32 {
+	return 0 // Success
+}
+
+func main() {}
+```
+
+### Step 4: Build
+
+```bash
+tinygo build -o build/plugin.wasm -target=wasi -scheduler=none .
+```
+
+Or create a `Makefile`:
+
+```makefile
+build:
+	@mkdir -p build
+	GOWORK=off tinygo build -o build/plugin.wasm -target=wasi -scheduler=none .
+
+clean:
+	@rm -rf build
+```
+
+Output: `build/plugin.wasm`
+
+  </Tab>
+  <Tab title="Rust">
+
+### Prerequisites
+
+Install Rust and add the WASM target:
+
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Add WASM target
+rustup target add wasm32-unknown-unknown
+```
+
+Optional - Install `wasm-opt` for smaller binaries:
+
+```bash
+# macOS
+brew install binaryen
+
+# Linux
+apt install binaryen
+```
+
+### Project Structure
+
+```
+my-wasm-plugin/
+├── src/
+│   ├── lib.rs       # Plugin implementation
+│   ├── memory.rs    # Memory management
+│   └── types.rs     # Type definitions
+├── Cargo.toml
+└── Makefile
+```
+
+### Step 1: Initialize Project
+
+```bash
+cargo new --lib my-wasm-plugin
+cd my-wasm-plugin
+```
+
+Update `Cargo.toml`:
+
+```toml
+[package]
+name = "my-wasm-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+```
+
+### Step 2: Implement Memory Management
+
+Create `src/memory.rs`:
+
+```rust
+use std::alloc::{alloc, dealloc, Layout};
+
+#[no_mangle]
+pub extern "C" fn malloc(size: u32) -> u32 {
+    let layout = Layout::from_size_align(size as usize, 1).unwrap();
+    unsafe { alloc(layout) as u32 }
+}
+
+#[no_mangle]
+pub extern "C" fn free(ptr: u32, size: u32) {
+    let layout = Layout::from_size_align(size as usize, 1).unwrap();
+    unsafe { dealloc(ptr as *mut u8, layout) }
+}
+
+pub fn read_string(ptr: u32, len: u32) -> String {
+    let slice = unsafe {
+        std::slice::from_raw_parts(ptr as *const u8, len as usize)
+    };
+    String::from_utf8_lossy(slice).to_string()
+}
+
+pub fn write_string(s: &str) -> u64 {
+    let bytes = s.as_bytes();
+    let ptr = malloc(bytes.len() as u32);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            ptr as *mut u8,
+            bytes.len()
+        );
+    }
+    // Pack pointer (upper 32 bits) and length (lower 32 bits)
+    ((ptr as u64) << 32) | (bytes.len() as u64)
+}
+```
+
+### Step 3: Implement the Plugin
+
+Create `src/lib.rs`:
+
+```rust
+mod memory;
+
+use memory::{read_string, write_string};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+// Plugin configuration storage
+static mut CONFIG: Option<String> = None;
+
+#[no_mangle]
+pub extern "C" fn get_name() -> u64 {
+    write_string("my-rust-wasm-plugin")
+}
+
+#[no_mangle]
+pub extern "C" fn init(config_ptr: u32, config_len: u32) -> i32 {
+    let config = read_string(config_ptr, config_len);
+    unsafe { CONFIG = Some(config); }
+    0 // Success
+}
+
+#[derive(Deserialize)]
+struct HTTPInterceptInput {
+    context: HashMap<String, serde_json::Value>,
+    request: serde_json::Value,
+}
+
+#[derive(Serialize, Default)]
+struct HTTPInterceptOutput {
+    context: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<serde_json::Value>,
+    has_response: bool,
+    error: String,
+}
+
+#[no_mangle]
+pub extern "C" fn http_intercept(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    let input: HTTPInterceptInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = HTTPInterceptOutput {
+                error: format!("Parse error: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap());
+        }
+    };
+    
+    let mut context = input.context;
+    context.insert("from-http".to_string(), serde_json::json!("rust-wasm"));
+    
+    let output = HTTPInterceptOutput {
+        context,
+        request: Some(input.request),
+        has_response: false,
+        ..Default::default()
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap())
+}
+
+#[derive(Deserialize)]
+struct PreHookInput {
+    context: HashMap<String, serde_json::Value>,
+    request: serde_json::Value,
+}
+
+#[derive(Serialize, Default)]
+struct PreHookOutput {
+    context: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    short_circuit: Option<serde_json::Value>,
+    has_short_circuit: bool,
+    error: String,
+}
+
+#[no_mangle]
+pub extern "C" fn pre_hook(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    let input: PreHookInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = PreHookOutput {
+                error: format!("Parse error: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap());
+        }
+    };
+    
+    let mut context = input.context;
+    context.insert("from-pre-hook".to_string(), serde_json::json!("rust-wasm"));
+    
+    let output = PreHookOutput {
+        context,
+        request: Some(input.request),
+        has_short_circuit: false,
+        ..Default::default()
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap())
+}
+
+#[derive(Deserialize)]
+struct PostHookInput {
+    context: HashMap<String, serde_json::Value>,
+    response: serde_json::Value,
+    error: serde_json::Value,
+    has_error: bool,
+}
+
+#[derive(Serialize, Default)]
+struct PostHookOutput {
+    context: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<serde_json::Value>,
+    has_error: bool,
+    hook_error: String,
+}
+
+#[no_mangle]
+pub extern "C" fn post_hook(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    let input: PostHookInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = PostHookOutput {
+                hook_error: format!("Parse error: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap());
+        }
+    };
+    
+    let mut context = input.context;
+    context.insert("from-post-hook".to_string(), serde_json::json!("rust-wasm"));
+    
+    let output = PostHookOutput {
+        context,
+        response: Some(input.response),
+        error: Some(input.error),
+        has_error: input.has_error,
+        hook_error: String::new(),
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap())
+}
+
+#[no_mangle]
+pub extern "C" fn cleanup() -> i32 {
+    unsafe { CONFIG = None; }
+    0 // Success
+}
+```
+
+### Step 4: Build
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+cp target/wasm32-unknown-unknown/release/my_wasm_plugin.wasm build/plugin.wasm
+```
+
+Optional - Optimize with wasm-opt:
+
+```bash
+wasm-opt -Os -o build/plugin.wasm build/plugin.wasm
+```
+
+Output: `build/plugin.wasm`
+
+  </Tab>
+</Tabs>
+
+## Hook Input/Output Structures
+
+### http_intercept
+
+<Note>
+**Header and Query Parameter Handling**: Headers and query parameters in `request.headers` and `request.query` preserve the original casing sent by the client. When looking up headers/query params, you should perform case-insensitive comparisons in your WASM plugin code to handle various casing (e.g., `Content-Type`, `content-type`, `CONTENT-TYPE`).
+
+For Go native plugins, use the built-in `CaseInsensitiveHeaderLookup()` and `CaseInsensitiveQueryLookup()` helper methods.
+</Note>
+
+**Input:**
+```json
+{
+  "context": {
+    "request_id": "abc-123"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": { "content-type": "application/json" },
+    "query": {},
+    "body": "<base64-encoded>"
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "context": { "request_id": "abc-123", "custom_key": "value" },
+  "request": { ... },
+  "response": null,
+  "has_response": false,
+  "error": ""
+}
+```
+
+To short-circuit with a response:
+```json
+{
+  "context": { ... },
+  "request": null,
+  "response": {
+    "status_code": 200,
+    "headers": { "Content-Type": "application/json" },
+    "body": "<base64-encoded>"
+  },
+  "has_response": true,
+  "error": ""
+}
+```
+
+### pre_hook
+
+**Input:**
+```json
+{
+  "context": { "request_id": "abc-123" },
+  "request": {
+    "provider": "openai",
+    "model": "gpt-4",
+    "input": [{ "role": "user", "content": "Hello" }],
+    "params": { "temperature": 0.7 }
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "context": { "request_id": "abc-123", "plugin_processed": true },
+  "request": { ... },
+  "short_circuit": null,
+  "has_short_circuit": false,
+  "error": ""
+}
+```
+
+To short-circuit with a response:
+```json
+{
+  "context": { ... },
+  "request": null,
+  "short_circuit": {
+    "response": {
+      "chat_response": {
+        "id": "mock-123",
+        "model": "gpt-4",
+        "choices": [{ "index": 0, "message": { "role": "assistant", "content": "Mock response" } }]
+      }
+    }
+  },
+  "has_short_circuit": true,
+  "error": ""
+}
+```
+
+### post_hook
+
+**Input:**
+```json
+{
+  "context": { "request_id": "abc-123" },
+  "response": {
+    "chat_response": {
+      "id": "chatcmpl-123",
+      "model": "gpt-4",
+      "choices": [{ "index": 0, "message": { "role": "assistant", "content": "Hello!" } }],
+      "usage": { "prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15 }
+    }
+  },
+  "error": {},
+  "has_error": false
+}
+```
+
+**Output:**
+```json
+{
+  "context": { "request_id": "abc-123", "post_processed": true },
+  "response": { ... },
+  "error": {},
+  "has_error": false,
+  "hook_error": ""
+}
+```
+
+## Configuration
+
+Configure your WASM plugin in Bifrost's `config.json`:
+
+```json
+{
+  "plugins": [
+    {
+      "path": "/path/to/plugin.wasm",
+      "name": "my-wasm-plugin",
+      "enabled": true,
+      "config": {
+        "custom_option": "value"
+      }
+    }
+  ]
+}
+```
+
+You can also load plugins from URLs:
+
+```json
+{
+  "plugins": [
+    {
+      "path": "https://example.com/plugins/my-plugin.wasm",
+      "name": "my-wasm-plugin",
+      "enabled": true
+    }
+  ]
+}
+```
+
+## Limitations vs Native Plugins
+
+WASM plugins have some trade-offs compared to native Go plugins:
+
+| Aspect | Native (.so) | WASM |
+|--------|-------------|------|
+| **Performance** | Fastest (in-process) | JSON serialization overhead |
+| **Cross-platform** | Build per platform | Single binary everywhere |
+| **Version matching** | Exact Go/package match required | No version requirements |
+| **Memory** | Shared process memory | Linear memory (limited) |
+| **Languages** | Go only | TypeScript, Go, Rust, etc. |
+| **Debugging** | Full Go tooling | Limited debugging support |
+| **Security** | Full process access | Sandboxed execution |
+
+## Source Code Reference
+
+Complete hello-world examples are available in the Bifrost repository:
+
+- **TypeScript**: [examples/plugins/hello-world-wasm-typescript](https://github.com/maximhq/bifrost/tree/main/examples/plugins/hello-world-wasm-typescript)
+- **Go (TinyGo)**: [examples/plugins/hello-world-wasm-go](https://github.com/maximhq/bifrost/tree/main/examples/plugins/hello-world-wasm-go)
+- **Rust**: [examples/plugins/hello-world-wasm-rust](https://github.com/maximhq/bifrost/tree/main/examples/plugins/hello-world-wasm-rust)
+
+## Troubleshooting
+
+### Module fails to load
+
+**Error**: `failed to instantiate WASM module`
+
+**Solution**: Ensure all required exports are present. Use a WASM inspection tool:
+
+```bash
+# List exports
+wasm-objdump -x plugin.wasm | grep -A 20 "Export"
+```
+
+### Memory allocation errors
+
+**Error**: `out of memory` or `invalid memory access`
+
+**Solution**: 
+- Increase heap size in your allocator
+- Ensure you're freeing memory after use
+- Check for memory leaks in long-running plugins
+
+### JSON parsing errors
+
+**Error**: `failed to parse input JSON`
+
+**Solution**: 
+- Validate your JSON structures match expected schemas
+- Handle optional/nullable fields properly
+- Add error logging to identify malformed data
+
+### Build errors (TinyGo)
+
+**Error**: `package not supported by TinyGo`
+
+**Solution**: TinyGo doesn't support all Go standard library packages. Avoid:
+- `reflect` (limited support)
+- `net/http` (use raw JSON instead)
+- Complex generics
+
+### Build errors (Rust)
+
+**Error**: `cannot find -lc`
+
+**Solution**: For `wasm32-unknown-unknown` target, don't link to libc. Ensure your `Cargo.toml` doesn't require native dependencies.
+
+## Need Help?
+
+- **Discord Community**: [Join our Discord](https://getmax.im/bifrost-discord)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/maximhq/bifrost/issues)
+- **Documentation**: [Browse all docs](/)

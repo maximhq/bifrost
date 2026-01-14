@@ -1,0 +1,706 @@
+---
+title: "Building Dynamically Linked Bifrost Binary"
+description: "Learn how to build a dynamically linked Bifrost binary required for custom plugin support"
+icon: "hammer"
+---
+
+## Why Dynamic Linking?
+
+Go's plugin system requires **dynamic linking** to load `.so` files at runtime. By default, Bifrost builds are **statically linked** for maximum portability across Linux distributions - they bundle all dependencies including the C standard library (libc). However, statically linked binaries **cannot load Go plugins**.
+
+To use custom plugins with Bifrost, you must build a dynamically linked binary that links against the system's libc at runtime.
+
+<Warning>
+Dynamic plugins only work on **Linux** and **macOS** (Darwin). Windows is not supported by Go's plugin system.
+</Warning>
+
+## Static vs Dynamic Builds
+
+### Static Builds (Default)
+
+Bifrost's default build configuration creates statically linked binaries:
+
+```bash
+go build \
+  -ldflags="-w -s -extldflags '-static' -X main.Version=v1.3.30" \
+  -tags "sqlite_static" \
+  -o bifrost-http
+```
+
+**Characteristics:**
+- ✅ Portable across all Linux distributions (musl, glibc, etc.)
+- ✅ No external dependencies required at runtime
+- ✅ Smaller deployment surface area
+- ❌ **Cannot load Go plugins**
+
+**Use static builds when:** You don't need custom plugins and want maximum portability.
+
+### Dynamic Builds (For Plugins)
+
+To enable plugin support, build without static linking flags:
+
+```bash
+go build \
+  -ldflags="-w -s -X main.Version=v1.3.30" \
+  -o bifrost-http
+```
+
+**Characteristics:**
+- ✅ **Can load Go plugins** (`.so` files)
+- ✅ Slightly faster compilation
+- ⚠️ Must match the target system's libc (musl vs glibc)
+- ⚠️ Less portable across different Linux distributions
+
+**Use dynamic builds when:** You need custom plugin support.
+
+## Building with Makefile
+
+The easiest way to build a dynamic binary is using the `DYNAMIC=1` flag with the Makefile:
+
+### Local Build
+
+```bash
+# Build dynamically linked binary for your current platform
+make build DYNAMIC=1
+
+# With version tag
+make build DYNAMIC=1 VERSION=1.3.30
+```
+
+This creates `tmp/bifrost-http` as a dynamically linked binary.
+
+### Cross-Compilation
+
+```bash
+# Build for Linux AMD64 (uses Docker if cross-compiling)
+make build DYNAMIC=1 GOOS=linux GOARCH=amd64
+
+# Build for Linux ARM64
+make build DYNAMIC=1 GOOS=linux GOARCH=arm64
+```
+
+### How It Works
+
+The `DYNAMIC=1` flag automatically:
+- ✅ Removes `-extldflags "-static"` from ldflags
+- ✅ Removes `-tags "sqlite_static"` build tag
+- ✅ Keeps `CGO_ENABLED=1` (required for SQLite and plugins)
+- ✅ Uses Docker for cross-compilation when needed
+
+## Building with Docker
+
+For containerized deployments, you'll need to modify the Dockerfile. Here are two complete examples based on your target environment's libc.
+
+### Option A: Alpine Linux (musl libc)
+
+Use this for Alpine-based deployments or when you want minimal image size.
+
+<Accordion title="Complete Dockerfile for Alpine (musl libc)">
+
+```dockerfile
+# --- UI Build Stage: Build the Next.js frontend ---
+FROM node:24-alpine3.22 AS ui-builder
+WORKDIR /app
+
+# Copy UI package files and install dependencies
+COPY ui/package*.json ./
+RUN npm ci
+
+# Copy UI source code
+COPY ui/ ./
+
+# Build UI (skip the copy-build step)
+RUN npx next build
+RUN node scripts/fix-paths.js
+
+# --- Go Build Stage: Compile the Go binary ---
+FROM golang:1.25.5-alpine3.22 AS builder
+WORKDIR /app
+
+# Install dependencies including gcc for CGO and sqlite
+RUN apk add --no-cache gcc musl-dev sqlite-dev
+
+# Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
+ENV CGO_ENABLED=1 GOOS=linux
+
+COPY transports/go.mod transports/go.sum ./
+RUN go mod download
+
+# Copy source code and dependencies
+COPY transports/ ./
+
+COPY --from=ui-builder /app/out ./bifrost-http/ui
+
+# Build the binary with CGO enabled for DYNAMIC LINKING
+ENV GOWORK=off
+ARG VERSION=unknown
+RUN go build \
+    -ldflags="-w -s -X main.Version=v${VERSION}" \
+    -a -trimpath \
+    -o /app/main \
+    ./bifrost-http
+
+# Verify build succeeded
+RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+# --- Runtime Stage: Minimal runtime image ---
+FROM alpine:3.22
+WORKDIR /app
+
+# Install runtime dependencies for CGO-enabled dynamic binary
+# musl: C standard library (required for CGO binaries)
+# libgcc: GCC runtime library
+# ca-certificates: For HTTPS connections
+RUN apk add --no-cache musl libgcc ca-certificates
+
+# Create data directory and set up user
+COPY --from=builder /app/main .
+COPY --from=builder /app/docker-entrypoint.sh .
+
+# Getting arguments
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+
+# Environment variables with defaults (can be overridden at runtime)
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
+
+RUN mkdir -p $APP_DIR/logs && \
+    adduser -D -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    chmod +x /app/docker-entrypoint.sh
+USER appuser
+
+# Declare volume for data persistence
+VOLUME ["/app/data"]
+EXPOSE $APP_PORT
+
+# Health check for container status monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${APP_PORT}/metrics || exit 1
+
+# Use entrypoint script that handles volume permissions and argument processing
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
+```
+
+</Accordion>
+
+**Key changes from static build:**
+- Line 40-44: Removed `-extldflags '-static'` and `-tags "sqlite_static"`
+- Removed UPX compression step (optional, but simpler)
+- Runtime uses musl libc from Alpine base image
+
+**Build and run:**
+
+```bash
+# Build the image
+docker build -f transports/Dockerfile -t bifrost:dynamic-alpine .
+
+# Run the container
+docker run -p 8080:8080 -v ./plugins:/app/data/plugins bifrost:dynamic-alpine
+```
+
+### Option B: Debian (glibc)
+
+Use this for Debian/Ubuntu-based deployments or when deploying to glibc-based systems.
+
+<Accordion title="Complete Dockerfile for Debian (glibc)">
+
+```dockerfile
+# --- UI Build Stage: Build the Next.js frontend ---
+FROM node:24-bookworm AS ui-builder
+WORKDIR /app
+
+# Copy UI package files and install dependencies
+COPY ui/package*.json ./
+RUN npm ci
+
+# Copy UI source code
+COPY ui/ ./
+
+# Build UI
+RUN npx next build
+RUN node scripts/fix-paths.js
+
+# --- Go Build Stage: Compile the Go binary ---
+FROM golang:1.25.5-bookworm AS builder
+WORKDIR /app
+
+# Install dependencies including gcc for CGO and sqlite
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libc6-dev \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment for CGO-enabled build (required for go-sqlite3 and plugins)
+ENV CGO_ENABLED=1 GOOS=linux
+
+COPY transports/go.mod transports/go.sum ./
+RUN go mod download
+
+# Copy source code and dependencies
+COPY transports/ ./
+
+COPY --from=ui-builder /app/out ./bifrost-http/ui
+
+# Build the binary with CGO enabled for DYNAMIC LINKING
+ENV GOWORK=off
+ARG VERSION=unknown
+RUN go build \
+    -ldflags="-w -s -X main.Version=v${VERSION}" \
+    -a -trimpath \
+    -o /app/main \
+    ./bifrost-http
+
+# Verify build succeeded
+RUN test -f /app/main || (echo "Build failed" && exit 1)
+
+# --- Runtime Stage: Minimal runtime image ---
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# Install runtime dependencies for CGO-enabled dynamic binary
+# libc6: GNU C Library (required for glibc-linked binaries)
+# ca-certificates: For HTTPS connections
+RUN apt-get update && apt-get install -y \
+    libc6 \
+    ca-certificates \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create data directory and set up user
+COPY --from=builder /app/main .
+COPY --from=builder /app/docker-entrypoint.sh .
+
+# Getting arguments
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+
+# Environment variables with defaults (can be overridden at runtime)
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR
+
+RUN mkdir -p $APP_DIR/logs && \
+    useradd -m -s /bin/sh appuser && \
+    chown -R appuser:appuser /app && \
+    chmod +x /app/docker-entrypoint.sh
+USER appuser
+
+# Declare volume for data persistence
+VOLUME ["/app/data"]
+EXPOSE $APP_PORT
+
+# Health check for container status monitoring
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${APP_PORT}/metrics || exit 1
+
+# Use entrypoint script that handles volume permissions and argument processing
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]
+```
+
+</Accordion>
+
+**Key differences from Alpine version:**
+- Uses `bookworm` (Debian 12) base images instead of Alpine
+- Installs `apt` packages instead of `apk`
+- Runtime uses glibc (libc6) instead of musl
+- Uses `useradd` instead of `adduser` for user creation
+
+**Build and run:**
+
+```bash
+# Build the image
+docker build -f transports/Dockerfile.debian -t bifrost:dynamic-debian .
+
+# Run the container
+docker run -p 8080:8080 -v ./plugins:/app/data/plugins bifrost:dynamic-debian
+```
+
+## libc Compatibility
+
+Understanding libc (C standard library) compatibility is **critical** when building dynamic binaries and plugins.
+
+### musl vs glibc
+
+Linux distributions use one of two main C standard libraries:
+
+| libc Type | Used By | Characteristics |
+|-----------|---------|-----------------|
+| **musl** | Alpine Linux | Lightweight, minimal, security-focused |
+| **glibc** | Debian, Ubuntu, RHEL, CentOS, Fedora, Amazon Linux | Standard GNU C Library, feature-rich |
+
+### The Golden Rule
+
+<Warning>
+- **A binary built with musl will NOT run on glibc systems.**
+- **A binary built with glibc will NOT run on musl systems.**
+- **Plugins and Bifrost MUST use the same libc.**
+</Warning>
+
+### Why This Matters
+
+When you build a dynamic binary:
+
+```bash
+# Built on Alpine (musl)
+$ ldd bifrost-http
+        linux-vdso.so.1
+        libc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1
+
+# Built on Debian (glibc)
+$ ldd bifrost-http
+        linux-vdso.so.1
+        libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+```
+
+The binary is linked to a **specific** libc implementation. If you try to run it on a system with a different libc, you'll get errors like:
+
+```
+error while loading shared libraries: libc.musl-x86_64.so.1: cannot open shared object file
+```
+
+### Choosing Your Build Environment
+
+**Decision Matrix:**
+
+| Target Deployment | Build With | Dockerfile Base |
+|-------------------|------------|-----------------|
+| Alpine containers | musl | `golang:1.25.5-alpine3.22` |
+| Debian/Ubuntu containers | glibc | `golang:1.25.5-bookworm` |
+| Ubuntu/Debian servers | glibc | `golang:1.25.5-bookworm` |
+| RHEL/CentOS servers | glibc | Native build or glibc container |
+| Kubernetes (Alpine) | musl | `golang:1.25.5-alpine3.22` |
+| Kubernetes (Debian) | glibc | `golang:1.25.5-bookworm` |
+
+**Simple rule:** Build with the same base OS family as your deployment target.
+
+### Building Plugins
+
+Plugins **must** be built with the **exact same environment** as your Bifrost binary:
+
+```bash
+# If Bifrost was built with Alpine/musl
+docker run --rm \
+  -v "$PWD:/work" \
+  -w /work \
+  golang:1.25.5-alpine3.22 \
+  sh -c "apk add --no-cache gcc musl-dev && \
+         go build -buildmode=plugin -o myplugin.so main.go"
+
+# If Bifrost was built with Debian/glibc  
+docker run --rm \
+  -v "$PWD:/work" \
+  -w /work \
+  golang:1.25.5-bookworm \
+  sh -c "apt-get update && apt-get install -y gcc && \
+         go build -buildmode=plugin -o myplugin.so main.go"
+```
+
+See the [hello-world plugin Makefile](https://github.com/maximhq/bifrost/blob/main/examples/plugins/hello-world/Makefile) for a complete example.
+
+## Verification
+
+### Verify Dynamic Linking
+
+After building, check that your binary is dynamically linked:
+
+```bash
+# Check binary dependencies
+ldd tmp/bifrost-http
+
+# Expected output (musl):
+linux-vdso.so.1
+libc.musl-x86_64.so.1 => /lib/ld-musl-x86_64.so.1
+
+# Expected output (glibc):
+linux-vdso.so.1
+libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0
+```
+
+If you see `statically linked`, the binary **will not load plugins**.
+
+### Verify Plugin Compatibility
+
+Test that your plugin loads successfully:
+
+```bash
+# Start Bifrost with your plugin configured
+./tmp/bifrost-http -config config.json
+
+# Check logs for plugin initialization
+# Should see: "Plugin loaded successfully: your-plugin-name"
+```
+
+## Go Version and Package Compatibility
+
+### Go Version Requirement
+
+Bifrost is built with **Go 1.25.5**. Your plugin **must** be compiled with the exact same Go version to ensure compatibility.
+
+```bash
+# Check your Go version
+go version
+# Should output: go version go1.25.5 ...
+
+# If you need to install Go 1.25.5
+# Visit: https://go.dev/dl/
+```
+
+### Key Package Versions
+
+Bifrost uses the following key packages across its three main modules that may affect plugin development:
+
+#### Transport Layer (`transports/go.mod`)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `github.com/bytedance/sonic` | v1.14.1 | High-performance JSON serialization |
+| `github.com/valyala/fasthttp` | v1.67.0 | Fast HTTP server/client |
+| `github.com/fasthttp/router` | v1.5.4 | HTTP router for fasthttp |
+| `github.com/fasthttp/websocket` | v1.5.12 | WebSocket support |
+| `github.com/prometheus/client_golang` | v1.23.0 | Prometheus metrics |
+| `gorm.io/gorm` | v1.31.1 | Database ORM |
+
+#### Core Layer (`core/go.mod`)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `github.com/bytedance/sonic` | v1.14.1 | High-performance JSON serialization |
+| `github.com/valyala/fasthttp` | v1.67.0 | Fast HTTP client for providers |
+| `github.com/google/uuid` | v1.6.0 | UUID generation |
+| `github.com/rs/zerolog` | v1.34.0 | Zero-allocation JSON logger |
+| `github.com/mark3labs/mcp-go` | v0.41.1 | Model Context Protocol support |
+| `golang.org/x/oauth2` | v0.32.0 | OAuth2 client |
+
+#### Framework Layer (`framework/go.mod`)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| `github.com/redis/go-redis/v9` | v9.14.0 | Redis client for caching |
+| `github.com/weaviate/weaviate-go-client/v5` | v5.5.0 | Weaviate vector store client |
+| `github.com/mattn/go-sqlite3` | v1.14.32 | SQLite3 driver (requires CGO) |
+| `gorm.io/gorm` | v1.31.1 | Database ORM |
+| `gorm.io/driver/sqlite` | v1.6.0 | GORM SQLite driver |
+| `gorm.io/driver/postgres` | v1.6.0 | GORM PostgreSQL driver |
+| `golang.org/x/crypto` | v0.43.0 | Cryptographic functions |
+
+<Note>
+If your plugin imports any of these packages, use compatible versions to avoid runtime issues. Check `transports/go.mod`, `core/go.mod`, and `framework/go.mod` for complete dependency lists.
+</Note>
+
+### Checking Bifrost's Dependencies
+
+To see all dependencies used by Bifrost across its three main modules:
+
+```bash
+# View transport layer dependencies
+cat transports/go.mod
+
+# View core dependencies
+cat core/go.mod
+
+# View framework dependencies
+cat framework/go.mod
+
+# Or list all dependencies for a specific module
+cd transports && go list -m all
+cd ../core && go list -m all
+cd ../framework && go list -m all
+```
+
+### Plugin go.mod Example
+
+When creating a plugin, your `go.mod` should match Bifrost's Go version:
+
+```go
+module github.com/example/my-plugin
+
+go 1.25.5
+
+require (
+    github.com/maximhq/bifrost/core v1.2.38
+    // Optional: Add framework for advanced features
+    // github.com/maximhq/bifrost/framework v1.1.48
+    
+    // Add other dependencies as needed, matching versions from Bifrost's go.mod files
+    // github.com/bytedance/sonic v1.14.1
+    // github.com/rs/zerolog v1.34.0
+)
+```
+
+<Tip>
+Import only the Bifrost modules you need. Most plugins only require `core`. Use `framework` if you need access to config stores, vector stores, or other framework features.
+</Tip>
+
+## Troubleshooting
+
+### Common Errors
+
+#### 1. Cannot load plugin - Go version mismatch
+
+```
+cannot load plugin: plugin was built with a different version of package runtime/internal/sys
+```
+
+**Cause:** Plugin and Bifrost were built with different Go versions.
+
+**Solution:** Use the exact same Go version (Go 1.25.5) for both:
+
+```bash
+# Check Go version used for Bifrost
+./tmp/bifrost-http -version
+
+# Verify your Go version matches
+go version  # Should output: go version go1.25.5
+
+# See full compatibility requirements
+```
+
+Refer to [Go Version and Package Compatibility](#go-version-and-package-compatibility) for details.
+
+#### 2. Shared library not found
+
+```
+error while loading shared libraries: libc.musl-x86_64.so.1: cannot open shared object file
+```
+
+**Cause:** Binary built with musl trying to run on glibc system (or vice versa).
+
+**Solution:** Rebuild with the correct libc for your target system.
+
+#### 3. Plugin architecture mismatch
+
+```
+plugin was built with a different version of package internal/cpu
+```
+
+**Cause:** Plugin and Bifrost built for different architectures (amd64 vs arm64).
+
+**Solution:** Ensure `GOARCH` matches for both builds:
+
+```bash
+# Check architecture
+uname -m  # x86_64 = amd64, aarch64 = arm64
+
+# Build with explicit architecture
+GOARCH=amd64 go build ...
+```
+
+#### 4. Plugin file not found
+
+```
+plugin.Open("myplugin.so"): realpath failed: no such file or directory
+```
+
+**Cause:** Plugin file path is incorrect in config.
+
+**Solution:** Use absolute paths or verify relative paths:
+
+```json
+{
+  "plugins": [
+    {
+      "path": "/app/data/plugins/myplugin.so",
+      "config": {}
+    }
+  ]
+}
+```
+
+## Best Practices
+
+### 1. Document Your Build Environment
+
+Create a `BUILD.md` file documenting:
+- Go version used
+- Base image (Alpine vs Debian)
+- Build commands
+- Target deployment platform
+
+### 2. Use Consistent Tooling
+
+Match Bifrost's exact Go version and key dependencies (see [Go Version and Package Compatibility](#go-version-and-package-compatibility)):
+
+```bash
+# Pin Go version in Dockerfile
+FROM golang:1.25.5-alpine3.22 AS builder
+
+# Pin Go version in Makefile/CI
+GO_VERSION=1.25.5
+```
+
+### 3. Test Plugin Loading Locally
+
+Before deploying, test plugin loading:
+
+```bash
+# Build both Bifrost and plugin
+make build DYNAMIC=1
+cd examples/plugins/hello-world && make build
+
+# Test loading
+./tmp/bifrost-http -config examples/plugins/hello-world/config.json
+```
+
+### 4. Version Your Plugins
+
+Tag plugin builds with version and build info:
+
+```bash
+go build -buildmode=plugin \
+  -ldflags="-X main.Version=v1.0.0 -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -o myplugin-v1.0.0.so
+```
+
+### 5. Multi-Stage Dockerfiles for Plugins
+
+Build plugins in the same Dockerfile as Bifrost:
+
+```dockerfile
+# Build plugin
+FROM golang:1.25.5-alpine3.22 AS plugin-builder
+WORKDIR /plugin
+COPY plugins/myplugin/ .
+RUN apk add --no-cache gcc musl-dev && \
+    go build -buildmode=plugin -o myplugin.so main.go
+
+# Build Bifrost
+FROM golang:1.25.5-alpine3.22 AS bifrost-builder
+# ... (bifrost build steps)
+
+# Runtime
+FROM alpine:3.22
+COPY --from=bifrost-builder /app/main .
+COPY --from=plugin-builder /plugin/myplugin.so /app/plugins/
+```
+
+This ensures plugins and Bifrost use identical build environments.
+
+## Next Steps
+
+Now that you have a dynamically linked Bifrost binary:
+
+1. **[Write your first plugin](./writing-plugin)** - Learn the plugin API and create custom functionality
+2. **[Deploy with plugins](../deployment-guides)** - Best practices for production deployments
+3. **[Example plugins](https://github.com/maximhq/bifrost/tree/main/examples/plugins)** - Study working examples
+
+<Note>
+For questions or issues with dynamic builds and plugins, visit our [GitHub Discussions](https://github.com/maximhq/bifrost/discussions) or [Discord community](https://discord.gg/bifrost).
+</Note>
+

@@ -1,0 +1,866 @@
+---
+title: "Guardrails"
+description: "Enterprise-grade content safety and security validation with support for AWS Bedrock Guardrails, Azure Content Safety, and Patronus AI for real-time input and output protection."
+icon: "road-barrier"
+---
+
+## Overview
+
+**Guardrails** in Bifrost provide enterprise-grade content safety, security validation, and policy enforcement for LLM requests and responses. The system validates inputs and outputs in real-time against your specified policies, ensuring responsible AI deployment with comprehensive protection against harmful content, prompt injection, PII leakage, and policy violations.
+
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-Provider Support** | AWS Bedrock, Azure Content Safety, and Patronus AI integration |
+| **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
+| **Real-Time Processing** | Synchronous and asynchronous validation modes |
+| **Custom Policies** | Define organization-specific guardrail rules |
+| **Automatic Remediation** | Block, redact, or modify content based on policy |
+| **Comprehensive Logging** | Detailed audit trails for compliance |
+
+---
+
+## Supported Guardrail Providers
+
+Bifrost integrates with leading guardrail providers to offer comprehensive protection:
+
+### AWS Bedrock Guardrails
+
+**Amazon Bedrock Guardrails** provides enterprise-grade content filtering and safety features with deep AWS integration.
+
+**Capabilities:**
+- **Content Filters**: Hate speech, insults, sexual content, violence, misconduct
+- **Denied Topics**: Block specific topics or categories
+- **Word Filters**: Custom profanity and sensitive word blocking
+- **PII Protection**: Detect and redact 50+ PII entity types
+- **Contextual Grounding**: Verify responses against source documents
+- **Prompt Attack Detection**: Identify injection and jailbreak attempts
+
+**Supported PII Types:**
+- Personal identifiers (SSN, passport, driver's license)
+- Financial information (credit cards, bank accounts)
+- Contact information (email, phone, address)
+- Medical information (health records, insurance)
+- Device identifiers (IP addresses, MAC addresses)
+
+### Azure Content Safety
+
+**Azure AI Content Safety** provides multi-modal content moderation powered by Microsoft's advanced AI models.
+
+**Capabilities:**
+- **Severity-Based Filtering**: 4-level severity classification (Safe, Low, Medium, High)
+- **Multi-Category Detection**: Hate, sexual, violence, self-harm content
+- **Prompt Shield**: Advanced jailbreak and injection detection
+- **Groundedness Detection**: Verify factual accuracy against sources
+- **Protected Material**: Detect copyrighted content
+- **Custom Categories**: Define organization-specific content policies
+
+**Detection Categories:**
+- Hate and fairness
+- Sexual content
+- Violence
+- Self-harm
+- Profanity
+- Jailbreak attempts
+
+### Patronus AI
+
+**Patronus AI** specializes in LLM security and safety with advanced evaluation capabilities.
+
+**Capabilities:**
+- **Hallucination Detection**: Identify factually incorrect responses
+- **PII Detection**: Comprehensive personal data identification
+- **Toxicity Screening**: Multi-language toxic content detection
+- **Prompt Injection Defense**: Advanced attack pattern recognition
+- **Custom Evaluators**: Build organization-specific safety checks
+- **Real-Time Monitoring**: Continuous safety validation
+
+**Advanced Features:**
+- Context-aware evaluation
+- Multi-turn conversation analysis
+- Custom policy templates
+- Integration with existing safety workflows
+
+---
+
+## Configuration
+
+### AWS Bedrock Guardrails Setup
+
+<Tabs group="bedrock-config">
+<Tab title="Web UI">
+
+1. **Navigate to Guardrails**
+   - Open Bifrost UI at `http://localhost:8080`
+   - Go to **Enterprise** → **Guardrails**
+   - Click **Add Guardrail Provider**
+
+2. **Configure AWS Bedrock**
+
+**Required Fields:**
+- **Provider Name**: Descriptive name for this guardrail
+- **Provider Type**: Select "AWS Bedrock"
+- **AWS Region**: Your Bedrock region (e.g., `us-east-1`)
+- **Guardrail ID**: Your Bedrock guardrail identifier
+- **Guardrail Version**: Version number or `DRAFT`
+
+**AWS Credentials:**
+- **Access Key ID**: AWS IAM access key
+- **Secret Access Key**: AWS IAM secret key
+- **Session Token**: (Optional) For temporary credentials
+
+**Validation Settings:**
+- **Input Validation**: Enable for prompt validation
+- **Output Validation**: Enable for response validation
+- **Action on Violation**: Block, Log, or Redact
+- **Timeout**: Max validation time (default: 5s)
+
+3. **Test Configuration**
+   - Click **Test Guardrail**
+   - Send sample prompt to verify detection
+   - Review detection results
+
+</Tab>
+<Tab title="API">
+
+**Configure AWS Bedrock Guardrails:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/guardrails \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "AWS Bedrock Production Guardrail",
+    "provider": "aws_bedrock",
+    "enabled": true,
+    "config": {
+      "aws_region": "us-east-1",
+      "guardrail_id": "gdrail-abc123def456",
+      "guardrail_version": "1",
+      "credentials": {
+        "access_key_id": "AKIA...",
+        "secret_access_key": "secret...",
+        "session_token": ""
+      }
+    },
+    "validation": {
+      "validate_input": true,
+      "validate_output": true,
+      "action_on_violation": "block",
+      "timeout_ms": 5000
+    },
+    "content_filters": {
+      "hate": {
+        "enabled": true,
+        "threshold": "MEDIUM"
+      },
+      "insults": {
+        "enabled": true,
+        "threshold": "MEDIUM"
+      },
+      "sexual": {
+        "enabled": true,
+        "threshold": "HIGH"
+      },
+      "violence": {
+        "enabled": true,
+        "threshold": "MEDIUM"
+      },
+      "misconduct": {
+        "enabled": true,
+        "threshold": "LOW"
+      }
+    },
+    "pii_detection": {
+      "enabled": true,
+      "action": "redact",
+      "entities": [
+        "SSN",
+        "EMAIL",
+        "PHONE",
+        "CREDIT_CARD",
+        "BANK_ACCOUNT",
+        "PASSPORT",
+        "DRIVER_LICENSE",
+        "IP_ADDRESS"
+      ]
+    },
+    "denied_topics": [
+      {
+        "name": "Financial Advice",
+        "definition": "Investment recommendations or financial guidance",
+        "action": "block"
+      },
+      {
+        "name": "Medical Diagnosis",
+        "definition": "Specific medical diagnoses or treatment recommendations",
+        "action": "block"
+      }
+    ],
+    "word_filters": {
+      "profanity": {
+        "enabled": true,
+        "action": "redact"
+      },
+      "custom_words": [
+        "confidential",
+        "internal-only",
+        "do-not-share"
+      ]
+    }
+  }'
+```
+
+**Test Guardrail:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/guardrails/{guardrail_id}/test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_text": "My SSN is 123-45-6789 and I need help with something",
+    "validation_type": "input"
+  }'
+
+# Response
+{
+  "guardrail_id": "gdrail-abc123def456",
+  "action_taken": "redact",
+  "violations": [
+    {
+      "type": "PII",
+      "category": "SSN",
+      "severity": "HIGH",
+      "text_excerpt": "My SSN is ***-**-****",
+      "confidence": 0.99
+    }
+  ],
+  "modified_text": "My SSN is ***-**-**** and I need help with something",
+  "processing_time_ms": 245
+}
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "enterprise": {
+    "guardrails": [
+      {
+        "id": "bedrock-prod-guardrail",
+        "name": "AWS Bedrock Production Guardrail",
+        "provider": "aws_bedrock",
+        "enabled": true,
+        "config": {
+          "aws_region": "us-east-1",
+          "guardrail_id": "gdrail-abc123def456",
+          "guardrail_version": "1",
+          "credentials": {
+            "access_key_id": "${AWS_ACCESS_KEY_ID}",
+            "secret_access_key": "${AWS_SECRET_ACCESS_KEY}",
+            "session_token": "${AWS_SESSION_TOKEN}"
+          }
+        },
+        "validation": {
+          "validate_input": true,
+          "validate_output": true,
+          "action_on_violation": "block",
+          "timeout_ms": 5000
+        },
+        "content_filters": {
+          "hate": {
+            "enabled": true,
+            "threshold": "MEDIUM"
+          },
+          "insults": {
+            "enabled": true,
+            "threshold": "MEDIUM"
+          },
+          "sexual": {
+            "enabled": true,
+            "threshold": "HIGH"
+          },
+          "violence": {
+            "enabled": true,
+            "threshold": "MEDIUM"
+          }
+        },
+        "pii_detection": {
+          "enabled": true,
+          "action": "redact",
+          "entities": [
+            "SSN",
+            "EMAIL",
+            "PHONE",
+            "CREDIT_CARD"
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Azure Content Safety Setup
+
+<Tabs group="azure-config">
+<Tab title="Web UI">
+
+1. **Navigate to Guardrails**
+   - Go to **Enterprise** → **Guardrails**
+   - Click **Add Guardrail Provider**
+
+2. **Configure Azure Content Safety**
+
+**Required Fields:**
+- **Provider Name**: Descriptive name
+- **Provider Type**: Select "Azure Content Safety"
+- **Endpoint**: Your Azure Content Safety endpoint
+- **API Key**: Azure subscription key
+
+**Content Filters:**
+- **Hate**: Enable with severity threshold
+- **Sexual**: Enable with severity threshold
+- **Violence**: Enable with severity threshold
+- **Self-Harm**: Enable with severity threshold
+
+**Advanced Features:**
+- **Prompt Shield**: Enable jailbreak detection
+- **Groundedness Detection**: Enable for factual verification
+- **Custom Categories**: Define organization policies
+
+</Tab>
+<Tab title="API">
+
+**Configure Azure Content Safety:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/guardrails \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Azure Content Safety Guardrail",
+    "provider": "azure_content_safety",
+    "enabled": true,
+    "config": {
+      "endpoint": "https://your-resource.cognitiveservices.azure.com/",
+      "api_key": "your-azure-api-key",
+      "api_version": "2024-02-15-preview"
+    },
+    "validation": {
+      "validate_input": true,
+      "validate_output": true,
+      "action_on_violation": "block",
+      "timeout_ms": 3000
+    },
+    "content_categories": {
+      "hate": {
+        "enabled": true,
+        "severity_threshold": 2,
+        "action": "block"
+      },
+      "sexual": {
+        "enabled": true,
+        "severity_threshold": 4,
+        "action": "block"
+      },
+      "violence": {
+        "enabled": true,
+        "severity_threshold": 2,
+        "action": "block"
+      },
+      "self_harm": {
+        "enabled": true,
+        "severity_threshold": 2,
+        "action": "block"
+      }
+    },
+    "prompt_shield": {
+      "enabled": true,
+      "detect_jailbreak": true,
+      "detect_indirect_attack": true,
+      "action": "block"
+    },
+    "groundedness_detection": {
+      "enabled": false,
+      "source_type": "reasoning",
+      "action": "log"
+    },
+    "custom_categories": [
+      {
+        "name": "Corporate Policy Violation",
+        "definition": "Content violating company communication policies",
+        "sample_content": [
+          "Example of prohibited content 1",
+          "Example of prohibited content 2"
+        ],
+        "severity_threshold": 2,
+        "action": "block"
+      }
+    ]
+  }'
+```
+
+**Analyze Content:**
+```bash
+curl -X POST http://localhost:8080/api/guardrails/{guardrail_id}/analyze \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Content to analyze for safety violations",
+    "validation_type": "input"
+  }'
+
+# Response
+{
+  "guardrail_id": "azure-content-safety-001",
+  "action_taken": "allow",
+  "categories_analysis": [
+    {
+      "category": "Hate",
+      "severity": 0
+    },
+    {
+      "category": "Sexual",
+      "severity": 0
+    },
+    {
+      "category": "Violence",
+      "severity": 0
+    },
+    {
+      "category": "SelfHarm",
+      "severity": 0
+    }
+  ],
+  "prompt_shield_result": {
+    "jailbreak_detected": false,
+    "indirect_attack_detected": false
+  },
+  "processing_time_ms": 187
+}
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "enterprise": {
+    "guardrails": [
+      {
+        "id": "azure-content-safety-001",
+        "name": "Azure Content Safety Guardrail",
+        "provider": "azure_content_safety",
+        "enabled": true,
+        "config": {
+          "endpoint": "https://your-resource.cognitiveservices.azure.com/",
+          "api_key": "${AZURE_CONTENT_SAFETY_API_KEY}",
+          "api_version": "2024-02-15-preview"
+        },
+        "validation": {
+          "validate_input": true,
+          "validate_output": true,
+          "action_on_violation": "block",
+          "timeout_ms": 3000
+        },
+        "content_categories": {
+          "hate": {
+            "enabled": true,
+            "severity_threshold": 2,
+            "action": "block"
+          },
+          "sexual": {
+            "enabled": true,
+            "severity_threshold": 4,
+            "action": "block"
+          },
+          "violence": {
+            "enabled": true,
+            "severity_threshold": 2,
+            "action": "block"
+          },
+          "self_harm": {
+            "enabled": true,
+            "severity_threshold": 2,
+            "action": "block"
+          }
+        },
+        "prompt_shield": {
+          "enabled": true,
+          "detect_jailbreak": true,
+          "detect_indirect_attack": true
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Patronus AI Setup
+
+<Tabs group="patronus-config">
+<Tab title="Web UI">
+
+1. **Navigate to Guardrails**
+   - Go to **Enterprise** → **Guardrails**
+   - Click **Add Guardrail Provider**
+
+2. **Configure Patronus AI**
+
+**Required Fields:**
+- **Provider Name**: Descriptive name
+- **Provider Type**: Select "Patronus AI"
+- **API Key**: Your Patronus API key
+- **Environment**: Production or Development
+
+**Evaluators:**
+- **Hallucination Detection**: Enable factual accuracy checks
+- **PII Detection**: Enable personal data identification
+- **Toxicity**: Enable harmful content detection
+- **Prompt Injection**: Enable attack detection
+
+**Custom Policies:**
+- Upload organization-specific evaluators
+- Define custom safety criteria
+
+</Tab>
+<Tab title="API">
+
+**Configure Patronus AI:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/guardrails \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Patronus AI Guardrail",
+    "provider": "patronus_ai",
+    "enabled": true,
+    "config": {
+      "api_key": "your-patronus-api-key",
+      "api_endpoint": "https://api.patronus.ai/v1",
+      "environment": "production"
+    },
+    "validation": {
+      "validate_input": true,
+      "validate_output": true,
+      "action_on_violation": "log",
+      "timeout_ms": 4000
+    },
+    "evaluators": {
+      "hallucination_detection": {
+        "enabled": true,
+        "action": "log",
+        "confidence_threshold": 0.8
+      },
+      "pii_detection": {
+        "enabled": true,
+        "action": "redact",
+        "entity_types": [
+          "PERSON",
+          "EMAIL_ADDRESS",
+          "PHONE_NUMBER",
+          "CREDIT_CARD",
+          "SSN",
+          "LOCATION"
+        ]
+      },
+      "toxicity": {
+        "enabled": true,
+        "action": "block",
+        "threshold": 0.7,
+        "categories": [
+          "toxicity",
+          "severe_toxicity",
+          "identity_attack",
+          "insult",
+          "profanity",
+          "threat"
+        ]
+      },
+      "prompt_injection": {
+        "enabled": true,
+        "action": "block",
+        "confidence_threshold": 0.85
+      }
+    },
+    "custom_evaluators": [
+      {
+        "name": "brand_safety",
+        "evaluator_id": "eval-brand-001",
+        "action": "block",
+        "threshold": 0.75
+      }
+    ]
+  }'
+```
+
+**Run Evaluation:**
+```bash
+curl -X POST http://localhost:8080/api/enterprise/guardrails/{guardrail_id}/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input_text": "Tell me about quantum computing",
+    "output_text": "Quantum computing uses quantum mechanics principles...",
+    "context": "Technical documentation query"
+  }'
+
+# Response
+{
+  "guardrail_id": "patronus-ai-001",
+  "action_taken": "allow",
+  "evaluations": [
+    {
+      "evaluator": "hallucination_detection",
+      "score": 0.95,
+      "passed": true,
+      "explanation": "Response is factually accurate"
+    },
+    {
+      "evaluator": "pii_detection",
+      "score": 0.0,
+      "passed": true,
+      "entities_found": []
+    },
+    {
+      "evaluator": "toxicity",
+      "score": 0.02,
+      "passed": true,
+      "categories_detected": []
+    },
+    {
+      "evaluator": "prompt_injection",
+      "score": 0.01,
+      "passed": true
+    }
+  ],
+  "processing_time_ms": 312
+}
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "enterprise": {
+    "guardrails": [
+      {
+        "id": "patronus-ai-001",
+        "name": "Patronus AI Guardrail",
+        "provider": "patronus_ai",
+        "enabled": true,
+        "config": {
+          "api_key": "${PATRONUS_API_KEY}",
+          "api_endpoint": "https://api.patronus.ai/v1",
+          "environment": "production"
+        },
+        "validation": {
+          "validate_input": true,
+          "validate_output": true,
+          "action_on_violation": "log",
+          "timeout_ms": 4000
+        },
+        "evaluators": {
+          "hallucination_detection": {
+            "enabled": true,
+            "action": "log",
+            "confidence_threshold": 0.8
+          },
+          "pii_detection": {
+            "enabled": true,
+            "action": "redact",
+            "entity_types": [
+              "PERSON",
+              "EMAIL_ADDRESS",
+              "PHONE_NUMBER"
+            ]
+          },
+          "toxicity": {
+            "enabled": true,
+            "action": "block",
+            "threshold": 0.7
+          },
+          "prompt_injection": {
+            "enabled": true,
+            "action": "block",
+            "confidence_threshold": 0.85
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Guardrails in Requests
+
+### Attaching Guardrails to API Calls
+
+Once configured, attach guardrails to your LLM requests using custom headers:
+
+**Single Guardrail:**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-guardrail-id: bedrock-prod-guardrail" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Help me with this task"
+      }
+    ]
+  }'
+```
+
+**Multiple Guardrails (Sequential):**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-guardrail-ids: bedrock-prod-guardrail,azure-content-safety-001" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Help me with this task"
+      }
+    ]
+  }'
+```
+
+**Guardrail Configuration in Request:**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Help me with this task"
+      }
+    ],
+    "bifrost_config": {
+      "guardrails": {
+        "input": ["bedrock-prod-guardrail"],
+        "output": ["patronus-ai-001"],
+        "async": false
+      }
+    }
+  }'
+```
+
+### Guardrail Response Handling
+
+**Successful Validation (200):**
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1699564800,
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I'd be happy to help you with your task..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "extra_fields": {
+    "guardrails": {
+      "input_validation": {
+        "guardrail_id": "bedrock-prod-guardrail",
+        "status": "passed",
+        "violations": [],
+        "processing_time_ms": 245
+      },
+      "output_validation": {
+        "guardrail_id": "patronus-ai-001",
+        "status": "passed",
+        "violations": [],
+        "processing_time_ms": 312
+      }
+    }
+  }
+}
+```
+
+**Validation Failure - Blocked (446):**
+```json
+{
+  "error": {
+    "message": "Request blocked by guardrails",
+    "type": "guardrail_violation",
+    "code": 446,
+    "details": {
+      "guardrail_id": "bedrock-prod-guardrail",
+      "validation_stage": "input",
+      "violations": [
+        {
+          "type": "PII",
+          "category": "SSN",
+          "severity": "HIGH",
+          "action": "block",
+          "text_excerpt": "My SSN is ***-**-****"
+        },
+        {
+          "type": "prompt_injection",
+          "severity": "CRITICAL",
+          "action": "block",
+          "confidence": 0.95
+        }
+      ],
+      "processing_time_ms": 198
+    }
+  }
+}
+```
+
+**Validation Warning - Logged (246):**
+```json
+{
+  "id": "chatcmpl-def456",
+  "object": "chat.completion",
+  "created": 1699564800,
+  "model": "gpt-4o-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Response with redacted content..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "bifrost_metadata": {
+    "guardrails": {
+      "output_validation": {
+        "guardrail_id": "azure-content-safety-001",
+        "status": "warning",
+        "violations": [
+          {
+            "type": "profanity",
+            "severity": "LOW",
+            "action": "redact",
+            "modifications": 2
+          }
+        ],
+        "processing_time_ms": 187
+      }
+    }
+  }
+}
+```

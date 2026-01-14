@@ -1,0 +1,89 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") .Values.vectorStore.redis.enabled (not .Values.vectorStore.redis.external.enabled) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bifrost.fullname" . }}-redis-master
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: "{{ .Values.vectorStore.redis.image.repository }}:{{ .Values.vectorStore.redis.image.tag }}"
+          imagePullPolicy: {{ .Values.vectorStore.redis.image.pullPolicy }}
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          env:
+            {{- if .Values.vectorStore.redis.auth.enabled }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bifrost.fullname" . }}-redis
+                  key: password
+            {{- end }}
+          {{- if .Values.vectorStore.redis.auth.enabled }}
+          command:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+          {{- end }}
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  {{- if .Values.vectorStore.redis.auth.enabled }}
+                  redis-cli -a "$REDIS_PASSWORD" ping
+                  {{- else }}
+                  redis-cli ping
+                  {{- end }}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - |
+                  {{- if .Values.vectorStore.redis.auth.enabled }}
+                  redis-cli -a "$REDIS_PASSWORD" ping
+                  {{- else }}
+                  redis-cli ping
+                  {{- end }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.vectorStore.redis.master.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.vectorStore.redis.master.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "bifrost.fullname" . }}-redis
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

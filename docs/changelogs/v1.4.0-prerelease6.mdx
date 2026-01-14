@@ -1,0 +1,77 @@
+---
+title: "v1.4.0-prerelease6"
+description: "v1.4.0-prerelease6 changelog - 2026-01-07"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.0-prerelease6
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.0-prerelease6
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.0-prerelease6
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.0-prerelease6">
+- feat: remove restart required for auth config changes
+- fix: resolved issue where new auth configs were not being created
+- ci: added workflow to auto-generate openapi.json documentation when openapi yaml files change
+- fix: tracer lifecycle management fixes
+- fix: stream accumulator deduplication fixes
+- fix: image url and input audio handling in gemini chat converters
+- fix: support both responseJsonSchema and responseSchema for JSON response formatting in gemini
+- fix: disable auth on inference routes not working correctly
+- fix: fixes Anthropic to Azure/OpenAI for input_text/output_text
+
+</Update>
+<Update label="Core" description="1.3.5">
+- fix: tracer lifecycle management fixes
+- fix: image url and input audio handling in gemini chat converters
+- fix: support both responseJsonSchema and responseSchema for JSON response formatting in gemini
+- fix: fixes Anthropic to Azure/OpenAI for input_text/output_text
+
+</Update>
+<Update label="Framework" description="1.2.5">
+- feat: added flush session functionality to config store to clear all existing sessions
+- fix: stream accumulator reference count management fixes
+- fix: stream accumulator deduplication fixes
+
+</Update>
+<Update label="governance" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>
+<Update label="jsonparser" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>
+<Update label="logging" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+- fix: streaming tracer cleanup fixes
+
+</Update>
+<Update label="maxim" description="1.5.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+- fix: streaming tracer cleanup fixes
+
+</Update>
+<Update label="mocker" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>
+<Update label="otel" description="1.1.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>
+<Update label="semanticcache" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>
+<Update label="telemetry" description="1.4.5">
+- chore: upgrades core to v1.3.4 and framework to 1.2.4
+
+</Update>

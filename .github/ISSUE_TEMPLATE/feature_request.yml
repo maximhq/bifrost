@@ -1,0 +1,69 @@
+name: Feature request
+description: Suggest an idea or enhancement for Bifrost
+title: "[Feature]: <short summary>"
+labels: [enhancement]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature! Please fill out the details below.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and discussions to avoid duplicates
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What problem does this feature solve? Who benefits?
+      placeholder: Describe the problem clearly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your proposed API/UX/CLI. Include examples if helpful.
+      placeholder: Provide details about how this should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other solutions or workarounds did you consider?
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area(s)
+      multiple: true
+      options:
+        - Core (Go)
+        - Framework
+        - Transports (HTTP)
+        - Plugins
+        - UI (Next.js)
+        - Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add any other context, sketches, or references here.
+    validations:
+      required: false
+
+

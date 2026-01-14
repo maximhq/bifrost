@@ -1,0 +1,114 @@
+---
+title: "Adding a vector store"
+description: "Learn how to contribute a backend for the vector store in Bifrost"
+icon: "circle-nodes"
+---
+
+The Vector store in Bifrost is designed to be extensible, allowing support for different vector database backends. This guide outlines the philosophy, architecture, and steps to add support for a new vector database.
+
+This guide will help you add a new custom backend for the vector store. Currently, Bifrost supports Weaviate, Redis and Qdrant.
+
+## Setup
+
+We assume you have some idea about how Bifrost works and you have already [set up bifrost for local development](./setting-up-repo).
+
+## Architecture
+
+The system is built around a few key components:
+
+1.  **`VectorStore` Interface**: This is the heart of the system. It defines all the methods required for vector operations including namespace management, similarity search, CRUD operations, and filtering (e.g., `CreateNamespace`, `GetNearest`, `Add`, `Delete`). Any valid store must implement this interface.
+2.  **Database-Specific Stores**: Unlike relational stores, vector databases have unique characteristics. Each implementation (e.g., `WeaviateStore`, `RedisStore`) uses the native client library for that database to provide optimal performance.
+3.  **Configuration Structs**: Each database type has its own configuration struct (e.g., `WeaviateConfig`, `RedisConfig`) that defines connection details and database-specific settings.
+4.  **Query Abstraction**: The `Query` type provides a common way to express filters across different backends, with each implementation translating to its native query language.
+
+## Vector store structure
+
+The vector store is used for semantic search and similarity matching in Bifrost. This enables features like RAG (Retrieval-Augmented Generation) and intelligent document retrieval. Bifrost exposes a single interface (`VectorStore`) for all vector operations.
+
+Any custom backend for vector store should implement the `VectorStore` interface. The interface is defined in [vectorstore/store.go](https://github.com/maximhq/bifrost/blob/main/framework/vectorstore/store.go).
+
+## Key interface methods
+
+The `VectorStore` interface includes methods for:
+
+*   **Namespace Management**: Create and delete namespaces (collections/indices)
+*   **Health Checks**: Ping to verify connectivity
+*   **Data Operations**: Add, get, and delete vector embeddings with metadata
+*   **Similarity Search**: Find nearest neighbors using vector similarity
+*   **Filtering**: Query with metadata filters and pagination
+*   **Batch Operations**: Retrieve or delete multiple items efficiently
+
+## Using native clients
+
+Unlike the config and log stores which use GORM, vector stores use native database clients. This is because:
+
+*   Vector databases have specialized APIs optimized for similarity search
+*   Each database has unique features (e.g., Weaviate's GraphQL, Redis's vector syntax)
+*   Performance is critical for vector operations
+
+You should use the official Go client library for your target vector database.
+
+## Conventions
+
+When adding a new database, please follow these conventions:
+
+### File Placement
+*   The main interface and factory method are in `framework/vectorstore/store.go`.
+*   Create a new file for your database implementation, named after the database (e.g., `framework/vectorstore/pinecone.go`).
+
+### Naming Conventions
+*   Define a constant for your database type in `store.go` following the pattern `VectorStoreType[DatabaseName]` (e.g., `VectorStoreTypeWeaviate`).
+*   Name your config struct as `[DatabaseName]Config` (e.g., `WeaviateConfig`).
+*   Name your store struct as `[DatabaseName]Store` (e.g., `WeaviateStore`).
+*   Name your constructor function as `new[DatabaseName]Store` (e.g., `newWeaviateStore`).
+
+### Implementation Steps
+
+1.  Add a new constant to the `VectorStoreType` in `store.go`.
+2.  Define a configuration struct in your new database file that contains all connection parameters (host, API keys, timeout settings, etc.).
+3.  Create a store struct that holds the database client, configuration, and logger.
+4.  Implement all methods from the `VectorStore` interface:
+    *   Connection and health checks (`Ping`)
+    *   Namespace/collection management (`CreateNamespace`, `DeleteNamespace`)
+    *   Single and batch retrieval (`GetChunk`, `GetChunks`)  
+    *   Filtered queries (`GetAll` with pagination)
+    *   Similarity search (`GetNearest`)
+    *   Add/update operations (`Add`)
+    *   Delete operations (`Delete`, `DeleteAll`)
+    *   Cleanup (`Close`)
+5.  Implement query translation logic to convert the generic `Query` type to your database's native filter format.
+6.  Create a constructor function that initializes the database client and validates connectivity.
+7.  Update the `NewVectorStore` factory function in `store.go` to handle your new database type.
+8.  Update the `Config` struct's `UnmarshalJSON` method in `store.go` to properly parse your configuration.
+
+### Query translation
+
+Each vector database has its own query syntax. You'll need to implement functions to translate the generic `Query` type to your database's format. For example:
+
+*   Weaviate uses GraphQL-style filters
+*   Redis uses FT.SEARCH query syntax
+
+Study the existing implementations (`buildWeaviateFilter`, `buildRedisQuery`) for patterns to follow.
+
+### Error Handling
+
+Make sure to properly handle errors during:
+*   Database connection establishment
+*   Client initialization and authentication
+*   Query execution (especially for complex similarity searches)
+*   Namespace creation and deletion
+*   Connection cleanup
+
+### Testing Considerations
+
+*   Test all `VectorStore` interface methods with your backend
+*   Verify similarity search returns results in the correct order
+*   Test filtering with various query operators (Equal, GreaterThan, ContainsAny, etc.)
+*   Ensure pagination works correctly with cursors
+*   Test batch operations with different sizes
+*   Verify namespace isolation (data from one namespace doesn't leak to another)
+*   Consider performance benchmarks for large-scale vector operations
+
+## Getting Help
+
+If you need help, please reach out to the Bifrost team on [Discord](https://getmax.im/bifrost-discord).

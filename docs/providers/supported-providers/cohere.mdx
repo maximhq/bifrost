@@ -1,0 +1,376 @@
+---
+title: "Cohere"
+description: "Cohere API conversion guide - parameter mapping, message handling, reasoning/thinking, and tool conversion"
+icon: "c"
+---
+
+## Overview
+
+Cohere has a different API structure from OpenAI's format. Bifrost performs conversions including:
+- **Parameter renaming** - e.g., `max_completion_tokens` → `max_tokens`, `top_p` → `p`, `stop` → `stop_sequences`
+- **Message content conversion** - String and content block formats handled
+- **Tool conversion** - Tool definitions and tool choice mapped to Cohere format
+- **Thinking/Reasoning transformation** - `reasoning` parameters mapped to Cohere's `thinking` structure
+- **Response format conversion** - JSON schema handling adapted to Cohere's format
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v2/chat` |
+| Responses API | ✅ | ✅ | `/v2/chat` |
+| Embeddings | ✅ | - | `/v2/embed` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Text Completions, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Cohere API. These return `UnsupportedOperationError`.
+</Note>
+
+---
+
+# 1. Chat Completions
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `max_completion_tokens` | Renamed to `max_tokens` |
+| `temperature`, `top_p` → `p` | Direct pass-through for temperature; `top_p` renamed to `p` |
+| `stop` | Renamed to `stop_sequences` |
+| `frequency_penalty`, `presence_penalty` | Direct pass-through |
+| `response_format` | Converted to structured format (see [Response Format](#response-format)) |
+| `tools` | Schema structure adapted (see [Tool Conversion](#tool-conversion)) |
+| `tool_choice` | Type mapped (see [Tool Conversion](#tool-conversion)) |
+| `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `user` | Via `extra_params` (not directly supported in Cohere v2 API) |
+| `top_k` | Via `extra_params` (Cohere-specific) |
+
+### Dropped Parameters
+
+The following parameters are silently ignored: `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`, `service_tier`
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway) for Cohere-specific fields:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/command-r-plus",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "top_k": 40,
+    "safety_mode": "STRICT",
+    "log_probs": true,
+    "strict_tool_choice": false
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.Cohere,
+    Model:    "cohere/command-r-plus",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "top_k": 40,
+            "safety_mode": "STRICT",
+            "log_probs": true,
+            "strict_tool_choice": false,
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Reasoning / Thinking
+
+**Documentation**: See [Bifrost Reasoning Reference](/providers/reasoning)
+
+### Parameter Mapping
+
+- `reasoning.effort` → `thinking.type` (mapped to `"enabled"` or `"disabled"`)
+- `reasoning.max_tokens` → `thinking.token_budget` (token budget for thinking)
+
+### Critical Constraints
+
+- **Minimum budget**: 1 token required; requests with 0 tokens will be converted to disabled
+- **Dynamic budget**: `-1` is converted to `1` automatically
+
+### Example
+
+```json
+// Request
+{"reasoning": {"effort": "high", "max_tokens": 2048}}
+
+// Cohere conversion
+{"thinking": {"type": "enabled", "token_budget": 2048}}
+```
+
+## Message Conversion
+
+### Content Handling
+
+- **String content**: Messages can have simple string content
+- **Content blocks**: Messages can have arrays of content blocks (text, images, thinking)
+- **Image conversion**: `image_url` blocks with URL are supported
+- **Tool calls**: Converted from message assistant tool calls to Cohere format
+- **Tool messages**: Tool call results are passed with `tool_call_id`
+
+## Tool Conversion
+
+Tool definitions are adapted to Cohere format with the following mappings:
+- Function `name` → `name` (unchanged)
+- Function `parameters` → `parameters` (flexible JSON format)
+- Strict mode (`strict: true`) is silently dropped (not supported)
+
+Tool choice mapping:
+- `"none"` → `"NONE"`
+- `"auto"` or `"required"` → `"REQUIRED"` or `"AUTO"`
+- Specific tool selection → `"REQUIRED"` (Cohere uses function-level selection)
+
+## Response Format
+
+Supported formats:
+- `text` - Plain text response
+- `json_object` - Structured JSON response
+- `json_schema` - JSON with schema validation (converted to `json_object`)
+
+Schema is passed through `response_format.json_schema` field.
+
+## Response Conversion
+
+### Field Mapping
+
+- `finish_reason`: `COMPLETE` / `STOP_SEQUENCE` → `stop`, `MAX_TOKENS` → `length`, `TOOL_CALL` → `tool_calls`
+- `input_tokens` → `prompt_tokens` | `output_tokens` → `completion_tokens`
+- `cached_tokens` → `prompt_tokens_details.cached_tokens` (if present)
+- Tool call arguments converted from string → string (no conversion needed, Cohere uses string format)
+
+## Streaming
+
+Event sequence: `message-start` → `content-start` → `content-delta` → `content-end` → `message-end`
+
+Delta types:
+- `content-delta` with text → message content
+- `content-delta` with thinking → reasoning text
+- `tool-call-start/delta/end` → tool call events
+- `tool-plan-delta` → tool planning output
+
+---
+
+## Caveats
+
+<Accordion title="Minimum Thinking Budget">
+**Severity**: Low
+**Behavior**: `reasoning.max_tokens` must be >= 1
+**Impact**: Very low impact, conversion happens automatically
+**Code**: `chat.go:104-130`
+</Accordion>
+
+<Accordion title="Top P Renamed">
+**Severity**: Low
+**Behavior**: `top_p` parameter renamed to `p`
+**Impact**: Parameter name changes internally
+**Code**: `chat.go:99`
+</Accordion>
+
+<Accordion title="Strict Tool Mode Dropped">
+**Severity**: Low
+**Behavior**: `strict: true` in tool definitions silently dropped
+**Impact**: No schema validation enforcement
+**Code**: `chat.go:168-185`
+</Accordion>
+
+<Accordion title="Tool Arguments Format">
+**Severity**: Low
+**Behavior**: Tool arguments are already strings, no JSON serialization needed
+**Impact**: Minimal - Cohere v2 API expects string format
+**Code**: `chat.go:70-78`
+</Accordion>
+
+---
+
+# 2. Responses API
+
+The Responses API uses the same underlying `/v2/chat` endpoint but converts between OpenAI's Responses format and Cohere's format.
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `max_output_tokens` | Renamed to `max_tokens` |
+| `temperature`, `top_p` → `p` | Direct pass-through for temperature; `top_p` renamed to `p` |
+| `instructions` | Becomes system message |
+| `text.format` | Converted to `response_format` |
+| `tools` | Schema restructured (see [Chat Completions](#1-chat-completions)) |
+| `tool_choice` | Type mapped (see [Chat Completions](#1-chat-completions)) |
+| `reasoning` | Mapped to `thinking` (see [Reasoning / Thinking](#reasoning--thinking)) |
+| `stop` | Via `extra_params`, renamed to `stop_sequences` |
+| `top_k` | Via `extra_params` (Cohere-specific) |
+| `frequency_penalty`, `presence_penalty` | Via `extra_params` |
+
+### Extra Parameters
+
+Use `extra_params` (SDK) or pass directly in request body (Gateway):
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/command-r-plus",
+    "input": "Hello, how are you?",
+    "top_k": 40,
+    "stop": [".", "!"]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+    Provider: schemas.Cohere,
+    Model:    "cohere/command-r-plus",
+    Input:    messages,
+    Params: &schemas.ResponsesParameters{
+        ExtraParams: map[string]interface{}{
+            "top_k": 40,
+            "stop": []string{".", "!"},
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Input & Instructions
+
+- **Input**: String converted to user message or array converted to messages
+- **Instructions**: Becomes system message (prepended to messages)
+
+## Tool Support
+
+Supported types: `function`
+
+Tool conversions same as [Chat Completions](#1-chat-completions).
+
+## Response Conversion
+
+- `text` → `message` | `tool_use` → `function_call`
+- `input_tokens` / `output_tokens` preserved
+- Token details with cached tokens support
+
+## Streaming
+
+Event sequence: `message-start` → `content-start` → `content-delta` → `content-end` → `message-end`
+
+Special handling:
+- Tool call arguments accumulated across chunks
+- Synthetic `output_item.added` events emitted for text/reasoning
+- Stable item IDs generated as `msg_{messageID}_item_{outputIndex}`
+
+---
+
+# 3. Embeddings
+
+## Request Parameters
+
+### Parameter Mapping
+
+| Parameter | Transformation |
+|-----------|----------------|
+| `input` (text or array) | Converted to `texts` array |
+| `dimensions` | Renamed to `output_dimension` |
+| `input_type` | Via `extra_params` (required, defaults to `"search_document"`) |
+| `embedding_types` | Via `extra_params` (array of embedding types) |
+| `truncate` | Via `extra_params` (how to handle long inputs) |
+| `max_tokens` | Via `extra_params` (max tokens to embed per input) |
+
+### Extra Parameters
+
+Use `extra_params` for Cohere-specific embedding options:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "cohere/embed-english-v3.0",
+    "input": ["text to embed"],
+    "input_type": "search_query",
+    "embedding_types": ["float"],
+    "truncate": "START"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.Cohere,
+    Model:    "cohere/embed-english-v3.0",
+    Input: &schemas.EmbeddingInput{
+        Texts: []string{"text to embed"},
+    },
+    Params: &schemas.EmbeddingParameters{
+        Dimensions: schemas.Ptr(1024),
+        ExtraParams: map[string]interface{}{
+            "input_type": "search_query",
+            "embedding_types": []string{"float"},
+            "truncate": "START",
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Critical Notes
+
+- **Input Type Required**: Cohere v3+ models require `input_type` parameter (defaults to `"search_document"`)
+- **Embedding Types**: Specify which embedding types to return (e.g., `"float"`, `"int8"`)
+
+## Response Conversion
+
+- `embeddings.float` → `data[].embedding`
+- `meta.tokens` → usage information
+- Multiple embedding types handled
+
+---
+
+# 4. List Models
+
+**Request**: GET `/v1/models?page_size={defaultPageSize}`
+
+**Field mapping**: Model data converted to standard format
+
+**Pagination**: Cursor-based with `next_page_token`
+
+**Note**: `endpoint` and `default_only` filters available via `extra_params`

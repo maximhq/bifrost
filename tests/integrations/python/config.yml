@@ -1,0 +1,815 @@
+# Bifrost Integration Tests Configuration
+# This file centralizes all configuration for AI integration clients and test settings
+
+# Bifrost Gateway Configuration
+# All integrations route through Bifrost as a proxy/gateway
+bifrost:
+  base_url: "${BIFROST_BASE_URL:-http://localhost:8080}"
+
+  # Integration-specific endpoints (suffixes appended to base_url)
+  endpoints:
+    openai: "openai"
+    anthropic: "anthropic"
+    cohere: "cohere"
+    google: "genai"
+    litellm: "litellm"
+    langchain: "langchain"
+    pydanticai: "pydanticai"
+    bedrock: "bedrock"
+
+  # Full URLs constructed as: {base_url.rstrip('/')}/{endpoints[integration]}
+  # Examples:
+  # - OpenAI: http://localhost:8080/openai
+  # - Anthropic: http://localhost:8080/anthropic
+  # - Google: http://localhost:8080/genai
+  # - LiteLLM: http://localhost:8080/litellm
+  # - LangChain: http://localhost:8080/langchain
+
+# API Configuration
+api:
+  timeout: 30 # seconds
+  max_retries: 3
+  retry_delay: 1 # seconds
+
+# Provider model configurations
+# Integrations (openai, anthropic, google, litellm, langchain) map to these providers
+providers:
+  openai:
+    chat: "gpt-4o"
+    vision: "gpt-4o"
+    file: "gpt-4o"
+    tools: "gpt-4o-mini"
+    speech: "tts-1"
+    transcription: "whisper-1"
+    embeddings: "text-embedding-3-small"
+    image_generation: "gpt-image-1"
+    streaming: "gpt-4o-mini"
+    thinking: "gpt-5.1"
+    batch_file_upload: "gpt-4o-mini"
+    batch_list: "gpt-4o"
+    batch_retrieve: "gpt-4o"
+    batch_cancel: "gpt-4o"
+    batch_inline: "gpt-4o"
+    file_upload: "gpt-4o-mini"
+    file_list: "gpt-4o-mini"
+    file_retrieve: "gpt-4o-mini"
+    file_delete: "gpt-4o-mini"
+    file_content: "gpt-4o-mini"
+    count_tokens: "gpt-4o-mini"
+    alternatives:
+      - "gpt-4"
+      - "gpt-4-turbo-preview"
+      - "gpt-4o"
+      - "gpt-3.5-turbo"
+    
+  xai:
+    chat: "grok-4-0709"
+    vision: "grok-2-vision-1212"
+    tools: "grok-4-0709"
+    streaming: "grok-4-0709"
+    thinking: "grok-3-mini"
+    
+  anthropic:
+    chat: "claude-sonnet-4-5-20250929"
+    vision: "claude-3-7-sonnet-20250219"
+    file: "claude-sonnet-4-5-20250929"
+    tools: "claude-sonnet-4-5-20250929"
+    streaming: "claude-sonnet-4-5-20250929"
+    thinking: "claude-opus-4-5"
+    batch_file_upload: "claude-sonnet-4-20250514"
+    batch_inline: "claude-sonnet-4-20250514"
+    batch_list: "claude-sonnet-4-20250514"
+    batch_retrieve: "claude-sonnet-4-20250514"
+    batch_cancel: "claude-sonnet-4-20250514"
+    file_upload: "claude-sonnet-4-20250514"
+    file_list: "claude-sonnet-4-20250514"
+    file_delete: "claude-sonnet-4-20250514"
+    file_content: "claude-sonnet-4-20250514"
+    count_tokens: "claude-sonnet-4-5-20250929"
+    alternatives:
+      - "claude-3-sonnet-20240229"
+      - "claude-3-opus-20240229"
+      - "claude-3-5-sonnet-20241022"
+      - "claude-3-haiku-20240307"
+    
+  gemini:
+    chat: "gemini-2.5-flash"
+    vision: "gemini-2.5-flash"
+    tools: "gemini-2.5-flash"
+    file: "gemini-2.5-flash"
+    thinking: "gemini-3-pro-preview"
+    speech: "gemini-2.5-flash-preview-tts"
+    transcription: "gemini-2.5-flash"
+    embeddings: "gemini-embedding-001"
+    image_generation: "gemini-2.5-flash-image"
+    imagen: "imagen-4.0-generate-001"
+    streaming: "gemini-2.5-flash"
+    batch_create: "gemini-2.5-flash"
+    batch_inline: "gemini-2.5-flash"
+    batch_file_upload: "gemini-2.5-flash"
+    batch_list: "gemini-2.5-flash"
+    batch_retrieve: "gemini-2.5-flash"
+    batch_cancel: "gemini-2.5-flash"
+    batch_s3: "gemini-2.5-flash"
+    file_upload: "gemini-2.0-flash"
+    file_list: "gemini-2.0-flash"
+    file_content: "gemini-2.0-flash"
+    file_download: "gemini-2.0-flash"
+    file_delete: "gemini-2.0-flash"
+    count_tokens: "gemini-2.5-flash"
+    alternatives:
+      - "gemini-1.5-pro"
+      - "gemini-1.5-flash"
+      - "gemini-1.0-pro"
+      - "gemini-2.0-flash-001"
+  
+  vertex:
+    chat: "gemini-2.5-flash"
+    vision: "claude-sonnet-4-5"
+    tools: "gemini-2.5-flash"
+    file: "claude-sonnet-4-5"
+    thinking: "gemini-3-pro-preview"
+    embeddings: "gemini-embedding-001"
+    image_generation: "imagen-4.0-generate-001"
+    imagen: "imagen-4.0-generate-001"
+    streaming: "gemini-2.5-flash"
+    count_tokens: "claude-sonnet-4-5"
+
+  bedrock:
+    chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    file: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    tools: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    streaming: "global.anthropic.claude-sonnet-4-20250514-v1:0"
+    thinking: "us.anthropic.claude-opus-4-5-20251101-v1:0"
+    text_completion: "mistral.mistral-7b-instruct-v0:2"
+    embeddings: "global.cohere.embed-v4:0"
+    batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_retrieve: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_cancel: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_file_upload: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    batch_s3: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_upload: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_delete: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    file_content: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    alternatives:
+      - "anthropic.claude-3-opus-20240229-v1:0"
+    
+  cohere:
+    chat: "command-a-03-2025"
+    vision: "command-a-vision-07-2025"
+    tools: "command-a-03-2025"
+    embeddings: "embed-v4.0"
+    streaming: "command-a-03-2025"
+    count_tokens: "command-a-03-2025"
+    alternatives:
+      - "command-r-plus"
+  
+  huggingface:
+    image_generation: "fal-ai/fal-ai/flux/dev"
+  
+  nebius:
+    image_generation: "black-forest-labs/flux-schnell"
+
+# Provider availability configuration
+# Maps provider names to their API key environment variables
+provider_api_keys:
+  openai: "OPENAI_API_KEY"
+  anthropic: "ANTHROPIC_API_KEY"
+  gemini: "GEMINI_API_KEY"
+  vertex: "VERTEX_API_KEY"
+  bedrock: "AWS_ACCESS_KEY_ID"
+  cohere: "COHERE_API_KEY"
+  xai: "XAI_API_KEY"
+  huggingface: "HUGGINGFACE_API_KEY"
+  nebius: "NEBIUS_API_KEY"
+
+# Provider test scenarios - which tests each provider supports
+provider_scenarios:
+  openai:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: true
+    image_base64: true
+    file_input: true
+    multiple_images: true
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    image_generation: true
+    thinking: true
+    prompt_caching: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: true  # PydanticAI structured output works reliably with OpenAI
+    pydanticai_streaming: true  # PydanticAI streaming works with OpenAI
+    batch_file_upload: true
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # OpenAI supports inline requests for batch
+    batch_s3: false  # OpenAI does not use S3 for batch
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: true
+    count_tokens: true
+
+  xai:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: true
+    image_base64: false
+    file_input: false
+    multiple_images: false
+    thinking: true
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: true 
+    pydanticai_streaming: true 
+    
+  anthropic:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: true
+    image_base64: true
+    file_input: true
+    file_input_text: true
+    multiple_images: true
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: false
+    thinking: true
+    prompt_caching: true
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: false
+    pydantic_structured_output: true  # PydanticAI structured output works with Anthropic
+    pydanticai_streaming: true  # PydanticAI streaming works with Anthropic
+    batch_file_upload: true  # Anthropic batch API uses inline requests, not files
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # Anthropic uses inline requests for batch
+    batch_s3: false  # Anthropic does not use S3 for batch
+    file_upload: true
+    file_list: false
+    file_retrieve: false
+    file_delete: true
+    file_content: false
+    count_tokens: true
+    
+  gemini:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # Gemini requires base64 or file upload
+    image_base64: true
+    file_input: true
+    multiple_images: false
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    image_generation: true  # Gemini image generation via responseModalities
+    imagen: true  # Imagen via :predict endpoint
+    thinking: true
+    prompt_caching: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
+    pydanticai_streaming: false  # PydanticAI GoogleModel streaming has asyncio issues
+    batch_file_upload: true  # Gemini supports file upload via Files API
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: true  # Gemini uses inline requests for batch (synchronous)
+    batch_s3: false  # Gemini does not use S3 for batch
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: false  # Gemini doesn't support direct file download
+    count_tokens: true
+    
+  vertex:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false  # Gemini requires base64 or file upload
+    image_base64: true
+    file_input: true
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    image_generation: true
+    imagen: true  # Imagen via :predict endpoint
+    thinking: true
+    prompt_caching: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI structured output unreliable via Bifrost for Gemini
+    pydanticai_streaming: false  # PydanticAI GoogleModel streaming has asyncio issues
+    batch_file_upload: false  # Gemini supports file upload via Files API
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # Gemini uses inline requests for batch (synchronous)
+    batch_s3: false  # Gemini does not use S3 for batch
+    file_upload: false
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false  # Gemini doesn't support direct file download
+    count_tokens: false
+
+  bedrock:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    image_url: false
+    image_base64: true
+    file_input: true
+    file_input_text: true
+    multiple_images: false
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: true
+    prompt_caching: true
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: false  # Bedrock not supported in PydanticAI tests
+    pydanticai_streaming: false  # Bedrock not supported in PydanticAI tests
+    batch_file_upload: true  # Bedrock uses S3 wrapper for file uploads
+    batch_create: true
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: false  # Bedrock batch uses S3, not inline requests via API
+    batch_s3: true  # Bedrock uses S3 for batch input/output
+    file_upload: true  # Bedrock uses S3 wrapper for file storage
+    file_list: true  # Bedrock lists files in S3 bucket
+    file_retrieve: true  # Bedrock retrieves S3 object metadata
+    file_delete: true  # Bedrock deletes S3 objects
+    file_content: true  # Bedrock downloads S3 object content
+    
+  cohere:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: false
+    image_url: true
+    image_base64: true
+    multiple_images: true
+    speech_synthesis: false
+    speech_synthesis_streaming: false
+    transcription: false
+    transcription_streaming: false
+    embeddings: true
+    thinking: false
+    prompt_caching: false
+    list_models: false
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: true
+    pydantic_structured_output: false  # PydanticAI CohereModel doesn't reliably support structured output
+    pydanticai_streaming: false  # PydanticAI CohereModel doesn't implement streaming
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false  # Cohere does not support batch API
+    batch_s3: false  # Cohere does not support batch API
+    file_upload: false  # Cohere does not support Files API
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
+    count_tokens: true
+  
+  huggingface:
+    image_generation: true
+  
+  nebius:
+    image_generation: true
+
+# Scenario to capability mapping
+# Maps test scenario names to their corresponding capability types
+scenario_capabilities:
+  simple_chat: "chat"
+  multi_turn_conversation: "chat"
+  responses: "chat"
+  responses_image: "vision"
+  text_completion: "chat"
+  streaming: "streaming"
+  tool_calls: "tools"
+  multiple_tool_calls: "tools"
+  end2end_tool_calling: "tools"
+  automatic_function_calling: "tools"
+  image_url: "vision"
+  image_base64: "vision"
+  file_input: "file"
+  file_input_text: "file"
+  multiple_images: "vision"
+  speech_synthesis: "speech"
+  speech_synthesis_streaming: "speech"
+  transcription: "transcription"
+  transcription_streaming: "transcription"
+  embeddings: "embeddings"
+  image_generation: "image_generation"  # Uses image_generation model
+  imagen: "imagen"  # Uses imagen model (Gemini/Vertex)
+  thinking: "thinking"
+  prompt_caching: "chat"
+  list_models: "chat"
+  langchain_structured_output: "chat"  # LangChain structured output uses chat capability
+  pydantic_structured_output: "chat"  # Structured output uses chat capability
+  pydanticai_streaming: "streaming"  # PydanticAI streaming uses streaming capability
+  batch_file_upload: "batch_file_upload"  # Uses batch_file_upload model directly
+  batch_create: "batch_create"
+  batch_list: "batch_list"
+  batch_retrieve: "batch_retrieve"
+  batch_cancel: "batch_cancel"
+  batch_inline: "batch_inline"  # Uses batch_inline model directly
+  batch_s3: "batch_s3"  # Uses batch_s3 model directly
+  file_upload: "file_upload"  # Uses file_upload model directly
+  file_list: "file_list"  # Uses file_list model directly
+  file_retrieve: "file_retrieve"  # Uses file_retrieve model directly
+  file_delete: "file_delete"  # Uses file_delete model directly
+  file_content: "file_content"  # Uses file_content model directly
+  count_tokens: "chat"
+
+# Model capabilities matrix
+model_capabilities:
+  # OpenAI Models
+  "gpt-3.5-turbo":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 4096
+    context_window: 4096
+
+  "gpt-4":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 8192
+    context_window: 8192
+
+  "gpt-4o":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 128000
+
+  "gpt-4o-mini":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    speech: false
+    transcription: false
+    max_tokens: 4096
+    context_window: 128000
+
+  # OpenAI Speech Models
+  "tts-1":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    max_tokens: null
+    context_window: null
+
+  "tts-1-hd":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    max_tokens: null
+    context_window: null
+
+  # OpenAI Transcription Models
+  "whisper-1":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: false
+    transcription: true
+    embeddings: false
+    max_tokens: null
+    context_window: null
+
+  # OpenAI Embedding Models
+  "text-embedding-3-small":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: false
+    transcription: false
+    embeddings: true
+    max_tokens: null
+    context_window: 8191
+    dimensions: 1536
+
+  "text-embedding-3-large":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: false
+    transcription: false
+    embeddings: true
+    max_tokens: null
+    context_window: 8191
+    dimensions: 3072
+
+  "text-embedding-ada-002":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: false
+    transcription: false
+    embeddings: true
+    max_tokens: null
+    context_window: 8191
+    dimensions: 1536
+
+  # Anthropic Models
+  "claude-3-haiku-20240307":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  "claude-3-sonnet-20240229":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  "claude-3-opus-20240229":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 4096
+    context_window: 200000
+
+  # Google Models
+  "gemini-pro":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 8192
+    context_window: 32768
+
+  "gemini-2.0-flash-001":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 8192
+    context_window: 32768
+
+  "gemini-1.5-pro":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    max_tokens: 8192
+    context_window: 1000000
+
+  # Gemini Transcription Models
+  "gemini-2.5-flash":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    speech: false
+    transcription: true
+    embeddings: false
+    max_tokens: 8192
+    context_window: 1000000
+    audio_max_duration: 34200  # 9.5 hours in seconds
+
+  "gemini-2.5-pro":
+    chat: true
+    tools: true
+    vision: true
+    streaming: true
+    speech: false
+    transcription: true
+    embeddings: false
+    max_tokens: 8192
+    context_window: 2000000
+    audio_max_duration: 34200  # 9.5 hours in seconds
+
+  # Gemini TTS Models
+  "gemini-2.5-flash-preview-tts":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    embeddings: false
+    max_tokens: 32000  # 32k token context window for TTS
+    context_window: 32000
+    audio_format: "pcm"
+    sample_rate: 24000
+    channels: 1
+
+  "gemini-2.5-pro-preview-tts":
+    chat: false
+    tools: false
+    vision: false
+    streaming: false
+    speech: true
+    transcription: false
+    embeddings: false
+    max_tokens: 32000  # 32k token context window for TTS
+    context_window: 32000
+    audio_format: "pcm"
+    sample_rate: 24000
+    channels: 1
+
+  # Mistral Models
+  "mistral-7b-instruct":
+    chat: true
+    tools: false
+    vision: false
+    streaming: true
+    max_tokens: 4096
+    context_window: 32768
+
+  "mistral-8x7b-instruct":
+    chat: true
+    tools: true
+    vision: false
+    streaming: true
+    max_tokens: 4096
+    context_window: 32768
+
+# Test configuration
+test_settings:
+  # Maximum tokens for test responses
+  max_tokens:
+    chat: 100
+    vision: 200
+    tools: 100
+    complex: 300
+    speech: null  # Speech doesn't use token limits
+    transcription: null  # Transcription doesn't use token limits
+    embeddings: null  # Embeddings don't use token limits (text is the input)
+
+  # Timeout settings for tests
+  timeouts:
+    simple: 30 # seconds
+    complex: 60 # seconds
+
+  # Retry settings for flaky tests
+  retries:
+    max_attempts: 3
+    delay: 2 # seconds
+
+# Integration-specific settings
+integration_settings:
+  openai:
+    organization: "${OPENAI_ORG_ID:-}"
+    project: "${OPENAI_PROJECT_ID:-}"
+
+  anthropic:
+    version: "2023-06-01"
+
+  google:
+    project_id: "${GOOGLE_PROJECT_ID:-}"
+    location: "${GOOGLE_LOCATION:-us-central1}"
+
+  litellm:
+    drop_params: true
+    debug: false
+
+  langchain:
+    debug: false
+    streaming: true
+
+  bedrock:
+    region: "${AWS_REGION:-us-west-2}"
+    s3_bucket: "${AWS_S3_BUCKET:-}"
+    batch_role_arn: "${AWS_ARN:-}"
+    output_s3_prefix: "${AWS_OUTPUT_S3_PREFIX:-bifrost-batch-output/}"
+
+# Environment-specific overrides
+environments:
+  development:
+    api:
+      timeout: 60
+      max_retries: 5
+    test_settings:
+      timeouts:
+        simple: 60
+        complex: 120
+
+  production:
+    api:
+      timeout: 15
+      max_retries: 2
+    test_settings:
+      timeouts:
+        simple: 20
+        complex: 40
+
+# Virtual key testing configuration
+# When enabled, cross-provider tests will run twice: with and without the x-bf-vk header
+virtual_key:
+  enabled: true
+  value: "sk-bf-test-key"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "tests.log"

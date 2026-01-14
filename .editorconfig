@@ -1,0 +1,13 @@
+root = true
+
+[*]
+insert_final_newline = false
+end_of_line = lf
+charset = utf-8
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[*.{js,jsx,ts,tsx,mjs,json,md,css,scss,html}]
+insert_final_newline = false

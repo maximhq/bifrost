@@ -1,0 +1,201 @@
+providers:
+  get:
+    operationId: listProviders
+    summary: List all providers
+    description: Returns a list of all configured providers with their configurations and status.
+    tags:
+      - Providers
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListProvidersResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: addProvider
+    summary: Add a new provider
+    description: Adds a new provider with the specified configuration.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/AddProviderRequest'
+    responses:
+      '200':
+        description: Provider added successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: Provider already exists
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+providers-by-name:
+  get:
+    operationId: getProvider
+    summary: Get a specific provider
+    description: Returns the configuration for a specific provider.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateProvider
+    summary: Update a provider
+    description: |
+      Updates a provider's configuration. Expects ALL fields to be provided,
+      including both edited and non-edited fields. Partial updates are not supported.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/UpdateProviderRequest'
+    responses:
+      '200':
+        description: Provider updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteProvider
+    summary: Delete a provider
+    description: Removes a provider from the configuration.
+    tags:
+      - Providers
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Provider deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ProviderResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+keys:
+  get:
+    operationId: listKeys
+    summary: List all keys
+    description: Returns a list of all configured API keys across all providers.
+    tags:
+      - Providers
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '../../schemas/management/providers.yaml#/Key'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+models:
+  get:
+    operationId: listModelsManagement
+    summary: List models
+    description: |
+      Lists available models with optional filtering by query, provider, or keys.
+    tags:
+      - Providers
+    parameters:
+      - name: query
+        in: query
+        description: Filter models by name (case-insensitive partial match)
+        schema:
+          type: string
+      - name: provider
+        in: query
+        description: Filter by specific provider name
+        schema:
+          type: string
+      - name: keys
+        in: query
+        description: Comma-separated list of key IDs to filter models accessible by those keys
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Maximum number of results to return (default 5)
+        schema:
+          type: integer
+          default: 5
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ListModelsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

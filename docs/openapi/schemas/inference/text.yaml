@@ -1,0 +1,98 @@
+# Text Completions API schemas
+
+TextCompletionRequest:
+  type: object
+  required:
+    - model
+    - prompt
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+    prompt:
+      $ref: '#/TextCompletionInput'
+    fallbacks:
+      type: array
+      items:
+        type: string
+    stream:
+      type: boolean
+    best_of:
+      type: integer
+    echo:
+      type: boolean
+    frequency_penalty:
+      type: number
+    logit_bias:
+      type: object
+      additionalProperties:
+        type: number
+    logprobs:
+      type: integer
+    max_tokens:
+      type: integer
+    n:
+      type: integer
+    presence_penalty:
+      type: number
+    seed:
+      type: integer
+    stop:
+      type: array
+      items:
+        type: string
+    suffix:
+      type: string
+    temperature:
+      type: number
+    top_p:
+      type: number
+    user:
+      type: string
+
+TextCompletionInput:
+  oneOf:
+    - type: string
+    - type: array
+      items:
+        type: string
+  description: Prompt input - can be a string or array of strings
+
+TextCompletionResponse:
+  type: object
+  properties:
+    id:
+      type: string
+    choices:
+      type: array
+      items:
+        $ref: './chat.yaml#/BifrostResponseChoice'
+    model:
+      type: string
+    object:
+      type: string
+    system_fingerprint:
+      type: string
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+TextCompletionStreamResponse:
+  type: object
+  description: Streaming text completion response
+  properties:
+    id:
+      type: string
+    choices:
+      type: array
+      items:
+        $ref: './chat.yaml#/BifrostResponseChoice'
+    model:
+      type: string
+    object:
+      type: string
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

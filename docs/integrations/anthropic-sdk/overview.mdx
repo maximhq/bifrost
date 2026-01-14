@@ -1,0 +1,338 @@
+---
+title: "Overview"
+description: "Use Bifrost as a drop-in replacement for Anthropic API with full compatibility and enhanced features."
+icon: "book"
+---
+
+## Overview
+
+Bifrost provides complete Anthropic API compatibility through protocol adaptation. The integration handles request transformation, response normalization, and error mapping between Anthropic's Messages API specification and Bifrost's internal processing pipeline.
+
+This integration enables you to utilize Bifrost's features like governance, load balancing, semantic caching, multi-provider support, and more, all while preserving your existing Anthropic SDK-based architecture.
+
+**Endpoint:** `/anthropic`
+
+---
+
+## Setup
+
+<Tabs group="anthropic-sdk">
+<Tab title="Python">
+
+```python {5}
+import anthropic
+
+# Configure client to use Bifrost
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="dummy-key"  # Keys handled by Bifrost
+)
+
+# Make requests as usual
+response = client.messages.create(
+    model="claude-3-sonnet-20240229",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(response.content[0].text)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {5}
+import Anthropic from "@anthropic-ai/sdk";
+
+// Configure client to use Bifrost
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "dummy-key", // Keys handled by Bifrost
+});
+
+// Make requests as usual
+const response = await anthropic.messages.create({
+  model: "claude-3-sonnet-20240229",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello!" }],
+});
+
+console.log(response.content[0].text);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Use multiple providers through the same Anthropic SDK format by prefixing model names with the provider:
+
+<Tabs group="anthropic-sdk">
+<Tab title="Python">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="dummy-key"
+)
+
+# Anthropic models (default)
+anthropic_response = client.messages.create(
+    model="claude-3-sonnet-20240229",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from Claude!"}]
+)
+
+# OpenAI models via Anthropic SDK format
+openai_response = client.messages.create(
+    model="openai/gpt-4o-mini",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from OpenAI!"}]
+)
+
+# Google Vertex models via Anthropic SDK format
+vertex_response = client.messages.create(
+    model="vertex/gemini-pro",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from Gemini!"}]
+)
+
+# Azure models
+azure_response = client.messages.create(
+    model="azure/gpt-4o",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from Azure!"}]
+)
+
+# Local Ollama models
+ollama_response = client.messages.create(
+    model="ollama/llama3.1:8b",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from Ollama!"}]
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "dummy-key",
+});
+
+// Anthropic models (default)
+const anthropicResponse = await anthropic.messages.create({
+  model: "claude-3-sonnet-20240229",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from Claude!" }],
+});
+
+// OpenAI models via Anthropic SDK format
+const openaiResponse = await anthropic.messages.create({
+  model: "openai/gpt-4o-mini",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from OpenAI!" }],
+});
+
+// Google Vertex models via Anthropic SDK format
+const vertexResponse = await anthropic.messages.create({
+  model: "vertex/gemini-pro",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from Gemini!" }],
+});
+
+// Azure models
+const azureResponse = await anthropic.messages.create({
+  model: "azure/gpt-4o",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from Azure!" }],
+});
+
+// Local Ollama models
+const ollamaResponse = await anthropic.messages.create({
+  model: "ollama/llama3.1:8b",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from Ollama!" }],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.):
+
+<Tabs group="anthropic-sdk">
+<Tab title="Python">
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="dummy-key",
+    default_headers={
+        "x-bf-vk": "vk_12345",  # Virtual key for governance
+    }
+)
+
+response = client.messages.create(
+    model="claude-3-sonnet-20240229",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello with custom headers!"}]
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "dummy-key",
+  defaultHeaders: {
+    "x-bf-vk": "vk_12345", // Virtual key for governance
+  },
+});
+
+const response = await anthropic.messages.create({
+  model: "claude-3-sonnet-20240229",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello with custom headers!" }],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Using Direct Keys
+
+Pass API keys directly in requests to bypass Bifrost's load balancing. You can pass any provider's API key (OpenAI, Anthropic, Mistral, etc.) since Bifrost only looks for `Authorization` or `x-api-key` headers. This requires the **Allow Direct API keys** option to be enabled in Bifrost configuration.
+
+> **Learn more:** See [Key Management](../../features/keys-management#direct-key-bypass) for enabling direct API key usage.
+
+<Tabs group="anthropic-sdk">
+<Tab title="Python">
+
+```python
+import anthropic
+
+# Using Anthropic's API key directly
+client_with_direct_key = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="sk-your-anthropic-key"  # Anthropic's API key works
+)
+
+anthropic_response = client_with_direct_key.messages.create(
+    model="claude-3-sonnet-20240229",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello from Claude!"}]
+)
+
+# or pass different provider keys per request using headers
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="dummy-key"
+)
+
+# Use Anthropic key for Claude
+anthropic_response = client.messages.create(
+    model="claude-3-sonnet-20240229",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello Claude!"}],
+    extra_headers={
+        "x-api-key": "sk-ant-your-anthropic-key"
+    }
+)
+
+# Use OpenAI key for GPT models
+openai_response = client.messages.create(
+    model="openai/gpt-4o-mini",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Hello GPT!"}],
+    extra_headers={
+        "Authorization": "Bearer sk-your-openai-key"
+    }
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import Anthropic from "@anthropic-ai/sdk";
+
+// Using Anthropic's API key directly
+const anthropicWithDirectKey = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "sk-your-anthropic-key", // Anthropic's API key works
+});
+
+
+const anthropicResponse = await anthropicWithDirectKey.messages.create({
+  model: "claude-3-sonnet-20240229",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello from Claude!" }],
+});
+
+
+// or pass different provider keys per request using headers
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "dummy-key",
+});
+
+// Use Anthropic key for Claude
+const anthropicResponse = await anthropic.messages.create({
+  model: "claude-3-sonnet-20240229",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello Claude!" }],
+  headers: {
+    "x-api-key": "sk-ant-your-anthropic-key",
+  },
+});
+
+// Use OpenAI key for GPT models
+const openaiResponseWithHeader = await anthropic.messages.create({
+  model: "openai/gpt-4o-mini",
+  max_tokens: 1000,
+  messages: [{ role: "user", content: "Hello GPT!" }],
+  headers: {
+    "Authorization": "Bearer sk-your-openai-key",
+  },
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Supported Features
+
+The Anthropic integration supports all features that are available in both the Anthropic SDK and Bifrost core functionality. If the Anthropic SDK supports a feature and Bifrost supports it, the integration will work seamlessly.
+
+---
+
+## Next Steps
+
+- **[Files and Batch API](./files-and-batch)** - File uploads and batch processing
+- **[OpenAI SDK](../openai-sdk/overview)** - GPT integration patterns
+- **[Google GenAI SDK](../genai-sdk)** - Gemini integration patterns  
+- **[Configuration](../../quickstart/README)** - Bifrost setup and configuration
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+

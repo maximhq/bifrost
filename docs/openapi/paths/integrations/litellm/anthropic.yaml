@@ -1,0 +1,39 @@
+# LiteLLM - Anthropic-compatible Endpoints
+# Reuses Anthropic integration schemas
+
+messages:
+  post:
+    operationId: litellmAnthropicMessages
+    summary: Create message (LiteLLM - Anthropic format)
+    description: |
+      Creates a message using Anthropic-compatible format via LiteLLM.
+    tags:
+      - LiteLLM Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicMessageResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/messages.yaml#/AnthropicStreamEvent'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'

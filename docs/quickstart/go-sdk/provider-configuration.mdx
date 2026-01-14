@@ -1,0 +1,586 @@
+---
+title: "Provider Configuration"
+description: "Configure multiple AI providers for custom concurrency, queue sizes, proxy settings, and more."
+icon: "sliders"
+---
+
+## Multi-Provider Setup
+
+Configure multiple providers to seamlessly switch between them. This example shows how to configure OpenAI, Anthropic, and Mistral providers.
+
+```go
+type MyAccount struct{}
+
+func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+    return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Mistral}, nil
+}
+
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return []schemas.Key{{
+            Value:  os.Getenv("OPENAI_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    case schemas.Anthropic:
+        return []schemas.Key{{
+            Value:  os.Getenv("ANTHROPIC_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    case schemas.Mistral:
+        return []schemas.Key{{
+            Value:  os.Getenv("MISTRAL_API_KEY"),
+            Models: []string{},
+            Weight: 1.0,
+        }}, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    // Return same config for all providers
+    return &schemas.ProviderConfig{
+            NetworkConfig:            schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+    }, nil
+}
+```
+
+> If Bifrost receives a new provider at runtime (i.e., one that is not returned by `GetConfiguredProviders()` initially on `bifrost.Init()`), it will set up the provider at runtime using `GetConfigForProvider()`, which may cause a delay in the first request to that provider.
+
+## Making Requests
+
+Once providers are configured, you can make requests to any specific provider. This example shows how to send a request directly to Mistral's latest vision model. Bifrost handles the provider-specific API formatting automatically.
+
+```go
+response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+    Provider: schemas.Mistral,
+    Model:    "pixtral-12b-latest",
+    Input:    messages,
+})
+```
+
+## Environment Variables
+
+Set up your API keys for the providers you want to use:
+
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export CEREBRAS_API_KEY="your-cerebras-api-key"
+export MISTRAL_API_KEY="your-mistral-api-key"
+export GROQ_API_KEY="your-groq-api-key"
+export COHERE_API_KEY="your-cohere-api-key"
+```
+
+## Advanced Configuration
+
+### Weighted Load Balancing
+
+Distribute requests across multiple API keys or providers based on custom weights. This example shows how to split traffic 70/30 between two OpenAI keys, useful for managing rate limits or costs across different accounts.
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return []schemas.Key{{
+            Value:  os.Getenv("OPENAI_API_KEY_1"),
+            Models: []string{},
+            Weight: 0.7, // 70% of requests
+        },
+        {
+            Value:  os.Getenv("OPENAI_API_KEY_2"),
+            Models: []string{},
+            Weight: 0.3, // 30% of requests
+        },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+### Model-Specific Keys
+
+Use different API keys for specific models, allowing you to manage access controls and billing separately. This example uses a premium key for advanced reasoning models (o1-preview, o1-mini) and a standard key for regular GPT models.
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return []schemas.Key{
+            {
+                Value:  os.Getenv("OPENAI_API_KEY"),
+                Models: []string{"gpt-4o", "gpt-4o-mini"},
+                Weight: 1.0,
+            },
+            {
+                Value:  os.Getenv("OPENAI_API_KEY_PREMIUM"),
+                Models: []string{"o1-preview", "o1-mini"},
+                Weight: 1.0,
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+### Custom Base URL
+
+Override the default API endpoint for a provider. This is useful for connecting to self-hosted models, local development servers, or OpenAI-compatible APIs like vLLM, Ollama, or LiteLLM.
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL: "http://localhost:8000/v1", // Custom endpoint
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+<Note>
+For self-hosted providers like Ollama and SGL, `BaseURL` is required. For standard providers, it's optional and overrides the default endpoint.
+</Note>
+### Managing Retries
+
+Configure retry behavior for handling temporary failures and rate limits. This example sets up exponential backoff with up to 5 retries, starting with 1ms delay and capping at 10 seconds - ideal for handling transient network issues.
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				MaxRetries:          5,
+				RetryBackoffInitial: 1 * time.Millisecond,
+				RetryBackoffMax:     10 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+### Custom Concurrency and Buffer Size
+
+Fine-tune performance by adjusting worker concurrency and queue sizes per provider (defaults are 1000 workers and 5000 queue size). This example gives OpenAI higher limits (100 workers, 500 queue) for high throughput, while Anthropic gets conservative limits to respect their rate limits.
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    switch provider {
+    case schemas.OpenAI:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                MaxConcurrency: 100, // Max number of concurrent requests (no of workers)
+                BufferSize:     500, // Max number of requests in the buffer (queue size)
+            },
+        }, nil
+    case schemas.Anthropic:
+        return &schemas.ProviderConfig{
+            NetworkConfig: schemas.DefaultNetworkConfig,
+            ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+                MaxConcurrency: 25,
+                BufferSize:     100,
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+### Custom Headers
+
+Bifrost supports two ways to add custom headers to provider requests: **static headers** configured at the provider level, and **dynamic headers** passed per-request via context.
+
+#### Static Headers (Provider Level)
+
+Configure headers that are automatically included in every request to a specific provider using `NetworkConfig.ExtraHeaders`:
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				ExtraHeaders: map[string]string{
+					"x-custom-org":   "my-organization",
+					"x-environment":  "production",
+				},
+			},
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+#### Dynamic Headers (Per Request)
+
+Send custom headers with individual requests by adding them to the request context. Headers are automatically propagated to the provider:
+
+```go
+import (
+    "context"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+func makeRequestWithCustomHeaders() {
+    // Create base context
+    ctx := context.Background()
+
+    // Add custom headers using BifrostContextKeyExtraHeaders
+    extraHeaders := map[string][]string{
+        "user-id":         {"user-123"},
+        "session-id":      {"session-abc"},
+        "custom-metadata": {"value1", "value2"}, // Multiple values supported
+    }
+    ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+
+    // Make request with custom headers
+    response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+        Provider: schemas.OpenAI,
+        Model:    "gpt-4o-mini",
+        Input:    messages,
+    })
+    if err != nil {
+        // Handle error
+    }
+}
+```
+
+**How it works:**
+- Headers are stored as `map[string][]string` in the context
+- Multiple values per header name are supported
+- Header names are case-insensitive and normalized to lowercase
+- Headers are accessible throughout the request lifecycle
+
+**Example use cases:**
+- User identification: `user-id`, `tenant-id`
+- Request tracking: `correlation-id`, `trace-id`
+- Custom metadata: `department`, `cost-center`
+- A/B testing: `experiment-id`, `variant`
+
+#### Security Denylist
+
+Bifrost maintains a security denylist of headers that are never forwarded to providers, regardless of configuration:
+
+```go
+denylist := map[string]bool{
+    "authorization":       true,
+    "proxy-authorization": true,
+    "cookie":              true,
+    "host":                true,
+    "content-length":      true,
+    "connection":          true,
+    "transfer-encoding":   true,
+
+    // prevent auth/key overrides
+    "x-api-key":      true,
+    "x-goog-api-key": true,
+    "x-bf-api-key":   true,
+    "x-bf-vk":        true,
+}
+```
+
+This denylist is applied to both static and dynamic headers to prevent security vulnerabilities.
+
+### Setting Up a Proxy
+
+Route requests through proxies for compliance, security, or geographic requirements. This example shows both HTTP proxy for OpenAI and authenticated SOCKS5 proxy for Anthropic, useful for corporate environments or regional access.
+
+```go
+func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	switch provider {
+	case schemas.OpenAI:
+		return &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ProxyConfig: &schemas.ProxyConfig{
+				Type: schemas.HttpProxy,
+				URL:  "http://localhost:8000", // Proxy URL
+			},
+		}, nil
+	case schemas.Anthropic:
+		return &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			ProxyConfig: &schemas.ProxyConfig{
+				Type:     schemas.Socks5Proxy,
+				URL:      "http://localhost:8000", // Proxy URL
+				Username: "user",
+				Password: "password",
+			},
+		}, nil
+	}
+	return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+### Send Back Raw Response
+
+Include the original provider response alongside Bifrost's standardized response format. Useful for debugging and accessing provider-specific metadata.
+
+```go
+func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        SendBackRawResponse: true, // Include raw provider response
+    }, nil
+}
+```
+
+When enabled, the raw provider response appears in `ExtraFields.RawResponse`:
+
+```go
+type BifrostChatResponse struct {
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       string                     `json:"service_tier"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+type BifrostResponseExtraFields struct {
+	RequestType    RequestType        `json:"request_type"`
+	Provider       ModelProvider      `json:"provider"`
+	ModelRequested string             `json:"model_requested"`
+	Latency        int64              `json:"latency"`     // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex     int                `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawResponse    interface{}        `json:"raw_response,omitempty"`
+	CacheDebug     *BifrostCacheDebug `json:"cache_debug,omitempty"`
+}
+```
+
+### Send Back Raw Request
+
+Include the original request sent to the provider alongside Bifrost's response. Useful for debugging request transformations and verifying what was actually sent to the provider.
+
+```go
+func (a *MyAccount) GetConfigForProvider(ctx *context.Context, provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+    return &schemas.ProviderConfig{
+        NetworkConfig: schemas.DefaultNetworkConfig,
+        ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+        SendBackRawRequest: true, // Include raw provider request
+    }, nil
+}
+```
+
+When enabled, the raw provider request appears in `ExtraFields.RawRequest`:
+
+```go
+type BifrostResponseExtraFields struct {
+	// ... other fields
+	RawRequest     interface{}        `json:"raw_request,omitempty"`
+	RawResponse    interface{}        `json:"raw_response,omitempty"`
+}
+```
+
+<Tip>
+You can enable both `SendBackRawRequest` and `SendBackRawResponse` together to see the complete request-response cycle for debugging purposes.
+</Tip>
+
+## Provider-Specific Authentication
+
+Enterprise cloud providers require additional configuration beyond API keys. Configure Azure, AWS Bedrock, and Google Vertex with platform-specific authentication details.
+
+<Tabs group="provider-auth">
+
+<Tab title="Azure">
+
+Azure supports two authentication methods:
+
+**Azure Entra ID (Service Principal)**
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  "", // Leave empty for Service Principal auth
+                Models: []string{"gpt-4o", "gpt-4o-mini"},
+                Weight: 1.0,
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint:     os.Getenv("AZURE_ENDPOINT"),
+                    ClientID:     bifrost.Ptr(os.Getenv("AZURE_CLIENT_ID")),
+                    ClientSecret: bifrost.Ptr(os.Getenv("AZURE_CLIENT_SECRET")),
+                    TenantID:     bifrost.Ptr(os.Getenv("AZURE_TENANT_ID")),
+                    Deployments: map[string]string{
+                        "gpt-4o":      "gpt-4o-deployment",
+                        "gpt-4o-mini": "gpt-4o-mini-deployment",
+                    },
+                    APIVersion: bifrost.Ptr("2024-08-01-preview"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+**Direct Authentication**
+
+For simpler use cases, provide the authentication credential directly in the `Value` field:
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Azure:
+        return []schemas.Key{
+            {
+                Value:  os.Getenv("AZURE_OPENAI_KEY"),
+                Models: []string{"gpt-4o", "gpt-4o-mini"},
+                Weight: 1.0,
+                AzureKeyConfig: &schemas.AzureKeyConfig{
+                    Endpoint: os.Getenv("AZURE_ENDPOINT"),
+                    Deployments: map[string]string{
+                        "gpt-4o":      "gpt-4o-deployment",
+                        "gpt-4o-mini": "gpt-4o-mini-deployment",
+                    },
+                    APIVersion: bifrost.Ptr("2024-08-01-preview"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+<Note>
+If `ClientID`, `ClientSecret`, and `TenantID` are configured, Service Principal authentication is used. Otherwise, direct authentication with the `Value` field is used.
+</Note>
+
+</Tab>
+
+<Tab title="AWS Bedrock">
+
+AWS Bedrock supports both explicit credentials and IAM role authentication:
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Bedrock:
+        return []schemas.Key{
+            {
+                Models: []string{"anthropic.claude-3-sonnet-20240229-v1:0", "anthropic.claude-v2:1"},
+                Weight: 1.0,
+                Value:  os.Getenv("AWS_API_KEY"), // Leave empty for IAM role authentication
+                BedrockKeyConfig: &schemas.BedrockKeyConfig{
+                    AccessKey:    os.Getenv("AWS_ACCESS_KEY_ID"),     // Leave empty for API Key authentication or system's IAM pickup
+                    SecretKey:    os.Getenv("AWS_SECRET_ACCESS_KEY"), // Leave empty for API Key authentication or system's IAM pickup
+                    SessionToken: bifrost.Ptr(os.Getenv("AWS_SESSION_TOKEN")), // Optional
+                    Region:       bifrost.Ptr("us-east-1"),
+                    // For model profiles (inference profiles)
+                    Deployments: map[string]string{
+                        "claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0",
+                    },
+                    // For direct model access without profiles
+                    ARN: bifrost.Ptr("arn:aws:bedrock:us-east-1:123456789012:inference-profile"),
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+**Notes:**
+- If using API Key authentication, set `Value` field to the API key, else leave it empty for IAM role authentication.
+- In IAM role authentication, if both `AccessKey` and `SecretKey` are empty, Bifrost uses IAM from the environment.
+- `ARN` is required for URL formation - `Deployments` mapping is ignored without it.
+- When using `ARN` + `Deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
+
+</Tab>
+
+<Tab title="Google Vertex">
+
+Google Vertex requires project configuration and authentication credentials:
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    switch provider {
+    case schemas.Vertex:
+        return []schemas.Key{
+            {
+                Value:  os.Getenv("VERTEX_API_KEY"), // only when using gemini or fine-tuned models
+                Models: []string{"gemini-pro", "gemini-pro-vision"},
+                Weight: 1.0,
+                VertexKeyConfig: &schemas.VertexKeyConfig{
+                    ProjectID:       os.Getenv("VERTEX_PROJECT_ID"),       // GCP project ID
+                    ProjectNumber:   os.Getenv("VERTEX_PROJECT_NUMBER"),   // GCP project number (only when using fine-tuned models)
+                    Region:          "us-central1",                        // GCP region
+                    AuthCredentials: os.Getenv("VERTEX_CREDENTIALS"),      // Service account JSON
+                     Deployments: map[string]string{
+                        "fine-tuned-gemini-2.5-pro": "123456789"
+                    },
+                },
+            },
+        }, nil
+    }
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+**Notes:**
+- You can leave both API Key and Auth Credentials empty to use service account authentication from the environment.
+- You must set Project Number if using fine-tuned models.
+- API Key Authentication is only supported for Gemini and fine-tuned models.
+- You can use custom fine-tuned models by passing `vertex/<your-fine-tuned-model-id>` or `vertex/<model-deployment-alias>` if you have set the deployments in the key config.
+
+<Note>
+Vertex AI support for fine-tuned models is currently in beta. Requests to non-Gemini fine-tuned models may fail, so please test and report any issues.
+</Note>
+
+</Tab>
+
+</Tabs>
+
+## Best Practices
+
+### Performance Considerations
+
+Keys are fetched from your `GetKeysForProvider` implementation on every request. Ensure your implementation is optimized for speed to avoid adding latency:
+
+```go
+func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+    // ✅ Good: Fast in-memory lookup
+    switch provider {
+    case schemas.OpenAI:
+        return a.cachedOpenAIKeys, nil  // Pre-cached keys
+    }
+    
+    // ❌ Avoid: Database queries, API calls, complex algorithms
+    // This will add latency to every AI request
+    // keys := fetchKeysFromDatabase(provider)  // Too slow!
+    // return processWithComplexLogic(keys)     // Too slow!
+    
+    return nil, fmt.Errorf("provider %s not supported", provider)
+}
+```
+
+**Recommendations:**
+- Cache keys in memory during application startup
+- Use simple switch statements or map lookups
+- Avoid database queries, file I/O, or network calls
+- Keep complex key processing logic outside the request path
+
+## Next Steps
+
+- **[Streaming Responses](./streaming)** - Real-time response generation
+- **[Tool Calling](./tool-calling)** - Enable AI to use external functions
+- **[Multimodal AI](./multimodal)** - Process images, audio, and text
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities

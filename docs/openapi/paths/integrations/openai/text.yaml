@@ -1,0 +1,72 @@
+# OpenAI Integration - Text Completions Endpoints (Legacy)
+
+text-completions:
+  post:
+    operationId: openaiCreateTextCompletion
+    summary: Create text completion (OpenAI format)
+    description: |
+      Creates a text completion using OpenAI-compatible format.
+      This is the legacy completions API.
+
+      **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/completions`).
+    tags:
+      - OpenAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+
+azure-text-completions:
+  post:
+    operationId: azureCreateTextCompletion
+    summary: Create text completion (Azure OpenAI)
+    tags:
+      - OpenAI Integration
+      - Azure Integration
+    parameters:
+      - name: deployment-id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Azure deployment ID
+      - name: api-version
+        in: query
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/openai/text.yaml#/OpenAITextCompletionStreamResponse'
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'

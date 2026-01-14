@@ -1,0 +1,321 @@
+---
+title: "Setting up Microsoft Entra"
+description: "Step-by-step guide to configure Microsoft Entra ID (Azure AD) as your identity provider for Bifrost Enterprise SSO authentication."
+icon: "microsoft"
+---
+
+## Overview
+
+This guide walks you through configuring Microsoft Entra ID (formerly Azure Active Directory) as your identity provider for Bifrost Enterprise. After completing this setup, your users will be able to sign in to Bifrost using their Microsoft credentials, with roles and team memberships automatically synchronized.
+
+## Prerequisites
+
+- A Microsoft Azure account with access to Entra ID (Azure AD)
+- Admin access to create app registrations
+- Bifrost Enterprise deployed and accessible
+- The redirect URI for your Bifrost instance (e.g., `https://your-bifrost-domain.com/login`)
+
+---
+
+## Step 1: Register an Application
+
+1. Sign in to the [Azure Portal](https://portal.azure.com)
+2. Navigate to **Microsoft Entra ID** (or **Azure Active Directory**)
+3. Go to **App registrations**
+4. Click **New registration**
+
+Configure the registration:
+
+| Field | Value |
+|-------|-------|
+| **Name** | Bifrost Enterprise |
+| **Supported account types** | Accounts in this organizational directory only (Single tenant) |
+| **Redirect URI** | Web: `https://your-bifrost-domain.com/login` |
+
+5. Click **Register**
+
+<Tip>
+You can add an app icon to make the application easily recognizable. The Bifrost logo is available at: [https://www.getmaxim.ai/bifrost/bifrost-logo-only.png](https://www.getmaxim.ai/bifrost/bifrost-logo-only.png)
+</Tip>
+
+6. After registration, note down the following from the **Overview** page:
+
+<Frame>
+  <img src="/media/user-provisioning/entra-app-information.png" alt="Entra App Registration Overview" />
+</Frame>
+
+| Value | Where to Find |
+|-------|---------------|
+| **Application (client) ID** | Overview → Essentials |
+| **Directory (tenant) ID** | Overview → Essentials |
+
+---
+
+## Step 2: Create App Roles
+
+Configure roles in Entra that map to Bifrost's role hierarchy (Admin, Developer, Viewer).
+
+1. In your app registration, go to **App roles**
+2. Click **Create app role**
+3. Create the following three roles:
+
+<Frame>
+  <img src="/media/user-provisioning/entra-create-app-roles.png" alt="Entra App Roles configuration" />
+</Frame>
+
+### Viewer Role
+
+| Field | Value |
+|-------|-------|
+| **Display name** | Viewer |
+| **Allowed member types** | Users/Groups |
+| **Value** | `viewer` |
+| **Description** | Viewer role on Bifrost |
+| **State** | Enabled |
+
+### Developer Role
+
+| Field | Value |
+|-------|-------|
+| **Display name** | Developer |
+| **Allowed member types** | Users/Groups |
+| **Value** | `developer` |
+| **Description** | Developer role on Bifrost |
+| **State** | Enabled |
+
+### Admin Role
+
+| Field | Value |
+|-------|-------|
+| **Display name** | Admin |
+| **Allowed member types** | Users/Groups |
+| **Value** | `admin` |
+| **Description** | Admin role on Bifrost |
+| **State** | Enabled |
+
+<Note>
+The role **Value** must be lowercase (`admin`, `developer`, `viewer`) to match Bifrost's role resolution logic. Users with multiple roles will be assigned the highest privilege role.
+</Note>
+
+---
+
+## Step 3: Enable Assignment Required
+
+To control which users can access Bifrost, enable assignment requirement on the Enterprise Application.
+
+1. Go to **Enterprise applications** (from the main Entra ID menu)
+2. Find and select **Bifrost Enterprise**
+3. Go to **Properties**
+
+<Frame>
+  <img src="/media/user-provisioning/entra-enable-assignment.png" alt="Entra Enterprise Application Properties" />
+</Frame>
+
+4. Set **Assignment required?** to **Yes**
+5. Set **Enabled for users to sign-in?** to **Yes**
+6. Click **Save**
+
+---
+
+## Step 4: Create a Client Secret
+
+Bifrost requires a client secret for OAuth authentication.
+
+1. Go back to **App registrations** → **Bifrost Enterprise**
+2. Navigate to **Certificates & secrets**
+3. Click **New client secret**
+
+<Frame>
+  <img src="/media/user-provisioning/entra-create-client-secret.png" alt="Entra Enterprise Client Secrets" />
+</Frame>
+
+| Field | Value |
+|-------|-------|
+| **Description** | Bifrost Enterprise Secret |
+| **Expires** | Choose based on your security policy (e.g., 24 months) |
+
+4. Click **Add**
+5. **Copy the secret value immediately** - it won't be shown again!
+
+<Warning>
+Store the client secret securely. You'll need it for the Bifrost configuration.
+</Warning>
+
+---
+
+## Step 5: Configure API Permissions
+
+Ensure your application has the necessary permissions.
+
+<Frame>
+  <img src="/media/user-provisioning/entra-api-permissions.png" alt="Entra Enterprise API Permissions" />
+</Frame>
+
+1. In your app registration, go to **API permissions**
+2. Click **Add a permission**
+3. Select **Microsoft Graph**
+4. Choose **Delegated permissions**
+5. Add the following permissions:
+   - `openid`
+   - `profile`
+   - `email`
+   - `offline_access` (for refresh tokens)
+
+6. Click **Add permissions**
+7. If required by your organization, click **Grant admin consent for [Your Organization]**
+
+---
+
+## Step 6: Configure Token Claims (Optional)
+
+By default, Entra includes the `roles` claim when app roles are assigned. To include group memberships for team synchronization:
+
+1. Go to **Token configuration**
+2. Click **Add groups claim**
+3. Select:
+   - **Security groups** or **Groups assigned to the application**
+   - For token type, enable **ID** and **Access**
+4. Click **Add**
+
+<Note>
+Group IDs from Entra will be used as team IDs in Bifrost. You may want to create groups in Entra that correspond to your teams.
+</Note>
+
+---
+
+## Step 7: Assign Users and Roles
+
+
+<Frame>
+  <img src="/media/user-provisioning/entra-user-assignments.png" alt="Entra User Assignments" />
+</Frame>
+
+1. Go to **Enterprise applications** → **Bifrost Enterprise**
+2. Navigate to **Users and groups**
+3. Click **Add user/group**
+4. Select users or groups
+5. Select the appropriate role (Admin, Developer, or Viewer)
+6. Click **Assign**
+
+<Tip>
+You can assign roles to groups for easier management. All users in a group will inherit the assigned role.
+</Tip>
+
+---
+
+## Step 8: Configure Bifrost
+
+Now configure Bifrost to use Microsoft Entra as the identity provider.
+
+### Using the Bifrost UI
+
+1. Navigate to **Governance** → **User Provisioning** in your Bifrost dashboard
+2. Select **Microsoft Entra** as the SCIM Provider
+3. Enter the following configuration:
+
+| Field | Value |
+|-------|-------|
+| **Client ID** | Application (client) ID from Azure |
+| **Tenant ID** | Directory (tenant) ID from Azure |
+| **Client Secret** | The secret you created in Step 4 |
+| **Audience** | Your Client ID (optional, defaults to Client ID) |
+| **App ID URI** | `api://{client-id}` (optional, for v1.0 tokens) |
+
+4. Toggle **Enabled** to activate the provider
+5. Click **Save Configuration**
+
+<Warning>
+After saving, you'll need to restart your Bifrost server for the changes to take effect.
+</Warning>
+
+### Configuration Reference
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `tenantId` | Yes | Azure Directory (tenant) ID |
+| `clientId` | Yes | Application (client) ID |
+| `clientSecret` | Yes | Client secret for OAuth authentication |
+| `audience` | No | JWT audience for validation (defaults to clientId) |
+| `appIdUri` | No | App ID URI for v1.0 tokens (e.g., `api://{clientId}`) |
+| `userIdField` | No | JWT claim for user ID (default: `oid`) |
+| `rolesField` | No | JWT claim for roles (default: `roles`) |
+| `teamIdsField` | No | JWT claim for group/team IDs (default: `groups`) |
+
+---
+
+## Role Mapping
+
+Bifrost automatically maps Entra app roles to its internal role hierarchy:
+
+| Entra Role Value | Bifrost Role | Privilege Level |
+|------------------|--------------|-----------------|
+| `admin` | Admin | Highest |
+| `developer` | Developer | Medium |
+| `viewer` | Viewer | Lowest |
+
+**Multiple Roles:** If a user has multiple roles assigned, Bifrost automatically selects the highest privilege role. For example, a user with both `viewer` and `developer` roles will be assigned the Developer role in Bifrost.
+
+**Default Role:** Users without any assigned role will default to the Viewer role.
+
+---
+
+## Testing the Integration
+
+1. Open your Bifrost dashboard in a new browser or incognito window
+2. You should be redirected to Microsoft login
+3. Log in with an assigned user
+4. After successful authentication, you'll be redirected back to Bifrost
+5. Verify the user appears in the Bifrost users list with the correct role
+
+---
+
+## Troubleshooting
+
+### User not redirected to Microsoft login
+
+- Verify the SCIM provider is enabled in Bifrost
+- Check that the Bifrost server was restarted after configuration
+- Ensure the Tenant ID and Client ID are correct
+
+### "AADSTS50011: The reply URL does not match"
+
+- Verify the redirect URI in your app registration exactly matches your Bifrost login URL
+- Ensure there are no trailing slashes or protocol mismatches (http vs https)
+
+### "AADSTS7000215: Invalid client secret"
+
+- Regenerate the client secret in Azure
+- Ensure you're using the secret **Value**, not the secret ID
+- Check for any leading/trailing whitespace when copying
+
+### Roles not appearing in token
+
+- Ensure users are assigned to the Enterprise Application with a role
+- Verify app roles are created with the correct lowercase values
+- Check that "Assignment required" is enabled
+
+### "AADSTS70011: The provided request includes an invalid scope"
+
+- This usually happens when mixing `.default` scope with other scopes
+- Bifrost handles this automatically - ensure you're using the latest version
+
+### Groups not syncing as teams
+
+- Verify the groups claim is configured in Token configuration
+- Ensure users are members of the groups
+- Check that groups are created and assigned in Entra
+
+### Token validation errors
+
+- Ensure the Tenant ID matches your Azure directory
+- Verify the Client ID is correct
+- Check that the app registration is in the same tenant as your users
+
+---
+
+## Next Steps
+
+- **[Advanced Governance](./advanced-governance)** - Learn about user budgets and compliance features
+- **[Role-Based Access Control](./advanced-governance#role-hierarchy)** - Understand the Admin, Developer, Viewer hierarchy
+- **[Audit Logs](./audit-logs)** - Monitor user authentication and activity
+

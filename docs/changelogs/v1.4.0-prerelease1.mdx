@@ -1,0 +1,290 @@
+---
+title: "v1.4.0-prerelease1"
+description: "v1.4.0-prerelease1 changelog - 2025-12-29"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.0-prerelease1
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.0-prerelease1
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.0-prerelease1
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.0-prerelease1">
+- refactor: governance plugin refactored for extensibility and optimization
+- feat: new MCP gateway (server including) along with code mode
+- feat: added health monitoring to mcp
+- feat: added responses format tool execution support to mcp
+- feat: new e2e tracing
+- fix: gemini thought signature handling in multi-turn conversations
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor removed, replaced with HTTPTransportMiddleware**
+
+  The `TransportInterceptor` function has been removed from the plugin interface. Plugins using HTTP transport interception must migrate to `HTTPTransportMiddleware`.
+
+  **Migration summary:**
+  ```
+  // v1.3.x (removed)
+  TransportInterceptor(ctx *BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+
+  // v1.4.x+ (new)
+  HTTPTransportMiddleware() BifrostHTTPMiddleware
+  // where BifrostHTTPMiddleware = func(next fasthttp.RequestHandler) fasthttp.RequestHandler
+  ```
+
+  **Key API changes:**
+  - Function renamed: `TransportInterceptor` -> `HTTPTransportMiddleware`
+  - Signature changed: Now returns a middleware wrapper instead of accepting/returning header/body maps
+  - Added dependency: Requires `github.com/valyala/fasthttp` import
+  - Flow control: Must explicitly call `next(ctx)` to continue the chain
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for complete migration instructions and code examples.
+
+</Update>
+<Update label="Core" description="1.3.0">
+- feat: added code mode to mcp
+- feat: added health monitoring to mcp
+- feat: added responses format tool execution support to mcp
+- feat: adds central tracer for e2e tracing
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor removed, replaced with HTTPTransportMiddleware**
+
+  The `TransportInterceptor` method has been removed from the `Plugin` interface in `schemas/plugin.go`. All plugins must now implement `HTTPTransportMiddleware()` instead.
+
+  **Old API (removed in core v1.3.0):**
+  ```go
+  TransportInterceptor(ctx *BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+  ```
+
+  **New API (core v1.3.0+):**
+  ```go
+  HTTPTransportMiddleware() BifrostHTTPMiddleware
+  // where BifrostHTTPMiddleware = func(next fasthttp.RequestHandler) fasthttp.RequestHandler
+  ```
+
+  **Key changes:**
+  - Method renamed: `TransportInterceptor` -> `HTTPTransportMiddleware`
+  - Return type changed: Now returns a middleware function instead of modified headers/body
+  - New import required: `github.com/valyala/fasthttp`
+  - Flow control: Must call `next(ctx)` explicitly to continue the middleware chain
+  - New capability: Can now intercept and modify responses (not just requests)
+
+  **Migration for plugin consumers:**
+  1. Update your plugin to implement `HTTPTransportMiddleware()` instead of `TransportInterceptor()`
+  2. If your plugin doesn't need HTTP transport interception, return `nil` from `HTTPTransportMiddleware()`
+  3. Update tests to verify the new middleware signature
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for complete instructions and code examples.
+
+</Update>
+<Update label="Framework" description="1.2.0">
+- feat: adds new tracing framework for allowing plugins to enable e2e tracing
+
+### BREAKING CHANGES
+
+- **DynamicPlugin: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  The `DynamicPlugin` loader now expects plugins to export `HTTPTransportMiddleware` instead of `TransportInterceptor`.
+
+  **Old symbol lookup (removed in framework v1.2.0):**
+  ```go
+  plugin.Lookup("TransportInterceptor")
+  // Expected: func(ctx *BifrostContext, url string, headers map[string]string, body map[string]any) (map[string]string, map[string]any, error)
+  ```
+
+  **New symbol lookup (framework v1.2.0+):**
+  ```go
+  plugin.Lookup("HTTPTransportMiddleware")
+  // Expected: func() BifrostHTTPMiddleware
+  ```
+
+  **Impact on dynamic plugins (.so files):**
+  - Plugins compiled for core v1.2.x will fail to load with error: `plugin: symbol HTTPTransportMiddleware not found`
+  - Recompile all dynamic plugins against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for migration instructions.
+
+</Update>
+<Update label="governance" description="1.4.0">
+- refactor: extracted governance store into an interface for extensibility
+- refactor: extended the way governance store handles rate limits
+- chore: added e2e tests for governance plugin
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="jsonparser" description="1.4.0">
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="logging" description="1.4.0">
+- feat: logging now uses central accumulator vs its own; reducing total memory consumption during runtime
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="maxim" description="1.5.0">
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="mocker" description="1.4.0">
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="otel" description="1.1.0">
+- feat: otel now uses central accumulator reducing the total amount of memory consumed in runtime
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="semanticcache" description="1.4.0">
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>
+<Update label="telemetry" description="1.4.0">
+- chore: upgraded versions of core to 1.3.0 and framework to 1.2.0
+
+### BREAKING CHANGES
+
+- **Plugin Interface: TransportInterceptor replaced with HTTPTransportMiddleware**
+
+  This plugin now implements `HTTPTransportMiddleware()` instead of `TransportInterceptor()` to comply with core v1.3.0.
+
+  **What changed:**
+  - Old: `TransportInterceptor(ctx, url, headers, body) (headers, body, error)`
+  - New: `HTTPTransportMiddleware() BifrostHTTPMiddleware`
+
+  **For plugin consumers:**
+  - If you import this plugin directly, no code changes are required
+  - If you extend this plugin, update your implementation to use `HTTPTransportMiddleware()`
+  - Recompile any code that depends on this plugin against core v1.3.0+ and framework v1.2.0+
+
+  See [Plugin Migration Guide](/plugins/migration-guide) for details.
+
+</Update>

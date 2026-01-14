@@ -1,0 +1,76 @@
+# Configuration: SQLite for config/logs + Redis for vector store
+# Usage: helm install bifrost ./bifrost -f values-examples/sqlite-redis.yaml
+#
+# SECURITY NOTE: This example contains placeholder values that MUST be replaced
+# before deployment. Specifically:
+# - Redis password must be set to a strong, randomly generated value
+# - Provider API keys must be replaced with real keys
+# See inline comments for specific requirements.
+
+# Storage configuration
+storage:
+  mode: sqlite
+  persistence:
+    enabled: true
+    size: 10Gi
+  configStore:
+    enabled: true
+  logsStore:
+    enabled: true
+
+# No PostgreSQL
+postgresql:
+  enabled: false
+
+# Deploy Redis for vector store
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    enabled: true
+    auth:
+      enabled: true
+      # REQUIRED: Replace with a strong, randomly generated password
+      # Example: Use `openssl rand -base64 32` to generate a secure password
+      # Or set via Helm: --set vectorStore.redis.auth.password="$(openssl rand -base64 32)"
+      # Or use a Kubernetes secret: --set vectorStore.redis.auth.existingSecret=redis-secret
+      password: "REPLACE_ME_WITH_STRONG_PASSWORD"
+    master:
+      persistence:
+        enabled: true
+        size: 8Gi
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 250m
+          memory: 256Mi
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+  
+  # Enable semantic cache plugin to use Redis vector store
+  plugins:
+    semanticCache:
+      enabled: true
+      # OPTION 1 (Recommended): Reference to external Kubernetes Secret for OpenAI API key
+      # Create the secret with: kubectl create secret generic bifrost-semantic-cache --from-literal=openai-key=sk-YOUR_OPENAI_KEY
+      secretRef:
+        name: "bifrost-semantic-cache"
+        key: "openai-key"
+      # OPTION 2 (Not recommended): Or uncomment to provide keys directly (not secure)
+      # Remove secretRef above and uncomment the keys below:
+      config:
+        provider: "openai"
+        # keys:
+        #   - "REPLACE_WITH_OPENAI_API_KEY"  # Not recommended: use secretRef instead
+        embedding_model: "text-embedding-3-small"
+        dimension: 1536
+        threshold: 0.8
+        ttl: "5m"
+

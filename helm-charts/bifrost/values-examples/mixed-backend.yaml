@@ -1,0 +1,51 @@
+# Configuration: SQLite for config store + PostgreSQL for logs store
+# This demonstrates independent backend selection for each store
+# Usage: helm install bifrost ./bifrost -f values-examples/mixed-backend.yaml
+
+# Storage configuration with mixed backends
+storage:
+  mode: sqlite  # Default fallback (not used when per-store type is set)
+  persistence:
+    enabled: true
+    size: 5Gi
+  configStore:
+    enabled: true
+    type: sqlite    # Config store uses SQLite (fast, local, simple)
+  logsStore:
+    enabled: true
+    type: postgres  # Logs store uses PostgreSQL (scalable, queryable)
+
+# Deploy PostgreSQL for logs store
+postgresql:
+  enabled: true
+  auth:
+    username: bifrost
+    password: bifrost_password
+    database: bifrost
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+# No vector store
+vectorStore:
+  enabled: false
+  type: none
+
+# Bifrost configuration
+bifrost:
+  client:
+    enableLogging: true
+  providers: {}
+    # Add your provider keys here
+    # openai:
+    #   keys:
+    #     - value: "sk-..."
+    #       weight: 1

@@ -1,0 +1,300 @@
+---
+title: "Streaming Responses"
+description: "Receive AI responses in real-time as they're generated. Perfect for chat applications, audio processing, and real-time transcription where you want immediate results."
+icon: "water"
+---
+
+## Streaming Text Completion
+
+Stream plain text completions as they are generated, ideal for autocomplete, summaries, and single-output generation.
+
+```go
+stream, err := client.TextCompletionStreamRequest(context.Background(), &schemas.BifrostTextCompletionRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input: &schemas.TextCompletionInput{
+		PromptStr: bifrost.Ptr("A for apple and B for"),
+	},
+})
+
+if err != nil {
+	log.Printf("Streaming request failed: %v", err)
+	return
+}
+
+for chunk := range stream {
+	// Handle errors in stream
+	if chunk.BifrostError != nil {
+		log.Printf("Stream error: %v", chunk.BifrostError)
+		break
+	}
+
+	// Process response chunks
+	if chunk.BifrostTextCompletionResponse != nil && len(chunk.BifrostTextCompletionResponse.Choices) > 0 {
+		choice := chunk.BifrostTextCompletionResponse.Choices[0]
+		
+		// Check for streaming content
+		if choice.TextCompletionResponseChoice != nil &&
+			choice.TextCompletionResponseChoice.Text != nil {
+			content := *choice.BifrostTextCompletionResponseChoice.Text
+			fmt.Print(content) // Print content as it arrives
+		}
+	}
+}
+```
+
+## Streaming Chat Responses
+
+Receive incremental chat deltas in real-time. Append delta content to progressively render assistant messages.
+
+```go
+stream, err := client.ChatCompletionStreamRequest(context.Background(), &schemas.BifrostChatRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input:    messages,
+})
+
+if err != nil {
+	log.Printf("Streaming request failed: %v", err)
+	return
+}
+
+for chunk := range stream {
+	// Handle errors in stream
+	if chunk.BifrostError != nil {
+		log.Printf("Stream error: %v", chunk.BifrostError)
+		break
+	}
+
+	// Process response chunks
+	if chunk.BifrostChatResponse != nil && len(chunk.BifrostChatResponse.Choices) > 0 {
+		choice := chunk.BifrostChatResponse.Choices[0]
+
+		// Check for streaming content
+		if choice.ChatStreamResponseChoice != nil &&
+			choice.ChatStreamResponseChoice.Delta != nil &&
+			choice.ChatStreamResponseChoice.Delta.Content != nil {
+
+			content := *choice.ChatStreamResponseChoice.Delta.Content
+			fmt.Print(content) // Print content as it arrives
+		}
+	}
+}
+```
+
+> **Note:** Streaming requests also follow the default timeout setting defined in provider configuration, which defaults to **30 seconds**.
+
+<Note>
+Bifrost standardizes all stream responses to send usage and finish reason only in the last chunk, and content in the previous chunks.
+</Note>
+
+## Responses API Streaming
+
+Use the OpenAI-style Responses API with streaming for unified flows. Events arrive via SSE; accumulate text deltas until completion.
+
+```go
+messages := []schemas.ResponsesMessage{
+	{
+		Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{
+			ContentStr: bifrost.Ptr("Hello, Bifrost!"),
+		},
+	},
+}
+
+stream, err := client.ResponsesStreamRequest(context.Background(), &schemas.BifrostResponsesRequest{
+	Provider: schemas.OpenAI,
+	Model:    "gpt-4o-mini",
+	Input:    messages,
+})
+
+if err != nil {
+	log.Printf("Streaming request failed: %v", err)
+	return
+}
+
+for chunk := range stream {
+	// Handle errors in stream
+	if chunk.BifrostError != nil {
+		log.Printf("Stream error: %v", chunk.BifrostError)
+		break
+	}
+
+	// Process response chunks
+	if chunk.BifrostResponsesStreamResponse != nil {
+		delta := chunk.BifrostResponsesStreamResponse.Delta
+
+		// Check for streaming content
+		if delta != nil {
+			fmt.Print(*delta) // Print content as it arrives
+		}
+	}
+}
+```
+
+## Text-to-Speech Streaming: Real-time Audio Generation
+
+Stream audio generation in real-time as text is converted to speech. Ideal for long texts or when you need immediate audio playback.
+
+```go
+stream, err := client.SpeechStreamRequest(context.Background(), &schemas.BifrostSpeechRequest{
+	Provider: schemas.OpenAI,
+	Model:    "tts-1", // Using text-to-speech model
+	Input: &schemas.SpeechInput{
+		Input: "Hello! This is a sample text that will be converted to speech using Bifrost's speech synthesis capabilities. The weather today is wonderful, and I hope you're having a great day!",
+	},
+	Params: &schemas.SpeechParameters{
+		VoiceConfig: &schemas.SpeechVoiceInput{
+			Voice: schemas.Ptr("alloy"),
+		},
+		ResponseFormat: schemas.Ptr("mp3"),
+	},
+})
+
+if err != nil {
+	panic(err)
+}
+
+// Handle speech synthesis stream
+var audioData []byte
+var totalChunks int
+filename := "output.mp3"
+
+for chunk := range stream {
+	if chunk.BifrostError != nil {
+		panic(fmt.Sprintf("Stream error: %s", chunk.BifrostError.Error.Message))
+	}
+
+	if chunk.BifrostSpeechStreamResponse != nil {
+		// Accumulate audio data from each chunk
+		audioData = append(audioData, chunk.BifrostSpeechStreamResponse.Audio...)
+		totalChunks++
+		fmt.Printf("Received chunk %d, size: %d bytes\n", totalChunks, len(chunk.BifrostSpeechStreamResponse.Audio))
+	}
+}
+
+if len(audioData) > 0 {
+	// Save the accumulated audio to a file
+	err := os.WriteFile(filename, audioData, 0644)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to save audio file: %v", err))
+	}
+
+	fmt.Printf("Speech synthesis streaming complete! Audio saved to %s\n", filename)
+	fmt.Printf("Total chunks received: %d, final file size: %d bytes\n", totalChunks, len(audioData))
+}
+```
+
+## Speech-to-Text Streaming: Real-time Audio Transcription
+
+Stream audio transcription results as they're processed. Get immediate text output for real-time applications or long audio files.
+
+```go
+// Read the audio file for transcription
+audioFilename := "output.mp3"
+audioData, err := os.ReadFile(audioFilename)
+if err != nil {
+	panic(fmt.Sprintf("Failed to read audio file %s: %v. Please make sure the file exists.", audioFilename, err))
+}
+
+fmt.Printf("Loaded audio file %s (%d bytes) for transcription...\n", audioFilename, len(audioData))
+
+stream, err := client.TranscriptionStreamRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+	Provider: schemas.OpenAI,
+	Model:    "whisper-1", // Using Whisper model for transcription
+	Input: &schemas.TranscriptionInput{
+		File: audioData,
+	},
+	Params: &schemas.TranscriptionParameters{
+		Prompt: schemas.Ptr("This is a sample audio transcription from Bifrost speech synthesis."), // Optional: provide context
+	},
+})
+
+if err != nil {
+	panic(err)
+}
+
+for chunk := range stream {
+	if chunk.BifrostError != nil {
+		panic(fmt.Sprintf("Stream error: %s", chunk.BifrostError.Error.Message))
+	}
+
+	if chunk.BifrostTranscriptionStreamResponse != nil && chunk.BifrostTranscriptionStreamResponse.Delta != nil {
+		// Print each chunk of text as it arrives
+		fmt.Print(*chunk.BifrostTranscriptionStreamResponse.Delta)
+	}
+}
+```
+
+## Streaming Best Practices
+
+### Buffering for Audio
+
+For audio streaming, consider buffering chunks before saving:
+
+```go
+const bufferSize = 1024 * 1024 // 1MB buffer
+
+var audioBuffer bytes.Buffer
+var lastSave time.Time
+
+for chunk := range stream {
+	if chunk.BifrostSpeechStreamResponse != nil {
+		audioBuffer.Write(chunk.BifrostSpeechStreamResponse.Audio)
+
+		// Save every second or when buffer is full
+		if time.Since(lastSave) > time.Second || audioBuffer.Len() > bufferSize {
+			// Append to file
+			file, err := os.OpenFile("streaming_audio.mp3", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				file.Write(audioBuffer.Bytes())
+				file.Close()
+				audioBuffer.Reset()
+				lastSave = time.Now()
+			}
+		}
+	}
+}
+```
+
+### Context and Cancellation
+
+Use context to control streaming duration:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+stream, err := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+	// ... your request
+})
+
+// Stream will automatically stop after 30 seconds
+```
+
+## Voice Options
+
+OpenAI TTS supports these voices:
+
+- `alloy` - Balanced, natural voice
+- `echo` - Deep, resonant voice  
+- `fable` - Expressive, storytelling voice
+- `onyx` - Strong, confident voice
+- `nova` - Bright, energetic voice
+- `shimmer` - Gentle, soothing voice
+
+```go
+// Different voice example
+VoiceConfig: schemas.SpeechVoiceInput{
+    Voice: bifrost.Ptr("nova"),
+},
+```
+
+> **Note:** Please check each model's documentation to see if it supports the corresponding streaming features. Not all providers support all streaming capabilities.
+
+## Next Steps
+
+- **[Tool Calling](./tool-calling)** - Enable AI to use external functions
+- **[Multimodal AI](./multimodal)** - Process images and multimedia content
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for redundancy
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities

@@ -1,0 +1,38 @@
+# Cohere - Chat Endpoints
+
+chat:
+  post:
+    operationId: cohereChatV2
+    summary: Chat with model (Cohere v2 format)
+    description: |
+      Sends a chat request using Cohere v2 API format.
+    tags:
+      - Cohere Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/chat.yaml#/CohereChatStreamEvent'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/cohere/common.yaml#/CohereError'

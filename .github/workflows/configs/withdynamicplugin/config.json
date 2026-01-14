@@ -1,0 +1,17 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "../.github/workflows/configs/withdynamicplugin/config.db"
+    }
+  },
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "hello-world",
+      "path": "../examples/plugins/hello-world/build/hello-world.so"
+    }
+  ]
+}

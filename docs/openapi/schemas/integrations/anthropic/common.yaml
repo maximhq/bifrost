@@ -1,0 +1,53 @@
+# Anthropic Integration Common Types
+
+AnthropicError:
+  type: object
+  properties:
+    type:
+      type: string
+      default: error
+    error:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Error type (e.g., invalid_request_error, api_error)
+        message:
+          type: string
+          description: Error message
+
+AnthropicModel:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Model identifier
+    type:
+      type: string
+      default: model
+    display_name:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+
+AnthropicListModelsResponse:
+  type: object
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/AnthropicModel'
+    has_more:
+      type: boolean
+    first_id:
+      type: string
+    last_id:
+      type: string
+
+# Anthropic Message Roles
+AnthropicMessageRole:
+  type: string
+  enum:
+    - user
+    - assistant

@@ -1,0 +1,314 @@
+logs:
+  get:
+    operationId: getLogs
+    summary: Get logs
+    description: |
+      Retrieves logs with filtering, search, and pagination via query parameters.
+    tags:
+      - Logging
+    parameters:
+      - name: providers
+        in: query
+        description: Comma-separated list of providers to filter by
+        schema:
+          type: string
+      - name: models
+        in: query
+        description: Comma-separated list of models to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by
+        schema:
+          type: string
+      - name: objects
+        in: query
+        description: Comma-separated list of object types to filter by
+        schema:
+          type: string
+      - name: selected_key_ids
+        in: query
+        description: Comma-separated list of selected key IDs to filter by
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter
+        schema:
+          type: number
+      - name: min_tokens
+        in: query
+        description: Minimum tokens filter
+        schema:
+          type: integer
+      - name: max_tokens
+        in: query
+        description: Maximum tokens filter
+        schema:
+          type: integer
+      - name: min_cost
+        in: query
+        description: Minimum cost filter
+        schema:
+          type: number
+      - name: max_cost
+        in: query
+        description: Maximum cost filter
+        schema:
+          type: number
+      - name: missing_cost_only
+        in: query
+        description: Only show logs with missing cost
+        schema:
+          type: boolean
+      - name: content_search
+        in: query
+        description: Search in request/response content
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of logs to return (default 50, max 1000)
+        schema:
+          type: integer
+          default: 50
+          maximum: 1000
+      - name: offset
+        in: query
+        description: Number of logs to skip
+        schema:
+          type: integer
+          default: 0
+      - name: sort_by
+        in: query
+        description: Field to sort by
+        schema:
+          type: string
+          enum: [timestamp, latency, tokens, cost]
+          default: timestamp
+      - name: order
+        in: query
+        description: Sort order
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: desc
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/SearchLogsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteLogs
+    summary: Delete logs
+    description: Deletes logs by their IDs.
+    tags:
+      - Logging
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/logging.yaml#/DeleteLogsRequest'
+    responses:
+      '200':
+        description: Logs deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-stats:
+  get:
+    operationId: getLogsStats
+    summary: Get log statistics
+    description: Returns statistics for logs matching the specified filters.
+    tags:
+      - Logging
+    parameters:
+      - name: providers
+        in: query
+        description: Comma-separated list of providers to filter by
+        schema:
+          type: string
+      - name: models
+        in: query
+        description: Comma-separated list of models to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by
+        schema:
+          type: string
+      - name: objects
+        in: query
+        description: Comma-separated list of object types to filter by
+        schema:
+          type: string
+      - name: selected_key_ids
+        in: query
+        description: Comma-separated list of selected key IDs to filter by
+        schema:
+          type: string
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter
+        schema:
+          type: number
+      - name: min_tokens
+        in: query
+        description: Minimum tokens filter
+        schema:
+          type: integer
+      - name: max_tokens
+        in: query
+        description: Maximum tokens filter
+        schema:
+          type: integer
+      - name: min_cost
+        in: query
+        description: Minimum cost filter
+        schema:
+          type: number
+      - name: max_cost
+        in: query
+        description: Maximum cost filter
+        schema:
+          type: number
+      - name: missing_cost_only
+        in: query
+        description: Only show logs with missing cost
+        schema:
+          type: boolean
+      - name: content_search
+        in: query
+        description: Search in request/response content
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/LogStats'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-dropped:
+  get:
+    operationId: getDroppedRequests
+    summary: Get dropped requests count
+    description: Returns the number of dropped requests.
+    tags:
+      - Logging
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/DroppedRequestsResponse'
+
+logs-filterdata:
+  get:
+    operationId: getAvailableFilterData
+    summary: Get available filter data
+    description: Returns all unique filter data from logs (models, keys, virtual keys).
+    tags:
+      - Logging
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/FilterDataResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-recalculate-cost:
+  post:
+    operationId: recalculateLogCosts
+    summary: Recalculate log costs
+    description: |
+      Recomputes missing costs in batches. Processes logs with missing cost values
+      and updates them based on current pricing data.
+    tags:
+      - Logging
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/logging.yaml#/RecalculateCostRequest'
+    responses:
+      '200':
+        description: Costs recalculated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

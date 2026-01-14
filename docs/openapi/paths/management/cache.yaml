@@ -1,0 +1,51 @@
+clear-by-request-id:
+  delete:
+    operationId: clearCacheByRequestId
+    summary: Clear cache by request ID
+    description: Clears cache entries associated with a specific request ID.
+    tags:
+      - Cache
+    parameters:
+      - name: requestId
+        in: path
+        required: true
+        description: Request ID to clear cache for
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Cache cleared successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/cache.yaml#/ClearCacheResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+clear-by-cache-key:
+  delete:
+    operationId: clearCacheByCacheKey
+    summary: Clear cache by cache key
+    description: Clears a cache entry by its direct cache key.
+    tags:
+      - Cache
+    parameters:
+      - name: cacheKey
+        in: path
+        required: true
+        description: Cache key to clear
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Cache cleared successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/cache.yaml#/ClearCacheResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

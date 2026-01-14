@@ -1,0 +1,689 @@
+"use client";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { isRedacted } from "@/lib/utils/validation";
+import { Info, Plus, Trash2 } from "lucide-react";
+import { Control, UseFormReturn } from "react-hook-form";
+
+// Providers that support batch APIs
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini"];
+
+interface Props {
+	control: Control<any>;
+	providerName: string;
+	form: UseFormReturn<any>;
+}
+
+// Batch API form field for all providers
+function BatchAPIFormField({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	return (
+		<FormField
+			control={control}
+			name={`key.use_for_batch_api`}
+			render={({ field }) => (
+				<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+					<div className="space-y-1.5">
+						<FormLabel>Use for Batch APIs</FormLabel>
+						<FormDescription>
+							Enable this key for batch API operations. Only keys with this enabled will be used for batch requests.
+						</FormDescription>
+					</div>
+					<FormControl>
+						<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
+					</FormControl>
+				</FormItem>
+			)}
+		/>
+	);
+}
+
+export function ApiKeyFormFragment({ control, providerName, form }: Props) {
+	const isBedrock = providerName === "bedrock";
+	const isVertex = providerName === "vertex";
+	const isAzure = providerName === "azure";
+	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+	return (
+		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
+			{isBedrock && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>Authentication Methods</AlertTitle>
+					<AlertDescription>
+						You can either use IAM role authentication or API key authentication. Please leave API Key empty when using IAM role
+						authentication.
+					</AlertDescription>
+				</Alert>
+			)}
+			{isVertex && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>Authentication Methods</AlertTitle>
+					<AlertDescription>
+						You can either use service account authentication or API key authentication. Please leave API Key empty when using service
+						account authentication.
+					</AlertDescription>
+				</Alert>
+			)}
+			<div className="flex items-start gap-4">
+				<div className="flex-1">
+					<FormField
+						control={control}
+						name={`key.name`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Name</FormLabel>
+								<FormControl>
+									<Input placeholder="Production Key" type="text" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+				<FormField
+					control={control}
+					name={`key.weight`}
+					render={({ field }) => (
+						<FormItem>
+							<div className="flex items-center gap-2">
+								<FormLabel>Weight</FormLabel>
+								<TooltipProvider>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span>
+												<Info className="text-muted-foreground h-3 w-3" />
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>
+											<p>Determines traffic distribution between keys. Higher weights receive more requests.</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
+							</div>
+							<FormControl>
+								<Input
+									placeholder="1.0"
+									className="w-[260px]"
+									value={field.value === undefined || field.value === null ? "" : String(field.value)}
+									onChange={(e) => {
+										// Keep as string during typing to allow partial input
+										field.onChange(e.target.value === "" ? "" : e.target.value);
+									}}
+									onBlur={(e) => {
+										const v = e.target.value.trim();
+										if (v !== "") {
+											const num = parseFloat(v);
+											if (!isNaN(num)) {
+												field.onChange(num);
+											}
+										}
+										field.onBlur();
+									}}
+									name={field.name}
+									ref={field.ref}
+									type="text"
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			</div>
+			<FormField
+				control={control}
+				name={`key.value`}
+				render={({ field }) => (
+					<FormItem>
+						<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : ""}</FormLabel>
+						<FormControl>
+							<Input placeholder="API Key or env.MY_KEY" type="text" {...field} value={field.value ?? ""} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			<FormField
+				control={control}
+				name={`key.models`}
+				render={({ field }) => (
+					<FormItem>
+						<div className="flex items-center gap-2">
+							<FormLabel>Models</FormLabel>
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span>
+											<Info className="text-muted-foreground h-3 w-3" />
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>
+										<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
+						<FormControl>
+							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} />
+						</FormControl>
+						<FormMessage />
+					</FormItem>
+				)}
+			/>
+			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
+			{isAzure && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name={`key.azure_key_config.endpoint`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Endpoint (Required)</FormLabel>
+								<FormControl>
+									<Input placeholder="https://your-resource.openai.azure.com or env.AZURE_ENDPOINT" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.api_version`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>API Version (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="2024-02-01 or env.AZURE_API_VERSION" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+
+					<Separator className="my-6" />
+					<Alert variant="default" className="-z-10">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Azure Entra ID Authentication</AlertTitle>
+						<AlertDescription>
+							To use Azure Entra ID authentication, fill in Client ID, Client Secret, and Tenant ID. Please leave API Key empty when using Entra ID authentication.
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.client_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Client ID</FormLabel>
+								<FormControl>
+									<Input placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.client_secret`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Client Secret</FormLabel>
+								<FormControl>
+									<Input placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.tenant_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Tenant ID</FormLabel>
+								<FormControl>
+									<Input placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.azure_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Required)</FormLabel>
+								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"gpt-4": "my-gpt4-deployment", "gpt-3.5-turbo": "my-gpt35-deployment"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											form.clearErrors("key.azure_key_config.deployments");
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+				</div>
+			)}
+			{isVertex && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.project_id`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Project ID (Required)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-gcp-project-id or env.VERTEX_PROJECT_ID" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.project_number`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Project Number (Required only for fine-tuned models)</FormLabel>
+								<FormControl>
+									<Input placeholder="your-gcp-project-number or env.VERTEX_PROJECT_NUMBER" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.region`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Region (Required)</FormLabel>
+								<FormControl>
+									<Input placeholder="us-central1 or env.VERTEX_REGION" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<Alert variant="default" className="-z-10">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Service Account Authentication</AlertTitle>
+						<AlertDescription>
+							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.auth_credentials`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Auth Credentials</FormLabel>
+								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+										value={typeof field.value === "string" ? field.value : field.value ? JSON.stringify(field.value || {}, null, 2) : ""}
+										onChange={(e) => field.onChange(e.target.value)}
+										onBlur={(e) => {
+											const value = e.target.value.trim();
+											if (value.startsWith("env.")) {
+												field.onChange(value);
+											} else if (value) {
+												try {
+													try {
+														if (value) JSON.parse(value);
+													} catch {}
+													field.onChange(value);
+												} catch {
+													// leave as string; validation will catch malformed JSON
+												}
+											}
+											field.onBlur();
+										}}
+										rows={4}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								{isRedacted(typeof field.value === "string" ? field.value : "") && (
+									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+										<Info className="h-3 w-3" />
+										<span>Credentials are stored securely. Edit to update.</span>
+									</div>
+								)}
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to custom fine-tuned model deployment ids</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"custom-gemini-2.5-pro": "123456789", "custom-gemini-2.0-flash-001": "987654321"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isBedrock && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<Alert variant="default" className="-z-10">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>IAM Role Authentication</AlertTitle>
+						<AlertDescription>
+							Leave both Access Key and Secret Key empty to use IAM roles attached to your environment (EC2, Lambda, ECS, EKS).
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.access_key`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Access Key</FormLabel>
+								<FormControl>
+									<Input
+										placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID"
+										value={field.value ?? ""}
+										onChange={field.onChange}
+										onBlur={field.onBlur}
+										name={field.name}
+										ref={field.ref}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.secret_key`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Secret Key</FormLabel>
+								<FormControl>
+									<Input
+										placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY"
+										value={field.value ?? ""}
+										onChange={field.onChange}
+										onBlur={field.onBlur}
+										name={field.name}
+										ref={field.ref}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.session_token`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Session Token (Optional)</FormLabel>
+								<FormControl>
+									<Input
+										placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN"
+										value={field.value ?? ""}
+										onChange={field.onChange}
+										onBlur={field.onBlur}
+										name={field.name}
+										ref={field.ref}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.region`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Region (Required)</FormLabel>
+								<FormControl>
+									<Input
+										placeholder="us-east-1 or env.AWS_REGION"
+										value={field.value ?? ""}
+										onChange={field.onChange}
+										onBlur={field.onBlur}
+										name={field.name}
+										ref={field.ref}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.arn`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>ARN</FormLabel>
+								<FormControl>
+									<Input
+										placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN"
+										value={field.value ?? ""}
+										onChange={field.onChange}
+										onBlur={field.onBlur}
+										name={field.name}
+										ref={field.ref}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to inference profile names</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"claude-3-sonnet": "us.anthropic.claude-3-sonnet-20240229-v1:0", "claude-v2": "us.anthropic.claude-v2:1"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Bedrock S3 configuration section for batch operations
+function BedrockBatchS3ConfigSection({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	const buckets = form.watch("key.bedrock_key_config.batch_s3_config.buckets") || [];
+
+	const addBucket = () => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		form.setValue(
+			"key.bedrock_key_config.batch_s3_config.buckets",
+			[...currentBuckets, { bucket_name: "", prefix: "", is_default: currentBuckets.length === 0 }],
+			{ shouldDirty: true },
+		);
+	};
+
+	const removeBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.filter((_: any, i: number) => i !== index);
+		// If we removed the default bucket and there are still buckets, make the first one default
+		if (currentBuckets[index]?.is_default && newBuckets.length > 0) {
+			newBuckets[0].is_default = true;
+		}
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	const setDefaultBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.map((bucket: any, i: number) => ({
+			...bucket,
+			is_default: i === index,
+		}));
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	return (
+		<div className="space-y-4">
+			<Separator className="my-4" />
+			<div className="flex items-center justify-between">
+				<div>
+					<FormLabel className="text-base">S3 Bucket Configuration</FormLabel>
+					<FormDescription>Configure S3 buckets for Bedrock batch operations</FormDescription>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={addBucket}>
+					<Plus className="mr-2 h-4 w-4" />
+					Add Bucket
+				</Button>
+			</div>
+			{buckets.length === 0 && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>No S3 Buckets Configured</AlertTitle>
+					<AlertDescription>
+						Add at least one S3 bucket to store batch job input/output files for Bedrock batch operations.
+					</AlertDescription>
+				</Alert>
+			)}
+			{buckets.map((_: any, index: number) => (
+				<div key={index} className="space-y-4 rounded-sm border p-2">
+					<div className="flex items-center justify-between">
+						<div className="flex items-center gap-2">
+							<span className="text-sm font-medium">Bucket {index + 1}</span>
+							{buckets[index]?.is_default && (
+								<span className="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">Default</span>
+							)}
+						</div>
+						<div className="flex items-center gap-2">
+							{!buckets[index]?.is_default && buckets.length > 1 && (
+								<Button type="button" variant="ghost" size="sm" onClick={() => setDefaultBucket(index)}>
+									Set as Default
+								</Button>
+							)}
+							<Button type="button" variant="ghost" size="sm" onClick={() => removeBucket(index)}>
+								<Trash2 className="text-destructive h-4 w-4" />
+							</Button>
+						</div>
+					</div>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.bucket_name`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Bucket Name</FormLabel>
+								<FormControl>
+									<Input placeholder="my-batch-bucket or env.S3_BUCKET_NAME" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.prefix`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Prefix (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="batch-jobs/ or env.S3_PREFIX" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormDescription>Optional path prefix for batch files in the bucket</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			))}
+		</div>
+	);
+}
