@@ -317,7 +317,7 @@ type AdditionalProperties struct {
 	ObjectValue *map[string]any
 }
 
-// UnmarshalJSON implements custom JSON unmarshalling for ToolParamsAdditionalProperties.
+// UnmarshalJSON implements custom JSON unmarshalling for AdditionalProperties.
 // Handles both the value being either bool or a generic jsonschema object.
 func (t *AdditionalProperties) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as a bool
@@ -336,7 +336,7 @@ func (t *AdditionalProperties) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON implements custom JSON marshalling for ToolParamsAdditionalProperties.
+// UnmarshalJSON implements custom JSON marshalling for AdditionalProperties.
 // If object value exists then it take precedence, else bool value.
 func (t *AdditionalProperties) MarshalJSON() ([]byte, error) {
 	if t.ObjectValue != nil {
