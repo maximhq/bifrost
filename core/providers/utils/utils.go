@@ -389,16 +389,6 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 		}
 	}
 
-	// Try to unmarshal decoded body for RawResponse
-	var rawErrorResponse interface{}
-	if err := sonic.Unmarshal(decodedBody, &rawErrorResponse); err != nil {
-		if logger != nil {
-			logger.Warn(fmt.Sprintf("Failed to parse raw error response: %v", err))
-		}
-		// If unmarshal fails (e.g., for HTML or plain text), store as string so RawResponse is never nil
-		rawErrorResponse = string(decodedBody)
-	}
-
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(decodedBody))
 	if len(trimmed) == 0 {
@@ -409,9 +399,16 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				Message: schemas.ErrProviderResponseEmpty,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
+				RawResponse: nil, // No raw response for empty response
 			},
 		}
+	}
+
+	// Try to unmarshal decoded body for RawResponse
+	var rawErrorResponse interface{}
+	if err := sonic.Unmarshal(decodedBody, &rawErrorResponse); err != nil {
+		// If unmarshal fails (e.g., for HTML or plain text), store as string so RawResponse is never nil
+		rawErrorResponse = string(decodedBody)
 	}
 
 	// Try JSON parsing first

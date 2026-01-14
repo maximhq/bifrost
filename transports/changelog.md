@@ -4,3 +4,4 @@
 - fix: improve thought signature handling in gemini for function calls
 - fix: enhance citations structure to support multiple citation types
 - fix: anthropic streaming events through integration
+- feat: added support for code execution tool for openai, anthropic and gemini

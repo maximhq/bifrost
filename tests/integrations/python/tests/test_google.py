@@ -2695,3 +2695,141 @@ def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:
                 continue
 
     return function_calls
+
+
+class TestGoogleCodeExecution:
+    """Tests for code execution tool with Google Gemini SDK"""
+
+    @pytest.fixture
+    def google_genai_client(self):
+        """Create Google GenAI client for code execution tests"""
+        from google import genai
+        from google.genai import types
+
+        api_key = get_api_key("GOOGLE_API_KEY")
+        skip_if_no_api_key(api_key, "Google")
+
+        # Configure client with Bifrost base URL
+        client = genai.Client(
+            api_key=api_key,
+            http_options={
+                "api_version": "v1alpha"
+            }
+        )
+
+        # Store base URL for the client
+        base_url = os.getenv("BIFROST_BASE_URL", "http://localhost:8787")
+        client._base_url = base_url
+
+        return client, types
+
+    def test_code_execution_math(self, google_genai_client):
+        """Test code execution with mathematical computation"""
+        client, types = google_genai_client
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents="Calculate the sum of all prime numbers between 1 and 50 using Python code. Show your calculation.",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(code_execution={})]
+            )
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "candidates"), "Response should have candidates"
+        assert len(response.candidates) > 0, "Response should have at least one candidate"
+
+        candidate = response.candidates[0]
+        assert hasattr(candidate, "content"), "Candidate should have content"
+        assert hasattr(candidate.content, "parts"), "Content should have parts"
+
+        # Extract text from all parts
+        text_parts = []
+        for part in candidate.content.parts:
+            if hasattr(part, "text") and part.text:
+                text_parts.append(part.text)
+
+        response_text = " ".join(text_parts)
+        assert len(response_text) > 0, "Response should have text content"
+
+        # The result should mention primes or the sum (328)
+        assert any(keyword in response_text.lower() for keyword in ["328", "prime", "sum"]), \
+            f"Response should contain calculation result. Got: {response_text}"
+
+        print(f"✓ Google code execution (math) test passed!")
+        print(f"  Response: {response_text[:200]}...")
+
+    def test_code_execution_data_analysis(self, google_genai_client):
+        """Test code execution with statistical data analysis"""
+        client, types = google_genai_client
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents="Calculate the mean and standard deviation of these numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]. Use Python to compute.",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(code_execution={})]
+            )
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "candidates"), "Response should have candidates"
+        assert len(response.candidates) > 0, "Response should have at least one candidate"
+
+        candidate = response.candidates[0]
+        assert hasattr(candidate, "content"), "Candidate should have content"
+        assert hasattr(candidate.content, "parts"), "Content should have parts"
+
+        # Extract text from all parts
+        text_parts = []
+        for part in candidate.content.parts:
+            if hasattr(part, "text") and part.text:
+                text_parts.append(part.text)
+
+        response_text = " ".join(text_parts)
+        assert len(response_text) > 0, "Response should have text content"
+
+        # The result should mention mean (5.5) or standard deviation
+        assert any(keyword in response_text.lower() for keyword in ["mean", "5.5", "average", "standard deviation", "std"]), \
+            f"Response should contain statistical results. Got: {response_text}"
+
+        print(f"✓ Google code execution (data analysis) test passed!")
+        print(f"  Response: {response_text[:200]}...")
+
+    def test_code_execution_equation_solving(self, google_genai_client):
+        """Test code execution with equation solving"""
+        client, types = google_genai_client
+
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents="Solve the equation 3x + 11 = 14 for x using Python code.",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(code_execution={})]
+            )
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "candidates"), "Response should have candidates"
+        assert len(response.candidates) > 0, "Response should have at least one candidate"
+
+        candidate = response.candidates[0]
+        assert hasattr(candidate, "content"), "Candidate should have content"
+        assert hasattr(candidate.content, "parts"), "Content should have parts"
+
+        # Extract text from all parts
+        text_parts = []
+        for part in candidate.content.parts:
+            if hasattr(part, "text") and part.text:
+                text_parts.append(part.text)
+
+        response_text = " ".join(text_parts)
+        assert len(response_text) > 0, "Response should have text content"
+
+        # The solution should be x = 1
+        assert any(keyword in response_text.lower() for keyword in ["x = 1", "x=1", "1.0", "1", "solution"]), \
+            f"Response should contain equation solution. Got: {response_text}"
+
+        print(f"✓ Google code execution (equation solving) test passed!")
+        print(f"  Response: {response_text[:200]}...")

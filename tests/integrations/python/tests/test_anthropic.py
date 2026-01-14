@@ -2310,11 +2310,134 @@ def validate_cache_read(usage: Any, operation: str) -> int:
     print(f"{operation} usage - input_tokens: {usage.input_tokens}, "
             f"cache_creation_input_tokens: {getattr(usage, 'cache_creation_input_tokens', 0)}, "
             f"cache_read_input_tokens: {getattr(usage, 'cache_read_input_tokens', 0)}")
-    
+
     assert hasattr(usage, 'cache_read_input_tokens'), \
         f"{operation} should have cache_read_input_tokens"
     cache_read_tokens = getattr(usage, 'cache_read_input_tokens', 0)
     assert cache_read_tokens > 0, \
         f"{operation} should read from cache (got {cache_read_tokens} tokens)"
-    
+
     return cache_read_tokens
+
+
+class TestAnthropicCodeExecution:
+    """Tests for code execution tool with Anthropic SDK"""
+
+    @pytest.fixture
+    def anthropic_client(self):
+        """Create Anthropic client for code execution tests"""
+        api_key = get_api_key("ANTHROPIC_API_KEY")
+        skip_if_no_api_key(api_key, "Anthropic")
+
+        return Anthropic(
+            api_key=api_key,
+            base_url=os.getenv("BIFROST_BASE_URL", "http://localhost:8787") + "/v1"
+        )
+
+    def test_code_execution_math(self, anthropic_client):
+        """Test code execution with mathematical computation"""
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4096,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Calculate the sum of all prime numbers between 1 and 50 using Python code."
+                }
+            ],
+            tools=[
+                {
+                    "type": "code_execution_20250825",
+                    "name": "code_execution"
+                }
+            ]
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "content"), "Response should have content"
+        assert len(response.content) > 0, "Response should have content blocks"
+
+        # Check for text response
+        text_blocks = [block for block in response.content if hasattr(block, "type") and block.type == "text"]
+        assert len(text_blocks) > 0, "Response should have text blocks"
+
+        # The result should mention primes or the sum (328)
+        response_text = " ".join([block.text for block in text_blocks])
+        assert any(keyword in response_text.lower() for keyword in ["328", "prime", "sum"]), \
+            f"Response should contain calculation result. Got: {response_text}"
+
+        print(f"✓ Anthropic code execution (math) test passed!")
+        print(f"  Response: {response_text[:200]}...")
+
+    def test_code_execution_data_analysis(self, anthropic_client):
+        """Test code execution with statistical data analysis"""
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4096,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Calculate the mean and standard deviation of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] using Python."
+                }
+            ],
+            tools=[
+                {
+                    "type": "code_execution_20250825",
+                    "name": "code_execution"
+                }
+            ]
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "content"), "Response should have content"
+        assert len(response.content) > 0, "Response should have content blocks"
+
+        # Check for text response
+        text_blocks = [block for block in response.content if hasattr(block, "type") and block.type == "text"]
+        assert len(text_blocks) > 0, "Response should have text blocks"
+
+        # The result should mention mean (5.5) or standard deviation
+        response_text = " ".join([block.text for block in text_blocks])
+        assert any(keyword in response_text.lower() for keyword in ["mean", "5.5", "standard deviation", "std"]), \
+            f"Response should contain statistical results. Got: {response_text}"
+
+        print(f"✓ Anthropic code execution (data analysis) test passed!")
+        print(f"  Response: {response_text[:200]}...")
+
+    def test_code_execution_equation_solving(self, anthropic_client):
+        """Test code execution with equation solving"""
+        response = anthropic_client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4096,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Solve the equation 3x + 11 = 14 for x using Python code."
+                }
+            ],
+            tools=[
+                {
+                    "type": "code_execution_20250825",
+                    "name": "code_execution"
+                }
+            ]
+        )
+
+        # Validate response
+        assert response is not None, "Response should not be None"
+        assert hasattr(response, "content"), "Response should have content"
+        assert len(response.content) > 0, "Response should have content blocks"
+
+        # Check for text response
+        text_blocks = [block for block in response.content if hasattr(block, "type") and block.type == "text"]
+        assert len(text_blocks) > 0, "Response should have text blocks"
+
+        # The solution should be x = 1
+        response_text = " ".join([block.text for block in text_blocks])
+        assert any(keyword in response_text.lower() for keyword in ["x = 1", "x=1", "1.0", "solution"]), \
+            f"Response should contain equation solution. Got: {response_text}"
+
+        print(f"✓ Anthropic code execution (equation solving) test passed!")
+        print(f"  Response: {response_text[:200]}...")

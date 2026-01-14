@@ -16,16 +16,32 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 	inputTokens := 0
 	inputDetails := &schemas.ResponsesResponseInputTokens{}
 
-	for _, m := range resp.PromptTokensDetails {
-		if m == nil {
-			continue
+	// Convert PromptTokensDetails to ModalityTokenCount
+	if len(resp.PromptTokensDetails) > 0 {
+		modalityDetails := make([]schemas.ModalityTokenCount, 0, len(resp.PromptTokensDetails))
+		for _, m := range resp.PromptTokensDetails {
+			if m == nil {
+				continue
+			}
+			inputTokens += int(m.TokenCount)
+			mod := strings.ToLower(m.Modality)
+
+			// Add to modality token count
+			modalityDetails = append(modalityDetails, schemas.ModalityTokenCount{
+				Modality:   m.Modality,
+				TokenCount: int(m.TokenCount),
+			})
+
+			// Also populate specific fields for common modalities
+			if strings.Contains(mod, "audio") {
+				inputDetails.AudioTokens += int(m.TokenCount)
+			} else if strings.Contains(mod, "text") {
+				inputDetails.TextTokens += int(m.TokenCount)
+			} else if strings.Contains(mod, "image") {
+				inputDetails.ImageTokens += int(m.TokenCount)
+			}
 		}
-		inputTokens += int(m.TokenCount)
-		mod := strings.ToLower(m.Modality)
-		// handle audio modality
-		if strings.Contains(mod, "audio") {
-			inputDetails.AudioTokens += int(m.TokenCount)
-		}
+		inputDetails.ModalityTokenCount = modalityDetails
 	}
 
 	// Set cached tokens from top-level field if present

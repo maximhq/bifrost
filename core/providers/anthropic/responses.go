@@ -2095,6 +2095,17 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse() *schemas.
 			},
 		}
 		outputMessages := ConvertAnthropicMessagesToBifrostMessages([]AnthropicMessage{tempMsg}, nil, true, false)
+		// Add container ID and container expire at using the Anthropic Response
+		if response.Container != nil {
+			// Find the corresponding code interpreter call by type=code_interpreter_call
+			for i, msg := range outputMessages {
+				if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall && msg.ResponsesCodeInterpreterToolCall != nil {
+					outputMessages[i].ResponsesToolMessage.ResponsesCodeInterpreterToolCall.ContainerID = response.Container.ID
+					outputMessages[i].ResponsesToolMessage.ResponsesCodeInterpreterToolCall.ExpiresAt = &response.Container.ExpiresAt
+					break
+				}
+			}
+		}
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
@@ -2161,6 +2172,27 @@ func ToAnthropicResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse)
 		if block.Type == AnthropicContentBlockTypeToolUse {
 			anthropicResp.StopReason = AnthropicStopReasonToolUse
 			break
+		}
+	}
+
+	// Extract container information from code interpreter calls
+	if bifrostResp.Output != nil {
+		for _, msg := range bifrostResp.Output {
+			if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall &&
+				msg.ResponsesToolMessage != nil &&
+				msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall != nil {
+				codeInterpreter := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+				if codeInterpreter.ContainerID != "" {
+					container := &AnthropicContainer{
+						ID: codeInterpreter.ContainerID,
+					}
+					if codeInterpreter.ExpiresAt != nil && *codeInterpreter.ExpiresAt != "" {
+						container.ExpiresAt = *codeInterpreter.ExpiresAt
+					}
+					anthropicResp.Container = container
+					break // Only need the first code interpreter container
+				}
+			}
 		}
 	}
 
@@ -2592,9 +2624,43 @@ func ConvertBifrostMessagesToAnthropicMessages(bifrostMessages []schemas.Respons
 				}
 			}
 
+		case schemas.ResponsesMessageTypeCodeInterpreterCall:
+			// Flush any pending tool results before processing code interpreter calls
+			flushPendingToolResults()
+
+			// Code interpreter calls need special handling: create server_tool_use + bash_code_execution_tool_result blocks
+			codeInterpreterBlocks := convertBifrostCodeInterpreterCallToAnthropicBlocks(&msg)
+			if len(codeInterpreterBlocks) > 0 {
+				// For code interpreter, we create both server_tool_use and bash_code_execution_tool_result
+				// These should appear in an assistant message
+				if currentAssistantMessage == nil {
+					currentAssistantMessage = &AnthropicMessage{
+						Role: AnthropicMessageRoleAssistant,
+					}
+				}
+
+				// Prepend any pending reasoning blocks to ensure they come BEFORE tool blocks
+				if len(pendingReasoningContentBlocks) > 0 {
+					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
+					copy(copied, pendingReasoningContentBlocks)
+					pendingToolCalls = append(copied, pendingToolCalls...)
+					pendingReasoningContentBlocks = nil
+				}
+
+				// Add the code interpreter blocks (server_tool_use + bash_code_execution_tool_result)
+				pendingToolCalls = append(pendingToolCalls, codeInterpreterBlocks...)
+
+				// Track the tool call ID for the server_tool_use block (first block)
+				if len(codeInterpreterBlocks) > 0 && codeInterpreterBlocks[0].ID != nil {
+					if currentToolCallIDs == nil {
+						currentToolCallIDs = make(map[string]bool)
+					}
+					currentToolCallIDs[*codeInterpreterBlocks[0].ID] = true
+				}
+			}
+
 		// Handle other tool call types that are not natively supported by Anthropic
 		case schemas.ResponsesMessageTypeFileSearchCall,
-			schemas.ResponsesMessageTypeCodeInterpreterCall,
 			schemas.ResponsesMessageTypeLocalShellCall,
 			schemas.ResponsesMessageTypeCustomToolCall,
 			schemas.ResponsesMessageTypeImageGenerationCall:
@@ -3205,7 +3271,6 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
 				}
 			}
-
 		case AnthropicContentBlockTypeServerToolUse:
 			// Check if it's a web_search tool
 			if block.Name != nil && *block.Name == string(AnthropicToolNameWebSearch) {
@@ -3238,6 +3303,28 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 				}
 			}
 
+			// Check if its code execution tool use
+			if block.Name != nil && *block.Name == string(AnthropicToolNameBashCodeExecution) {
+				bifrostMsg := schemas.ResponsesMessage{
+					ID:     block.ID,
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{
+							Outputs: []schemas.ResponsesCodeInterpreterOutput{},
+						},
+					},
+				}
+				if block.Input != nil {
+					if inputMap, ok := block.Input.(map[string]interface{}); ok {
+						if code, ok := inputMap["command"].(string); ok {
+							bifrostMsg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Code = &code
+						}
+					}
+				}
+				// Set container ID and container expire at using the Anthropic Response
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
 		case AnthropicContentBlockTypeWebSearchResult:
 			// Find the corresponding web_search_call by tool_use_id
 			if block.ToolUseID != nil {
@@ -3334,6 +3421,34 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					}
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
+		case AnthropicContentBlockTypeBashCodeExecutionToolResult:
+			// find the corresponding code interpreter call by tool_use_id
+			if block.ToolUseID != nil {
+				for i := len(bifrostMessages) - 1; i >= 0; i-- {
+					msg := &bifrostMessages[i]
+					if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCodeInterpreterCall &&
+						msg.ResponsesToolMessage != nil &&
+						msg.ResponsesToolMessage.CallID != nil &&
+						*msg.ResponsesToolMessage.CallID == *block.ToolUseID {
+						codeExecutionBlock := block.Content.ContentBlock
+						if codeExecutionBlock == nil || codeExecutionBlock.Type != AnthropicContentBlockTypeBashCodeExecutionResult {
+							continue
+						}
+						// Add this result to the code interpreter call outputs
+						var log schemas.ResponsesCodeInterpreterOutputLogs
+						log.Type = "logs"
+						log.ReturnCode = codeExecutionBlock.ReturnCode
+						if codeExecutionBlock.StdOut != nil {
+							log.Logs = *codeExecutionBlock.StdOut
+						} else if codeExecutionBlock.StdErr != nil {
+							log.Logs = *codeExecutionBlock.StdErr
+						}
+						msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs = append(msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall.Outputs, schemas.ResponsesCodeInterpreterOutput{
+							ResponsesCodeInterpreterOutputLogs: &log,
+						})
+					}
+				}
 			}
 		default:
 			// Handle other block types if needed
@@ -3671,25 +3786,6 @@ func convertBifrostMCPCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *Ant
 	return nil
 }
 
-// convertBifrostMCPCallOutputToAnthropicMessage converts a Bifrost MCP call output to Anthropic message
-func convertBifrostMCPCallOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *AnthropicMessage {
-	toolResultBlock := AnthropicContentBlock{
-		Type: AnthropicContentBlockTypeMCPToolResult,
-		ID:   msg.ResponsesToolMessage.CallID,
-	}
-
-	if msg.ResponsesToolMessage.Output != nil {
-		toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
-	}
-
-	return &AnthropicMessage{
-		Role: AnthropicMessageRoleUser,
-		Content: AnthropicContent{
-			ContentBlocks: []AnthropicContentBlock{toolResultBlock},
-		},
-	}
-}
-
 // convertBifrostMCPApprovalToAnthropicToolUse converts a Bifrost MCP approval request to Anthropic tool use
 func convertBifrostMCPApprovalToAnthropicToolUse(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Name != nil {
@@ -3777,6 +3873,101 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 	return blocks
 }
 
+// convertBifrostCodeInterpreterCallToAnthropicBlocks converts a Bifrost code_interpreter_call to Anthropic server_tool_use and bash_code_execution_tool_result blocks
+func convertBifrostCodeInterpreterCallToAnthropicBlocks(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall == nil {
+		return nil
+	}
+
+	var blocks []AnthropicContentBlock
+	codeInterpreter := msg.ResponsesToolMessage.ResponsesCodeInterpreterToolCall
+
+	// Ensure we have a valid ID for the tool use block (critical for linkage)
+	if msg.ID == nil {
+		// Cannot proceed without an ID - this would break tool_use_id linkage
+		return nil
+	}
+
+	// 1. Create server_tool_use block for the code interpreter
+	serverToolUseBlock := AnthropicContentBlock{
+		Type: AnthropicContentBlockTypeServerToolUse,
+		Name: schemas.Ptr(string(AnthropicToolNameBashCodeExecution)),
+		ID:   msg.ID, // Always set - required for tool result linkage
+	}
+
+	// Wrap the code in bash command format: python3 << 'EOF'\n...\nEOF\n
+	if codeInterpreter.Code != nil {
+		command := *codeInterpreter.Code
+		// Wrap in heredoc format if not already wrapped
+		if !strings.HasPrefix(command, "python") && !strings.HasPrefix(command, "bash") {
+			command = fmt.Sprintf("python3 << 'EOF'\n%s\nEOF\n", command)
+		}
+		input := map[string]interface{}{
+			"command": command,
+		}
+		serverToolUseBlock.Input = input
+	}
+
+	blocks = append(blocks, serverToolUseBlock)
+
+	// 2. Create bash_code_execution_tool_result block if outputs are present
+	if len(codeInterpreter.Outputs) > 0 {
+		for _, output := range codeInterpreter.Outputs {
+			// Initialize stdout and stderr with empty strings (Anthropic expects these fields)
+			stdout := ""
+			stderr := ""
+			var returnCode *int
+
+			// Handle logs output
+			if output.ResponsesCodeInterpreterOutputLogs != nil {
+				logs := output.ResponsesCodeInterpreterOutputLogs
+				returnCode = logs.ReturnCode
+				if returnCode != nil {
+					if *returnCode == 0 {
+						stdout = logs.Logs
+					} else {
+						stderr = logs.Logs
+					}
+				} else {
+					// If return code is not present, use the logs as stdout
+					stdout = logs.Logs
+				}
+			}
+
+			// Create the bash_code_execution_result content block
+			// This must include type, stdout, stderr, return_code, and an empty content array
+			bashResultContent := AnthropicContentBlock{
+				Type:       AnthropicContentBlockTypeBashCodeExecutionResult,
+				StdOut:     &stdout,
+				StdErr:     &stderr,
+				ReturnCode: returnCode,
+				Content: &AnthropicContent{
+					ContentBlocks: []AnthropicContentBlock{}, // Empty array as per Anthropic spec
+				},
+			}
+
+			// Ensure we have a valid tool_use_id (critical for linkage)
+			if msg.ID == nil {
+				// Skip if no ID - this would be a hard break
+				continue
+			}
+
+			// Create the bash_code_execution_tool_result block
+			bashResultBlock := AnthropicContentBlock{
+				Type:      AnthropicContentBlockTypeBashCodeExecutionToolResult,
+				ToolUseID: msg.ID, // Must match the server_tool_use.id
+				Content: &AnthropicContent{
+					ContentBlock: &bashResultContent,
+				},
+			}
+
+			blocks = append(blocks, bashResultBlock)
+		}
+	}
+
+	return blocks
+}
+
 // convertBifrostUnsupportedToolCallToAnthropicMessage converts unsupported tool calls to text messages
 func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesMessage, msgType schemas.ResponsesMessageType) *AnthropicMessage {
 	if msg.ResponsesToolMessage != nil {
@@ -3794,28 +3985,6 @@ func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesM
 			Role: AnthropicMessageRoleAssistant,
 			Content: AnthropicContent{
 				ContentStr: &description,
-			},
-		}
-	}
-	return nil
-}
-
-// convertBifrostComputerCallOutputToAnthropicMessage converts a Bifrost computer call output to Anthropic message
-func convertBifrostComputerCallOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *AnthropicMessage {
-	if msg.ResponsesToolMessage != nil {
-		toolResultBlock := AnthropicContentBlock{
-			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
-		}
-
-		if msg.ResponsesToolMessage.Output != nil {
-			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
-		}
-
-		return &AnthropicMessage{
-			Role: AnthropicMessageRoleUser,
-			Content: AnthropicContent{
-				ContentBlocks: []AnthropicContentBlock{toolResultBlock},
 			},
 		}
 	}
@@ -3873,7 +4042,6 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 				}
 			}
 			return bifrostTool
-
 		case AnthropicToolTypeWebSearch20250305:
 			bifrostTool := &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeWebSearch,
@@ -3901,12 +4069,10 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 			bfToolJSON, _ := json.MarshalIndent(bifrostTool, "", "  ")
 			fmt.Println("bifrostTool", string(bfToolJSON))
 			return bifrostTool
-
 		case AnthropicToolTypeBash20250124:
 			return &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolTypeLocalShell,
 			}
-
 		case AnthropicToolTypeTextEditor20250124:
 			return &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124),
@@ -3920,6 +4086,11 @@ func convertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
 		case AnthropicToolTypeTextEditor20250728:
 			return &schemas.ResponsesTool{
 				Type: schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250728),
+				Name: &tool.Name,
+			}
+		case AnthropicToolTypeCodeExecution:
+			return &schemas.ResponsesTool{
+				Type: schemas.ResponsesToolTypeCodeInterpreter,
 				Name: &tool.Name,
 			}
 		}
@@ -3975,27 +4146,6 @@ func convertAnthropicToolChoiceToBifrost(toolChoice *AnthropicToolChoice) *schem
 	}
 
 	return bifrostToolChoice
-}
-
-// flushPendingContentBlocks is a helper that flushes accumulated content blocks into an assistant message
-func flushPendingContentBlocks(
-	pendingContentBlocks []AnthropicContentBlock,
-	currentAssistantMessage *AnthropicMessage,
-	anthropicMessages []AnthropicMessage,
-) ([]AnthropicContentBlock, *AnthropicMessage, []AnthropicMessage) {
-	if len(pendingContentBlocks) > 0 && currentAssistantMessage != nil {
-		// Copy the slice to avoid aliasing issues
-		copied := make([]AnthropicContentBlock, len(pendingContentBlocks))
-		copy(copied, pendingContentBlocks)
-		currentAssistantMessage.Content = AnthropicContent{
-			ContentBlocks: copied,
-		}
-		anthropicMessages = append(anthropicMessages, *currentAssistantMessage)
-		// Return nil values to indicate flushed state
-		return nil, nil, anthropicMessages
-	}
-	// Return unchanged values if no flush was needed
-	return pendingContentBlocks, currentAssistantMessage, anthropicMessages
 }
 
 // convertToolOutputToAnthropicContent converts tool output to Anthropic content format
@@ -4092,6 +4242,11 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		return &AnthropicTool{
 			Type: schemas.Ptr(AnthropicToolTypeBash20250124),
 			Name: string(AnthropicToolNameBash),
+		}
+	case schemas.ResponsesToolTypeCodeInterpreter:
+		return &AnthropicTool{
+			Type: schemas.Ptr(AnthropicToolTypeCodeExecution),
+			Name: string(AnthropicToolNameCodeExecution),
 		}
 	case schemas.ResponsesToolType(AnthropicToolTypeTextEditor20250124):
 		return &AnthropicTool{

@@ -66,7 +66,7 @@ const (
 
 type GeminiGenerationRequest struct {
 	Model             string                   `json:"model,omitempty"`    // Model field for explicit model specification
-	Contents          []Content                `json:"contents,omitempty"` // For chat completion requests
+	Contents          []Content                `json:"-"`                  // For chat completion requests - handled by custom unmarshaller
 	Requests          []GeminiEmbeddingRequest `json:"requests,omitempty"` // For batch embedding requests
 	SystemInstruction *Content                 `json:"systemInstruction,omitempty"`
 	GenerationConfig  GenerationConfig         `json:"generationConfig,omitempty"`
@@ -83,6 +83,52 @@ type GeminiGenerationRequest struct {
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for GeminiGenerationRequest.
+// This handles the contents field which can be either a single Content object or an array of Content objects.
+func (g *GeminiGenerationRequest) UnmarshalJSON(data []byte) error {
+	type Alias GeminiGenerationRequest
+	aux := &struct {
+		Contents json.RawMessage `json:"contents,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(g),
+	}
+
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Handle contents field - can be single object or array
+	if len(aux.Contents) > 0 {
+		// Try to unmarshal as array first
+		var contentsArray []Content
+		if err := sonic.Unmarshal(aux.Contents, &contentsArray); err == nil {
+			g.Contents = contentsArray
+		} else {
+			// If that fails, try as single object
+			var singleContent Content
+			if err := sonic.Unmarshal(aux.Contents, &singleContent); err != nil {
+				return fmt.Errorf("contents must be either a Content object or array of Content objects: %w", err)
+			}
+			g.Contents = []Content{singleContent}
+		}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements custom JSON marshaling for GeminiGenerationRequest.
+func (g GeminiGenerationRequest) MarshalJSON() ([]byte, error) {
+	type Alias GeminiGenerationRequest
+	return sonic.Marshal(&struct {
+		Contents []Content `json:"contents,omitempty"`
+		*Alias
+	}{
+		Contents: g.Contents,
+		Alias:    (*Alias)(&g),
+	})
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1016,11 +1062,57 @@ type GeminiEmbeddingRequest struct {
 type Content struct {
 	// Optional. List of parts that constitute a single message. Each part may have
 	// a different IANA MIME type.
-	Parts []*Part `json:"parts,omitempty"`
+	Parts []*Part `json:"-"` // Handled by custom unmarshaller
 	// Optional. The producer of the content. Must be either 'user' or
 	// 'model'. Useful to set for multi-turn conversations, otherwise can be
 	// empty. If role is not specified, SDK will determine the role.
 	Role string `json:"role,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for Content.
+// This handles the parts field which can be either a single Part object or an array of Part objects.
+func (c *Content) UnmarshalJSON(data []byte) error {
+	type Alias Content
+	aux := &struct {
+		Parts json.RawMessage `json:"parts,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := sonic.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Handle parts field - can be single object or array
+	if len(aux.Parts) > 0 {
+		// Try to unmarshal as array first
+		var partsArray []*Part
+		if err := sonic.Unmarshal(aux.Parts, &partsArray); err == nil {
+			c.Parts = partsArray
+		} else {
+			// If that fails, try as single object
+			var singlePart Part
+			if err := sonic.Unmarshal(aux.Parts, &singlePart); err != nil {
+				return fmt.Errorf("parts must be either a Part object or array of Part objects: %w", err)
+			}
+			c.Parts = []*Part{&singlePart}
+		}
+	}
+
+	return nil
+}
+
+// MarshalJSON implements custom JSON marshaling for Content.
+func (c Content) MarshalJSON() ([]byte, error) {
+	type Alias Content
+	return sonic.Marshal(&struct {
+		Parts []*Part `json:"parts,omitempty"`
+		*Alias
+	}{
+		Parts: c.Parts,
+		Alias: (*Alias)(&c),
+	})
 }
 
 // Part is a datatype containing media content.

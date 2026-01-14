@@ -423,17 +423,82 @@ func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 
 	// Add cached tokens if present
 	if metadata.CachedContentTokenCount > 0 {
-		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-			CachedTokens: int(metadata.CachedContentTokenCount),
+		usage.InputTokensDetails.CachedTokens = int(metadata.CachedContentTokenCount)
+	}
+
+	// Add tool use prompt token count if present
+	if metadata.ToolUsePromptTokenCount > 0 {
+		usage.InputTokensDetails.ToolUseTokens = int(metadata.ToolUsePromptTokenCount)
+	}
+
+	// Add tool use prompt tokens details (modality breakdown) if present
+	if len(metadata.ToolUsePromptTokensDetails) > 0 {
+		details := make([]schemas.ModalityTokenCount, len(metadata.ToolUsePromptTokensDetails))
+		for i, detail := range metadata.ToolUsePromptTokensDetails {
+			details[i] = schemas.ModalityTokenCount{
+				Modality:   detail.Modality,
+				TokenCount: int(detail.TokenCount),
+			}
+		}
+		usage.InputTokensDetails.ModalityTokenCount = details
+	}
+
+	// Add prompt tokens details (modality breakdown) if present - merge with existing if needed
+	if len(metadata.PromptTokensDetails) > 0 {
+		// If we already have modality details from tool use, merge them
+		if len(usage.InputTokensDetails.ModalityTokenCount) > 0 {
+			// Create a map to merge modality counts
+			modalityMap := make(map[string]int)
+			for _, detail := range usage.InputTokensDetails.ModalityTokenCount {
+				modalityMap[detail.Modality] = detail.TokenCount
+			}
+			for _, detail := range metadata.PromptTokensDetails {
+				// Add or update the modality count
+				if existing, exists := modalityMap[detail.Modality]; exists {
+					modalityMap[detail.Modality] = existing + int(detail.TokenCount)
+				} else {
+					modalityMap[detail.Modality] = int(detail.TokenCount)
+				}
+			}
+			// Convert back to slice
+			details := make([]schemas.ModalityTokenCount, 0, len(modalityMap))
+			for modality, count := range modalityMap {
+				details = append(details, schemas.ModalityTokenCount{
+					Modality:   modality,
+					TokenCount: count,
+				})
+			}
+			usage.InputTokensDetails.ModalityTokenCount = details
+		} else {
+			// No existing modality details, just set from PromptTokensDetails
+			details := make([]schemas.ModalityTokenCount, len(metadata.PromptTokensDetails))
+			for i, detail := range metadata.PromptTokensDetails {
+				details[i] = schemas.ModalityTokenCount{
+					Modality:   detail.Modality,
+					TokenCount: int(detail.TokenCount),
+				}
+			}
+			usage.InputTokensDetails.ModalityTokenCount = details
 		}
 	}
 
+	// Add output tokens details
 	if metadata.CandidatesTokensDetails != nil {
+		outputDetails := make([]schemas.ModalityTokenCount, 0)
 		for _, detail := range metadata.CandidatesTokensDetails {
 			switch detail.Modality {
 			case "AUDIO":
 				usage.OutputTokensDetails.AudioTokens = int(detail.TokenCount)
+			case "TEXT":
+				usage.OutputTokensDetails.TextTokens = int(detail.TokenCount)
 			}
+			outputDetails = append(outputDetails, schemas.ModalityTokenCount{
+				Modality:   detail.Modality,
+				TokenCount: int(detail.TokenCount),
+			})
+		}
+		if len(outputDetails) > 0 {
+			usage.OutputTokensDetails.ModalityTokenCount = outputDetails
 		}
 	}
 
