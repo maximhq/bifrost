@@ -2174,7 +2174,7 @@ func (provider *GeminiProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 			return resp, nil
 		}
 		lastError = err
-		provider.logger.Debug("BatchCancel failed for key %s: %v", key.Name, err.Error.Message)
+		provider.logger.Debug("BatchCancel failed for key %s: %v", key.Name, err.Error)
 	}
 
 	// All keys failed, return the last error

@@ -138,7 +138,7 @@ type Log struct {
 	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
 }
 
-// NewFromMap creates a new Log from a map[string]interface{}
+// NewLogEntryFromMap creates a new Log from a map[string]interface{}
 func NewLogEntryFromMap(entry map[string]interface{}) *Log {
 	var log Log
 	data, err := sonic.Marshal(entry)

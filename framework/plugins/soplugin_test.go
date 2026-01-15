@@ -51,8 +51,8 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 		assert.Equal(t, "Hello World Plugin", name, "Plugin name should match")
 	})
 
-	// Test HTTPTransportIntercept
-	t.Run("HTTPTransportIntercept", func(t *testing.T) {
+	// Test HTTPTransportPreHook
+	t.Run("HTTPTransportPreHook", func(t *testing.T) {
 		ctx := context.Background()
 		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -69,13 +69,45 @@ func TestDynamicPluginLifecycle(t *testing.T) {
 			Body:  []byte(`{"test": "data"}`),
 		}
 
-		// Call HTTPTransportIntercept
-		resp, err := plugin.HTTPTransportIntercept(pluginCtx, req)
-		require.NoError(t, err, "HTTPTransportIntercept should not return error")
-		assert.Nil(t, resp, "HTTPTransportIntercept should return nil response to continue")
+		// Call HTTPTransportPreHook
+		resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
+		require.NoError(t, err, "HTTPTransportPreHook should not return error")
+		assert.Nil(t, resp, "HTTPTransportPreHook should return nil response to continue")
 
 		// Verify headers were modified (hello-world plugin adds a header)
-		assert.Equal(t, "transport-interceptor-value", req.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
+		assert.Equal(t, "transport-pre-hook-value", req.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
+	})
+
+	// Test HTTPTransportPostHook
+	t.Run("HTTPTransportPostHook", func(t *testing.T) {
+		ctx := context.Background()
+		pluginCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, 10*time.Second)
+		defer cancel()
+
+		// Create a test HTTP response
+		req := &schemas.HTTPRequest{
+			Method: "POST",
+			Path:   "/api",
+			Headers: map[string]string{
+				"Content-Type":  "application/json",
+				"Authorization": "Bearer token123",
+			},
+			Query: map[string]string{},
+			Body:  []byte(`{"test": "data"}`),
+		}
+		resp := &schemas.HTTPResponse{
+			StatusCode: 200,
+			Headers: map[string]string{
+				"Content-Type": "application/json",
+			},
+			Body: []byte(`{"result": "success"}`),
+		}
+
+		// Call HTTPTransportPostHook
+		err := plugin.HTTPTransportPostHook(pluginCtx, req, resp)
+		require.NoError(t, err, "HTTPTransportPostHook should not return error")
+		// Verify headers were modified (hello-world plugin adds a header)
+		assert.Equal(t, "transport-post-hook-value", resp.Headers["x-hello-world-plugin"], "Plugin should have added custom header")
 	})
 
 	// Test PreHook

@@ -478,9 +478,14 @@ func (p *MockerPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (p *MockerPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (p *MockerPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (p *MockerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // PreHook intercepts requests and applies mocking rules based on configuration

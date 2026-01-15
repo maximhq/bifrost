@@ -191,9 +191,14 @@ func (p *LoggerPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (p *LoggerPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (p *LoggerPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
@@ -287,7 +292,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 	logMsg.InitialData = initialData
 	logMsg.FallbackIndex = fallbackIndex
 
-	go func(msg *LogMessage) {		
+	go func(msg *LogMessage) {
 		defer p.putLogMessage(msg) // Return to pool when done
 		if err := p.insertInitialLogEntry(
 			p.ctx,
@@ -302,8 +307,10 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 			// Call callback for initial log creation (WebSocket "create" message)
 			// Construct LogEntry directly from data we have to avoid database query
 			p.mu.Lock()
-			defer p.mu.Unlock()
-			if p.logCallback != nil {
+			callback := p.logCallback
+			p.mu.Unlock()
+
+			if callback != nil {
 				initialEntry := &logstore.Log{
 					ID:                          msg.RequestID,
 					Timestamp:                   msg.Timestamp,
@@ -319,7 +326,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 					Stream:                      false, // Initially false, will be updated if streaming
 					CreatedAt:                   msg.Timestamp,
 				}
-				p.logCallback(p.ctx, initialEntry)
+				callback(p.ctx, initialEntry)
 			}
 		}
 	}(logMsg)
@@ -429,12 +436,13 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				// Call callback immediately for both streaming and regular updates
 				// UI will handle debouncing if needed
 				p.mu.Lock()
-				if p.logCallback != nil {
+				callback := p.logCallback
+				p.mu.Unlock()
+				if callback != nil {
 					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-						p.logCallback(p.ctx, updatedEntry)
+						callback(p.ctx, updatedEntry)
 					}
 				}
-				p.mu.Unlock()
 			}
 
 			return
@@ -479,12 +487,13 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					// Call callback immediately for both streaming and regular updates
 					// UI will handle debouncing if needed
 					p.mu.Lock()
-					if p.logCallback != nil {
+					callback := p.logCallback
+					p.mu.Unlock()
+					if callback != nil {
 						if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-							p.logCallback(p.ctx, updatedEntry)
+							callback(p.ctx, updatedEntry)
 						}
 					}
-					p.mu.Unlock()
 				}
 				// Note: Stream accumulator cleanup is handled by the tracer
 				if tracer != nil && traceID != "" {
@@ -613,7 +622,9 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 				// Call callback immediately for both streaming and regular updates
 				// UI will handle debouncing if needed
 				p.mu.Lock()
-				if p.logCallback != nil {
+				callback := p.logCallback
+				p.mu.Unlock()
+				if callback != nil {
 					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
 						updatedEntry.SelectedKey = &schemas.Key{
 							ID:   updatedEntry.SelectedKeyID,
@@ -625,10 +636,9 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 								Name: *updatedEntry.VirtualKeyName,
 							}
 						}
-						p.logCallback(p.ctx, updatedEntry)
+						callback(p.ctx, updatedEntry)
 					}
 				}
-				p.mu.Unlock()
 			}
 		}
 	}()

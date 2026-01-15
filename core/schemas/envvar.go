@@ -25,16 +25,20 @@ func NewEnvVar(value string) *EnvVar {
 	// Here we will need to check if the incoming data is a valid JSON object
 	// If it's a valid JSON object and follows the EnvVar schema, then we will unmarshal it into an EnvVar object
 	if sonic.Valid([]byte(value)) {
-		// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
-		type envVarAlias EnvVar
-		var envVar envVarAlias
-		if err := sonic.Unmarshal([]byte(value), &envVar); err == nil {
-			return &EnvVar{
-				Val:     envVar.Val,
-				FromEnv: envVar.FromEnv,
-				EnvVar:  envVar.EnvVar,
+		valueNode, _ := sonic.Get([]byte(val), "value")
+		envNode, _ := sonic.Get([]byte(val), "env_var")
+		if valueNode.Exists() && envNode.Exists() {
+			// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
+			type envVarAlias EnvVar
+			var envVar envVarAlias
+			if err := sonic.Unmarshal([]byte(value), &envVar); err == nil {
+				return &EnvVar{
+					Val:     envVar.Val,
+					FromEnv: envVar.FromEnv,
+					EnvVar:  envVar.EnvVar,
+				}
 			}
-		}		
+		}
 	}
 	if envKey, ok := strings.CutPrefix(val, "env."); ok {
 		if envValue, ok := os.LookupEnv(envKey); ok {
@@ -135,16 +139,20 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 	// Here we will need to check if the incoming data is a valid JSON object
 	// If it's a valid JSON object and follows the EnvVar schema, then we will unmarshal it into an EnvVar object
 	if sonic.Valid(data) {
-		// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
-		type envVarAlias EnvVar
-		var envVar envVarAlias
-		if err := sonic.Unmarshal(data, &envVar); err == nil {
-			e.Val = envVar.Val
-			e.FromEnv = envVar.FromEnv
-			e.EnvVar = envVar.EnvVar
-			return nil
+		valueNode, _ := sonic.Get(data, "value")
+		envNode, _ := sonic.Get(data, "env_var")
+		if valueNode.Exists() && envNode.Exists() {
+			// Use a type alias to avoid infinite recursion (alias doesn't inherit methods)
+			type envVarAlias EnvVar
+			var envVar envVarAlias
+			if err := sonic.Unmarshal(data, &envVar); err == nil {
+				e.Val = envVar.Val
+				e.FromEnv = envVar.FromEnv
+				e.EnvVar = envVar.EnvVar
+				return nil
+			}
+			// Else the value is JSON, so we will treat this as a normal value
 		}
-		// Else the value is JSON, so we will treat this as a normal value
 	}
 	if envKey, ok := strings.CutPrefix(val, "env."); ok {
 		if envValue, ok := os.LookupEnv(envKey); ok {
@@ -177,10 +185,13 @@ func (e *EnvVar) Scan(value any) error {
 		e.EnvVar = ""
 		return nil
 	}
-	if val, ok := value.(string); ok {
+	switch v := value.(type) {
+	case []byte:
+		return e.Scan(string(v))
+	case string:
 		// Cleanup string if required
 		// The string may have "\"env.TEST\"", "env.TEST" or "env.TEST\"", we need to clean it up to "env.TEST"
-		val = strings.Trim(val, "\"")
+		val := strings.Trim(v, "\"")
 		if envKey, ok := strings.CutPrefix(val, "env."); ok {
 			if envValue, ok := os.LookupEnv(envKey); ok {
 				e.Val = envValue
@@ -233,7 +244,7 @@ func (e *EnvVar) GetValuePtr() *string {
 }
 
 // CoerceInt coerces value to int
-func (e *EnvVar) CoerceInt(defaultValue int) int {	
+func (e *EnvVar) CoerceInt(defaultValue int) int {
 	if e == nil {
 		return defaultValue
 	}

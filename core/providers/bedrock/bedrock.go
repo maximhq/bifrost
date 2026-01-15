@@ -211,7 +211,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, deployment := provider.getModelPath(action, model, key)
 
 	region := DefaultBedrockRegion
-	if key.BedrockKeyConfig.Region != nil {
+	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
@@ -355,7 +355,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	config := key.BedrockKeyConfig
 
 	region := DefaultBedrockRegion
-	if config.Region != nil {
+	if config.Region != nil && config.Region.GetValue() != "" {
 		region = config.Region.GetValue()
 	}
 
@@ -651,7 +651,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					break
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
+				provider.logger.Warn("error decoding %s EventStream message: %v", providerName, err)
 				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
 				return
 			}
@@ -1405,7 +1405,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	}
 
 	region := DefaultBedrockRegion
-	if key.BedrockKeyConfig.Region != nil {
+	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
@@ -1549,7 +1549,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 
 	region := DefaultBedrockRegion
 	if key.BedrockKeyConfig != nil {
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 	}
@@ -1682,7 +1682,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		}
 
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
@@ -1789,7 +1789,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		}
 
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
@@ -1879,7 +1879,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}
 
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
@@ -2029,7 +2029,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	if inputFileID == "" && len(request.Requests) > 0 {
 		// Get region for S3 upload
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
@@ -2110,7 +2110,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	sendBackRawResponse := provider.sendBackRawResponse
 
 	region := DefaultBedrockRegion
-	if key.BedrockKeyConfig.Region != nil {
+	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
@@ -2240,7 +2240,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	region := DefaultBedrockRegion
-	if key.BedrockKeyConfig.Region != nil {
+	if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 		region = key.BedrockKeyConfig.Region.GetValue()
 	}
 
@@ -2442,7 +2442,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 
@@ -2591,7 +2591,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		region := DefaultBedrockRegion
-		if key.BedrockKeyConfig.Region != nil {
+		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
 			region = key.BedrockKeyConfig.Region.GetValue()
 		}
 

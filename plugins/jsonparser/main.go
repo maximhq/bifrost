@@ -83,9 +83,14 @@ func (p *JsonParserPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (p *JsonParserPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (p *JsonParserPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (p *JsonParserPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // PreHook is not used for this plugin as we only process responses
