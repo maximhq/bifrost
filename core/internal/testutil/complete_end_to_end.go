@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +11,7 @@ import (
 )
 
 // RunCompleteEnd2EndTest executes the complete end-to-end test scenario
+// This function now supports testing multiple chat models - the test passes only if ALL models pass
 func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.CompleteEnd2End {
 		t.Logf("Complete end-to-end not supported for provider %s", testConfig.Provider)
@@ -18,9 +19,13 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 	}
 
 	t.Run("CompleteEnd2End", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
+		WrapTestScenario(t, client, ctx, testConfig, "CompleteEnd2End", ModelTypeChat, runCompleteEnd2EndTestForModel)
+	})
+}
+
+// runCompleteEnd2EndTestForModel runs the complete end-to-end test for a specific model
+// The config passed here will have only ONE model in ChatModels array
+func runCompleteEnd2EndTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
 
 		// =============================================================================
 		// STEP 1: Multi-step conversation with tools - Test both APIs in parallel
@@ -45,7 +50,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			},
 			TestMetadata: map[string]interface{}{
 				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
+				"model":    GetChatModelOrFirst(testConfig),
 				"step":     "tool_call_weather",
 				"scenario": "complete_end_to_end",
 			},
@@ -63,7 +68,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
+				Model:    GetChatModelOrFirst(testConfig),
 				Input:    []schemas.ChatMessage{chatUserMessage1},
 				Params: &schemas.ChatParameters{
 					Tools: []schemas.ChatTool{*chatTool},
@@ -81,7 +86,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
+				Model:    GetChatModelOrFirst(testConfig),
 				Input:    []schemas.ResponsesMessage{responsesUserMessage1},
 				Params: &schemas.ResponsesParameters{
 					Tools: []schemas.ResponsesTool{*responsesTool},
@@ -115,7 +120,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if len(errors) == 0 {
 				errors = append(errors, "One or both APIs failed validation (see logs above)")
 			}
-			t.Fatalf("❌ CompleteEnd2End_Step1 dual API test failed: %v", errors)
+			return fmt.Errorf("❌ CompleteEnd2End_Step1 dual API test failed: %v", errors)
 		}
 
 		t.Logf("✅ Chat Completions API first response: %s", GetChatContent(result1.ChatCompletionsResponse))
@@ -181,7 +186,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			},
 			TestMetadata: map[string]interface{}{
 				"provider":                      testConfig.Provider,
-				"model":                         testConfig.ChatModel,
+				"model":                         GetChatModelOrFirst(testConfig),
 				"step":                          "process_tool_result",
 				"scenario":                      "complete_end_to_end",
 				"chat_conversation_length":      len(chatConversationHistory),
@@ -202,7 +207,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
+				Model:    GetChatModelOrFirst(testConfig),
 				Input:    chatConversationHistory,
 				Params: &schemas.ChatParameters{
 					MaxCompletionTokens: bifrost.Ptr(200),
@@ -216,7 +221,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			responsesReq := &schemas.BifrostResponsesRequest{
 				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
+				Model:    GetChatModelOrFirst(testConfig),
 				Input:    responsesConversationHistory,
 				Params: &schemas.ResponsesParameters{
 					MaxOutputTokens: bifrost.Ptr(200),
@@ -246,7 +251,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if len(errors) == 0 {
 				errors = append(errors, "One or both APIs failed validation (see logs above)")
 			}
-			t.Fatalf("❌ CompleteEnd2End_Step2 dual API test failed: %v", errors)
+			return fmt.Errorf("❌ CompleteEnd2End_Step2 dual API test failed: %v", errors)
 		}
 
 		t.Logf("✅ Chat Completions API tool result response: %s", GetChatContent(result2.ChatCompletionsResponse))
@@ -285,9 +290,9 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		chatConversationHistory = append(chatConversationHistory, chatFollowUpMessage)
 		responsesConversationHistory = append(responsesConversationHistory, responsesFollowUpMessage)
 
-		model := testConfig.ChatModel
+		model := GetChatModelOrFirst(testConfig)
 		if isVisionStep {
-			model = testConfig.VisionModel
+			model = GetVisionModelOrFirst(testConfig)
 		}
 
 		// Use appropriate retry config for final step
@@ -384,7 +389,7 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if len(errors) == 0 {
 				errors = append(errors, "One or both APIs failed validation (see logs above)")
 			}
-			t.Fatalf("❌ CompleteEnd2End_Step3 dual API test failed: %v", errors)
+			return fmt.Errorf("❌ CompleteEnd2End_Step3 dual API test failed: %v", errors)
 		}
 
 		// Log and validate results from both APIs
@@ -419,5 +424,5 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		t.Logf("🎉 Both Chat Completions and Responses APIs passed CompleteEnd2End test!")
-	})
+		return nil
 }

@@ -23,14 +23,14 @@ func TestMistral(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:  schemas.Mistral,
-		ChatModel: "mistral-medium-2508",
+		Provider:   schemas.Mistral,
+		ChatModels: []string{"mistral-medium-2508"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Mistral, Model: "mistral-small-2503"},
 		},
-		VisionModel:         "pixtral-12b-latest",
-		EmbeddingModel:      "codestral-embed",
-		TranscriptionModel:  "voxtral-mini-latest", // Mistral's audio transcription model
+		VisionModels:        []string{"pixtral-12b-latest"},
+		EmbeddingModels:     []string{"codestral-embed"},
+		TranscriptionModels: []string{"voxtral-mini-latest"}, // Mistral's audio transcription model
 		ExternalTTSProvider: schemas.OpenAI,
 		ExternalTTSModel:    "gpt-4o-mini-tts",
 		Scenarios: testutil.TestScenarios{

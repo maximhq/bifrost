@@ -23,12 +23,12 @@ func TestXAI(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.XAI,
-		ChatModel:      "grok-4-0709",
-		ReasoningModel: "grok-3-mini",
-		TextModel:      "grok-3",
-		VisionModel:    "grok-2-vision-1212",
-		EmbeddingModel: "", // XAI doesn't support embedding
+		Provider:        schemas.XAI,
+		ChatModels:      []string{"grok-4-0709"},
+		ReasoningModels: []string{"grok-3-mini"},
+		TextModels:      []string{"grok-3"},
+		VisionModels:    []string{"grok-2-vision-1212"},
+		EmbeddingModels: []string{""}, // XAI doesn't support embedding
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,

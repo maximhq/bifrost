@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -68,86 +68,88 @@ func RunFileURLChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		return
 	}
 
-	t.Run("FileURL-ChatCompletions", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
+	WrapTestScenario(t, client, ctx, testConfig, "FileURL-ChatCompletions", ModelTypeVision, runFileURLChatCompletionsForModel)
+}
 
-		// Skip Chat Completions for OpenAI and OpenRouter (file URL not supported)
-		if testConfig.Provider == schemas.OpenAI || testConfig.Provider == schemas.OpenRouter {
-			t.Skipf("Skipping FileURL Chat Completions test for provider %s (file URL not supported)", testConfig.Provider)
-			return
-		}
+// runFileURLChatCompletionsForModel is the helper function for testing a single vision model with file URL
+func runFileURLChatCompletionsForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Skip Chat Completions for OpenAI and OpenRouter (file URL not supported)
+	if testConfig.Provider == schemas.OpenAI || testConfig.Provider == schemas.OpenRouter {
+		t.Skipf("Skipping FileURL Chat Completions test for provider %s (file URL not supported)", testConfig.Provider)
+		return nil
+	}
 
-		// Create messages for Chat Completions API with file URL
-		chatMessages := []schemas.ChatMessage{
-			CreateFileURLChatMessage("What is this document about? Please provide a summary of its main topics.", TestFileURL),
-		}
+	// Create messages for Chat Completions API with file URL
+	chatMessages := []schemas.ChatMessage{
+		CreateFileURLChatMessage("What is this document about? Please provide a summary of its main topics.", TestFileURL),
+	}
 
-		// Use retry framework for file URL requests
-		retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
-		retryContext := TestRetryContext{
-			ScenarioName: "FileURL-ChatCompletions",
-			ExpectedBehavior: map[string]interface{}{
-				"should_fetch_url":       true,
-				"should_read_document":   true,
-				"should_extract_content": true,
-				"document_understanding": true,
+	// Use retry framework for file URL requests
+	retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
+	retryContext := TestRetryContext{
+		ScenarioName: "FileURL-ChatCompletions",
+		ExpectedBehavior: map[string]interface{}{
+			"should_fetch_url":       true,
+			"should_read_document":   true,
+			"should_extract_content": true,
+			"document_understanding": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             GetVisionModelOrFirst(testConfig),
+			"file_type":         "pdf",
+			"source":            "url",
+			"test_url":          TestFileURL,
+			"expected_keywords": []string{"berkshire", "hathaway", "shareholders"},
+		},
+	}
+
+	// Enhanced validation for file URL processing
+	expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+	// The test PDF is a Berkshire Hathaway shareholder letter - flexible keywords
+	expectations.ShouldContainKeywords = []string{} // Clear default keywords
+	expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
+		"cannot process", "invalid format", "decode error",
+		"unable to read", "no file", "corrupted", "unsupported",
+		"cannot fetch", "download failed", "url not found",
+	}...) // File URL processing failure indicators
+
+	chatRetryConfig := ChatRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ChatRetryCondition{},
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
+
+	response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		chatReq := &schemas.BifrostChatRequest{
+			Provider: testConfig.Provider,
+			Model:    GetVisionModelOrFirst(testConfig),
+			Input:    chatMessages,
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(500),
 			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ChatModel,
-				"file_type":         "pdf",
-				"source":            "url",
-				"test_url":          TestFileURL,
-				"expected_keywords": []string{"berkshire", "hathaway", "shareholders"},
-			},
+			Fallbacks: testConfig.Fallbacks,
 		}
-
-		// Enhanced validation for file URL processing
-		expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		// The test PDF is a Berkshire Hathaway shareholder letter - flexible keywords
-		expectations.ShouldContainKeywords = []string{} // Clear default keywords
-		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot process", "invalid format", "decode error",
-			"unable to read", "no file", "corrupted", "unsupported",
-			"cannot fetch", "download failed", "url not found",
-		}...) // File URL processing failure indicators
-
-		chatRetryConfig := ChatRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ChatRetryCondition{},
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			chatReq := &schemas.BifrostChatRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    chatMessages,
-				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(500),
-				},
-				Fallbacks: testConfig.Fallbacks,
-			}
-			return client.ChatCompletionRequest(bfCtx, chatReq)
-		})
-
-		if chatError != nil {
-			t.Fatalf("❌ FileURL Chat Completions test failed: %v", GetErrorMessage(chatError))
-		}
-
-		// Additional validation for file URL processing
-		content := GetChatContent(response)
-		validateFileURLContent(t, content, "Chat Completions")
-
-		t.Logf("🎉 Chat Completions API passed FileURL test!")
+		return client.ChatCompletionRequest(bfCtx, chatReq)
 	})
+
+	if chatError != nil {
+		return fmt.Errorf("FileURL Chat Completions test failed: %v", GetErrorMessage(chatError))
+	}
+
+	// Additional validation for file URL processing
+	content := GetChatContent(response)
+	if err := validateFileURLContentWithError(t, content, "Chat Completions"); err != nil {
+		return err
+	}
+
+	t.Logf("Chat Completions API passed FileURL test!")
+	return nil
 }
 
 // RunFileURLResponsesTest executes the file URL test using Responses API
@@ -157,72 +159,74 @@ func RunFileURLResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 		return
 	}
 
-	t.Run("FileURL-Responses", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
+	WrapTestScenario(t, client, ctx, testConfig, "FileURL-Responses", ModelTypeVision, runFileURLResponsesForModel)
+}
 
-		// Create messages for Responses API with file URL
-		responsesMessages := []schemas.ResponsesMessage{
-			CreateFileURLResponsesMessage("What is this document about? Please provide a summary of its main topics.", TestFileURL),
-		}
+// runFileURLResponsesForModel is the helper function for testing a single vision model with file URL using Responses API
+func runFileURLResponsesForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Create messages for Responses API with file URL
+	responsesMessages := []schemas.ResponsesMessage{
+		CreateFileURLResponsesMessage("What is this document about? Please provide a summary of its main topics.", TestFileURL),
+	}
 
-		// Set up retry context for file URL requests
-		retryContext := TestRetryContext{
-			ScenarioName: "FileURL-Responses",
-			ExpectedBehavior: map[string]interface{}{
-				"should_fetch_url":       true,
-				"should_read_document":   true,
-				"should_extract_content": true,
-				"document_understanding": true,
+	// Set up retry context for file URL requests
+	retryContext := TestRetryContext{
+		ScenarioName: "FileURL-Responses",
+		ExpectedBehavior: map[string]interface{}{
+			"should_fetch_url":       true,
+			"should_read_document":   true,
+			"should_extract_content": true,
+			"document_understanding": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             GetVisionModelOrFirst(testConfig),
+			"file_type":         "pdf",
+			"source":            "url",
+			"test_url":          TestFileURL,
+			"expected_keywords": []string{"berkshire", "hathaway", "shareholders"},
+		},
+	}
+
+	// Enhanced validation for file URL processing
+	expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+	// The test PDF is a Berkshire Hathaway shareholder letter - flexible keywords
+	expectations.ShouldContainKeywords = []string{} // Clear default keywords
+	expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
+		"cannot process", "invalid format", "decode error",
+		"unable to read", "no file", "corrupted", "unsupported",
+		"cannot fetch", "download failed", "url not found",
+	}...) // File URL processing failure indicators
+
+	responsesRetryConfig := FileInputResponsesRetryConfig()
+
+	response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		responsesReq := &schemas.BifrostResponsesRequest{
+			Provider: testConfig.Provider,
+			Model:    GetVisionModelOrFirst(testConfig),
+			Input:    responsesMessages,
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: bifrost.Ptr(500),
 			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ChatModel,
-				"file_type":         "pdf",
-				"source":            "url",
-				"test_url":          TestFileURL,
-				"expected_keywords": []string{"berkshire", "hathaway", "shareholders"},
-			},
+			Fallbacks: testConfig.Fallbacks,
 		}
-
-		// Enhanced validation for file URL processing
-		expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		// The test PDF is a Berkshire Hathaway shareholder letter - flexible keywords
-		expectations.ShouldContainKeywords = []string{} // Clear default keywords
-		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot process", "invalid format", "decode error",
-			"unable to read", "no file", "corrupted", "unsupported",
-			"cannot fetch", "download failed", "url not found",
-		}...) // File URL processing failure indicators
-
-		responsesRetryConfig := FileInputResponsesRetryConfig()
-
-		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "FileURL", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			responsesReq := &schemas.BifrostResponsesRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    responsesMessages,
-				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(500),
-				},
-				Fallbacks: testConfig.Fallbacks,
-			}
-			return client.ResponsesRequest(bfCtx, responsesReq)
-		})
-
-		if responsesError != nil {
-			t.Fatalf("❌ FileURL Responses test failed: %v", GetErrorMessage(responsesError))
-		}
-
-		// Additional validation for file URL processing
-		content := GetResponsesContent(response)
-		validateFileURLContent(t, content, "Responses")
-
-		t.Logf("🎉 Responses API passed FileURL test!")
+		return client.ResponsesRequest(bfCtx, responsesReq)
 	})
+
+	if responsesError != nil {
+		return fmt.Errorf("FileURL Responses test failed: %v", GetErrorMessage(responsesError))
+	}
+
+	// Additional validation for file URL processing
+	content := GetResponsesContent(response)
+	if err := validateFileURLContentWithError(t, content, "Responses"); err != nil {
+		return err
+	}
+
+	t.Logf("Responses API passed FileURL test!")
+	return nil
 }
 
 func validateFileURLContent(t *testing.T, content string, apiName string) {
@@ -270,4 +274,50 @@ func validateFileURLContent(t *testing.T, content string, apiName string) {
 		t.Errorf("❌ %s model failed to process file from URL - response doesn't reference expected content. Response: %s", apiName, truncateString(content, 300))
 		return
 	}
+}
+
+// validateFileURLContentWithError validates file URL content and returns an error instead of using t.Errorf
+func validateFileURLContentWithError(t *testing.T, content string, apiName string) error {
+	lowerContent := strings.ToLower(content)
+
+	if len(content) < 20 {
+		return fmt.Errorf("%s response is too short for document description (got %d chars): %s", apiName, len(content), content)
+	}
+
+	// Berkshire Hathaway related keywords
+	primaryKeywords := []string{"berkshire", "hathaway", "shareholder", "mistake", "murphy", "munger"}
+
+	// Generic document-related keywords
+	documentKeywords := []string{"document", "pdf", "letter", "report", "annual", "company"}
+
+	// Check if any primary keywords are found
+	foundPrimary := false
+	for _, keyword := range primaryKeywords {
+		if strings.Contains(lowerContent, keyword) {
+			foundPrimary = true
+			break
+		}
+	}
+
+	// Check if any document keywords are found
+	foundDocument := false
+	for _, keyword := range documentKeywords {
+		if strings.Contains(lowerContent, keyword) {
+			foundDocument = true
+			break
+		}
+	}
+
+	// Pass if we find any relevant content indicators
+	if foundPrimary || foundDocument {
+		if foundPrimary {
+			t.Logf("%s model successfully extracted Berkshire Hathaway content from PDF file URL", apiName)
+		} else {
+			t.Logf("%s model processed PDF from URL and generated relevant response", apiName)
+		}
+		t.Logf("Response preview: %s", truncateString(content, 200))
+		return nil
+	}
+
+	return fmt.Errorf("%s model failed to process file from URL - response doesn't reference expected content. Response: %s", apiName, truncateString(content, 300))
 }

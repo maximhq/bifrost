@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 )
 
 // RunMultiTurnConversationTest executes the multi-turn conversation test scenario
+// This function now supports testing multiple chat models - the test passes only if ALL models pass
 func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.MultiTurnConversation {
 		t.Logf("Multi-turn conversation not supported for provider %s", testConfig.Provider)
@@ -21,117 +23,128 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t.Parallel()
 		}
 
-		// First message - introduction
-		userMessage1 := CreateBasicChatMessage("Hello, my name is Alice.")
-		messages1 := []schemas.ChatMessage{
-			userMessage1,
-		}
+		// Use the generic multi-model test wrapper
+		result := RunMultiModelTest(t, client, ctx, testConfig, "MultiTurnConversation", ModelTypeChat, runMultiTurnConversationTestForModel)
 
-		firstRequest := &schemas.BifrostChatRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
-			Input:    messages1,
-			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(150),
-			},
-			Fallbacks: testConfig.Fallbacks,
-		}
+		// Assert all models passed - this will fail the test if any model failed
+		AssertAllModelsPassed(t, result)
+	})
+}
 
-		// Use retry framework for first request
-		retryConfig1 := GetTestRetryConfigForScenario("MultiTurnConversation", testConfig)
-		retryContext1 := TestRetryContext{
-			ScenarioName: "MultiTurnConversation_Step1",
-			ExpectedBehavior: map[string]interface{}{
-				"acknowledging_name": true,
-				"polite_response":    true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
-				"step":     "introduction",
-			},
-		}
-		chatRetryConfig1 := ChatRetryConfig{
-			MaxAttempts: retryConfig1.MaxAttempts,
-			BaseDelay:   retryConfig1.BaseDelay,
-			MaxDelay:    retryConfig1.MaxDelay,
-			Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
-			OnRetry:     retryConfig1.OnRetry,
-			OnFinalFail: retryConfig1.OnFinalFail,
-		}
+// runMultiTurnConversationTestForModel runs the multi-turn conversation test for a specific model
+// The config passed here will have only ONE model in ChatModels array
+func runMultiTurnConversationTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// First message - introduction
+	userMessage1 := CreateBasicChatMessage("Hello, my name is Alice.")
+	messages1 := []schemas.ChatMessage{
+		userMessage1,
+	}
 
-		// Enhanced validation for first response
-		// Just check that it acknowledges Alice by name - being less strict about exact wording
-		expectations1 := ConversationExpectations([]string{"alice"})
-		expectations1 = ModifyExpectationsForProvider(expectations1, testConfig.Provider)
+	firstRequest := &schemas.BifrostChatRequest{
+		Provider: testConfig.Provider,
+		Model:    GetChatModelOrFirst(testConfig),
+		Input:    messages1,
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(150),
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
 
-		response1, bifrostErr := WithChatTestRetry(t, chatRetryConfig1, retryContext1, expectations1, "MultiTurnConversation_Step1", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			return client.ChatCompletionRequest(bfCtx, firstRequest)
-		})
+	// Use retry framework for first request
+	retryConfig1 := GetTestRetryConfigForScenario("MultiTurnConversation", testConfig)
+	retryContext1 := TestRetryContext{
+		ScenarioName: "MultiTurnConversation_Step1",
+		ExpectedBehavior: map[string]interface{}{
+			"acknowledging_name": true,
+			"polite_response":    true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider": testConfig.Provider,
+			"model":    GetChatModelOrFirst(testConfig),
+			"step":     "introduction",
+		},
+	}
+	chatRetryConfig1 := ChatRetryConfig{
+		MaxAttempts: retryConfig1.MaxAttempts,
+		BaseDelay:   retryConfig1.BaseDelay,
+		MaxDelay:    retryConfig1.MaxDelay,
+		Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
+		OnRetry:     retryConfig1.OnRetry,
+		OnFinalFail: retryConfig1.OnFinalFail,
+	}
 
-		if bifrostErr != nil {
-			t.Fatalf("❌ MultiTurnConversation_Step1 request failed after retries: %v", GetErrorMessage(bifrostErr))
-		}
+	// Enhanced validation for first response
+	// Just check that it acknowledges Alice by name - being less strict about exact wording
+	expectations1 := ConversationExpectations([]string{"alice"})
+	expectations1 = ModifyExpectationsForProvider(expectations1, testConfig.Provider)
 
-		t.Logf("✅ First turn acknowledged: %s", GetChatContent(response1))
+	response1, bifrostErr := WithChatTestRetry(t, chatRetryConfig1, retryContext1, expectations1, "MultiTurnConversation_Step1", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		return client.ChatCompletionRequest(bfCtx, firstRequest)
+	})
 
-		// Second message with conversation history - memory test
-		messages2 := []schemas.ChatMessage{
-			userMessage1,
-		}
+	if bifrostErr != nil {
+		return fmt.Errorf("MultiTurnConversation_Step1 request failed after retries: %v", GetErrorMessage(bifrostErr))
+	}
 
-		// Add all choice messages from the first response
-		if response1 != nil {
-			for _, choice := range response1.Choices {
-				if choice.Message != nil {
-					messages2 = append(messages2, *choice.Message)
-				}
+	t.Logf("✅ First turn acknowledged: %s", GetChatContent(response1))
+
+	// Second message with conversation history - memory test
+	messages2 := []schemas.ChatMessage{
+		userMessage1,
+	}
+
+	// Add all choice messages from the first response
+	if response1 != nil {
+		for _, choice := range response1.Choices {
+			if choice.Message != nil {
+				messages2 = append(messages2, *choice.Message)
 			}
 		}
+	}
 
-		// Add the follow-up question to test memory
-		messages2 = append(messages2, CreateBasicChatMessage("What's my name?"))
+	// Add the follow-up question to test memory
+	messages2 = append(messages2, CreateBasicChatMessage("What's my name?"))
 
-		secondRequest := &schemas.BifrostChatRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
-			Input:    messages2,
-			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(150),
-			},
-			Fallbacks: testConfig.Fallbacks,
-		}
+	secondRequest := &schemas.BifrostChatRequest{
+		Provider: testConfig.Provider,
+		Model:    GetChatModelOrFirst(testConfig),
+		Input:    messages2,
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(150),
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
 
-		// Use retry framework for memory recall test
-		retryConfig2 := GetTestRetryConfigForScenario("MultiTurnConversation", testConfig)
-		retryContext2 := TestRetryContext{
-			ScenarioName: "MultiTurnConversation_Step2",
-			ExpectedBehavior: map[string]interface{}{
-				"should_remember_alice": true,
-				"memory_recall":         true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
-				"step":     "memory_test",
-				"context":  "name_recall",
-			},
-		}
-		chatRetryConfig2 := ChatRetryConfig{
-			MaxAttempts: retryConfig2.MaxAttempts,
-			BaseDelay:   retryConfig2.BaseDelay,
-			MaxDelay:    retryConfig2.MaxDelay,
-			Conditions:  []ChatRetryCondition{},
-			OnRetry:     retryConfig2.OnRetry,
-			OnFinalFail: retryConfig2.OnFinalFail,
-		}
+	// Use retry framework for memory recall test
+	retryConfig2 := GetTestRetryConfigForScenario("MultiTurnConversation", testConfig)
+	retryContext2 := TestRetryContext{
+		ScenarioName: "MultiTurnConversation_Step2",
+		ExpectedBehavior: map[string]interface{}{
+			"should_remember_alice": true,
+			"memory_recall":         true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider": testConfig.Provider,
+			"model":    GetChatModelOrFirst(testConfig),
+			"step":     "memory_test",
+			"context":  "name_recall",
+		},
+	}
+	chatRetryConfig2 := ChatRetryConfig{
+		MaxAttempts: retryConfig2.MaxAttempts,
+		BaseDelay:   retryConfig2.BaseDelay,
+		MaxDelay:    retryConfig2.MaxDelay,
+		Conditions:  []ChatRetryCondition{},
+		OnRetry:     retryConfig2.OnRetry,
+		OnFinalFail: retryConfig2.OnFinalFail,
+	}
 
-		// Enhanced validation for memory recall response
-		expectations2 := ConversationExpectations([]string{"alice"})
-		expectations2 = ModifyExpectationsForProvider(expectations2, testConfig.Provider)
-		expectations2.ShouldContainKeywords = []string{"alice"}                                  // Case insensitive
-		expectations2.ShouldNotContainWords = []string{"don't know", "can't remember", "forgot"} // Memory failure indicators
+	// Enhanced validation for memory recall response
+	expectations2 := ConversationExpectations([]string{"alice"})
+	expectations2 = ModifyExpectationsForProvider(expectations2, testConfig.Provider)
+	expectations2.ShouldContainKeywords = []string{"alice"}                                  // Case insensitive
+	expectations2.ShouldNotContainWords = []string{"don't know", "can't remember", "forgot"} // Memory failure indicators
 
 	response2, bifrostErr := WithChatTestRetry(t, chatRetryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -139,13 +152,13 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	})
 
 	if bifrostErr != nil {
-		t.Fatalf("❌ MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
+		return fmt.Errorf("MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
 	}
 
 	// Validation already happened inside WithChatTestRetry via expectations2
 	// If we reach here, the model successfully remembered "Alice"
 	content := GetChatContent(response2)
 	t.Logf("✅ Model successfully remembered the name: %s", content)
-	t.Logf("✅ Multi-turn conversation completed successfully")
-	})
+	t.Logf("✅ Multi-turn conversation completed successfully for model: %s", GetChatModelOrFirst(testConfig))
+	return nil
 }

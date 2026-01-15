@@ -23,10 +23,10 @@ func TestParasail(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Parasail,
-		ChatModel:      "parasail-llama-33-70b-fp8",
-		TextModel:      "", // Parasail doesn't support text completion
-		EmbeddingModel: "", // Parasail doesn't support embedding
+		Provider:        schemas.Parasail,
+		ChatModels:      []string{"parasail-llama-33-70b-fp8"},
+		TextModels:      []string{""}, // Parasail doesn't support text completion
+		EmbeddingModels: []string{""}, // Parasail doesn't support embedding
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

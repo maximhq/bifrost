@@ -23,12 +23,12 @@ func TestCohere(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Cohere,
-		ChatModel:      "command-a-03-2025",
-		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
-		TextModel:      "",                         // Cohere focuses on chat
-		EmbeddingModel: "embed-v4.0",
-		ReasoningModel: "command-a-reasoning-08-2025",
+		Provider:        schemas.Cohere,
+		ChatModels:      []string{"command-a-03-2025"},
+		VisionModels:    []string{"command-a-vision-07-2025"}, // Cohere's latest vision model
+		TextModels:      []string{""},                         // Cohere focuses on chat
+		EmbeddingModels: []string{"embed-v4.0"},
+		ReasoningModels: []string{"command-a-reasoning-08-2025"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,

@@ -23,10 +23,10 @@ func TestPerplexity(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Perplexity,
-		ChatModel:      "sonar-pro",
-		TextModel:      "", // Perplexity doesn't support text completion
-		EmbeddingModel: "", // Perplexity doesn't support embedding
+		Provider:        schemas.Perplexity,
+		ChatModels:      []string{"sonar-pro"},
+		TextModels:      []string{""}, // Perplexity doesn't support text completion
+		EmbeddingModels: []string{""}, // Perplexity doesn't support embedding
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

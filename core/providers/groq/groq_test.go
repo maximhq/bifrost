@@ -24,17 +24,17 @@ func TestGroq(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
+		Provider:   schemas.Groq,
+		ChatModels: []string{"llama-3.3-70b-versatile"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-120b"},
 		},
-		TextModel: "llama-3.3-70b-versatile", // Use same model for text completion (via conversion)
+		TextModels: []string{"llama-3.3-70b-versatile"}, // Use same model for text completion (via conversion)
 		TextCompletionFallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
-		EmbeddingModel: "", // Groq doesn't support embedding
-		ReasoningModel: "openai/gpt-oss-120b",
+		EmbeddingModels: []string{""}, // Groq doesn't support embedding
+		ReasoningModels: []string{"openai/gpt-oss-120b"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true, // Supported via chat completion conversion
 			TextCompletionStream:  true, // Supported via chat completion streaming conversion

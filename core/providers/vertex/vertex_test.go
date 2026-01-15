@@ -23,12 +23,12 @@ func TestVertex(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Vertex,
-		ChatModel:      "google/gemini-2.0-flash-001",
-		VisionModel:    "claude-sonnet-4-5",
-		TextModel:      "", // Vertex doesn't support text completion in newer models
-		EmbeddingModel: "text-multilingual-embedding-002",
-		ReasoningModel: "claude-opus-4-5",
+		Provider:        schemas.Vertex,
+		ChatModels:      []string{"google/gemini-2.0-flash-001"},
+		VisionModels:    []string{"claude-sonnet-4-5"},
+		TextModels:      []string{""}, // Vertex doesn't support text completion in newer models
+		EmbeddingModels: []string{"text-multilingual-embedding-002"},
+		ReasoningModels: []string{"claude-opus-4-5"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

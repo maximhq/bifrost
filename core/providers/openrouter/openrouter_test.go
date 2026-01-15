@@ -23,12 +23,12 @@ func TestOpenRouter(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.OpenRouter,
-		ChatModel:      "openai/gpt-4.1",
-		VisionModel:    "openai/gpt-4o",
-		TextModel:      "google/gemini-2.5-flash",
-		EmbeddingModel: "",
-		ReasoningModel: "openai/gpt-oss-120b",
+		Provider:        schemas.OpenRouter,
+		ChatModels:      []string{"openai/gpt-4.1"},
+		VisionModels:    []string{"openai/gpt-4o"},
+		TextModels:      []string{"google/gemini-2.5-flash"},
+		EmbeddingModels: []string{""},
+		ReasoningModels: []string{"openai/gpt-oss-120b"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
