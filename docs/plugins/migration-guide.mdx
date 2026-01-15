@@ -6,7 +6,7 @@ icon: "arrow-up-right-dots"
 
 ## Overview
 
-Bifrost v1.4.x introduces a new plugin interface for HTTP transport layer interception. This guide helps you migrate existing plugins from the v1.3.x `TransportInterceptor` pattern to the v1.4.x `HTTPTransportIntercept` pattern.
+Bifrost v1.4.x introduces a new plugin interface for HTTP transport layer interception. This guide helps you migrate existing plugins from the v1.3.x `TransportInterceptor` pattern to the v1.4.x `HTTPTransportPreHook` and `HTTPTransportPostHook` pattern.
 
 <Note>
 If your plugin doesn't use `TransportInterceptor`, no migration is needed. The `PreHook`, `PostHook`, `Init`, `GetName`, and `Cleanup` functions remain unchanged.
@@ -14,29 +14,31 @@ If your plugin doesn't use `TransportInterceptor`, no migration is needed. The `
 
 ## What Changed?
 
-The HTTP transport interception mechanism changed from a simple function that receives and returns headers/body to a serializable intercept pattern that works with both native `.so` plugins and WASM plugins.
+The HTTP transport interception mechanism changed from a simple function that receives and returns headers/body to a dual-hook pattern that works with both native `.so` plugins and WASM plugins.
 
 ### Key Differences
 
-| Aspect | v1.3.x (TransportInterceptor) | v1.4.x+ (HTTPTransportIntercept) |
-|--------|-------------------------------|----------------------------------|
-| Signature | `TransportInterceptor(ctx, url, headers, body)` | `HTTPTransportIntercept(ctx, req)` |
-| Return type | `(headers, body, error)` | `(*HTTPResponse, error)` |
+| Aspect | v1.3.x (TransportInterceptor) | v1.4.x+ (Pre/Post Hooks) |
+|--------|-------------------------------|--------------------------|
+| Signature | `TransportInterceptor(ctx, url, headers, body)` | `HTTPTransportPreHook(ctx, req)` + `HTTPTransportPostHook(ctx, req, resp)` |
+| Return type | `(headers, body, error)` | Pre: `(*HTTPResponse, error)`, Post: `error` |
 | Request type | Separate `headers map`, `body map` | Unified `*HTTPRequest` struct |
-| Modification | Return modified maps | Modify `req` in-place |
+| Response access | Not available | Post-hook receives `*HTTPResponse` |
+| Modification | Return modified maps | Modify `req`/`resp` in-place |
 | Short-circuit | Return error | Return `*HTTPResponse` |
 | WASM support | No | Yes |
-| Context | Limited `BifrostContext` | Full `*BifrostContext` |
+| Context | Limited `BifrostContext` | Full `*BifrostContext` with `SetValue`/`Value` |
 
 ### Why the Change?
 
-The new intercept pattern provides:
+The new dual-hook pattern provides:
 
 1. **WASM plugin support** - Serializable types work across WASM boundary
-2. **Simpler API** - No middleware wrapper, direct function call
-3. **Better testability** - No fasthttp dependency in plugin tests
-4. **Full context access** - BifrostContext available for request metadata
-5. **Custom response short-circuits** - Return a full response to short-circuit
+2. **Response interception** - Post-hook can modify responses before returning to client
+3. **Simpler API** - No middleware wrapper, direct function call
+4. **Better testability** - No fasthttp dependency in plugin tests
+5. **Full context access** - BifrostContext available for sharing data between hooks
+6. **Custom response short-circuits** - Return a full response to short-circuit
 
 ## Migration Steps
 
@@ -73,9 +75,9 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 **After (v1.4.x+):**
 
 ```go
-// HTTPTransportIntercept intercepts requests at the transport layer
+// HTTPTransportPreHook intercepts requests BEFORE they enter Bifrost core
 // Modify req in-place. Return (*HTTPResponse, nil) to short-circuit.
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	// Add custom header (in-place modification)
 	req.Headers["x-custom-header"] = "value"
 	
@@ -85,8 +87,26 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 	body["custom_field"] = "custom_value"
 	req.Body, _ = sonic.Marshal(body)
 	
+	// Store values in context for use in post-hook
+	ctx.SetValue(schemas.BifrostContextKey("my-plugin-key"), "my-value")
+	
 	// Return nil to continue, or return &HTTPResponse{} to short-circuit
 	return nil, nil
+}
+
+// HTTPTransportPostHook intercepts responses AFTER they exit Bifrost core
+// Modify resp in-place. Called in reverse order of pre-hooks.
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Add response header
+	resp.Headers["x-processed-by"] = "my-plugin"
+	
+	// Read values set in pre-hook
+	if val := ctx.Value(schemas.BifrostContextKey("my-plugin-key")); val != nil {
+		fmt.Println("Context value:", val)
+	}
+	
+	// Return nil to continue, or return error to short-circuit
+	return nil
 }
 ```
 
@@ -109,7 +129,7 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 ```go
 import "github.com/bytedance/sonic"
 
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	// Parse body
 	var body map[string]any
 	if err := sonic.Unmarshal(req.Body, &body); err == nil {
@@ -119,6 +139,16 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 		req.Body, _ = sonic.Marshal(body)
 	}
 	return nil, nil
+}
+
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Modify response body if needed
+	var respBody map[string]any
+	if err := sonic.Unmarshal(resp.Body, &respBody); err == nil {
+		respBody["plugin_processed"] = true
+		resp.Body, _ = sonic.Marshal(respBody)
+	}
+	return nil
 }
 ```
 
@@ -134,8 +164,13 @@ return headers, body, nil
 
 **v1.4.x+:**
 ```go
+// In HTTPTransportPreHook - modify request headers
 req.Headers["authorization"] = "Bearer " + token
 return nil, nil
+
+// In HTTPTransportPostHook - modify response headers
+resp.Headers["x-request-id"] = requestID
+return nil
 ```
 
 ### Reading Headers
@@ -147,6 +182,10 @@ apiKey := headers["X-API-Key"]
 
 **v1.4.x+:**
 ```go
+// Use case-insensitive helper for reading (recommended)
+apiKey := req.CaseInsensitiveHeaderLookup("X-API-Key")
+
+// Or direct map access (case-sensitive)
 apiKey := req.Headers["x-api-key"]
 ```
 
@@ -165,12 +204,17 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 
 **v1.4.x+:**
 ```go
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if req.Headers["x-skip-processing"] == "true" {
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if req.CaseInsensitiveHeaderLookup("x-skip-processing") == "true" {
 		return nil, nil // Continue without modification
 	}
 	// Process...
 	return nil, nil
+}
+
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Post-hook always runs unless pre-hook short-circuited
+	return nil
 }
 ```
 
@@ -188,8 +232,8 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 
 **v1.4.x+:**
 ```go
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if req.Headers["x-api-key"] == "" {
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if req.CaseInsensitiveHeaderLookup("x-api-key") == "" {
 		// Return a custom response to short-circuit
 		return &schemas.HTTPResponse{
 			StatusCode: 401,
@@ -198,6 +242,11 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 		}, nil
 	}
 	return nil, nil
+}
+
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Not called if pre-hook short-circuited
+	return nil
 }
 ```
 
@@ -214,12 +263,24 @@ func TransportInterceptor(ctx *schemas.BifrostContext, url string, headers map[s
 
 **v1.4.x+:**
 ```go
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	// Full access to request properties
-	method := req.Method      // "GET", "POST", etc.
-	path := req.Path          // "/v1/chat/completions"
-	query := req.Query        // map[string]string of query params
+	method := req.Method        // "GET", "POST", etc.
+	path := req.Path            // "/v1/chat/completions"
+	query := req.Query          // map[string]string of query params
+	pathParams := req.PathParams // map[string]string of path variables (e.g., {model})
 	return nil, nil
+}
+
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Access both request and response
+	statusCode := resp.StatusCode
+	responseHeaders := resp.Headers
+	responseBody := resp.Body
+	_ = statusCode      // Use variables...
+	_ = responseHeaders
+	_ = responseBody
+	return nil
 }
 ```
 
@@ -242,11 +303,12 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
      -d '{"model": "openai/gpt-4o-mini", "messages": [{"role": "user", "content": "Hello"}]}'
    ```
 
-4. **Verify logs show the new intercept being called:**
+4. **Verify logs show both hooks being called:**
    ```
-   HTTPTransportIntercept called
+   HTTPTransportPreHook called
    PreHook called
    PostHook called
+   HTTPTransportPostHook called
    ```
 
 ## Troubleshooting
@@ -256,13 +318,15 @@ func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPReques
 **Error:** `plugin: symbol TransportInterceptor not found`
 
 This error occurs if Bifrost v1.4.x is looking for the old function. Make sure:
-1. You've updated to `HTTPTransportIntercept`
-2. The function signature matches exactly: `func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)`
+1. You've updated to `HTTPTransportPreHook` and `HTTPTransportPostHook`
+2. The function signatures match exactly:
+   - `func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)`
+   - `func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error`
 3. You've rebuilt the plugin with the correct core version
 
 ### Body modification not working
 
-Make sure you're assigning back to `req.Body`:
+Make sure you're assigning back to `req.Body` in the pre-hook:
 
 ```go
 // Wrong - body changes lost
@@ -278,16 +342,52 @@ body["model"] = "gpt-4"
 req.Body, _ = sonic.Marshal(body)  // Assign back!
 ```
 
-### Headers not being set
+### Response modification not working
 
-Make sure you're modifying `req.Headers` directly:
+Make sure you're modifying `resp` in the post-hook:
 
 ```go
-// Set header (case-sensitive keys)
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Modify response headers
+	resp.Headers["x-custom-header"] = "value"
+	
+	// Modify response body
+	var body map[string]any
+	sonic.Unmarshal(resp.Body, &body)
+	body["extra_field"] = "value"
+	resp.Body, _ = sonic.Marshal(body)
+	
+	return nil
+}
+```
+
+### Headers not being set
+
+Make sure you're modifying `req.Headers` or `resp.Headers` directly:
+
+```go
+// Set request header in pre-hook
 req.Headers["x-custom-header"] = "value"
 
-// Read header
-value := req.Headers["x-custom-header"]
+// Set response header in post-hook
+resp.Headers["x-custom-header"] = "value"
+
+// Read headers using case-insensitive helper
+value := req.CaseInsensitiveHeaderLookup("X-Custom-Header")
+```
+
+### Context values not available in post-hook
+
+Make sure you're using the correct context key type:
+
+```go
+// In pre-hook - set value
+ctx.SetValue(schemas.BifrostContextKey("my-key"), "my-value")
+
+// In post-hook - read value
+if val := ctx.Value(schemas.BifrostContextKey("my-key")); val != nil {
+	// Use val
+}
 ```
 
 ## Need Help?

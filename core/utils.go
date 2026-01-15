@@ -244,7 +244,6 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 		extraFields := result.GetExtraFields()
 		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
 	}
-
 	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
 }
 

@@ -2362,7 +2362,7 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Name:       key.Name,
 				Value:      *schemas.NewEnvVar(""),
 				Models:     models,
-				Weight:     &key.Weight,
+				Weight:     bifrost.Ptr(key.Weight),
 				Provider:   string(providerKey),
 				ConfigHash: key.ConfigHash,
 			})

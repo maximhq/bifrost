@@ -16,11 +16,12 @@ type DynamicPlugin struct {
 	filename string
 	plugin   *plugin.Plugin
 
-	getName              func() string
-	httpTransportIntercept func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
-	preHook              func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
-	postHook             func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
-	cleanup              func() error
+	getName               func() string
+	httpTransportPreHook  func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	httpTransportPostHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
+	preHook               func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
+	postHook              func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
+	cleanup               func() error
 }
 
 // GetName returns the name of the plugin
@@ -28,25 +29,27 @@ func (dp *DynamicPlugin) GetName() string {
 	return dp.getName()
 }
 
-// HTTPTransportIntercept intercepts HTTP requests at the transport layer for this plugin
-func (dp *DynamicPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	if dp.httpTransportIntercept == nil {
-		return nil, nil
-	}
-	return dp.httpTransportIntercept(ctx, req)
+// HTTPTransportPreHook intercepts HTTP requests at the transport layer before entering Bifrost core
+func (dp *DynamicPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	return dp.httpTransportPreHook(ctx, req)
 }
 
-// PreHook is not used for dynamic plugins
+// HTTPTransportPostHook intercepts HTTP responses at the transport layer after exiting Bifrost core
+func (dp *DynamicPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return dp.httpTransportPostHook(ctx, req, resp)
+}
+
+// PreHook is invoked by PluginPipeline.RunPreHooks in core/bifrost.go
 func (dp *DynamicPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
 	return dp.preHook(ctx, req)
 }
 
-// PostHook is not used for dynamic plugins
+// PostHook is invoked by PluginPipeline.RunPostHooks in core/bifrost.go
 func (dp *DynamicPlugin) PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	return dp.postHook(ctx, resp, bifrostErr)
 }
 
-// Cleanup is not used for dynamic plugins
+// Cleanup is invoked by core/bifrost.go during plugin unload, reload, and shutdown
 func (dp *DynamicPlugin) Cleanup() error {
 	return dp.cleanup()
 }

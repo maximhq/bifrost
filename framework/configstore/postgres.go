@@ -39,7 +39,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if config.Password == nil {
 		return nil, fmt.Errorf("postgres password is required")
 	}
-	if config.DBName == nil {
+	if config.DBName == nil || config.DBName.GetValue() == "" {
 		return nil, fmt.Errorf("postgres db name is required")
 	}
 	if config.SSLMode == nil || config.SSLMode.GetValue() == "" {

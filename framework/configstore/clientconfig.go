@@ -276,7 +276,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	if key.Value.IsFromEnv() {
 		hash.Write([]byte(key.Value.EnvVar))
 	} else {
-		hash.Write([]byte(key.Value.GetValue()))
+		hash.Write([]byte(key.Value.Val))
 	}
 	// Hash Models (key-level model restrictions)
 	if len(key.Models) > 0 {
@@ -319,15 +319,6 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash Enabled (nil = default true, explicit false should be detected)
-	if key.Enabled != nil {
-		if *key.Enabled {
-			hash.Write([]byte("enabled:true"))
-		} else {
-			hash.Write([]byte("enabled:false"))
-		}
-	}
-	// Hash UseForBatchAPI (nil = default false for new keys)
 	// Hash Enabled (nil = default true, explicit false should be detected)
 	enabled := true
 	if key.Enabled != nil {

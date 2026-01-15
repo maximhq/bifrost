@@ -280,6 +280,18 @@ func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// FindByID gets a log entry from the database by its ID.
+func (s *RDBLogStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	var log Log
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &log, nil
+}
+
 // FindFirst gets a log entry from the database.
 func (s *RDBLogStore) FindFirst(ctx context.Context, query any, fields ...string) (*Log, error) {
 	var log Log

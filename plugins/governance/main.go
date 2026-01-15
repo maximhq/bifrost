@@ -44,7 +44,8 @@ type InMemoryStore interface {
 
 type BaseGovernancePlugin interface {
 	GetName() string
-	HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error
 	PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)
 	PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)
 	Cleanup() error
@@ -288,9 +289,9 @@ func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
 	return nil
 }
 
-// HTTPTransportIntercept intercepts requests before they are processed (governance decision point)
+// HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
 // It modifies the request in-place and returns nil to continue, or an HTTPResponse to short-circuit.
-func (p *GovernancePlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
 	if virtualKeyValue == nil {
 		return nil, nil
@@ -329,6 +330,12 @@ func (p *GovernancePlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, r
 	}
 	req.Body = body
 	return nil, nil
+}
+
+// HTTPTransportPostHook intercepts requests after they are processed (governance decision point)
+// It modifies the response in-place and returns nil to continue
+func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // loadBalanceProvider loads balances the provider for the request

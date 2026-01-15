@@ -42,7 +42,7 @@
                 "provider_configs": [
                     {
                         "allowed_keys": [
-                            "azure-us-key-1-prod"                            
+                            "azure-us-key-1-prod"
                         ],
                         "provider": "azure",
                         "weight": 0.5
@@ -97,7 +97,7 @@
             }
         ]
     },
-   "logs_store": {
+    "logs_store": {
         "config": {
             "path": "../../examples/configs/withvirtualkeys/logs.db"
         },
@@ -300,6 +300,6 @@
                     "weight": 1
                 }
             ]
-        } 
+        }
     }
 }

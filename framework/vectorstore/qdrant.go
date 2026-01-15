@@ -13,7 +13,7 @@ import (
 // QdrantConfig represents the configuration for the Qdrant vector store.
 type QdrantConfig struct {
 	Host   schemas.EnvVar `json:"host"`              // Qdrant server host - REQUIRED
-	Port   schemas.EnvVar `json:"port"`              // Qdrant server port - REQUIRED (typically 6334 for gRPC)
+	Port   schemas.EnvVar `json:"port"`              // Qdrant server port  (fallback to 6334 for gRPC)
 	APIKey schemas.EnvVar `json:"api_key,omitempty"` // API key for authentication - Optional
 	UseTLS schemas.EnvVar `json:"use_tls,omitempty"` // Use TLS for connection - Optional
 }
@@ -345,7 +345,7 @@ func (s *QdrantStore) Close(ctx context.Context, namespace string) error {
 
 // newQdrantStore creates a new Qdrant vector store.
 func newQdrantStore(ctx context.Context, config *QdrantConfig, logger schemas.Logger) (*QdrantStore, error) {
-	if config.Host.GetValue() == "" {
+	if strings.TrimSpace(config.Host.GetValue()) == "" {
 		return nil, fmt.Errorf("qdrant host is required")
 	}
 	client, err := qdrant.NewClient(&qdrant.Config{

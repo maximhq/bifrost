@@ -29,10 +29,16 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
     // Extract display value from EnvVar object
     const displayValue = value?.value ?? ""
     const hasChanged = useRef(false)
+    const isUserChange = useRef(false)
 
     // Reset hasChanged when value prop changes externally (save/switch items)
     useEffect(() => {
-      hasChanged.current = false
+      if (!isUserChange.current) {
+        // External change (save/switch) - reset hasChanged
+        hasChanged.current = false
+      }
+      // Reset the flag for the next change
+      isUserChange.current = false
     }, [value])
 
     // Show badge when value is from env (server-synced or user-typed)
@@ -41,6 +47,7 @@ export const EnvVarInput = React.forwardRef<HTMLInputElement | HTMLTextAreaEleme
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       const newValue = e.target.value
       hasChanged.current = true
+      isUserChange.current = true
       // Auto-detect env var prefix
       if (newValue.startsWith("env.")) {
         onChange?.({ value: newValue, env_var: newValue, from_env: true })
