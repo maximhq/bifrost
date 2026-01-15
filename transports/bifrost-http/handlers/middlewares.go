@@ -65,7 +65,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			fasthttpToHTTPRequest(ctx, req)
 			// Run plugin interceptors
 			for _, plugin := range plugins {
-				resp, err := plugin.HTTPTransportIntercept(bifrostCtx, req)
+				resp, err := plugin.HTTPTransportPreHook(bifrostCtx, req)
 				if err != nil {
 					// Short-circuit with error
 					ctx.SetStatusCode(fasthttp.StatusInternalServerError)
@@ -86,6 +86,23 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				ctx.SetUserValue(key, value)
 			}
 			next(ctx)
+			// Acquire pooled response for post-hooks
+			httpResp := schemas.AcquireHTTPResponse()
+			defer schemas.ReleaseHTTPResponse(httpResp)
+			fasthttpResponseToHTTPResponse(ctx, httpResp)
+			// Run http post-hooks in reverse order
+			for i := len(plugins) - 1; i >= 0; i-- {
+				plugin := plugins[i]
+				err := plugin.HTTPTransportPostHook(bifrostCtx, req, httpResp)
+				if err != nil {
+					logger.Warn("error in HTTPTransportPostHook for plugin %s: %s", plugin.GetName(), err.Error())
+					// Short-circuit with response
+					applyHTTPResponseToCtx(ctx, httpResp)
+					return
+				}
+			}
+			// Apply modifications back to fasthttp context
+			applyHTTPResponseToCtx(ctx, httpResp)
 		}
 	}
 }
@@ -169,6 +186,19 @@ func applyHTTPResponseToCtx(ctx *fasthttp.RequestCtx, resp *schemas.HTTPResponse
 	}
 	if resp.Body != nil {
 		ctx.SetBody(resp.Body)
+	}
+}
+
+// fasthttpResponseToHTTPResponse populates a pooled HTTPResponse from fasthttp context.
+func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTPResponse) {
+	resp.StatusCode = ctx.Response.StatusCode()
+	for key, value := range ctx.Response.Header.All() {
+		resp.Headers[string(key)] = string(value)
+	}
+	body := ctx.Response.Body()
+	if len(body) > 0 {
+		resp.Body = make([]byte, len(body))
+		copy(resp.Body, body)
 	}
 }
 

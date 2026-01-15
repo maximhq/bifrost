@@ -281,9 +281,14 @@ func (p *PrometheusPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (p *PrometheusPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // PreHook records the start time of the request in the context.
@@ -320,7 +325,7 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	customerID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
 	customerName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
 
-	// Extract ALL context values BEFORE spawning the goroutine.		
+	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
 		"provider":          string(provider),
 		"model":             model,

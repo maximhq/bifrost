@@ -191,9 +191,14 @@ func (p *LoggerPlugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (p *LoggerPlugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (p *LoggerPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
@@ -287,7 +292,7 @@ func (p *LoggerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bifrost
 	logMsg.InitialData = initialData
 	logMsg.FallbackIndex = fallbackIndex
 
-	go func(msg *LogMessage) {		
+	go func(msg *LogMessage) {
 		defer p.putLogMessage(msg) // Return to pool when done
 		if err := p.insertInitialLogEntry(
 			p.ctx,
