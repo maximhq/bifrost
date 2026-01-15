@@ -1104,47 +1104,14 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 		clone := *vk
 		// Update Budget using checkAndUpdateBudget logic (preserve usage unless currentUsage+baseline > newMaxLimit)
 		if clone.Budget != nil {
-			// Get existing budget from gs.budgets (NOT from VK.Budget which may be stale)
-			var existingBudget *configstoreTables.TableBudget
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
-				if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-					existingBudget = eb
-				}
-			}
-			budgetBaseline, exists := budgetBaselines[clone.Budget.ID]
-			if !exists {
-				budgetBaseline = 0.0
-			}
-			clone.Budget = checkAndUpdateBudget(clone.Budget, existingBudget, budgetBaseline)
-			// Update the budget in the main budgets sync.Map
-			if clone.Budget != nil {
-				gs.budgets.Store(clone.Budget.ID, clone.Budget)
-			}
+			gs.budgets.Store(clone.Budget.ID, clone.Budget)
 		} else if existingVK.Budget != nil {
 			// Budget was removed from the virtual key, delete it from memory
 			gs.budgets.Delete(existingVK.Budget.ID)
 		}
 		if clone.RateLimit != nil {
-			// Get existing rate limit from gs.rateLimits (NOT from VK.RateLimit which may be stale)
-			var existingRateLimit *configstoreTables.TableRateLimit
-			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-				if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
-					existingRateLimit = erl
-				}
-			}
-			tokenBaseline, exists := rateLimitTokensBaselines[clone.RateLimit.ID]
-			if !exists {
-				tokenBaseline = 0
-			}
-			requestBaseline, exists := rateLimitRequestsBaselines[clone.RateLimit.ID]
-			if !exists {
-				requestBaseline = 0
-			}
-			clone.RateLimit = checkAndUpdateRateLimit(clone.RateLimit, existingRateLimit, tokenBaseline, requestBaseline)
 			// Update the rate limit in the main rateLimits sync.Map
-			if clone.RateLimit != nil {
-				gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
-			}
+			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 		} else if existingVK.RateLimit != nil {
 			// Rate limit was removed from the virtual key, delete it from memory
 			gs.rateLimits.Delete(existingVK.RateLimit.ID)
@@ -1161,26 +1128,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 			// Process each new/updated provider config
 			for i, pc := range clone.ProviderConfigs {
 				if pc.RateLimit != nil {
-					// Get existing rate limit from gs.rateLimits (NOT from provider config which may be stale)
-					var existingProviderRateLimit *configstoreTables.TableRateLimit
-					if existingRateLimitValue, exists := gs.rateLimits.Load(pc.RateLimit.ID); exists && existingRateLimitValue != nil {
-						if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
-							existingProviderRateLimit = erl
-						}
-					}
-					tokenBaseline, exists := rateLimitTokensBaselines[pc.RateLimit.ID]
-					if !exists {
-						tokenBaseline = 0
-					}
-					requestBaseline, exists := rateLimitRequestsBaselines[pc.RateLimit.ID]
-					if !exists {
-						requestBaseline = 0
-					}
-					clone.ProviderConfigs[i].RateLimit = checkAndUpdateRateLimit(pc.RateLimit, existingProviderRateLimit, tokenBaseline, requestBaseline)
-					// Also update the rate limit in the main rateLimits sync.Map
-					if clone.ProviderConfigs[i].RateLimit != nil {
-						gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
-					}
+					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
 					if existingPC, exists := existingProviderConfigs[pc.ID]; exists && existingPC.RateLimit != nil {
@@ -1190,22 +1138,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 				}
 				// Update Budget for provider config (preserve usage unless currentUsage+baseline > newMaxLimit)
 				if pc.Budget != nil {
-					// Get existing budget from gs.budgets (NOT from provider config which may be stale)
-					var existingProviderBudget *configstoreTables.TableBudget
-					if existingBudgetValue, exists := gs.budgets.Load(pc.Budget.ID); exists && existingBudgetValue != nil {
-						if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-							existingProviderBudget = eb
-						}
-					}
-					budgetBaseline, exists := budgetBaselines[pc.Budget.ID]
-					if !exists {
-						budgetBaseline = 0.0
-					}
-					clone.ProviderConfigs[i].Budget = checkAndUpdateBudget(pc.Budget, existingProviderBudget, budgetBaseline)
-					// Also update the budget in the main budgets sync.Map
-					if clone.ProviderConfigs[i].Budget != nil {
-						gs.budgets.Store(clone.ProviderConfigs[i].Budget.ID, clone.ProviderConfigs[i].Budget)
-					}
+					gs.budgets.Store(clone.ProviderConfigs[i].Budget.ID, clone.ProviderConfigs[i].Budget)
 				} else {
 					// Budget was removed from provider config, delete it from memory if it existed
 					if existingPC, exists := existingProviderConfigs[pc.ID]; exists && existingPC.Budget != nil {
@@ -1299,22 +1232,7 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(team *configstoreTables.Table
 
 		// Handle budget updates with consistent logic
 		if clone.Budget != nil {
-			// Get existing budget from gs.budgets (NOT from Team.Budget which may be stale)
-			var existingBudget *configstoreTables.TableBudget
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
-				if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-					existingBudget = eb
-				}
-			}
-			budgetBaseline, exists := budgetBaselines[clone.Budget.ID]
-			if !exists {
-				budgetBaseline = 0.0
-			}
-			clone.Budget = checkAndUpdateBudget(clone.Budget, existingBudget, budgetBaseline)
-			// Update the budget in the main budgets sync.Map
-			if clone.Budget != nil {
-				gs.budgets.Store(clone.Budget.ID, clone.Budget)
-			}
+			gs.budgets.Store(clone.Budget.ID, clone.Budget)
 		} else if existingTeam.Budget != nil {
 			// Budget was removed from the team, delete it from memory
 			gs.budgets.Delete(existingTeam.Budget.ID)
@@ -1395,22 +1313,7 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(customer *configstoreTabl
 
 		// Handle budget updates with consistent logic
 		if clone.Budget != nil {
-			// Get existing budget from gs.budgets (NOT from Customer.Budget which may be stale)
-			var existingBudget *configstoreTables.TableBudget
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
-				if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-					existingBudget = eb
-				}
-			}
-			budgetBaseline, exists := budgetBaselines[clone.Budget.ID]
-			if !exists {
-				budgetBaseline = 0.0
-			}
-			clone.Budget = checkAndUpdateBudget(clone.Budget, existingBudget, budgetBaseline)
-			// Update the budget in the main budgets sync.Map
-			if clone.Budget != nil {
-				gs.budgets.Store(clone.Budget.ID, clone.Budget)
-			}
+			gs.budgets.Store(clone.Budget.ID, clone.Budget)
 		} else if existingCustomer.Budget != nil {
 			// Budget was removed from the customer, delete it from memory
 			gs.budgets.Delete(existingCustomer.Budget.ID)
@@ -1571,98 +1474,4 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(resetRateLimit *config
 		}
 		return true // continue
 	})
-}
-
-// checkAndUpdateBudget checks and updates a budget with usage reset logic
-// If currentUsage+baseline >= newMaxLimit, reset usage to 0
-// Otherwise preserve existing usage and accept reset duration and max limit changes
-func checkAndUpdateBudget(budgetToUpdate *configstoreTables.TableBudget, existingBudget *configstoreTables.TableBudget, baseline float64) *configstoreTables.TableBudget {
-	// Create clone to avoid modifying the original
-	clone := *budgetToUpdate
-	if existingBudget == nil {
-		// New budget, return as-is
-		return budgetToUpdate
-	}
-
-	// Check if reset duration or max limit changed
-	resetDurationChanged := budgetToUpdate.ResetDuration != existingBudget.ResetDuration
-	maxLimitChanged := budgetToUpdate.MaxLimit != existingBudget.MaxLimit
-
-	if resetDurationChanged || maxLimitChanged {
-		// If currentUsage + baseline >= new max limit, reset usage to 0
-		// This handles the case where new max limit is lower than or equal to current usage
-		if existingBudget.CurrentUsage+baseline >= budgetToUpdate.MaxLimit {
-			clone.CurrentUsage = 0
-		} else {
-			// Otherwise, preserve the existing usage from memory (which may have been updated)
-			clone.CurrentUsage = existingBudget.CurrentUsage
-			// Preserve LastDBUsage baseline to prevent multi-node baseline corruption
-			clone.LastDBUsage = existingBudget.LastDBUsage
-		}
-	} else {
-		// No changes to max limit or reset duration, preserve existing usage
-		clone.CurrentUsage = existingBudget.CurrentUsage
-		// Preserve LastDBUsage baseline to prevent multi-node baseline corruption
-		clone.LastDBUsage = existingBudget.LastDBUsage
-	}
-
-	return &clone
-}
-
-// checkAndUpdateRateLimit checks and updates a rate limit with usage reset logic
-// If currentUsage+baseline > newMaxLimit, reset usage to 0
-// Otherwise preserve existing usage and accept reset duration and max limit changes
-func checkAndUpdateRateLimit(rateLimitToUpdate *configstoreTables.TableRateLimit, existingRateLimit *configstoreTables.TableRateLimit, tokenBaseline int64, requestBaseline int64) *configstoreTables.TableRateLimit {
-	// Create clone to avoid modifying the original
-	clone := *rateLimitToUpdate
-	if existingRateLimit == nil {
-		// New rate limit, return as-is
-		return rateLimitToUpdate
-	}
-
-	// Check if token settings changed
-	tokenMaxLimitChanged := !equalPtr(existingRateLimit.TokenMaxLimit, rateLimitToUpdate.TokenMaxLimit)
-	tokenResetDurationChanged := !equalPtr(existingRateLimit.TokenResetDuration, rateLimitToUpdate.TokenResetDuration)
-
-	// Check if request settings changed
-	requestMaxLimitChanged := !equalPtr(existingRateLimit.RequestMaxLimit, rateLimitToUpdate.RequestMaxLimit)
-	requestResetDurationChanged := !equalPtr(existingRateLimit.RequestResetDuration, rateLimitToUpdate.RequestResetDuration)
-
-	if tokenMaxLimitChanged || tokenResetDurationChanged {
-		// If currentUsage + baseline >= new max limit, reset usage to 0
-		// This handles the case where new max limit is lower than or equal to current usage
-		if rateLimitToUpdate.TokenMaxLimit != nil && existingRateLimit.TokenCurrentUsage+tokenBaseline >= *rateLimitToUpdate.TokenMaxLimit {
-			clone.TokenCurrentUsage = 0
-		} else {
-			// Otherwise, preserve the existing usage
-			clone.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-			// Preserve LastDBTokenUsage baseline to prevent multi-node baseline corruption
-			clone.LastDBTokenUsage = existingRateLimit.LastDBTokenUsage
-		}
-	} else {
-		// No changes to max limit or reset duration, preserve existing usage
-		clone.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-		// Preserve LastDBTokenUsage baseline to prevent multi-node baseline corruption
-		clone.LastDBTokenUsage = existingRateLimit.LastDBTokenUsage
-	}
-
-	if requestMaxLimitChanged || requestResetDurationChanged {
-		// If currentUsage + baseline >= new max limit, reset usage to 0
-		// This handles the case where new max limit is lower than or equal to current usage
-		if rateLimitToUpdate.RequestMaxLimit != nil && existingRateLimit.RequestCurrentUsage+requestBaseline >= *rateLimitToUpdate.RequestMaxLimit {
-			clone.RequestCurrentUsage = 0
-		} else {
-			// Otherwise, preserve the existing usage
-			clone.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-			// Preserve LastDBRequestUsage baseline to prevent multi-node baseline corruption
-			clone.LastDBRequestUsage = existingRateLimit.LastDBRequestUsage
-		}
-	} else {
-		// No changes to max limit or reset duration, preserve existing usage
-		clone.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-		// Preserve LastDBRequestUsage baseline to prevent multi-node baseline corruption
-		clone.LastDBRequestUsage = existingRateLimit.LastDBRequestUsage
-	}
-
-	return &clone
 }

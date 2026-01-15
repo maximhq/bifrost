@@ -1,3 +1,4 @@
 - feat: fixed weighted provider routing to correctly match provider-prefixed models in allowed lists
 - fix: added support for model lookup in Google GenAI integration by path parameter
 - chore: updated core to v1.3.9 and framework to v1.2.9
+- fix: remove the configuration to clear usages on update when new max limit < current usage

@@ -6,3 +6,5 @@
 - fix: improve thought signature handling in gemini for function calls
 - fix: enhance citations structure to support multiple citation types
 - fix: anthropic streaming events through integration
+- feat: added support for web search tools in Openai, Anthropic and Gemini
+- fix: turn JSON array tool result into JSON object for Bedrock Converse API

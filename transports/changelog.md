@@ -10,3 +10,6 @@
 - feat: adds env variable indicators on UI
 - feat: introduces new EnvVar for env backed config fields
 - fix: missing request type in error response for anthropic SDK integration
+- feat: added support for web search tools in Openai, Anthropic and Gemini
+- fix: turn JSON array tool result into JSON object for Bedrock Converse API - [@Hieu Hoang](https://github.com/hhieuu)
+- fix: remove the configuration to clear usages on update when new max limit < current usage
