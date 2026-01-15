@@ -175,7 +175,9 @@ func (e *MistralTranscriptionStreamEvent) ToBifrostTranscriptionStreamResponse()
 		return nil
 	}
 
-	response := &schemas.BifrostTranscriptionStreamResponse{}
+	response := &schemas.BifrostTranscriptionStreamResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	switch MistralTranscriptionStreamEventType(e.Event) {
 	case MistralTranscriptionStreamEventTextDelta:

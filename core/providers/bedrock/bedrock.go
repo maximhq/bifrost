@@ -551,9 +551,6 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		if bifrostResponse.ExtraFields == nil {
-			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-		}
 		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
@@ -751,9 +748,6 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		if bifrostResponse.ExtraFields == nil {
-			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-		}
 		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
@@ -945,9 +939,6 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		response.ExtraFields.ModelDeployment = deployment
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			if response.ExtraFields == nil {
-				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-			}
 			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonData)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
@@ -1017,9 +1008,6 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		if bifrostResponse.ExtraFields == nil {
-			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-		}
 		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
@@ -1730,12 +1718,6 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		filename := s3Key
 		if idx := strings.LastIndex(s3Key, "/"); idx >= 0 {
 			filename = s3Key[idx+1:]
-		}
-
-		if lastMod := resp.Header.Get("Last-Modified"); lastMod != "" {
-			if t, err := time.Parse(time.RFC1123, lastMod); err == nil {
-				_ = t.Unix()
-			}
 		}
 
 		return &schemas.BifrostFileRetrieveResponse{

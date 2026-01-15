@@ -3,13 +3,10 @@ package integrations
 import (
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 )
-
-func Ptr[T any](v T) *T {
-	return &v
-}
 
 func TestStripExtraFieldsForOpenAI_ChatResponse(t *testing.T) {
 	resp := &schemas.BifrostChatResponse{
@@ -93,7 +90,7 @@ func TestStripExtraFieldsForOpenAIText_Nil(t *testing.T) {
 
 func TestStripExtraFieldsForOpenAIResponses(t *testing.T) {
 	resp := &schemas.BifrostResponsesResponse{
-		ID:    Ptr("test-id"),
+		ID:    bifrost.Ptr("test-id"),
 		Model: "anthropic/claude-3-5-sonnet",
 		Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
 		ExtraFields: &schemas.BifrostResponseExtraFields{
@@ -129,7 +126,7 @@ func TestStripExtraFieldsForOpenAIResponsesStream(t *testing.T) {
 		Type:           "response.created",
 		SequenceNumber: 0,
 		Response: &schemas.BifrostResponsesResponse{
-			ID:    Ptr("test-id"),
+			ID:    bifrost.Ptr("test-id"),
 			Model: "anthropic/claude-3-5-sonnet",
 			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30},
 		},
@@ -310,7 +307,7 @@ func TestOpenAIResponseFormat_UsagePreserved(t *testing.T) {
 		Model:             "anthropic/claude-3-opus-20241120",
 		Object:            "chat.completion",
 		SystemFingerprint: "fp_abc123",
-		ServiceTier:       Ptr[string]("standard"),
+		ServiceTier:       bifrost.Ptr("standard"),
 		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens:     100,
 			CompletionTokens: 250,

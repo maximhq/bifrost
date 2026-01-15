@@ -170,7 +170,9 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 // ToBifrostTranscriptionResponse converts a GenerateContentResponse to a BifrostTranscriptionResponse
 func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schemas.BifrostTranscriptionResponse {
-	bifrostResp := &schemas.BifrostTranscriptionResponse{}
+	bifrostResp := &schemas.BifrostTranscriptionResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Extract usage metadata
 	inputTokens, outputTokens, totalTokens, _, _ := response.extractUsageMetadata()

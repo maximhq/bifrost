@@ -837,7 +837,9 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		return nil, err
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := &schemas.BifrostEmbeddingResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))

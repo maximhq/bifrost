@@ -21,7 +21,8 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
 		ExtraFields: &schemas.BifrostResponseExtraFields{
-			Provider: providerKey,
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerKey,
 		},
 	}
 	for _, model := range response.Models {

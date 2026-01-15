@@ -1254,9 +1254,11 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
 	// Drain any remaining data from the body stream before releasing
 	// This prevents "whitespace in header" errors when the response is reused
-	if resp.BodyStream() != nil {
-		// Drain the body stream
-		io.Copy(io.Discard, resp.BodyStream())
+	if bs := resp.BodyStream(); bs != nil {
+		io.Copy(io.Discard, bs)
+		if closer, ok := bs.(io.Closer); ok {
+			_ = closer.Close()
+		}
 	}
 	fasthttp.ReleaseResponse(resp)
 }

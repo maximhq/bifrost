@@ -65,8 +65,10 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 
 // SendSSEError sends an error in Server-Sent Events format
 func SendSSEError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	clone := *bifrostErr
+	clone.ExtraFields = schemas.BifrostErrorExtraFields{}
 	errorJSON, err := json.Marshal(map[string]interface{}{
-		"error": bifrostErr,
+		"error": &clone,
 	})
 	if err != nil {
 		logger.Error("failed to marshal error for SSE: %v", err)

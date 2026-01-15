@@ -48,7 +48,7 @@ func TestToOpenAIChatResponse(t *testing.T) {
 					CompletionTokens: 5,
 					TotalTokens:      15,
 				},
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					Provider: schemas.OpenAI,
 					Latency:  100,
 				},
@@ -123,10 +123,9 @@ func TestToOpenAIChatResponse(t *testing.T) {
 				Object:  "chat.completion",
 				Created: 1234567890,
 				Model:   "gpt-4",
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					Provider:       schemas.OpenAI,
-					ModelRequested: "openai/gpt-4",
-					Latency:        500,
+				ExtraFields: &schemas.BifrostResponseExtraFields{
+					Provider: schemas.OpenAI,
+					Latency:  100,
 				},
 			},
 			validate: func(t *testing.T, result *OpenAIChatResponse) {

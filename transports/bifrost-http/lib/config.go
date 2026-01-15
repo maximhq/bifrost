@@ -1182,7 +1182,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 							KeyID:      "",
 						})
 					}
-				} else {				
+				} else {
 					logger.Debug("config hash matches for virtual key %s, keeping DB config", newVirtualKey.ID)
 				}
 				break
@@ -1205,7 +1205,7 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					Provider:   "",
 					KeyType:    "virtual_key",
 					ConfigPath: fmt.Sprintf("governance.virtual_keys[%s].value", configData.Governance.VirtualKeys[i].ID),
-					KeyID:      "",					
+					KeyID:      "",
 				})
 			}
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])

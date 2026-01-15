@@ -261,9 +261,6 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	}
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		if bifrostResponse.ExtraFields == nil {
-			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-		}
 		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
@@ -461,9 +458,6 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			if finalResponse.ExtraFields == nil {
-				finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-			}
 			providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

@@ -31,7 +31,7 @@ type BifrostChatResponse struct {
 	ServiceTier       *string                     `json:"service_tier,omitempty"`
 	SystemFingerprint string                      `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage            `json:"usage"`
-	ExtraFields       *BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraFields       *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -45,25 +45,12 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 		return nil
 	}
 
-	extraFieldsPtr := &BifrostResponseExtraFields{
-		RequestType:    TextCompletionRequest,
-		ChunkIndex:     0,
-		Provider:       "",
-		ModelRequested: "",
-		Latency:        0,
-		RawResponse:    nil,
-		CacheDebug:     nil,
-	}
+	// Clone ExtraFields and override RequestType to preserve all fields
+	extraFieldsPtr := &BifrostResponseExtraFields{RequestType: TextCompletionRequest}
 	if cr.ExtraFields != nil {
-		extraFieldsPtr = &BifrostResponseExtraFields{
-			RequestType:    TextCompletionRequest,
-			ChunkIndex:     cr.ExtraFields.ChunkIndex,
-			Provider:       cr.ExtraFields.Provider,
-			ModelRequested: cr.ExtraFields.ModelRequested,
-			Latency:        cr.ExtraFields.Latency,
-			RawResponse:    cr.ExtraFields.RawResponse,
-			CacheDebug:     cr.ExtraFields.CacheDebug,
-		}
+		clone := *cr.ExtraFields
+		clone.RequestType = TextCompletionRequest
+		extraFieldsPtr = &clone
 	}
 
 	if len(cr.Choices) == 0 {

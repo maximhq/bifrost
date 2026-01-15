@@ -108,7 +108,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
-			ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+		ListModelsResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
 			return gemini.ToGeminiListModelsResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {

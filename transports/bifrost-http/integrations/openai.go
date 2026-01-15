@@ -96,7 +96,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	}
 }
 
-// stripExtraFieldsForOpenAI creates a shallow copy of the response with extra fields set to nil
+// StripExtraFieldsForOpenAI creates a shallow copy of the response with extra fields set to nil
 // for OpenAI-compatible client compatibility. This removes Bifrost-specific fields that
 // OpenAI-compatible clients cannot parse.
 func StripExtraFieldsForOpenAI(resp *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
@@ -104,7 +104,7 @@ func StripExtraFieldsForOpenAI(resp *schemas.BifrostChatResponse) *schemas.Bifro
 		return nil
 	}
 	clone := *resp
-	clone.ExtraFields = nil
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
 	clone.SearchResults = nil
 	clone.Videos = nil
 	clone.Citations = nil
@@ -118,7 +118,7 @@ func stripExtraFieldsForOpenAIText(resp *schemas.BifrostTextCompletionResponse) 
 		return nil
 	}
 	clone := *resp
-	clone.ExtraFields = nil
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
 	return &clone
 }
 
@@ -129,7 +129,7 @@ func stripExtraFieldsForOpenAIResponses(resp *schemas.BifrostResponsesResponse) 
 		return nil
 	}
 	clone := *resp
-	clone.ExtraFields = nil
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
 	clone.SearchResults = nil
 	clone.Videos = nil
 	clone.Citations = nil
@@ -143,7 +143,7 @@ func stripExtraFieldsForOpenAIResponsesStream(resp *schemas.BifrostResponsesStre
 		return nil
 	}
 	clone := *resp
-	clone.ExtraFields = nil
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
 	clone.SearchResults = nil
 	clone.Videos = nil
 	clone.Citations = nil
