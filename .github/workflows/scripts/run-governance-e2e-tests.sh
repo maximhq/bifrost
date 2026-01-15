@@ -25,7 +25,7 @@ NC='\033[0m' # No Color
 BIFROST_PORT=8080
 BIFROST_HOST="localhost"
 BIFROST_URL="http://${BIFROST_HOST}:${BIFROST_PORT}"
-CONFIG_PATH="tests/governance/config.json"
+APP_DIR="tests/governance"
 BIFROST_BINARY="tmp/bifrost-http"
 BIFROST_PID_FILE="/tmp/bifrost-governance-test.pid"
 BIFROST_LOG_FILE="/tmp/bifrost-governance-test.log"
@@ -79,8 +79,13 @@ trap cleanup EXIT INT TERM
 # Step 1: Validate prerequisites
 echo -e "${CYAN}📋 Step 1: Validating prerequisites...${NC}"
 
-if [ ! -f "$CONFIG_PATH" ]; then
-  echo -e "${RED}❌ Config file not found: $CONFIG_PATH${NC}"
+if [ ! -d "$APP_DIR" ]; then
+  echo -e "${RED}❌ App directory not found: $APP_DIR${NC}"
+  exit 1
+fi
+
+if [ ! -f "$APP_DIR/config.json" ]; then
+  echo -e "${RED}❌ Config file not found: $APP_DIR/config.json${NC}"
   exit 1
 fi
 
@@ -120,7 +125,7 @@ mkdir -p data
 
 # Start Bifrost in background
 echo -e "${YELLOW}Starting Bifrost on ${BIFROST_URL}...${NC}"
-"$BIFROST_BINARY" --config "$CONFIG_PATH" > "$BIFROST_LOG_FILE" 2>&1 &
+"$BIFROST_BINARY" -app-dir "$APP_DIR" -port "$BIFROST_PORT" -host "$BIFROST_HOST" > "$BIFROST_LOG_FILE" 2>&1 &
 BIFROST_PID=$!
 echo "$BIFROST_PID" > "$BIFROST_PID_FILE"
 

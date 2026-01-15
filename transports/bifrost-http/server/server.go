@@ -24,7 +24,6 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -84,7 +83,7 @@ type ServerCallbacks interface {
 
 // BifrostHTTPServer represents a HTTP server instance.
 type BifrostHTTPServer struct {
-	ctx    *schemas.BifrostContext
+	Ctx    *schemas.BifrostContext
 	cancel context.CancelFunc
 
 	Version   string
@@ -524,8 +523,12 @@ func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.
 // It acquires a read lock, finds the plugin, releases the lock, performs type assertion,
 // and returns the BaseGovernancePlugin implementation or an error.
 func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlugin, error) {
+	governancePluginName := governance.PluginName
+	if s.Ctx.Value("governance-plugin-name") != nil {
+		governancePluginName, _ = s.Ctx.Value("governance-plugin-name").(string)
+	}
 	s.PluginsMutex.RLock()
-	plugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
+	plugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil, err
@@ -671,8 +674,12 @@ func (s *BifrostHTTPServer) RemoveCustomer(ctx context.Context, id string) error
 
 // GetGovernanceData returns the governance data
 func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
+	governancePluginName := governance.PluginName
+	if s.Ctx.Value("governance-plugin-name") != nil {
+		governancePluginName, _ = s.Ctx.Value("governance-plugin-name").(string)
+	}
 	s.PluginsMutex.RLock()
-	governancePlugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
+	governancePlugin, err := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
 	s.PluginsMutex.RUnlock()
 	if err != nil {
 		return nil
@@ -1045,7 +1052,11 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		loggingHandler = handlers.NewLoggingHandler(loggerPlugin.GetPluginLogManager(), s)
 	}
 	var governanceHandler *handlers.GovernanceHandler
-	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, governance.PluginName)
+	governancePluginName := governance.PluginName
+	if ctx.Value("governance-plugin-name") != nil {
+		governancePluginName, _ = ctx.Value("governance-plugin-name").(string)
+	}
+	governancePlugin, _ := FindPluginByName[schemas.Plugin](s.Plugins, governancePluginName)
 	if governancePlugin != nil {
 		governanceHandler, err = handlers.NewGovernanceHandler(callbacks, s.Config.ConfigStore)
 		if err != nil {
@@ -1164,14 +1175,6 @@ func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids [
 	return virtualKeys
 }
 
-func (s *BifrostHTTPServer) LoadPricingManager(ctx context.Context, pricingConfig *modelcatalog.Config, configStore configstore.ConfigStore) (*modelcatalog.ModelCatalog, error) {
-	pricingManager, err := modelcatalog.Init(ctx, pricingConfig, configStore, nil, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize pricing manager: %v", err)
-	}
-	return pricingManager, nil
-}
-
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server
 func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMiddleware {
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
@@ -1199,7 +1202,7 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 //   - GET /metrics: For Prometheus metrics
 func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	var err error
-	s.ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
+	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
 	configDir := GetDefaultConfigDir(s.AppDir)
 	s.pluginStatusMutex = sync.RWMutex{}
@@ -1278,7 +1281,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Info("bifrost client initialized")
 	// List all models and add to model catalog
 	logger.Info("listing all models and adding to model catalog")
-	modelData, listModelsErr := s.Client.ListAllModels(s.ctx, nil)
+	modelData, listModelsErr := s.Client.ListAllModels(s.Ctx, nil)
 	if listModelsErr != nil {
 		if listModelsErr.Error != nil {
 			logger.Error("failed to list all models: %s", listModelsErr.Error.Message)
@@ -1308,7 +1311,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 	// Register routes
-	err = s.RegisterAPIRoutes(s.ctx, s, apiMiddlewares...)
+	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
@@ -1334,7 +1337,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// The observability plugins are optional (can be empty if only logging is enabled)
 	s.tracingMiddleware = handlers.NewTracingMiddleware(tracer, observabilityPlugins)
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.tracingMiddleware.Middleware()}, inferenceMiddlewares...)
-	err = s.RegisterInferenceRoutes(s.ctx, inferenceMiddlewares...)
+	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
