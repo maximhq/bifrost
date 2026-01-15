@@ -379,7 +379,7 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 		})
 	}
 	// Initializing governance plugin
-	if config.ClientConfig.EnableGovernance {
+	if config.ClientConfig.EnableGovernance && ctx.Value("isEnterprise") == nil {
 		// Initialize governance plugin
 		governancePlugin, err := LoadPlugin[*governance.GovernancePlugin](ctx, governance.PluginName, nil, &governance.Config{
 			IsVkMandatory: &config.ClientConfig.EnforceGovernanceHeader,

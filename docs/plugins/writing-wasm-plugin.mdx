@@ -29,7 +29,8 @@ All WASM plugins must export these functions:
 | `free` | `(ptr: u32)` or `(ptr: u32, size: u32)` | Free allocated memory (Rust requires size for dealloc) |
 | `get_name` | `() -> u64` | Returns packed ptr+len of plugin name |
 | `init` | `(config_ptr, config_len: u32) -> i32` | Initialize with config (0 = success) |
-| `http_intercept` | `(input_ptr, input_len: u32) -> u64` | HTTP transport intercept |
+| `http_pre_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP transport pre-hook (request interception) |
+| `http_post_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP transport post-hook (response interception) |
 | `pre_hook` | `(input_ptr, input_len: u32) -> u64` | Pre-request hook |
 | `post_hook` | `(input_ptr, input_len: u32) -> u64` | Post-response hook |
 | `cleanup` | `() -> i32` | Cleanup resources (0 = success) |
@@ -140,12 +141,22 @@ export function init(configPtr: u32, configLen: u32): i32 {
   return 0 // Success
 }
 
-export function http_intercept(inputPtr: u32, inputLen: u32): u64 {
+export function http_pre_hook(inputPtr: u32, inputLen: u32): u64 {
   const input = readString(inputPtr, inputLen)
   
   // Parse and modify as needed
   // For pass-through, return the input with has_response: false
   const output = '{"context":{},"request":null,"response":null,"has_response":false,"error":""}'
+  
+  return writeString(output)
+}
+
+export function http_post_hook(inputPtr: u32, inputLen: u32): u64 {
+  const input = readString(inputPtr, inputLen)
+  
+  // Parse input which includes both request and response
+  // For pass-through, just return context and empty error
+  const output = '{"context":{},"error":""}'
   
   return writeString(output)
 }
@@ -303,14 +314,14 @@ func init_plugin(configPtr, configLen uint32) int32 {
 	return 0 // Success
 }
 
-// HTTPInterceptInput represents the input to http_intercept
-type HTTPInterceptInput struct {
+// HTTPPreHookInput represents the input to http_pre_hook
+type HTTPPreHookInput struct {
 	Context map[string]interface{} `json:"context"`
 	Request json.RawMessage        `json:"request"`
 }
 
-// HTTPInterceptOutput represents the output from http_intercept
-type HTTPInterceptOutput struct {
+// HTTPPreHookOutput represents the output from http_pre_hook
+type HTTPPreHookOutput struct {
 	Context     map[string]interface{} `json:"context"`
 	Request     json.RawMessage        `json:"request,omitempty"`
 	Response    json.RawMessage        `json:"response,omitempty"`
@@ -318,25 +329,61 @@ type HTTPInterceptOutput struct {
 	Error       string                 `json:"error"`
 }
 
-//export http_intercept
-func http_intercept(inputPtr, inputLen uint32) uint64 {
+//export http_pre_hook
+func http_pre_hook(inputPtr, inputLen uint32) uint64 {
 	inputData := readInput(inputPtr, inputLen)
 	
-	var input HTTPInterceptInput
+	var input HTTPPreHookInput
 	if err := json.Unmarshal(inputData, &input); err != nil {
-		output := HTTPInterceptOutput{Error: err.Error()}
+		output := HTTPPreHookOutput{Error: err.Error()}
 		data, _ := json.Marshal(output)
 		return writeBytes(data)
 	}
 	
 	// Add custom context value
-	input.Context["from-http"] = "wasm-plugin"
+	input.Context["from-http-pre"] = "wasm-plugin"
 	
 	// Pass through
-	output := HTTPInterceptOutput{
+	output := HTTPPreHookOutput{
 		Context:     input.Context,
 		Request:     input.Request,
 		HasResponse: false,
+	}
+	
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+// HTTPPostHookInput represents the input to http_post_hook
+type HTTPPostHookInput struct {
+	Context  map[string]interface{} `json:"context"`
+	Request  json.RawMessage        `json:"request"`
+	Response json.RawMessage        `json:"response"`
+}
+
+// HTTPPostHookOutput represents the output from http_post_hook
+type HTTPPostHookOutput struct {
+	Context map[string]interface{} `json:"context"`
+	Error   string                 `json:"error"`
+}
+
+//export http_post_hook
+func http_post_hook(inputPtr, inputLen uint32) uint64 {
+	inputData := readInput(inputPtr, inputLen)
+	
+	var input HTTPPostHookInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		output := HTTPPostHookOutput{Error: err.Error()}
+		data, _ := json.Marshal(output)
+		return writeBytes(data)
+	}
+	
+	// Add custom context value
+	input.Context["from-http-post"] = "wasm-plugin"
+	
+	// Pass through
+	output := HTTPPostHookOutput{
+		Context: input.Context,
 	}
 	
 	data, _ := json.Marshal(output)
@@ -585,13 +632,13 @@ pub extern "C" fn init(config_ptr: u32, config_len: u32) -> i32 {
 }
 
 #[derive(Deserialize)]
-struct HTTPInterceptInput {
+struct HTTPPreHookInput {
     context: HashMap<String, serde_json::Value>,
     request: serde_json::Value,
 }
 
 #[derive(Serialize, Default)]
-struct HTTPInterceptOutput {
+struct HTTPPreHookOutput {
     context: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     request: Option<serde_json::Value>,
@@ -602,13 +649,13 @@ struct HTTPInterceptOutput {
 }
 
 #[no_mangle]
-pub extern "C" fn http_intercept(input_ptr: u32, input_len: u32) -> u64 {
+pub extern "C" fn http_pre_hook(input_ptr: u32, input_len: u32) -> u64 {
     let input_str = read_string(input_ptr, input_len);
     
-    let input: HTTPInterceptInput = match serde_json::from_str(&input_str) {
+    let input: HTTPPreHookInput = match serde_json::from_str(&input_str) {
         Ok(i) => i,
         Err(e) => {
-            let output = HTTPInterceptOutput {
+            let output = HTTPPreHookOutput {
                 error: format!("Parse error: {}", e),
                 ..Default::default()
             };
@@ -617,13 +664,52 @@ pub extern "C" fn http_intercept(input_ptr: u32, input_len: u32) -> u64 {
     };
     
     let mut context = input.context;
-    context.insert("from-http".to_string(), serde_json::json!("rust-wasm"));
+    context.insert("from-http-pre".to_string(), serde_json::json!("rust-wasm"));
     
-    let output = HTTPInterceptOutput {
+    let output = HTTPPreHookOutput {
         context,
         request: Some(input.request),
         has_response: false,
         ..Default::default()
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap())
+}
+
+#[derive(Deserialize)]
+struct HTTPPostHookInput {
+    context: HashMap<String, serde_json::Value>,
+    request: serde_json::Value,
+    response: serde_json::Value,
+}
+
+#[derive(Serialize, Default)]
+struct HTTPPostHookOutput {
+    context: HashMap<String, serde_json::Value>,
+    error: String,
+}
+
+#[no_mangle]
+pub extern "C" fn http_post_hook(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    let input: HTTPPostHookInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = HTTPPostHookOutput {
+                error: format!("Parse error: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap());
+        }
+    };
+    
+    let mut context = input.context;
+    context.insert("from-http-post".to_string(), serde_json::json!("rust-wasm"));
+    
+    let output = HTTPPostHookOutput {
+        context,
+        error: String::new(),
     };
     
     write_string(&serde_json::to_string(&output).unwrap())
@@ -749,7 +835,7 @@ Output: `build/plugin.wasm`
 
 ## Hook Input/Output Structures
 
-### http_intercept
+### http_pre_hook
 
 <Note>
 **Header and Query Parameter Handling**: Headers and query parameters in `request.headers` and `request.query` preserve the original casing sent by the client. When looking up headers/query params, you should perform case-insensitive comparisons in your WASM plugin code to handle various casing (e.g., `Content-Type`, `content-type`, `CONTENT-TYPE`).
@@ -798,6 +884,44 @@ To short-circuit with a response:
   "error": ""
 }
 ```
+
+### http_post_hook
+
+Called after the response is received from the LLM provider. Receives both the original request and the response.
+
+**Input:**
+```json
+{
+  "context": {
+    "request_id": "abc-123",
+    "custom_key": "value"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": { "content-type": "application/json" },
+    "query": {},
+    "body": "<base64-encoded>"
+  },
+  "response": {
+    "status_code": 200,
+    "headers": { "content-type": "application/json" },
+    "body": "<base64-encoded>"
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "context": { "request_id": "abc-123", "custom_key": "value", "post_processed": true },
+  "error": ""
+}
+```
+
+<Note>
+The `http_post_hook` is called in **reverse order** of `http_pre_hook`. Context values set in `http_pre_hook` are available in `http_post_hook`.
+</Note>
 
 ### pre_hook
 

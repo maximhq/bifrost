@@ -86,21 +86,42 @@ func GetName() string {
 	return "Hello World Plugin"
 }
 
-// HTTPTransportIntercept intercepts requests at the HTTP transport layer
+// HTTPTransportPreHook intercepts requests BEFORE they enter Bifrost core
 // Modify req in-place. Return (*HTTPResponse, nil) to short-circuit.
 // Only called when using HTTP transport (bifrost-http)
-func HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	fmt.Println("HTTPTransportIntercept called")
+func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	fmt.Println("HTTPTransportPreHook called")
 
 	// Read headers using case-insensitive helper (recommended)
 	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
 	fmt.Printf("Content-Type: %s\n", contentType)
 
-	// Modify request in-place (use lowercase for direct map access)
+	// Modify request in-place
 	req.Headers["x-custom-header"] = "custom-value"
+
+	// Store values in context for use in other hooks
+	ctx.SetValue(schemas.BifrostContextKey("my-plugin-key"), "pre-hook-value")
 
 	// Return nil to continue, or return &schemas.HTTPResponse{} to short-circuit
 	return nil, nil
+}
+
+// HTTPTransportPostHook intercepts responses AFTER they exit Bifrost core
+// Modify resp in-place. Called in reverse order of pre-hooks.
+// Only called when using HTTP transport (bifrost-http)
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	fmt.Println("HTTPTransportPostHook called")
+
+	// Modify response headers
+	resp.Headers["x-processed-by"] = "my-plugin"
+
+	// Read context values set in pre-hook
+	if val := ctx.Value(schemas.BifrostContextKey("my-plugin-key")); val != nil {
+		fmt.Printf("Context value: %v\n", val)
+	}
+
+	// Return nil to continue, or return error to short-circuit
+	return nil
 }
 
 // PreHook is called before the request is sent to the provider
@@ -214,12 +235,12 @@ Returns a unique identifier for your plugin. This name appears in logs and statu
 
 <Tabs>
   <Tab title="v1.4.x+">
-#### `HTTPTransportIntercept(ctx, req)`
+#### `HTTPTransportPreHook(ctx, req)`
 
-**HTTP transport only.** Intercepts requests at the transport layer. Use this to:
+**HTTP transport only.** Intercepts requests BEFORE they enter Bifrost core. Use this to:
 - Modify request headers, body, or query params in-place
 - Short-circuit with a custom response
-- Access `BifrostContext` for request metadata
+- Store values in `BifrostContext` for use in other hooks
 - Works with both native .so and WASM plugins
 
 Key points:
@@ -228,6 +249,20 @@ Key points:
 - Return `(nil, nil)` to continue to next plugin/handler
 - Return `(*HTTPResponse, nil)` to short-circuit with response
 - Return `(nil, error)` to short-circuit with error
+
+#### `HTTPTransportPostHook(ctx, req, resp)`
+
+**HTTP transport only.** Intercepts responses AFTER they exit Bifrost core. Use this to:
+- Modify response headers or body in-place
+- Log or monitor response data
+- Access context values set in pre-hook
+- Called in **reverse order** of pre-hooks
+
+Key points:
+- Receives both `*HTTPRequest` and `*HTTPResponse`
+- Modify `resp.Headers`, `resp.Body`, `resp.StatusCode` directly
+- Return `nil` to continue to next plugin/handler
+- Return `error` to short-circuit with error and skip remaining post-hooks
 
 <Note>
 **Header and Query Parameter Lookups**: Use the case-insensitive helper methods for reading headers and query parameters:
@@ -249,7 +284,7 @@ The helper methods (`CaseInsensitiveHeaderLookup` and `CaseInsensitiveQueryLooku
 </Note>
 
 <Warning>
-This function is **only called** when using `bifrost-http`. It's **not invoked** when using Bifrost as a Go SDK.
+These functions are **only called** when using `bifrost-http`. They are **not invoked** when using Bifrost as a Go SDK.
 </Warning>
   </Tab>
   <Tab title="v1.3.x">
@@ -455,9 +490,10 @@ Check the logs for plugin hook calls:
 <Tabs>
   <Tab title="v1.4.x+">
 ```
-HTTPTransportIntercept called
+HTTPTransportPreHook called
 PreHook called
 PostHook called
+HTTPTransportPostHook called
 ```
   </Tab>
   <Tab title="v1.3.x">

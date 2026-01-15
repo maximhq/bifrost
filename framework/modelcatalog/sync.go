@@ -221,20 +221,6 @@ func (mc *ModelCatalog) startSyncWorker(ctx context.Context) {
 // syncTick performs a single sync tick with proper lock management
 func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	// Guard against nil distributedLockManager
-	if mc.distributedLockManager == nil {
-		if err := mc.checkAndSyncPricing(ctx); err != nil {
-			mc.logger.Error("background pricing sync failed: %v", err)
-		}
-		return
-	}
-	// Acquire the distributed lock
-	lock := mc.distributedLockManager.NewLock("modelcatalog_sync")
-	if err := lock.LockWithRetry(ctx, 10); err != nil {
-		mc.logger.Error("failed to acquire pricing sync lock: %v", err)
-		return
-	}
-	defer lock.Unlock(ctx) // Now correctly scoped to this function
-	// Check and sync pricing data
 	if err := mc.checkAndSyncPricing(ctx); err != nil {
 		mc.logger.Error("background pricing sync failed: %v", err)
 	}

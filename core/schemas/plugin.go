@@ -78,6 +78,7 @@ func caseInsensitiveLookup(data map[string]string, key string) string {
 
 // HTTPResponse is a serializable representation of an HTTP response.
 // Used for short-circuit responses in plugin HTTP transport interception.
+// This type is pooled for allocation control - use AcquireHTTPResponse and ReleaseHTTPResponse.
 type HTTPResponse struct {
 	StatusCode int               `json:"status_code"`
 	Headers    map[string]string `json:"headers"`
@@ -120,6 +121,37 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	httpRequestPool.Put(req)
 }
 
+// httpResponsePool is the pool for HTTPResponse objects to reduce allocations.
+var httpResponsePool = sync.Pool{
+	New: func() any {
+		return &HTTPResponse{
+			Headers: make(map[string]string, 8),
+		}
+	},
+}
+
+// AcquireHTTPResponse gets an HTTPResponse from the pool.
+// The returned HTTPResponse is ready to use with a pre-allocated Headers map.
+// Call ReleaseHTTPResponse when done to return it to the pool.
+func AcquireHTTPResponse() *HTTPResponse {
+	return httpResponsePool.Get().(*HTTPResponse)
+}
+
+// ReleaseHTTPResponse returns an HTTPResponse to the pool.
+// The HTTPResponse is reset before being returned to the pool.
+// Do not use the HTTPResponse after calling this function.
+func ReleaseHTTPResponse(resp *HTTPResponse) {
+	if resp == nil {
+		return
+	}
+	// Clear the map
+	clear(resp.Headers)
+	// Reset fields
+	resp.StatusCode = 0
+	resp.Body = nil
+	httpResponsePool.Put(resp)
+}
+
 // Plugin defines the interface for Bifrost plugins.
 // Plugins can intercept and modify requests and responses at different stages
 // of the processing pipeline.
@@ -155,7 +187,7 @@ type Plugin interface {
 	// GetName returns the name of the plugin.
 	GetName() string
 
-	// HTTPTransportIntercept is called at the HTTP transport layer before requests enter Bifrost core.
+	// HTTPTransportPreHook is called at the HTTP transport layer before requests enter Bifrost core.
 	// It receives a serializable HTTPRequest and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
@@ -166,7 +198,19 @@ type Plugin interface {
 	// - (nil, error): Short-circuit with error response
 	//
 	// Return nil for both values if the plugin doesn't need HTTP transport interception.
-	HTTPTransportIntercept(ctx *BifrostContext, req *HTTPRequest) (*HTTPResponse, error)
+	HTTPTransportPreHook(ctx *BifrostContext, req *HTTPRequest) (*HTTPResponse, error)
+
+	// HTTPTransportPostHook is called at the HTTP transport layer after requests exit Bifrost core.
+	// It receives a serializable HTTPRequest and HTTPResponse and allows plugins to modify it in-place.
+	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
+	// Works with both native .so plugins and WASM plugins due to serializable types.
+	//
+	// Return values:
+	// - nil: Continue to next plugin/handler, response modifications are applied
+	// - error: Short-circuit with error response and skip remaining plugins
+	//
+	// Return nil if the plugin doesn't need HTTP transport interception.
+	HTTPTransportPostHook(ctx *BifrostContext, req *HTTPRequest, resp *HTTPResponse) error
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.

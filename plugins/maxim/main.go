@@ -156,9 +156,14 @@ func (plugin *Plugin) GetName() string {
 	return PluginName
 }
 
-// HTTPTransportIntercept is not used for this plugin
-func (plugin *Plugin) HTTPTransportIntercept(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+// HTTPTransportPreHook is not used for this plugin
+func (plugin *Plugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	return nil, nil
+}
+
+// HTTPTransportPostHook is not used for this plugin
+func (plugin *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	return nil
 }
 
 // getEffectiveLogRepoID determines which single log repo ID to use based on priority:
