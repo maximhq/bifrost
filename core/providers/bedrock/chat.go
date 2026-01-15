@@ -237,7 +237,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		Choices: choices,
 		Usage:   usage,
 		Created: int(time.Now().Unix()),
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ChatCompletionRequest,
 			Provider:    schemas.Bedrock,
 		},

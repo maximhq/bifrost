@@ -309,7 +309,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse() *schemas.Bifro
 	bifrostResponse := &schemas.BifrostChatResponse{
 		ID:    response.ID,
 		Model: response.Model,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ChatCompletionRequest,
 			Provider:    schemas.Anthropic,
 		},

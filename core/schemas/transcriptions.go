@@ -14,15 +14,15 @@ func (r *BifrostTranscriptionRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostTranscriptionResponse struct {
-	Duration    *float64                   `json:"duration,omitempty"` // Duration in seconds
-	Language    *string                    `json:"language,omitempty"` // e.g., "english"
-	LogProbs    []TranscriptionLogProb     `json:"logprobs,omitempty"`
-	Segments    []TranscriptionSegment     `json:"segments,omitempty"`
-	Task        *string                    `json:"task,omitempty"` // e.g., "transcribe"
-	Text        string                     `json:"text"`
-	Usage       *TranscriptionUsage        `json:"usage,omitempty"`
-	Words       []TranscriptionWord        `json:"words,omitempty"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Duration    *float64                    `json:"duration,omitempty"` // Duration in seconds
+	Language    *string                     `json:"language,omitempty"` // e.g., "english"
+	LogProbs    []TranscriptionLogProb      `json:"logprobs,omitempty"`
+	Segments    []TranscriptionSegment      `json:"segments,omitempty"`
+	Task        *string                     `json:"task,omitempty"` // e.g., "transcribe"
+	Text        string                      `json:"text"`
+	Usage       *TranscriptionUsage         `json:"usage,omitempty"`
+	Words       []TranscriptionWord         `json:"words,omitempty"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 type TranscriptionInput struct {
@@ -126,5 +126,5 @@ type BifrostTranscriptionStreamResponse struct {
 	Text        string                          `json:"text"`
 	Type        TranscriptionStreamResponseType `json:"type"`
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
-	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
+	ExtraFields *BifrostResponseExtraFields     `json:"extra_fields,omitempty"`
 }

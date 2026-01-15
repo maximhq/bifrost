@@ -465,7 +465,7 @@ func createConsolidatedTextCompletionResponse(finalContent string, lastResponse 
 				},
 			},
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			Provider:    provider,
 			RequestType: schemas.TextCompletionRequest,
 		},

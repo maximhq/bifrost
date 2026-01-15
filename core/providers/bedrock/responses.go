@@ -1814,7 +1814,7 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 	}
 
 	// Set metrics
-	if bifrostResp.ExtraFields.Latency > 0 {
+	if bifrostResp.ExtraFields != nil && bifrostResp.ExtraFields.Latency > 0 {
 		bedrockResp.Metrics.LatencyMs = bifrostResp.ExtraFields.Latency
 	}
 

@@ -65,6 +65,9 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Data)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: schemas.Azure,
+		},
 	}
 
 	for _, model := range response.Data {

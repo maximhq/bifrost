@@ -16,6 +16,9 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		FirstID: response.FirstID,
 		LastID:  response.LastID,
 		HasMore: schemas.Ptr(response.HasMore),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerKey,
+		},
 	}
 
 	// Map Anthropic's cursor-based pagination to Bifrost's token-based pagination

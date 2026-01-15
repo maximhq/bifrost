@@ -66,7 +66,7 @@ func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(providerName schemas.Mo
 		Status:         ToBifrostFileStatus(r.Status),
 		StatusDetails:  r.StatusDetails,
 		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileUploadRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -96,7 +96,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 		Status:         ToBifrostFileStatus(r.Status),
 		StatusDetails:  r.StatusDetails,
 		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

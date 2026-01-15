@@ -47,7 +47,8 @@ func (response *BedrockTitanEmbeddingResponse) ToBifrostEmbeddingResponse() *sch
 	}
 
 	bifrostResponse := &schemas.BifrostEmbeddingResponse{
-		Object: "list",
+		Object:      "list",
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
 		Data: []schemas.EmbeddingData{
 			{
 				Index:  0,

@@ -13,6 +13,9 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Data)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: schemas.Mistral,
+		},
 	}
 
 	for _, model := range response.Data {

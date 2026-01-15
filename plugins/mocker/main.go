@@ -825,7 +825,7 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 					FinishReason: finishReason,
 				},
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ChatCompletionRequest,
 				Provider:       provider,
 				ModelRequested: model,
@@ -849,7 +849,7 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				OutputTokens: usage.CompletionTokens,
 				TotalTokens:  usage.TotalTokens,
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ResponsesRequest,
 				Provider:       provider,
 				ModelRequested: model,
@@ -1027,7 +1027,7 @@ func (p *MockerPlugin) handleDefaultBehavior(req *schemas.BifrostRequest) (*sche
 							FinishReason: &finishReason,
 						},
 					},
-					ExtraFields: schemas.BifrostResponseExtraFields{
+					ExtraFields: &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ChatCompletionRequest,
 						Provider:       provider,
 						ModelRequested: model,

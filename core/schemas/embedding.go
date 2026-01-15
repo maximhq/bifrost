@@ -18,11 +18,11 @@ func (r *BifrostEmbeddingRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostEmbeddingResponse struct {
-	Data        []EmbeddingData            `json:"data"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
-	Model       string                     `json:"model"`
-	Object      string                     `json:"object"` // "list"
-	Usage       *BifrostLLMUsage           `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Data        []EmbeddingData             `json:"data"` // Maps to "data" field in provider responses (e.g., OpenAI embedding format)
+	Model       string                      `json:"model"`
+	Object      string                      `json:"object"` // "list"
+	Usage       *BifrostLLMUsage            `json:"usage"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // EmbeddingInput represents the input for an embedding request.

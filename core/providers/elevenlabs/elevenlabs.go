@@ -252,7 +252,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 
 	// Create response based on whether timestamps were requested
 	bifrostResponse := &schemas.BifrostSpeechResponse{
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.SpeechRequest,
 			Provider:       providerName,
 			ModelRequested: request.Model,
@@ -261,7 +261,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	}
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	if withTimestampsRequest {
@@ -424,7 +424,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 				response := &schemas.BifrostSpeechStreamResponse{
 					Type:  schemas.SpeechStreamResponseTypeDelta,
 					Audio: audioChunk,
-					ExtraFields: schemas.BifrostResponseExtraFields{
+					ExtraFields: &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.SpeechStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
@@ -447,7 +447,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		finalResponse := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Audio: []byte{},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
@@ -458,7 +458,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
+			providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, finalResponse, nil), responseChan)
@@ -555,7 +555,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	}
 
 	response := ToBifrostTranscriptionResponse(chunks)
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
+	response.ExtraFields = &schemas.BifrostResponseExtraFields{
 		RequestType:    schemas.TranscriptionRequest,
 		Provider:       providerName,
 		ModelRequested: request.Model,

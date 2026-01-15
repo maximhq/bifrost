@@ -466,7 +466,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 
 	// Parse Bedrock-specific response
 	bedrockResponse := &BedrockListModelsResponse{}
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bedrockResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, bedrockResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -478,11 +478,6 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-
-	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		response.ExtraFields.RawRequest = rawRequest
-	}
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -567,7 +562,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Parse raw response if enabled
@@ -688,7 +683,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 				// Create BifrostStream response containing the raw model-specific JSON chunk
 				textResponse := &schemas.BifrostTextCompletionResponse{
-					ExtraFields: schemas.BifrostResponseExtraFields{
+					ExtraFields: &schemas.BifrostResponseExtraFields{
 						RequestType:     schemas.TextCompletionStreamRequest,
 						Provider:        providerName,
 						ModelRequested:  request.Model,
@@ -764,7 +759,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -930,7 +925,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				if response != nil {
 					response.ID = id
 					response.Model = request.Model
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{
 						RequestType:     schemas.ChatCompletionStreamRequest,
 						Provider:        providerName,
 						ModelRequested:  request.Model,
@@ -955,7 +950,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		response.ExtraFields.ModelDeployment = deployment
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonData)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1024,7 +1019,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -1112,7 +1107,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 					// End of stream - finalize any open items
 					finalResponses := FinalizeBedrockStream(streamState, chunkIndex, usage)
 					for i, finalResponse := range finalResponses {
-						finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+						finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 							RequestType:     schemas.ResponsesStreamRequest,
 							Provider:        providerName,
 							ModelRequested:  request.Model,
@@ -1131,7 +1126,10 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// Set raw request if enabled
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-								providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
+								if finalResponse.ExtraFields == nil {
+									finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
+								}
+								providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonData)
 							}
 							finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						}
@@ -1214,7 +1212,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 				for _, response := range responses {
 					if response != nil {
-						response.ExtraFields = schemas.BifrostResponseExtraFields{
+						response.ExtraFields = &schemas.BifrostResponseExtraFields{
 							RequestType:     schemas.ResponsesStreamRequest,
 							Provider:        providerName,
 							ModelRequested:  request.Model,
@@ -1478,7 +1476,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 		Status:         schemas.FileStatusProcessed,
 		StorageBackend: schemas.FileStorageS3,
 		StorageURI:     s3URI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileUploadRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1539,7 +1537,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 			Object:  "list",
 			Data:    []schemas.FileObject{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileListRequest,
 				Provider:    providerName,
 			},
@@ -1642,7 +1640,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 		Object:  "list",
 		Data:    files,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1734,24 +1732,13 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 			filename = s3Key[idx+1:]
 		}
 
-		var createdAt int64
-		if lastMod := resp.Header.Get("Last-Modified"); lastMod != "" {
-			if t, err := time.Parse(time.RFC1123, lastMod); err == nil {
-				createdAt = t.Unix()
-			}
-		}
-
 		return &schemas.BifrostFileRetrieveResponse{
-			ID:             request.FileID,
-			Object:         "file",
-			Bytes:          resp.ContentLength,
-			CreatedAt:      createdAt,
 			Filename:       filename,
 			Purpose:        schemas.FilePurposeBatch,
 			Status:         schemas.FileStatusProcessed,
 			StorageBackend: schemas.FileStorageS3,
 			StorageURI:     request.FileID,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileRetrieveRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1841,7 +1828,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 			ID:      request.FileID,
 			Object:  "file",
 			Deleted: true,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileDeleteRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1940,7 +1927,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 			FileID:      request.FileID,
 			Content:     body,
 			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileContentRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2170,7 +2157,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 			Object:      "batch",
 			InputFileID: inputFileID,
 			Status:      schemas.BatchStatusValidating,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCreateRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2185,7 +2172,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 		InputFileID: inputFileID,
 		Status:      retrieveResp.Status,
 		CreatedAt:   retrieveResp.CreatedAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCreateRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2222,7 +2209,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 			Object:  "list",
 			Data:    []schemas.BifrostBatchRetrieveResponse{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -2341,7 +2328,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 		Object:  "list",
 		Data:    batches,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2512,7 +2499,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			Object:   "batch",
 			Status:   ToBifrostBatchStatus(bedrockResp.Status),
 			Metadata: metadata,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchRetrieveRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2654,7 +2641,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 				ID:     request.BatchID,
 				Object: "batch",
 				Status: schemas.BatchStatusCancelling,
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					RequestType: schemas.BatchCancelRequest,
 					Provider:    providerName,
 					Latency:     totalLatency.Milliseconds(),
@@ -2666,7 +2653,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 			ID:     retrieveResp.ID,
 			Object: "batch",
 			Status: retrieveResp.Status,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCancelRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2747,7 +2734,7 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		batchResultsResp := &schemas.BifrostBatchResultsResponse{
 			BatchID: request.BatchID,
 			Results: results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchResultsRequest,
 				Provider:    providerName,
 				Latency:     fileContentResp.ExtraFields.Latency,
@@ -2782,7 +2769,7 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID: request.BatchID,
 		Results: allResults,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchResultsRequest,
 			Provider:    providerName,
 			Latency:     totalLatency,

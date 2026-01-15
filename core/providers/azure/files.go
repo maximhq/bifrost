@@ -79,7 +79,7 @@ func (r *AzureFileResponse) ToBifrostFileUploadResponse(providerName schemas.Mod
 		Status:         openai.ToBifrostFileStatus(r.Status),
 		StatusDetails:  r.StatusDetails,
 		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileUploadRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

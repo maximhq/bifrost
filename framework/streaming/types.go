@@ -211,7 +211,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 
 		resp.TextCompletionResponse = textResp
-		resp.TextCompletionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		resp.TextCompletionResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.TextCompletionRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
@@ -255,7 +255,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		}
 
 		resp.ChatResponse = chatResp
-		resp.ChatResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		resp.ChatResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ChatCompletionRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
@@ -279,7 +279,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 		if p.Data.TokenUsage != nil {
 			responsesResp.Usage = p.Data.TokenUsage.ToResponsesResponseUsage()
 		}
-		responsesResp.ExtraFields = schemas.BifrostResponseExtraFields{
+		responsesResp.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
@@ -301,7 +301,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			speechResp = &schemas.BifrostSpeechResponse{}
 		}
 		resp.SpeechResponse = speechResp
-		resp.SpeechResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		resp.SpeechResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.SpeechRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,
@@ -322,7 +322,7 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			transcriptionResp = &schemas.BifrostTranscriptionResponse{}
 		}
 		resp.TranscriptionResponse = transcriptionResp
-		resp.TranscriptionResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		resp.TranscriptionResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.TranscriptionRequest,
 			Provider:       p.Provider,
 			ModelRequested: p.Model,

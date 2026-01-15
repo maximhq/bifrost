@@ -14,6 +14,9 @@ func (response *OpenAIListModelsResponse) ToBifrostListModelsResponse(providerKe
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Data)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerKey,
+		},
 	}
 
 	for _, model := range response.Data {

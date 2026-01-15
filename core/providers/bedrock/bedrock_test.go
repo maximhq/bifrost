@@ -1567,7 +1567,7 @@ func TestBifrostToBedrockResponseConversion(t *testing.T) {
 						},
 					},
 				},
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					Latency: latency,
 				},
 			},

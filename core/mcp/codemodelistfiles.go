@@ -41,7 +41,7 @@ func (m *ToolsManager) createListToolFilesTool() schemas.ChatTool {
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
-			Name: ToolTypeListToolFiles,
+			Name:        ToolTypeListToolFiles,
 			Description: schemas.Ptr(description),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
@@ -131,16 +131,18 @@ type treeNode struct {
 //   - ["servers/calculator/add.d.ts", "servers/youtube/GET_CHANNELS.d.ts"]
 //
 // Example output for server-level:
-//   servers/
-//     calculator.d.ts
-//     youtube.d.ts
+//
+//	servers/
+//	  calculator.d.ts
+//	  youtube.d.ts
 //
 // Example output for tool-level:
-//   servers/
-//     calculator/
-//       add.d.ts
-//     youtube/
-//       GET_CHANNELS.d.ts
+//
+//	servers/
+//	  calculator/
+//	    add.d.ts
+//	  youtube/
+//	    GET_CHANNELS.d.ts
 func buildVFSTree(files []string) string {
 	if len(files) == 0 {
 		return ""

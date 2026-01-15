@@ -7,6 +7,160 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// OpenAIChatResponse represents the OpenAI chat completion response format.
+// This is used when converting BifrostChatResponse to OpenAI-compatible format
+// for clients like MstyStudio that expect pure OpenAI responses.
+type OpenAIChatResponse struct {
+	ID                string                 `json:"id"`
+	Object            string                 `json:"object"`
+	Created           int                    `json:"created"`
+	Model             string                 `json:"model"`
+	Choices           []OpenAIChatChoice     `json:"choices"`
+	Usage             *OpenAIChatUsage       `json:"usage,omitempty"`
+	ServiceTier       *string                `json:"service_tier,omitempty"`
+	SystemFingerprint string                 `json:"system_fingerprint,omitempty"`
+	SearchResults     []schemas.SearchResult `json:"search_results,omitempty"`
+	Videos            []schemas.VideoResult  `json:"videos,omitempty"`
+	Citations         []string               `json:"citations,omitempty"`
+}
+
+// OpenAIChatChoice represents a choice in the OpenAI chat completion response.
+type OpenAIChatChoice struct {
+	Index        int                      `json:"index"`
+	Message      *OpenAIChatMessage       `json:"message,omitempty"`
+	Delta        *OpenAIChatDelta         `json:"delta,omitempty"`
+	FinishReason *string                  `json:"finish_reason,omitempty"`
+	LogProbs     *schemas.BifrostLogProbs `json:"logprobs,omitempty"`
+}
+
+// OpenAIChatMessage represents a message in the OpenAI chat completion response.
+type OpenAIChatMessage struct {
+	Role        string                                   `json:"role"`
+	Content     *string                                  `json:"content"`
+	Refusal     *string                                  `json:"refusal,omitempty"`
+	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
+	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
+	Audio       *schemas.ChatAudioMessageAudio           `json:"audio,omitempty"`
+}
+
+// OpenAIChatDelta represents a delta in the OpenAI streaming chat completion response.
+type OpenAIChatDelta struct {
+	Role      *string                                `json:"role,omitempty"`
+	Content   *string                                `json:"content,omitempty"`
+	Refusal   *string                                `json:"refusal,omitempty"`
+	ToolCalls []schemas.ChatAssistantMessageToolCall `json:"tool_calls,omitempty"`
+	Audio     *schemas.ChatAudioMessageAudio         `json:"audio,omitempty"`
+}
+
+// OpenAIChatUsage represents usage information in the OpenAI chat completion response.
+type OpenAIChatUsage struct {
+	PromptTokens            int                                  `json:"prompt_tokens"`
+	CompletionTokens        int                                  `json:"completion_tokens"`
+	TotalTokens             int                                  `json:"total_tokens"`
+	PromptTokensDetails     *schemas.ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *schemas.ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// ToOpenAIChatResponse converts a BifrostChatResponse to OpenAI-compatible format.
+// This ensures clients like MstyStudio receive properly formatted responses
+// without Bifrost-specific fields like extra_fields.
+func ToOpenAIChatResponse(resp *schemas.BifrostChatResponse) *OpenAIChatResponse {
+	if resp == nil {
+		return nil
+	}
+
+	openaiResp := &OpenAIChatResponse{
+		ID:                resp.ID,
+		Object:            resp.Object,
+		Created:           resp.Created,
+		Model:             resp.Model,
+		ServiceTier:       resp.ServiceTier,
+		SystemFingerprint: resp.SystemFingerprint,
+		SearchResults:     resp.SearchResults,
+		Videos:            resp.Videos,
+		Citations:         resp.Citations,
+	}
+
+	// Set default object if not set
+	if openaiResp.Object == "" {
+		openaiResp.Object = "chat.completion"
+	}
+
+	// Convert usage
+	if resp.Usage != nil {
+		openaiResp.Usage = &OpenAIChatUsage{
+			PromptTokens:            resp.Usage.PromptTokens,
+			CompletionTokens:        resp.Usage.CompletionTokens,
+			TotalTokens:             resp.Usage.TotalTokens,
+			PromptTokensDetails:     resp.Usage.PromptTokensDetails,
+			CompletionTokensDetails: resp.Usage.CompletionTokensDetails,
+		}
+	}
+
+	// Convert choices
+	openaiResp.Choices = make([]OpenAIChatChoice, 0, len(resp.Choices))
+	for _, choice := range resp.Choices {
+		openaiChoice := OpenAIChatChoice{
+			Index:        choice.Index,
+			FinishReason: choice.FinishReason,
+			LogProbs:     choice.LogProbs,
+		}
+
+		// Handle non-streaming response (message)
+		if choice.ChatNonStreamResponseChoice != nil && choice.ChatNonStreamResponseChoice.Message != nil {
+			msg := choice.ChatNonStreamResponseChoice.Message
+			openaiChoice.Message = &OpenAIChatMessage{
+				Role: string(msg.Role),
+			}
+
+			// Extract content string
+			if msg.Content != nil {
+				openaiChoice.Message.Content = msg.Content.ContentStr
+			}
+
+			// Copy assistant message fields
+			if msg.ChatAssistantMessage != nil {
+				openaiChoice.Message.Refusal = msg.ChatAssistantMessage.Refusal
+				openaiChoice.Message.ToolCalls = msg.ChatAssistantMessage.ToolCalls
+				openaiChoice.Message.Annotations = msg.ChatAssistantMessage.Annotations
+				openaiChoice.Message.Audio = msg.ChatAssistantMessage.Audio
+			}
+		}
+
+		// Handle streaming response (delta)
+		if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+			delta := choice.ChatStreamResponseChoice.Delta
+			openaiChoice.Delta = &OpenAIChatDelta{
+				Role:      delta.Role,
+				Content:   delta.Content,
+				Refusal:   delta.Refusal,
+				ToolCalls: delta.ToolCalls,
+				Audio:     delta.Audio,
+			}
+		}
+
+		openaiResp.Choices = append(openaiResp.Choices, openaiChoice)
+	}
+
+	return openaiResp
+}
+
+// ToOpenAIChatStreamResponse converts a BifrostChatResponse to OpenAI-compatible
+// streaming format. This is used for SSE streaming responses.
+func ToOpenAIChatStreamResponse(resp *schemas.BifrostChatResponse) *OpenAIChatResponse {
+	if resp == nil {
+		return nil
+	}
+
+	openaiResp := ToOpenAIChatResponse(resp)
+	if openaiResp != nil {
+		// Always set to chunk for streaming responses
+		openaiResp.Object = "chat.completion.chunk"
+	}
+
+	return openaiResp
+}
+
 // ToBifrostResponsesRequest converts an OpenAI responses request to Bifrost format
 func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
 	if request == nil {

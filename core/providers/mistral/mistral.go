@@ -469,7 +469,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 			if ctx.Err() != nil {
 				return
 			}
-			
+
 			line := scanner.Text()
 
 			// Skip empty lines (event delimiter)
@@ -508,7 +508,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {	
+			if ctx.Err() != nil {
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -573,7 +573,7 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 	}
 
 	// Set extra fields
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
+	response.ExtraFields = &schemas.BifrostResponseExtraFields{
 		RequestType:    schemas.TranscriptionStreamRequest,
 		Provider:       providerName,
 		ModelRequested: model,

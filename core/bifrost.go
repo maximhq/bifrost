@@ -506,7 +506,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 	// Return aggregated response with accumulated latency
 	response := &schemas.BifrostListModelsResponse{
 		Data: allModels,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ListModelsRequest,
 			Latency:     time.Since(startTime).Milliseconds(),
 		},

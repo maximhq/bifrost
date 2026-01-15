@@ -51,6 +51,9 @@ func (r *MistralTranscriptionResponse) ToBifrostTranscriptionResponse() *schemas
 		Duration: r.Duration,
 		Language: r.Language,
 		Task:     schemas.Ptr("transcribe"),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			RequestType: schemas.TranscriptionRequest,
+		},
 	}
 
 	// Convert segments
@@ -172,7 +175,9 @@ func (e *MistralTranscriptionStreamEvent) ToBifrostTranscriptionStreamResponse()
 		return nil
 	}
 
-	response := &schemas.BifrostTranscriptionStreamResponse{}
+	response := &schemas.BifrostTranscriptionStreamResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	switch MistralTranscriptionStreamEventType(e.Event) {
 	case MistralTranscriptionStreamEventTextDelta:

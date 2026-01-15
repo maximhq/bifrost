@@ -18,12 +18,12 @@ func (r *BifrostSpeechRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostSpeechResponse struct {
-	Audio               []byte                     `json:"audio"`
-	Usage               *SpeechUsage               `json:"usage"`
-	Alignment           *SpeechAlignment           `json:"alignment,omitempty"`            // Character-level timing information
-	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
-	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
-	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+	Audio               []byte                      `json:"audio"`
+	Usage               *SpeechUsage                `json:"usage"`
+	Alignment           *SpeechAlignment            `json:"alignment,omitempty"`            // Character-level timing information
+	NormalizedAlignment *SpeechAlignment            `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
+	AudioBase64         *string                     `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
+	ExtraFields         *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -129,10 +129,10 @@ const (
 )
 
 type BifrostSpeechStreamResponse struct {
-	Type        SpeechStreamResponseType   `json:"type"`
-	Audio       []byte                     `json:"audio"`
-	Usage       *SpeechUsage               `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Type        SpeechStreamResponseType    `json:"type"`
+	Audio       []byte                      `json:"audio"`
+	Usage       *SpeechUsage                `json:"usage"`
+	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
 type SpeechUsage struct {

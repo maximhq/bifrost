@@ -74,6 +74,9 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: schemas.Vertex,
+		},
 	}
 
 	// Track which model IDs have been added to avoid duplicates

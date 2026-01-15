@@ -18,6 +18,7 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -683,6 +684,11 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Strip extra_fields for OpenAI-compatible clients when provider is not OpenAI
+	if resp != nil && (resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI) {
+		resp = integrations.StripExtraFieldsForOpenAI(resp)
+	}
+
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -1232,6 +1238,15 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, ge
 		for chunk := range stream {
 			if chunk == nil {
 				continue
+			}
+
+			// Strip extra_fields for OpenAI-compatible clients when provider is not OpenAI
+			if chunk.BifrostChatResponse != nil {
+				resp := chunk.BifrostChatResponse
+				if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
+					stripped := integrations.StripExtraFieldsForOpenAI(resp)
+					chunk.BifrostChatResponse = stripped
+				}
 			}
 
 			includeEventType = false

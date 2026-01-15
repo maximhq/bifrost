@@ -914,7 +914,7 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 		Type:           schemas.ResponsesStreamResponseTypeCreated,
 		SequenceNumber: 0,
 		Response:       &schemas.BifrostResponsesResponse{},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
 			ModelRequested: model,
@@ -935,7 +935,7 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
 		SequenceNumber: 1,
 		Response:       &schemas.BifrostResponsesResponse{},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
 			ModelRequested: model,
@@ -1236,7 +1236,7 @@ func CreateBifrostTextCompletionChunkResponse(
 				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{}, // empty delta
 			},
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    requestType,
 			Provider:       providerName,
 			ModelRequested: model,
@@ -1268,7 +1268,7 @@ func CreateBifrostChatCompletionChunkResponse(
 				},
 			},
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType:    requestType,
 			Provider:       providerName,
 			ModelRequested: model,
@@ -1331,9 +1331,11 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
 	// Drain any remaining data from the body stream before releasing
 	// This prevents "whitespace in header" errors when the response is reused
-	if resp.BodyStream() != nil {
-		// Drain the body stream
-		io.Copy(io.Discard, resp.BodyStream())
+	if bs := resp.BodyStream(); bs != nil {
+		io.Copy(io.Discard, bs)
+		if closer, ok := bs.(io.Closer); ok {
+			_ = closer.Close()
+		}
 	}
 	fasthttp.ReleaseResponse(resp)
 }
@@ -1376,7 +1378,8 @@ func GetBifrostResponseForStreamResponse(
 func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse) *schemas.BifrostListModelsResponse {
 	if len(responses) == 0 {
 		return &schemas.BifrostListModelsResponse{
-			Data: []schemas.Model{},
+			Data:        []schemas.Model{},
+			ExtraFields: &schemas.BifrostResponseExtraFields{},
 		}
 	}
 
@@ -1385,7 +1388,8 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 	// Use a map to track unique model IDs for efficient deduplication
 	seenIDs := make(map[string]struct{})
 	aggregated := &schemas.BifrostListModelsResponse{
-		Data: make([]schemas.Model, 0),
+		Data:        make([]schemas.Model, 0),
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
 	}
 
 	// Aggregate all models with deduplication, and collect raw responses
@@ -1405,7 +1409,7 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 		}
 
 		// Collect raw response if present
-		if response.ExtraFields.RawResponse != nil {
+		if response.ExtraFields != nil && response.ExtraFields.RawResponse != nil {
 			rawResponses = append(rawResponses, response.ExtraFields.RawResponse)
 		}
 	}

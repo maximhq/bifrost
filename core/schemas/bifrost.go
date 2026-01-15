@@ -371,45 +371,85 @@ type BifrostResponse struct {
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
 	case r.TextCompletionResponse != nil:
-		return &r.TextCompletionResponse.ExtraFields
+		if r.TextCompletionResponse.ExtraFields != nil {
+			return r.TextCompletionResponse.ExtraFields
+		}
 	case r.ChatResponse != nil:
-		return &r.ChatResponse.ExtraFields
+		if r.ChatResponse.ExtraFields != nil {
+			return r.ChatResponse.ExtraFields
+		}
 	case r.ResponsesResponse != nil:
-		return &r.ResponsesResponse.ExtraFields
+		if r.ResponsesResponse.ExtraFields != nil {
+			return r.ResponsesResponse.ExtraFields
+		}
 	case r.ResponsesStreamResponse != nil:
-		return &r.ResponsesStreamResponse.ExtraFields
+		if r.ResponsesStreamResponse.ExtraFields != nil {
+			return r.ResponsesStreamResponse.ExtraFields
+		}
 	case r.CountTokensResponse != nil:
-		return &r.CountTokensResponse.ExtraFields
+		if r.CountTokensResponse.ExtraFields != nil {
+			return r.CountTokensResponse.ExtraFields
+		}
 	case r.EmbeddingResponse != nil:
-		return &r.EmbeddingResponse.ExtraFields
+		if r.EmbeddingResponse.ExtraFields != nil {
+			return r.EmbeddingResponse.ExtraFields
+		}
 	case r.SpeechResponse != nil:
-		return &r.SpeechResponse.ExtraFields
+		if r.SpeechResponse.ExtraFields != nil {
+			return r.SpeechResponse.ExtraFields
+		}
 	case r.SpeechStreamResponse != nil:
-		return &r.SpeechStreamResponse.ExtraFields
+		if r.SpeechStreamResponse.ExtraFields != nil {
+			return r.SpeechStreamResponse.ExtraFields
+		}
 	case r.TranscriptionResponse != nil:
-		return &r.TranscriptionResponse.ExtraFields
+		if r.TranscriptionResponse.ExtraFields != nil {
+			return r.TranscriptionResponse.ExtraFields
+		}
 	case r.TranscriptionStreamResponse != nil:
-		return &r.TranscriptionStreamResponse.ExtraFields
+		if r.TranscriptionStreamResponse.ExtraFields != nil {
+			return r.TranscriptionStreamResponse.ExtraFields
+		}
 	case r.FileUploadResponse != nil:
-		return &r.FileUploadResponse.ExtraFields
+		if r.FileUploadResponse.ExtraFields != nil {
+			return r.FileUploadResponse.ExtraFields
+		}
 	case r.FileListResponse != nil:
-		return &r.FileListResponse.ExtraFields
+		if r.FileListResponse.ExtraFields != nil {
+			return r.FileListResponse.ExtraFields
+		}
 	case r.FileRetrieveResponse != nil:
-		return &r.FileRetrieveResponse.ExtraFields
+		if r.FileRetrieveResponse.ExtraFields != nil {
+			return r.FileRetrieveResponse.ExtraFields
+		}
 	case r.FileDeleteResponse != nil:
-		return &r.FileDeleteResponse.ExtraFields
+		if r.FileDeleteResponse.ExtraFields != nil {
+			return r.FileDeleteResponse.ExtraFields
+		}
 	case r.FileContentResponse != nil:
-		return &r.FileContentResponse.ExtraFields
+		if r.FileContentResponse.ExtraFields != nil {
+			return r.FileContentResponse.ExtraFields
+		}
 	case r.BatchCreateResponse != nil:
-		return &r.BatchCreateResponse.ExtraFields
+		if r.BatchCreateResponse.ExtraFields != nil {
+			return r.BatchCreateResponse.ExtraFields
+		}
 	case r.BatchListResponse != nil:
-		return &r.BatchListResponse.ExtraFields
+		if r.BatchListResponse.ExtraFields != nil {
+			return r.BatchListResponse.ExtraFields
+		}
 	case r.BatchRetrieveResponse != nil:
-		return &r.BatchRetrieveResponse.ExtraFields
+		if r.BatchRetrieveResponse.ExtraFields != nil {
+			return r.BatchRetrieveResponse.ExtraFields
+		}
 	case r.BatchCancelResponse != nil:
-		return &r.BatchCancelResponse.ExtraFields
+		if r.BatchCancelResponse.ExtraFields != nil {
+			return r.BatchCancelResponse.ExtraFields
+		}
 	case r.BatchResultsResponse != nil:
-		return &r.BatchResultsResponse.ExtraFields
+		if r.BatchResultsResponse.ExtraFields != nil {
+			return r.BatchResultsResponse.ExtraFields
+		}
 	}
 
 	return &BifrostResponseExtraFields{}

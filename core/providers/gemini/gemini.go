@@ -254,7 +254,10 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		if bifrostResponse.ExtraFields == nil {
+			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
+		}
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -489,7 +492,7 @@ func HandleGeminiChatCompletionStream(
 				if modelName != "" {
 					response.Model = modelName
 				}
-				response.ExtraFields = schemas.BifrostResponseExtraFields{
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{
 					RequestType:    schemas.ChatCompletionStreamRequest,
 					Provider:       providerName,
 					ModelRequested: model,
@@ -514,7 +517,10 @@ func HandleGeminiChatCompletionStream(
 
 				if isLastChunk {
 					if sendBackRawRequest {
-						providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+						if response.ExtraFields == nil {
+							response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+						}
+						providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 					}
 					response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -587,7 +593,10 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		if bifrostResponse.ExtraFields == nil {
+			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
+		}
+		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -828,7 +837,7 @@ func HandleGeminiResponsesStream(
 
 			for i, response := range responses {
 				if response != nil {
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
+					response.ExtraFields = &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.ResponsesStreamRequest,
 						Provider:       providerName,
 						ModelRequested: model,
@@ -860,7 +869,10 @@ func HandleGeminiResponsesStream(
 
 					if isLastChunk {
 						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+							if response.ExtraFields == nil {
+								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+							}
+							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -896,7 +908,7 @@ func HandleGeminiResponsesStream(
 				logger.Warn("FinalizeGeminiResponsesStream returned nil; skipping final response")
 				continue
 			}
-			finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ResponsesStreamRequest,
 				Provider:       providerName,
 				ModelRequested: model,
@@ -1065,7 +1077,10 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+		if response.ExtraFields == nil {
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+		}
+		providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonData)
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1263,7 +1278,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				response := &schemas.BifrostSpeechStreamResponse{
 					Type:  schemas.SpeechStreamResponseTypeDelta,
 					Audio: audioChunk,
-					ExtraFields: schemas.BifrostResponseExtraFields{
+					ExtraFields: &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.SpeechStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
@@ -1294,7 +1309,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		response := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Usage: usage,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.SpeechStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
@@ -1304,7 +1319,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		}
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			if response.ExtraFields == nil {
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+			}
+			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil), responseChan)
@@ -1349,7 +1367,10 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+		if response.ExtraFields == nil {
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+		}
+		providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonData)
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1553,7 +1574,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				response := &schemas.BifrostTranscriptionStreamResponse{
 					Type:  schemas.TranscriptionStreamResponseTypeDelta,
 					Delta: &deltaText, // Delta text for this chunk
-					ExtraFields: schemas.BifrostResponseExtraFields{
+					ExtraFields: &schemas.BifrostResponseExtraFields{
 						RequestType:    schemas.TranscriptionStreamRequest,
 						Provider:       providerName,
 						ModelRequested: request.Model,
@@ -1591,7 +1612,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				OutputTokens: usage.OutputTokens,
 				TotalTokens:  usage.TotalTokens,
 			},
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.TranscriptionStreamRequest,
 				Provider:       providerName,
 				ModelRequested: request.Model,
@@ -1602,7 +1623,10 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+			if response.ExtraFields == nil {
+				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
+			}
+			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, response), responseChan)
@@ -1767,7 +1791,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			Completed: completedCount,
 			Failed:    failedCount,
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCreateRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1836,7 +1860,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 				Object:  "list",
 				Data:    []schemas.BifrostBatchRetrieveResponse{},
 				HasMore: false,
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					RequestType: schemas.BatchListRequest,
 					Provider:    providerName,
 					Latency:     latency.Milliseconds(),
@@ -1868,7 +1892,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 			Status:        ToBifrostBatchStatus(batch.Metadata.State),
 			CreatedAt:     parseGeminiTimestamp(batch.Metadata.CreateTime),
 			OperationName: &batch.Name,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -1886,7 +1910,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 		Data:       data,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1923,7 +1947,7 @@ func (provider *GeminiProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 			Object:  "list",
 			Data:    []schemas.BifrostBatchRetrieveResponse{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -1957,7 +1981,7 @@ func (provider *GeminiProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 		Object:  "list",
 		Data:    resp.Data,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2046,7 +2070,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Pending:   geminiResp.Metadata.BatchStats.PendingRequestCount,
 			Failed:    failedCount,
 		},
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2142,7 +2166,7 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 		Object:       "batch",
 		Status:       schemas.BatchStatusCancelling,
 		CancellingAt: &now,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCancelRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2348,7 +2372,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID: request.BatchID,
 		Results: results,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchResultsRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2524,7 +2548,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 		StorageBackend: schemas.FileStorageAPI,
 		StorageURI:     geminiResp.URI,
 		ExpiresAt:      expiresAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileUploadRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2592,7 +2616,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 		Object:  "list",
 		Data:    make([]schemas.FileObject, len(geminiResp.Files)),
 		HasMore: geminiResp.NextPageToken != "",
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2663,7 +2687,7 @@ func (provider *GeminiProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 			Object:  "list",
 			Data:    []schemas.FileObject{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileListRequest,
 				Provider:    providerName,
 			},
@@ -2697,7 +2721,7 @@ func (provider *GeminiProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		Object:  "list",
 		Data:    resp.Data,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2786,7 +2810,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 		StorageBackend: schemas.FileStorageAPI,
 		StorageURI:     geminiResp.URI,
 		ExpiresAt:      expiresAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2868,7 +2892,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 		ID:      request.FileID,
 		Object:  "file",
 		Deleted: true,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileDeleteRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

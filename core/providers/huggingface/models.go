@@ -20,6 +20,10 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerKey,
+		},
 	}
 	for _, model := range response.Models {
 		if model.ModelID == "" {

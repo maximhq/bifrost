@@ -347,6 +347,9 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 	// Aggregate results
 	aggregatedResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
+		ExtraFields: &schemas.BifrostResponseExtraFields{
+			Provider: providerName,
+		},
 	}
 	var totalLatency int64
 	var successCount int
@@ -469,7 +472,9 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	bifrostResponse := &schemas.BifrostChatResponse{}
+	bifrostResponse := &schemas.BifrostChatResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	var rawResponse interface{}
 	var rawRequest interface{}

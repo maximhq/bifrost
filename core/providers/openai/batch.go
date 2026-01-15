@@ -93,7 +93,7 @@ func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.
 		CreatedAt:        r.CreatedAt,
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCreateRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -144,7 +144,7 @@ func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(providerName schema
 		OutputFileID:     r.OutputFileID,
 		ErrorFileID:      r.ErrorFileID,
 		Errors:           r.Errors,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchRetrieveRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),

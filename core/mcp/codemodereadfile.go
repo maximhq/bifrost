@@ -62,7 +62,7 @@ func (m *ToolsManager) createReadToolFileTool() schemas.ChatTool {
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
-			Name: ToolTypeReadToolFile,
+			Name:        ToolTypeReadToolFile,
 			Description: schemas.Ptr(toolDescription),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",

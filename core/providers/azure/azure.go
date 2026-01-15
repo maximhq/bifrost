@@ -488,7 +488,9 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostChatResponse{}
+	response := &schemas.BifrostChatResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -835,7 +837,9 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := &schemas.BifrostEmbeddingResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -1103,7 +1107,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					response := schemas.BifrostSpeechStreamResponse{
 						Type:  schemas.SpeechStreamResponseTypeDelta,
 						Audio: audioData,
-						ExtraFields: schemas.BifrostResponseExtraFields{
+						ExtraFields: &schemas.BifrostResponseExtraFields{
 							RequestType:     schemas.SpeechStreamRequest,
 							Provider:        provider.GetProviderKey(),
 							ModelRequested:  request.Model,
@@ -1139,7 +1143,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		if chunkIndex >= 0 {
 			finalResponse := schemas.BifrostSpeechStreamResponse{
 				Type: schemas.SpeechStreamResponseTypeDone,
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					RequestType:     schemas.SpeechStreamRequest,
 					Provider:        provider.GetProviderKey(),
 					ModelRequested:  request.Model,
@@ -1150,7 +1154,10 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			}
 
 			if sendBackRawRequest {
-				providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
+				if finalResponse.ExtraFields == nil {
+					finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
+				}
+				providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonBody)
 			}
 
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1382,7 +1389,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 			Object:  "list",
 			Data:    []schemas.FileObject{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileListRequest,
 				Provider:    providerName,
 			},
@@ -1480,7 +1487,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 		Object:  "list",
 		Data:    files,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.FileListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -1662,7 +1669,7 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 				ID:      request.FileID,
 				Object:  "file",
 				Deleted: true,
-				ExtraFields: schemas.BifrostResponseExtraFields{
+				ExtraFields: &schemas.BifrostResponseExtraFields{
 					RequestType: schemas.FileDeleteRequest,
 					Provider:    providerName,
 					Latency:     latency.Milliseconds(),
@@ -1694,7 +1701,7 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 			ID:      openAIResp.ID,
 			Object:  openAIResp.Object,
 			Deleted: openAIResp.Deleted,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileDeleteRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1804,7 +1811,7 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 			FileID:      request.FileID,
 			Content:     content,
 			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.FileContentRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -1955,7 +1962,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 			Object:  "list",
 			Data:    []schemas.BifrostBatchRetrieveResponse{},
 			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchListRequest,
 				Provider:    providerName,
 			},
@@ -2042,7 +2049,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 		Object:  "list",
 		Data:    batches,
 		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchListRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
@@ -2249,7 +2256,7 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 			Status:       openai.ToBifrostBatchStatus(openAIResp.Status),
 			CancellingAt: openAIResp.CancellingAt,
 			CancelledAt:  openAIResp.CancelledAt,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			ExtraFields: &schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCancelRequest,
 				Provider:    providerName,
 				Latency:     latency.Milliseconds(),
@@ -2321,7 +2328,7 @@ func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID: request.BatchID,
 		Results: results,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		ExtraFields: &schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchResultsRequest,
 			Provider:    providerName,
 			Latency:     fileContentResp.ExtraFields.Latency,
