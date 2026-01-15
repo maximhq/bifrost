@@ -161,6 +161,10 @@ type ConfigStore interface {
 	// Returns true if the lock was released, false if it wasn't held by the given holder.
 	ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error)
 
+	// CleanupExpiredLockByKey atomically deletes a specific lock only if it has expired.
+	// Returns true if an expired lock was deleted, false if the lock doesn't exist or hasn't expired.
+	CleanupExpiredLockByKey(ctx context.Context, lockKey string) (bool, error)
+
 	// CleanupExpiredLocks removes all locks that have expired.
 	// Returns the number of locks cleaned up.
 	CleanupExpiredLocks(ctx context.Context) (int64, error)

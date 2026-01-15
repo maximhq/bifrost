@@ -146,7 +146,7 @@ type DistributedLock struct {
 }
 
 // Lock acquires the lock, blocking until it's available or the context is cancelled.
-// It will retry up to maxRetries times with retryInterval between attempts.
+// It will make up to (maxRetries + 1) attempts, sleeping retryInterval between failed attempts.
 func (l *DistributedLock) Lock(ctx context.Context) error {
 	for i := 0; i <= l.maxRetries; i++ {
 		select {

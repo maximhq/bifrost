@@ -22,8 +22,7 @@ const (
 
 type ModelCatalog struct {
 	configStore            configstore.ConfigStore
-	distributedLockManager *configstore.DistributedLockManager
-
+	
 	logger schemas.Logger
 
 	// Pricing configuration fields (protected by pricingMu)
@@ -106,8 +105,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		done:                   make(chan struct{}),
-		shouldSyncPricingFunc:  shouldSyncPricingFunc,
-		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
+		shouldSyncPricingFunc:  shouldSyncPricingFunc,		
 	}
 
 	logger.Info("initializing pricing manager...")
@@ -116,13 +114,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		if err := mc.loadPricingFromDatabase(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load initial pricing data: %w", err)
 		}
-		// For the boot-up we sync pricing data from file to database
-		// Use distributed lock to prevent race condition when multiple instances boot simultaneously
-		lock := mc.distributedLockManager.NewLock("modelcatalog_sync")
-		if err := lock.LockWithRetry(ctx, 10); err != nil {
-			return nil, fmt.Errorf("failed to acquire pricing sync lock: %w", err)
-		}
-		defer lock.Unlock(ctx)
 		if err := mc.syncPricing(ctx); err != nil {
 			return nil, fmt.Errorf("failed to sync pricing data: %w", err)
 		}

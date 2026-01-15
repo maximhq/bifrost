@@ -57,13 +57,21 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 	if dp.getName, ok = getNameSym.(func() string); !ok {
 		return nil, fmt.Errorf("failed to cast GetName to func() string")
 	}
-	// Looking up for HTTPTransportIntercept method
-	httpTransportInterceptSym, err := plugin.Lookup("HTTPTransportIntercept")
+	// Looking up for HTTPTransportPreHook method
+	httpTransportPreHookSym, err := plugin.Lookup("HTTPTransportPreHook")
 	if err != nil {
 		return nil, err
 	}
-	if dp.httpTransportIntercept, ok = httpTransportInterceptSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportIntercept to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)")
+	if dp.httpTransportPreHook, ok = httpTransportPreHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
+		return nil, fmt.Errorf("failed to cast HTTPTransportPreHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)")
+	}
+	// Looking up for HTTPTransportPostHook method
+	httpTransportPostHookSym, err := plugin.Lookup("HTTPTransportPostHook")
+	if err != nil {
+		return nil, err
+	}
+	if dp.httpTransportPostHook, ok = httpTransportPostHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error); !ok {
+		return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error")
 	}
 	// Looking up for PreHook method
 	preHookSym, err := plugin.Lookup("PreHook")
