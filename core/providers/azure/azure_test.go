@@ -24,18 +24,18 @@ func TestAzure(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Azure,
-		ChatModel:      "gpt-4o-backup",
-		VisionModel:    "gpt-4o",
-		ChatAudioModel: "gpt-4o-mini-audio-preview",
+		Provider:        schemas.Azure,
+		ChatModels:      []string{"gpt-4o-backup"},
+		VisionModels:    []string{"gpt-4o"},
+		ChatAudioModels: []string{"gpt-4o-mini-audio-preview"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
 		},
-		TextModel:            "", // Azure doesn't support text completion in newer models
-		EmbeddingModel:       "text-embedding-ada-002",
-		ReasoningModel:       "claude-opus-4-5",
-		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		TranscriptionModel:   "whisper",
+		TextModels:            []string{""}, // Azure doesn't support text completion in newer models
+		EmbeddingModels:       []string{"text-embedding-ada-002"},
+		ReasoningModels:       []string{"claude-opus-4-5"},
+		SpeechSynthesisModels: []string{"gpt-4o-mini-tts"},
+		TranscriptionModels:   []string{"whisper"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

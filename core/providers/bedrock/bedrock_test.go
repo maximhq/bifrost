@@ -119,16 +119,16 @@ func TestBedrock(t *testing.T) {
 	}
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:    schemas.Bedrock,
-		ChatModel:   "claude-4-sonnet",
-		VisionModel: "claude-4-sonnet",
+		Provider:     schemas.Bedrock,
+		ChatModels:   []string{"claude-4-sonnet"},
+		VisionModels: []string{"claude-4-sonnet"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:     "cohere.embed-v4:0",
-		ReasoningModel:     "claude-4.5-sonnet",
-		PromptCachingModel: "claude-4.5-sonnet",
+		EmbeddingModels:     []string{"cohere.embed-v4:0"},
+		ReasoningModels:     []string{"claude-4.5-sonnet"},
+		PromptCachingModels: []string{"claude-4.5-sonnet"},
 		BatchExtraParams:   batchExtraParams,
 		FileExtraParams:    fileExtraParams,
 		Scenarios: testutil.TestScenarios{

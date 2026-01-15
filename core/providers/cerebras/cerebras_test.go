@@ -23,15 +23,15 @@ func TestCerebras(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:  schemas.Cerebras,
-		ChatModel: "llama-3.3-70b",
+		Provider:   schemas.Cerebras,
+		ChatModels: []string{"llama-3.3-70b"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Cerebras, Model: "llama3.1-8b"},
 			{Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
 		},
-		TextModel:      "llama3.1-8b",
-		EmbeddingModel: "", // Cerebras doesn't support embedding
-		ReasoningModel: "gpt-oss-120b",
+		TextModels:      []string{"llama3.1-8b"},
+		EmbeddingModels: []string{""}, // Cerebras doesn't support embedding
+		ReasoningModels: []string{"gpt-oss-120b"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,

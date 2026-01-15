@@ -22,13 +22,13 @@ func TestNebius(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:  schemas.Nebius,
-		ChatModel: "openai/gpt-oss-120b",
-		TextModel: "openai/gpt-oss-120b",
+		Provider:   schemas.Nebius,
+		ChatModels: []string{"openai/gpt-oss-120b"},
+		TextModels: []string{"openai/gpt-oss-120b"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Nebius, Model: "meta-llama/Meta-Llama-3.1-8B-Instruct-fast"},
 		},
-		EmbeddingModel: "BAAI/bge-en-icl",
+		EmbeddingModels: []string{"BAAI/bge-en-icl"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,

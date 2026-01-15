@@ -22,16 +22,16 @@ func TestHuggingface(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:             schemas.HuggingFace,
-		ChatModel:            "sambanova/meta-llama/Llama-3.1-8B-Instruct",
-		VisionModel:          "cohere/CohereLabs/aya-vision-32b",
-		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
-		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
-		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
+		Provider:              schemas.HuggingFace,
+		ChatModels:            []string{"sambanova/meta-llama/Llama-3.1-8B-Instruct"},
+		VisionModels:          []string{"cohere/CohereLabs/aya-vision-32b"},
+		EmbeddingModels:       []string{"sambanova/intfloat/e5-mistral-7b-instruct"},
+		TranscriptionModels:   []string{"fal-ai/openai/whisper-large-v3"},
+		SpeechSynthesisModels: []string{"fal-ai/hexgrad/Kokoro-82M"},
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.HuggingFace, Model: "fal-ai/ResembleAI/chatterbox"},
 		},
-		ReasoningModel: "groq/openai/gpt-oss-120b",
+		ReasoningModels: []string{"groq/openai/gpt-oss-120b"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,

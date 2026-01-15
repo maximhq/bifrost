@@ -2,14 +2,12 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // Long shared prefix for prompt caching test - similar to Python script
@@ -283,162 +281,177 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		return
 	}
 
-	t.Run("PromptCaching", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
+	WrapTestScenario(t, client, ctx, testConfig, "PromptCaching", ModelTypePromptCaching, runPromptCachingTestForModel)
+}
 
-		tools := GetPromptCachingTools()
-		systemMessage := schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleSystem,
-			Content: &schemas.ChatMessageContent{
-				ContentBlocks: []schemas.ChatContentBlock{
-					{
-						Type: schemas.ChatContentBlockTypeText,
-						Text: bifrost.Ptr(longSharedPrefix),
-						CacheControl: &schemas.CacheControl{
-							Type: schemas.CacheControlTypeEphemeral,
-						},
+// runPromptCachingTestForModel is the helper function that performs the actual test logic
+func runPromptCachingTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	tools := GetPromptCachingTools()
+	systemMessage := schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleSystem,
+		Content: &schemas.ChatMessageContent{
+			ContentBlocks: []schemas.ChatContentBlock{
+				{
+					Type: schemas.ChatContentBlockTypeText,
+					Text: bifrost.Ptr(longSharedPrefix),
+					CacheControl: &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
 					},
 				},
 			},
-		}
+		},
+	}
 
-		// Test queries - same pattern as Python script
-		testQueries := []struct {
-			name    string
-			message string
-		}{
-			{"FirstQuery", "Explain our API to a beginner."},
-			{"SecondQuery", "Now give me a 5-step onboarding checklist."},
-		}
+	// Test queries - same pattern as Python script
+	testQueries := []struct {
+		name    string
+		message string
+	}{
+		{"FirstQuery", "Explain our API to a beginner."},
+		{"SecondQuery", "Now give me a 5-step onboarding checklist."},
+	}
 
-		for i, query := range testQueries {
-			t.Run(query.name, func(t *testing.T) {
-				userMessage := schemas.ChatMessage{
-					Role: schemas.ChatMessageRoleUser,
-					Content: &schemas.ChatMessageContent{
-						ContentStr: bifrost.Ptr(query.message),
+	for i, query := range testQueries {
+		err := func() error {
+			userMessage := schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: bifrost.Ptr(query.message),
+				},
+			}
+
+			chatReq := &schemas.BifrostChatRequest{
+				Provider: testConfig.Provider,
+				Model:    GetPromptCachingModelOrFirst(testConfig),
+				Input: []schemas.ChatMessage{
+					systemMessage,
+					userMessage,
+				},
+				Params: &schemas.ChatParameters{
+					Tools: tools,
+					ToolChoice: &schemas.ChatToolChoice{
+						ChatToolChoiceStr: bifrost.Ptr("auto"),
 					},
+				},
+				Fallbacks: testConfig.Fallbacks,
+			}
+
+			// Create retry config with 5 attempts
+			retryConfig := ChatRetryConfig{
+				MaxAttempts: 5,
+				BaseDelay:   2 * time.Second,
+				MaxDelay:    10 * time.Second,
+				Conditions:  []ChatRetryCondition{},
+				OnRetry: func(attempt int, reason string, t *testing.T) {
+					t.Logf("🔄 Retrying query %d (attempt %d): %s", i+1, attempt, reason)
+				},
+				OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
+					t.Logf("❌ Query %d failed after %d attempts: %v", i+1, attempts, finalErr)
+				},
+			}
+
+			// Create expectations - only add cached tokens validation for query 3
+			expectations := ResponseExpectations{
+				ShouldHaveContent:    true,
+				ShouldHaveUsageStats: true,
+			}
+
+			// For the second query (index 1), add cached tokens validation
+			if i == 1 {
+				expectations.ProviderSpecific = map[string]interface{}{
+					"min_cached_tokens_percentage": 0.90, // 90% minimum
+					"query_index":                  i,
 				}
+			}
 
-				chatReq := &schemas.BifrostChatRequest{
-					Provider: testConfig.Provider,
-					Model:    testConfig.PromptCachingModel,
-					Input: []schemas.ChatMessage{
-						systemMessage,
-						userMessage,
-					},
-					Params: &schemas.ChatParameters{
-						Tools: tools,
-						ToolChoice: &schemas.ChatToolChoice{
-							ChatToolChoiceStr: bifrost.Ptr("auto"),
-						},
-					},
-					Fallbacks: testConfig.Fallbacks,
-				}
+			retryContext := TestRetryContext{
+				ScenarioName: "PromptCaching",
+				ExpectedBehavior: map[string]interface{}{
+					"query_index": i,
+					"query_name":  query.name,
+				},
+				TestMetadata: map[string]interface{}{
+					"provider": testConfig.Provider,
+					"model":    GetChatModelOrFirst(testConfig),
+				},
+			}
 
-				// Create retry config with 5 attempts
-				retryConfig := ChatRetryConfig{
-					MaxAttempts: 5,
-					BaseDelay:   2 * time.Second,
-					MaxDelay:    10 * time.Second,
-					Conditions:  []ChatRetryCondition{},
-					OnRetry: func(attempt int, reason string, t *testing.T) {
-						t.Logf("🔄 Retrying query %d (attempt %d): %s", i+1, attempt, reason)
-					},
-					OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
-						t.Logf("❌ Query %d failed after %d attempts: %v", i+1, attempts, finalErr)
-					},
-				}
+			// Execute with retry framework
+			operation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+				return client.ChatCompletionRequest(bfCtx, chatReq)
+			}
 
-				// Create expectations - only add cached tokens validation for query 3
-				expectations := ResponseExpectations{
-					ShouldHaveContent:    true,
-					ShouldHaveUsageStats: true,
-				}
+			response, err := WithChatTestRetry(t, retryConfig, retryContext, expectations, query.name, operation)
 
-				// For the second query (index 1), add cached tokens validation
-				if i == 1 {
-					expectations.ProviderSpecific = map[string]interface{}{
-						"min_cached_tokens_percentage": 0.90, // 90% minimum
-						"query_index":                  i,
-					}
-				}
+			if err != nil {
+				return fmt.Errorf("chat completion request failed: %v", err)
+			}
+			if response == nil {
+				return fmt.Errorf("response should not be nil")
+			}
+			if response.Usage == nil {
+				return fmt.Errorf("usage information should be present")
+			}
 
-				retryContext := TestRetryContext{
-					ScenarioName: "PromptCaching",
-					ExpectedBehavior: map[string]interface{}{
-						"query_index": i,
-						"query_name":  query.name,
-					},
-					TestMetadata: map[string]interface{}{
-						"provider": testConfig.Provider,
-						"model":    testConfig.ChatModel,
-					},
-				}
+			// Extract cached tokens
+			var cachedTokens int
+			if response.Usage.PromptTokensDetails != nil {
+				cachedTokens = response.Usage.PromptTokensDetails.CachedTokens
+			}
 
-				// Execute with retry framework
-				operation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-					return client.ChatCompletionRequest(bfCtx, chatReq)
-				}
+			promptTokens := response.Usage.PromptTokens
+			totalTokens := response.Usage.TotalTokens
 
-				response, err := WithChatTestRetry(t, retryConfig, retryContext, expectations, query.name, operation)
+			t.Logf("Query %d (%s):", i+1, query.name)
+			t.Logf("  Total tokens: %d", totalTokens)
+			t.Logf("  Prompt tokens: %d", promptTokens)
+			t.Logf("  Cached tokens: %d", cachedTokens)
 
-				require.Nil(t, err, "Chat completion request should succeed: %v", err)
-				require.NotNil(t, response, "Response should not be nil")
-				require.NotNil(t, response.Usage, "Usage information should be present")
+			// Verify response has content
+			content := GetChatContent(response)
+			if content == "" {
+				return fmt.Errorf("response should have content")
+			}
+			if len(content) > 100 {
+				t.Logf("  Response preview: %s...", content[:100])
+			} else {
+				t.Logf("  Response preview: %s", content)
+			}
 
-				// Extract cached tokens
-				var cachedTokens int
-				if response.Usage.PromptTokensDetails != nil {
-					cachedTokens = response.Usage.PromptTokensDetails.CachedTokens
-				}
-
-				promptTokens := response.Usage.PromptTokens
-				totalTokens := response.Usage.TotalTokens
-
-				t.Logf("Query %d (%s):", i+1, query.name)
-				t.Logf("  Total tokens: %d", totalTokens)
-				t.Logf("  Prompt tokens: %d", promptTokens)
-				t.Logf("  Cached tokens: %d", cachedTokens)
-
-				// Verify response has content
-				content := GetChatContent(response)
-				assert.NotEmpty(t, content, "Response should have content")
-				if len(content) > 100 {
-					t.Logf("  Response preview: %s...", content[:100])
+			// For the first request, log cached tokens (may be non-zero if cache exists from previous runs)
+			if i == 0 {
+				if cachedTokens == 0 {
+					t.Logf("  ✅ First request has 0 cached tokens (fresh cache)")
 				} else {
-					t.Logf("  Response preview: %s", content)
+					t.Logf("  ℹ️  First request has %d cached tokens (cache from previous test run)", cachedTokens)
 				}
+			} else if i == 1 {
+				// Query 2: Verify cached tokens are >90% of prompt tokens
+				// This validation is also done in the retry framework, but we verify here as well
+				if promptTokens > 0 {
+					cachedPercentage := float64(cachedTokens) / float64(promptTokens)
+					t.Logf("  Cached tokens percentage: %.2f%%", cachedPercentage*100)
 
-				// For the first request, log cached tokens (may be non-zero if cache exists from previous runs)
-				if i == 0 {
-					if cachedTokens == 0 {
-						t.Logf("  ✅ First request has 0 cached tokens (fresh cache)")
-					} else {
-						t.Logf("  ℹ️  First request has %d cached tokens (cache from previous test run)", cachedTokens)
-					}
-				} else if i == 1 {
-					// Query 2: Verify cached tokens are >90% of prompt tokens
-					// This validation is also done in the retry framework, but we verify here as well
-					if promptTokens > 0 {
-						cachedPercentage := float64(cachedTokens) / float64(promptTokens)
-						t.Logf("  Cached tokens percentage: %.2f%%", cachedPercentage*100)
-
-						require.GreaterOrEqual(t, cachedPercentage, 0.90,
-							"Query 2 should have at least 90%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
+					if cachedPercentage < 0.90 {
+						return fmt.Errorf("query 2 should have at least 90%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
 							cachedPercentage*100, cachedTokens, promptTokens)
-
-						t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 90%%)", cachedPercentage*100)
-					} else {
-						t.Fatalf("Prompt tokens is 0, cannot calculate cached percentage")
 					}
-				}
-			})
-		}
 
-		t.Logf("🎉 Prompt caching test completed!")
-	})
+					t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 90%%)", cachedPercentage*100)
+				} else {
+					return fmt.Errorf("prompt tokens is 0, cannot calculate cached percentage")
+				}
+			}
+
+			return nil
+		}()
+
+		if err != nil {
+			return fmt.Errorf("%s failed: %v", query.name, err)
+		}
+	}
+
+	t.Logf("🎉 Prompt caching test completed!")
+	return nil
 }

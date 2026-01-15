@@ -23,10 +23,10 @@ func TestOllama(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.Ollama,
-		ChatModel:      "llama3.1:latest",
-		TextModel:      "", // Ollama doesn't support text completion in newer models
-		EmbeddingModel: "", // Ollama doesn't support embedding
+		Provider:        schemas.Ollama,
+		ChatModels:      []string{"llama3.1:latest"},
+		TextModels:      []string{""}, // Ollama doesn't support text completion in newer models
+		EmbeddingModels: []string{""}, // Ollama doesn't support embedding
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

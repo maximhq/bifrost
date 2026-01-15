@@ -23,9 +23,9 @@ func TestElevenlabs(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:             schemas.Elevenlabs,
-		SpeechSynthesisModel: "eleven_turbo_v2_5",
-		TranscriptionModel:   "scribe_v1",
+		Provider:              schemas.Elevenlabs,
+		SpeechSynthesisModels: []string{"eleven_turbo_v2_5"},
+		TranscriptionModels:   []string{"scribe_v1"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,

@@ -22,11 +22,11 @@ func TestSGL(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:       schemas.SGL,
-		ChatModel:      "qwen/qwen2.5-0.5b-instruct",
-		VisionModel:    "Qwen/Qwen2.5-VL-7B-Instruct",
-		TextModel:      "qwen/qwen2.5-0.5b-instruct",
-		EmbeddingModel: "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+		Provider:        schemas.SGL,
+		ChatModels:      []string{"qwen/qwen2.5-0.5b-instruct"},
+		VisionModels:    []string{"Qwen/Qwen2.5-VL-7B-Instruct"},
+		TextModels:      []string{"qwen/qwen2.5-0.5b-instruct"},
+		EmbeddingModels: []string{"Alibaba-NLP/gte-Qwen2-1.5B-instruct"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,

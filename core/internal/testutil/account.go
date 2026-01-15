@@ -64,15 +64,15 @@ type TestScenarios struct {
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
 type ComprehensiveTestConfig struct {
 	Provider                 schemas.ModelProvider
-	TextModel                string
-	ChatModel                string
-	PromptCachingModel       string
-	VisionModel              string
-	ReasoningModel           string
-	EmbeddingModel           string
-	TranscriptionModel       string
-	SpeechSynthesisModel     string
-	ChatAudioModel           string
+	TextModels               []string // Multiple text models to test
+	ChatModels               []string // Multiple chat models to test
+	PromptCachingModels      []string // Multiple prompt caching models to test
+	VisionModels             []string // Multiple vision models to test
+	ReasoningModels          []string // Multiple reasoning models to test
+	EmbeddingModels          []string // Multiple embedding models to test
+	TranscriptionModels      []string // Multiple transcription models to test
+	SpeechSynthesisModels    []string // Multiple speech synthesis models to test
+	ChatAudioModels          []string // Multiple chat audio models to test
 	Scenarios                TestScenarios
 	Fallbacks                []schemas.Fallback     // for chat, responses, image and reasoning tests
 	TextCompletionFallbacks  []schemas.Fallback     // for text completion tests
@@ -663,14 +663,14 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 // AllProviderConfigs contains test configurations for all providers
 var AllProviderConfigs = []ComprehensiveTestConfig{
 	{
-		Provider:             schemas.OpenAI,
-		ChatModel:            "gpt-4o-mini",
-		TextModel:            "",        // OpenAI doesn't support text completion in newer models
-		ReasoningModel:       "o1-mini", // OpenAI reasoning model
-		PromptCachingModel:   "gpt-4.1",
-		TranscriptionModel:   "whisper-1",
-		SpeechSynthesisModel: "tts-1",
-		ChatAudioModel:       "gpt-4o-mini-audio-preview",
+		Provider:              schemas.OpenAI,
+		ChatModels:            []string{"gpt-4o-mini"},
+		TextModels:            []string{},          // OpenAI doesn't support text completion in newer models
+		ReasoningModels:       []string{"o1-mini"}, // OpenAI reasoning model
+		PromptCachingModels:   []string{"gpt-4.1"},
+		TranscriptionModels:   []string{"whisper-1"},
+		SpeechSynthesisModels: []string{"tts-1"},
+		ChatAudioModels:       []string{"gpt-4o-mini-audio-preview"},
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			TextCompletionStream:  false, // Not supported
@@ -709,9 +709,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Anthropic,
-		ChatModel: "claude-3-7-sonnet-20250219",
-		TextModel: "", // Anthropic doesn't support text completion
+		Provider:   schemas.Anthropic,
+		ChatModels: []string{"claude-3-7-sonnet-20250219"},
+		TextModels: []string{}, // Anthropic doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -743,9 +743,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Bedrock,
-		ChatModel: "anthropic.claude-3-sonnet-20240229-v1:0",
-		TextModel: "", // Bedrock Claude doesn't support text completion
+		Provider:   schemas.Bedrock,
+		ChatModels: []string{"anthropic.claude-3-sonnet-20240229-v1:0"},
+		TextModels: []string{}, // Bedrock Claude doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
@@ -782,9 +782,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Cohere,
-		ChatModel: "command-a-03-2025",
-		TextModel: "", // Cohere focuses on chat
+		Provider:   schemas.Cohere,
+		ChatModels: []string{"command-a-03-2025"},
+		TextModels: []string{}, // Cohere focuses on chat
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
@@ -810,12 +810,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:             schemas.Azure,
-		ChatModel:            "gpt-4o",
-		TextModel:            "", // Azure doesn't support text completion in newer models
-		ChatAudioModel:       "gpt-4o-mini-audio-preview",
-		TranscriptionModel:   "whisper-1",
-		SpeechSynthesisModel: "gpt-4o-mini-tts",
+		Provider:              schemas.Azure,
+		ChatModels:            []string{"gpt-4o"},
+		TextModels:            []string{}, // Azure doesn't support text completion in newer models
+		ChatAudioModels:       []string{"gpt-4o-mini-audio-preview"},
+		TranscriptionModels:   []string{"whisper-1"},
+		SpeechSynthesisModels: []string{"gpt-4o-mini-tts"},
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -852,9 +852,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Vertex,
-		ChatModel: "gemini-pro",
-		TextModel: "", // Vertex focuses on chat
+		Provider:   schemas.Vertex,
+		ChatModels: []string{"gemini-pro"},
+		TextModels: []string{}, // Vertex focuses on chat
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -880,10 +880,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:           schemas.Mistral,
-		ChatModel:          "mistral-large-2411",
-		TextModel:          "", // Mistral focuses on chat
-		TranscriptionModel: "voxtral-mini-latest",
+		Provider:            schemas.Mistral,
+		ChatModels:          []string{"mistral-large-2411"},
+		TextModels:          []string{}, // Mistral focuses on chat
+		TranscriptionModels: []string{"voxtral-mini-latest"},
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -908,9 +908,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Ollama,
-		ChatModel: "llama3.2",
-		TextModel: "", // Ollama focuses on chat
+		Provider:   schemas.Ollama,
+		ChatModels: []string{"llama3.2"},
+		TextModels: []string{}, // Ollama focuses on chat
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -936,9 +936,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Groq,
-		ChatModel: "llama-3.3-70b-versatile",
-		TextModel: "", // Groq doesn't support text completion
+		Provider:   schemas.Groq,
+		ChatModels: []string{"llama-3.3-70b-versatile"},
+		TextModels: []string{}, // Groq doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -964,9 +964,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  ProviderOpenAICustom,
-		ChatModel: "llama-3.3-70b-versatile",
-		TextModel: "", // Custom OpenAI instance doesn't support text completion
+		Provider:   ProviderOpenAICustom,
+		ChatModels: []string{"llama-3.3-70b-versatile"},
+		TextModels: []string{}, // Custom OpenAI instance doesn't support text completion
 		Scenarios: TestScenarios{
 			TextCompletion:        false,
 			SimpleChat:            true, // Enable simple chat for testing
@@ -992,12 +992,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:             schemas.Gemini,
-		ChatModel:            "gemini-2.0-flash",
-		TextModel:            "", // GenAI doesn't support text completion in newer models
-		TranscriptionModel:   "gemini-2.5-flash",
-		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
-		EmbeddingModel:       "text-embedding-004",
+		Provider:              schemas.Gemini,
+		ChatModels:            []string{"gemini-2.0-flash"},
+		TextModels:            []string{}, // GenAI doesn't support text completion in newer models
+		TranscriptionModels:   []string{"gemini-2.5-flash"},
+		SpeechSynthesisModels: []string{"gemini-2.5-flash-preview-tts"},
+		EmbeddingModels:       []string{"text-embedding-004"},
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -1033,9 +1033,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.OpenRouter,
-		ChatModel: "openai/gpt-4o",
-		TextModel: "google/gemini-2.5-flash",
+		Provider:   schemas.OpenRouter,
+		ChatModels: []string{"openai/gpt-4o"},
+		TextModels: []string{"google/gemini-2.5-flash"},
 		Scenarios: TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
@@ -1061,12 +1061,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:             schemas.HuggingFace,
-		ChatModel:            "groq/openai/gpt-oss-120b",
-		VisionModel:          "novita/zai-org/GLM-4.6V-Flash",
-		EmbeddingModel:       "sambanova/intfloat/e5-mistral-7b-instruct",
-		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
-		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
+		Provider:              schemas.HuggingFace,
+		ChatModels:            []string{"groq/openai/gpt-oss-120b"},
+		VisionModels:          []string{"novita/zai-org/GLM-4.6V-Flash"},
+		EmbeddingModels:       []string{"sambanova/intfloat/e5-mistral-7b-instruct"},
+		TranscriptionModels:   []string{"fal-ai/openai/whisper-large-v3"},
+		SpeechSynthesisModels: []string{"fal-ai/hexgrad/Kokoro-82M"},
 		Scenarios: TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -1095,9 +1095,9 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.XAI,
-		ChatModel: "grok-4-0709",
-		TextModel: "", // XAI focuses on chat
+		Provider:   schemas.XAI,
+		ChatModels: []string{"grok-4-0709"},
+		TextModels: []string{}, // XAI focuses on chat
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,

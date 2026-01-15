@@ -23,22 +23,27 @@ func TestOpenAI(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:           schemas.OpenAI,
-		TextModel:          "gpt-3.5-turbo-instruct",
-		ChatModel:          "gpt-4o-mini",
-		PromptCachingModel: "gpt-4.1",
+		Provider: schemas.OpenAI,
+		// Test multiple text completion models
+		TextModels: []string{"gpt-3.5-turbo-instruct"},
+		// Test multiple chat models - all must pass for test to succeed
+		ChatModels: []string{
+			"gpt-4o-mini",
+			"gpt-4o",
+		},
+		PromptCachingModels: []string{"gpt-4.1"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "gpt-4o"},
 		},
-		VisionModel:        "gpt-4o",
-		EmbeddingModel:     "text-embedding-3-small",
-		TranscriptionModel: "gpt-4o-transcribe",
+		VisionModels:        []string{"gpt-4o"},
+		EmbeddingModels:     []string{"text-embedding-3-small"},
+		TranscriptionModels: []string{"gpt-4o-transcribe"},
 		TranscriptionFallbacks: []schemas.Fallback{
 			{Provider: schemas.OpenAI, Model: "whisper-1"},
 		},
-		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		ReasoningModel:       "o1",
-		ChatAudioModel:       "gpt-4o-mini-audio-preview",
+		SpeechSynthesisModels: []string{"gpt-4o-mini-tts"},
+		ReasoningModels:       []string{"o1"},
+		ChatAudioModels:       []string{"gpt-4o-mini-audio-preview"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,

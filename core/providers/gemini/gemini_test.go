@@ -26,19 +26,19 @@ func TestGemini(t *testing.T) {
 	defer cancel()
 
 	testConfig := testutil.ComprehensiveTestConfig{
-		Provider:  schemas.Gemini,
-		ChatModel: "gemini-2.0-flash",
+		Provider:   schemas.Gemini,
+		ChatModels: []string{"gemini-2.0-flash"},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
 		},
-		VisionModel:          "gemini-2.5-flash",
-		EmbeddingModel:       "text-embedding-004",
-		TranscriptionModel:   "gemini-2.5-flash",
-		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
+		VisionModels:          []string{"gemini-2.5-flash"},
+		EmbeddingModels:       []string{"text-embedding-004"},
+		TranscriptionModels:   []string{"gemini-2.5-flash"},
+		SpeechSynthesisModels: []string{"gemini-2.5-flash-preview-tts"},
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel: "gemini-3-pro-preview",
+		ReasoningModels: []string{"gemini-3-pro-preview"},
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -49,23 +48,26 @@ func RunStructuredOutputChatTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 	}
 
 	t.Run("StructuredOutputChat", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Test Case 1: target_node_id should have a string value
-		t.Run("WithTargetNode", func(t *testing.T) {
-			testStructuredOutputChatWithValue(t, client, ctx, testConfig, true)
-		})
-
-		// Test Case 2: target_node_id should be null
-		t.Run("WithNullTargetNode", func(t *testing.T) {
-			testStructuredOutputChatWithValue(t, client, ctx, testConfig, false)
-		})
+		WrapTestScenario(t, client, ctx, testConfig, "StructuredOutputChat", ModelTypeChat, runStructuredOutputChatTestForModel)
 	})
 }
 
-func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig, expectValue bool) {
+// runStructuredOutputChatTestForModel runs the structured output chat test for a specific model
+func runStructuredOutputChatTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Test Case 1: target_node_id should have a string value
+	if err := testStructuredOutputChatWithValue(t, client, ctx, testConfig, true); err != nil {
+		return fmt.Errorf("WithTargetNode test failed: %w", err)
+	}
+
+	// Test Case 2: target_node_id should be null
+	if err := testStructuredOutputChatWithValue(t, client, ctx, testConfig, false); err != nil {
+		return fmt.Errorf("WithNullTargetNode test failed: %w", err)
+	}
+
+	return nil
+}
+
+func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig, expectValue bool) error {
 	var chatMessages []schemas.ChatMessage
 	if expectValue {
 		chatMessages = []schemas.ChatMessage{
@@ -87,7 +89,7 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 		},
 		TestMetadata: map[string]interface{}{
 			"provider": testConfig.Provider,
-			"model":    testConfig.ChatModel,
+			"model":    GetChatModelOrFirst(testConfig),
 		},
 	}
 
@@ -103,7 +105,7 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 	chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 		// Add Anthropic beta header for structured outputs if model contains "claude"
 		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
+		if strings.Contains(strings.ToLower(GetChatModelOrFirst(testConfig)), "claude") {
 			extraHeaders := map[string][]string{
 				"anthropic-beta": {"structured-outputs-2025-11-13"},
 			}
@@ -112,7 +114,7 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 
 		chatReq := &schemas.BifrostChatRequest{
 			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
+			Model:    GetChatModelOrFirst(testConfig),
 			Input:    chatMessages,
 			Params: &schemas.ChatParameters{
 				MaxCompletionTokens: bifrost.Ptr(5000),
@@ -139,7 +141,7 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 	chatResponse, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "StructuredOutputChat", chatOperation)
 
 	if chatError != nil {
-		t.Fatalf("❌ Chat Completions API with structured output failed: %s", GetErrorMessage(chatError))
+		return fmt.Errorf("Chat Completions API with structured output failed: %s", GetErrorMessage(chatError))
 	}
 
 	// Validate the response is valid JSON matching our schema
@@ -150,18 +152,18 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 		// Parse and validate the JSON
 		var result map[string]interface{}
 		if err := json.Unmarshal([]byte(content), &result); err != nil {
-			t.Fatalf("❌ Failed to parse structured output as JSON: %v", err)
+			return fmt.Errorf("Failed to parse structured output as JSON: %v", err)
 		}
 
 		// Validate required fields
 		if action, ok := result["action"].(string); !ok || action == "" {
-			t.Fatalf("❌ Missing or invalid 'action' field in structured output")
+			return fmt.Errorf("Missing or invalid 'action' field in structured output")
 		} else {
 			t.Logf("✅ Action: %s", action)
 		}
 
 		if reason, ok := result["reason"].(string); !ok || reason == "" {
-			t.Fatalf("❌ Missing or invalid 'reason' field in structured output")
+			return fmt.Errorf("Missing or invalid 'reason' field in structured output")
 		} else {
 			t.Logf("✅ Reason: %s", reason)
 		}
@@ -169,13 +171,13 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 		// target_node_id can be string or null - validate based on expectation
 		targetNodeID, hasTargetNode := result["target_node_id"]
 		if !hasTargetNode {
-			t.Fatalf("❌ Missing 'target_node_id' field in structured output")
+			return fmt.Errorf("Missing 'target_node_id' field in structured output")
 		}
 
 		if expectValue {
 			// Should be a non-empty string
 			if targetStr, ok := targetNodeID.(string); !ok || targetStr == "" {
-				t.Fatalf("❌ Expected 'target_node_id' to be a non-empty string, got: %v (type: %T)", targetNodeID, targetNodeID)
+				return fmt.Errorf("Expected 'target_node_id' to be a non-empty string, got: %v (type: %T)", targetNodeID, targetNodeID)
 			} else {
 				t.Logf("✅ Target Node ID has value: %s", targetStr)
 			}
@@ -192,11 +194,13 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 		if priority, ok := result["priority"]; ok {
 			t.Logf("✅ Priority: %v (type: %T)", priority, priority)
 		} else {
-			t.Fatalf("❌ Missing 'priority' field in structured output")
+			return fmt.Errorf("Missing 'priority' field in structured output")
 		}
 
 		t.Logf("🎉 Chat Completions API with structured output test passed!")
 	}
+
+	return nil
 }
 
 // RunStructuredOutputChatStreamTest tests structured outputs with Chat Completions API (streaming)
@@ -207,152 +211,156 @@ func RunStructuredOutputChatStreamTest(t *testing.T, client *bifrost.Bifrost, ct
 	}
 
 	t.Run("StructuredOutputChatStream", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Test with null target_node_id
-		chatMessages := []schemas.ChatMessage{
-			CreateBasicChatMessage("You are a workflow manager. User says: 'Continue with current task'. Analyze this and return: action='continue', target_node_id=null (must be null), and priority=3 (as integer). Provide reasoning."),
-		}
-
-		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
-			extraHeaders := map[string][]string{
-				"anthropic-beta": {"structured-outputs-2025-11-13"},
-			}
-			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
-		}
-
-		request := &schemas.BifrostChatRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
-			Input:    chatMessages,
-			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(5000),
-				ResponseFormat: func() *interface{} {
-					var format interface{} = map[string]interface{}{
-						"type": "json_schema",
-						"json_schema": map[string]interface{}{
-							"name":   "decision_schema",
-							"strict": true,
-							"schema": structuredOutputSchema,
-						},
-					}
-					return &format
-				}(),
-			},
-			Fallbacks: testConfig.Fallbacks,
-		}
-
-		retryConfig := StreamingRetryConfig()
-		retryContext := TestRetryContext{
-			ScenarioName: "StructuredOutputChatStream",
-			ExpectedBehavior: map[string]interface{}{
-				"should_stream_json":  true,
-				"should_match_schema": true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
-			},
-		}
-
-		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-			return client.ChatCompletionStreamRequest(reqCtx, request)
-		})
-
-		RequireNoError(t, err, "Chat streaming with structured output failed")
-		if responseChannel == nil {
-			t.Fatal("Response channel should not be nil")
-		}
-
-		var fullContent strings.Builder
-		var responseCount int
-
-		streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
-		defer cancel()
-
-		t.Logf("📡 Starting to read structured output streaming response...")
-
-		for {
-			select {
-			case response, ok := <-responseChannel:
-				if !ok {
-					goto streamComplete
-				}
-
-				if response == nil {
-					t.Fatal("❌ Streaming response should not be nil")
-				}
-				responseCount++
-
-				if response.BifrostChatResponse != nil {
-					if len(response.BifrostChatResponse.Choices) > 0 {
-						choice := response.BifrostChatResponse.Choices[0]
-						if choice.Delta != nil && choice.Delta.Content != nil {
-							fullContent.WriteString(*choice.Delta.Content)
-						}
-					}
-				}
-
-				if responseCount > 500 {
-					goto streamComplete
-				}
-
-			case <-streamCtx.Done():
-				t.Fatal("❌ Timeout waiting for structured output streaming response")
-			}
-		}
-
-	streamComplete:
-		if responseCount == 0 {
-			t.Fatal("❌ Should receive at least one streaming response")
-		}
-
-		finalContent := strings.TrimSpace(fullContent.String())
-		t.Logf("📝 Assembled structured output (%d chars): %s", len(finalContent), finalContent)
-
-		// Validate the assembled content is valid JSON matching our schema
-		var result map[string]interface{}
-		if err := json.Unmarshal([]byte(finalContent), &result); err != nil {
-			t.Fatalf("❌ Failed to parse assembled structured output as JSON: %v", err)
-		}
-
-		// Validate required fields
-		if action, ok := result["action"].(string); !ok || action == "" {
-			t.Fatalf("❌ Missing or invalid 'action' field in structured output")
-		} else {
-			t.Logf("✅ Action: %s", action)
-		}
-
-		if reason, ok := result["reason"].(string); !ok || reason == "" {
-			t.Fatalf("❌ Missing or invalid 'reason' field in structured output")
-		} else {
-			t.Logf("✅ Reason: %s", reason)
-		}
-
-		// target_node_id validation - should be null for "continue" action
-		targetNodeID, hasTargetNode := result["target_node_id"]
-		if !hasTargetNode {
-			t.Fatalf("❌ Missing 'target_node_id' field in structured output")
-		}
-		if targetNodeID != nil {
-			t.Logf("⚠️  Expected 'target_node_id' to be null, got: %v (type: %T)", targetNodeID, targetNodeID)
-		} else {
-			t.Logf("✅ Target Node ID is null (as expected)")
-		}
-
-		// priority can be string or integer (from JSON unmarshaling, numbers become float64)
-		if priority, ok := result["priority"]; ok {
-			t.Logf("✅ Priority: %v (type: %T)", priority, priority)
-		} else {
-			t.Fatalf("❌ Missing 'priority' field in structured output")
-		}
-
-		t.Logf("🎉 Chat streaming with structured output test passed!")
+		WrapTestScenario(t, client, ctx, testConfig, "StructuredOutputChatStream", ModelTypeChat, runStructuredOutputChatStreamTestForModel)
 	})
+}
+
+// runStructuredOutputChatStreamTestForModel runs the structured output chat stream test for a specific model
+func runStructuredOutputChatStreamTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Test with null target_node_id
+	chatMessages := []schemas.ChatMessage{
+		CreateBasicChatMessage("You are a workflow manager. User says: 'Continue with current task'. Analyze this and return: action='continue', target_node_id=null (must be null), and priority=3 (as integer). Provide reasoning."),
+	}
+
+	// Add Anthropic beta header for structured outputs if model contains "claude"
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	if strings.Contains(strings.ToLower(GetChatModelOrFirst(testConfig)), "claude") {
+		extraHeaders := map[string][]string{
+			"anthropic-beta": {"structured-outputs-2025-11-13"},
+		}
+		reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+	}
+
+	request := &schemas.BifrostChatRequest{
+		Provider: testConfig.Provider,
+		Model:    GetChatModelOrFirst(testConfig),
+		Input:    chatMessages,
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(5000),
+			ResponseFormat: func() *interface{} {
+				var format interface{} = map[string]interface{}{
+					"type": "json_schema",
+					"json_schema": map[string]interface{}{
+						"name":   "decision_schema",
+						"strict": true,
+						"schema": structuredOutputSchema,
+					},
+				}
+				return &format
+			}(),
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
+
+	retryConfig := StreamingRetryConfig()
+	retryContext := TestRetryContext{
+		ScenarioName: "StructuredOutputChatStream",
+		ExpectedBehavior: map[string]interface{}{
+			"should_stream_json":  true,
+			"should_match_schema": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider": testConfig.Provider,
+			"model":    GetChatModelOrFirst(testConfig),
+		},
+	}
+
+	responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		return client.ChatCompletionStreamRequest(reqCtx, request)
+	})
+
+	if err != nil {
+		return fmt.Errorf("Chat streaming with structured output failed: %s", GetErrorMessage(err))
+	}
+	if responseChannel == nil {
+		return fmt.Errorf("Response channel should not be nil")
+	}
+
+	var fullContent strings.Builder
+	var responseCount int
+
+	streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
+	defer cancel()
+
+	t.Logf("📡 Starting to read structured output streaming response...")
+
+	for {
+		select {
+		case response, ok := <-responseChannel:
+			if !ok {
+				goto streamComplete
+			}
+
+			if response == nil {
+				return fmt.Errorf("Streaming response should not be nil")
+			}
+			responseCount++
+
+			if response.BifrostChatResponse != nil {
+				if len(response.BifrostChatResponse.Choices) > 0 {
+					choice := response.BifrostChatResponse.Choices[0]
+					if choice.Delta != nil && choice.Delta.Content != nil {
+						fullContent.WriteString(*choice.Delta.Content)
+					}
+				}
+			}
+
+			if responseCount > 500 {
+				goto streamComplete
+			}
+
+		case <-streamCtx.Done():
+			return fmt.Errorf("Timeout waiting for structured output streaming response")
+		}
+	}
+
+streamComplete:
+	if responseCount == 0 {
+		return fmt.Errorf("Should receive at least one streaming response")
+	}
+
+	finalContent := strings.TrimSpace(fullContent.String())
+	t.Logf("📝 Assembled structured output (%d chars): %s", len(finalContent), finalContent)
+
+	// Validate the assembled content is valid JSON matching our schema
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(finalContent), &result); err != nil {
+		return fmt.Errorf("Failed to parse assembled structured output as JSON: %v", err)
+	}
+
+	// Validate required fields
+	if action, ok := result["action"].(string); !ok || action == "" {
+		return fmt.Errorf("Missing or invalid 'action' field in structured output")
+	} else {
+		t.Logf("✅ Action: %s", action)
+	}
+
+	if reason, ok := result["reason"].(string); !ok || reason == "" {
+		return fmt.Errorf("Missing or invalid 'reason' field in structured output")
+	} else {
+		t.Logf("✅ Reason: %s", reason)
+	}
+
+	// target_node_id validation - should be null for "continue" action
+	targetNodeID, hasTargetNode := result["target_node_id"]
+	if !hasTargetNode {
+		return fmt.Errorf("Missing 'target_node_id' field in structured output")
+	}
+	if targetNodeID != nil {
+		t.Logf("⚠️  Expected 'target_node_id' to be null, got: %v (type: %T)", targetNodeID, targetNodeID)
+	} else {
+		t.Logf("✅ Target Node ID is null (as expected)")
+	}
+
+	// priority can be string or integer (from JSON unmarshaling, numbers become float64)
+	if priority, ok := result["priority"]; ok {
+		t.Logf("✅ Priority: %v (type: %T)", priority, priority)
+	} else {
+		return fmt.Errorf("Missing 'priority' field in structured output")
+	}
+
+	t.Logf("🎉 Chat streaming with structured output test passed!")
+	return nil
 }
 
 // RunStructuredOutputResponsesTest tests structured outputs with Responses API (non-streaming)
@@ -363,169 +371,55 @@ func RunStructuredOutputResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx
 	}
 
 	t.Run("StructuredOutputResponses", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Test with string value for target_node_id
-		responsesMessages := []schemas.ResponsesMessage{
-			CreateBasicResponsesMessage("You are a workflow manager. User says: 'Transition to the first node'. Analyze this and return: action='transition', target_node_id='NODE-0' (NOT null), priority='high' (as string). Provide reasoning."),
-		}
-
-		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
-			extraHeaders := map[string][]string{
-				"anthropic-beta": {"structured-outputs-2025-11-13"},
-			}
-			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
-		}
-
-		retryConfig := GetTestRetryConfigForScenario("StructuredOutputResponses", testConfig)
-		retryContext := TestRetryContext{
-			ScenarioName: "StructuredOutputResponses",
-			ExpectedBehavior: map[string]interface{}{
-				"should_return_valid_json": true,
-				"should_match_schema":      true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
-			},
-		}
-
-		responsesRetryConfig := ResponsesRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ResponsesRetryCondition{},
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-			typeStr := "object"
-			props := structuredOutputSchema["properties"].(map[string]interface{})
-			additionalProps := structuredOutputSchema["additionalProperties"].(bool)
-			responsesReq := &schemas.BifrostResponsesRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    responsesMessages,
-				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(5000),
-					Text: &schemas.ResponsesTextConfig{
-						Format: &schemas.ResponsesTextConfigFormat{
-							Type: "json_schema",
-							Name: bifrost.Ptr("decision_schema"),
-							JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
-								Type:       &typeStr,
-								Properties: &props,
-								Required:   structuredOutputSchema["required"].([]string),
-								AdditionalProperties: &schemas.AdditionalPropertiesStruct{
-									AdditionalPropertiesBool: &additionalProps,
-								},
-							},
-						},
-					},
-				},
-				Fallbacks: testConfig.Fallbacks,
-			}
-			return client.ResponsesRequest(reqCtx, responsesReq)
-		}
-
-		expectations := GetExpectationsForScenario("StructuredOutputResponses", testConfig, map[string]interface{}{})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-
-		responsesResponse, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "StructuredOutputResponses", responsesOperation)
-
-		if responsesError != nil {
-			t.Fatalf("❌ Responses API with structured output failed: %s", GetErrorMessage(responsesError))
-		}
-
-		// Validate the response is valid JSON matching our schema
-		if responsesResponse != nil {
-			content := GetResponsesContent(responsesResponse)
-			t.Logf("📝 Structured output response: %s", content)
-
-			// Parse and validate the JSON
-			var result map[string]interface{}
-			if err := json.Unmarshal([]byte(content), &result); err != nil {
-				t.Fatalf("❌ Failed to parse structured output as JSON: %v", err)
-			}
-
-			// Validate required fields
-			if action, ok := result["action"].(string); !ok || action == "" {
-				t.Fatalf("❌ Missing or invalid 'action' field in structured output")
-			} else {
-				t.Logf("✅ Action: %s", action)
-			}
-
-			if reason, ok := result["reason"].(string); !ok || reason == "" {
-				t.Fatalf("❌ Missing or invalid 'reason' field in structured output")
-			} else {
-				t.Logf("✅ Reason: %s", reason)
-			}
-
-			// target_node_id validation - should be a string value for "transition" action
-			targetNodeID, hasTargetNode := result["target_node_id"]
-			if !hasTargetNode {
-				t.Fatalf("❌ Missing 'target_node_id' field in structured output")
-			}
-			if targetStr, ok := targetNodeID.(string); !ok || targetStr == "" {
-				t.Fatalf("❌ Expected 'target_node_id' to be a non-empty string, got: %v (type: %T)", targetNodeID, targetNodeID)
-			} else {
-				t.Logf("✅ Target Node ID has value: %s", targetStr)
-			}
-
-			// priority can be string or integer
-			if priority, ok := result["priority"]; ok {
-				t.Logf("✅ Priority: %v (type: %T)", priority, priority)
-			} else {
-				t.Fatalf("❌ Missing 'priority' field in structured output")
-			}
-
-			t.Logf("🎉 Responses API with structured output test passed!")
-		}
+		WrapTestScenario(t, client, ctx, testConfig, "StructuredOutputResponses", ModelTypeChat, runStructuredOutputResponsesTestForModel)
 	})
 }
 
-// RunStructuredOutputResponsesStreamTest tests structured outputs with Responses API (streaming)
-func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
-	if !testConfig.Scenarios.StructuredOutputs || !testConfig.Scenarios.CompletionStream {
-		t.Logf("Structured outputs streaming not supported for provider %s", testConfig.Provider)
-		return
+// runStructuredOutputResponsesTestForModel runs the structured output responses test for a specific model
+func runStructuredOutputResponsesTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Test with string value for target_node_id
+	responsesMessages := []schemas.ResponsesMessage{
+		CreateBasicResponsesMessage("You are a workflow manager. User says: 'Transition to the first node'. Analyze this and return: action='transition', target_node_id='NODE-0' (NOT null), priority='high' (as string). Provide reasoning."),
 	}
 
-	t.Run("StructuredOutputResponsesStream", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
+	// Add Anthropic beta header for structured outputs if model contains "claude"
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	if strings.Contains(strings.ToLower(GetChatModelOrFirst(testConfig)), "claude") {
+		extraHeaders := map[string][]string{
+			"anthropic-beta": {"structured-outputs-2025-11-13"},
 		}
+		reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+	}
 
-		// Test with null target_node_id
-		responsesMessages := []schemas.ResponsesMessage{
-			{
-				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{
-					ContentStr: schemas.Ptr("You are a workflow manager. User says: 'Continue current task'. Analyze this and return: action='continue', target_node_id=null (must be null), priority=7 (as integer). Provide reasoning."),
-				},
-			},
-		}
+	retryConfig := GetTestRetryConfigForScenario("StructuredOutputResponses", testConfig)
+	retryContext := TestRetryContext{
+		ScenarioName: "StructuredOutputResponses",
+		ExpectedBehavior: map[string]interface{}{
+			"should_return_valid_json": true,
+			"should_match_schema":      true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider": testConfig.Provider,
+			"model":    GetChatModelOrFirst(testConfig),
+		},
+	}
 
-		// Add Anthropic beta header for structured outputs if model contains "claude"
-		reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		if strings.Contains(strings.ToLower(testConfig.ChatModel), "claude") {
-			extraHeaders := map[string][]string{
-				"anthropic-beta": {"structured-outputs-2025-11-13"},
-			}
-			reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
-		}
+	responsesRetryConfig := ResponsesRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ResponsesRetryCondition{},
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
 
+	responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		typeStr := "object"
 		props := structuredOutputSchema["properties"].(map[string]interface{})
 		additionalProps := structuredOutputSchema["additionalProperties"].(bool)
-		request := &schemas.BifrostResponsesRequest{
+		responsesReq := &schemas.BifrostResponsesRequest{
 			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
+			Model:    GetChatModelOrFirst(testConfig),
 			Input:    responsesMessages,
 			Params: &schemas.ResponsesParameters{
 				MaxOutputTokens: bifrost.Ptr(5000),
@@ -546,171 +440,287 @@ func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifros
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}
+		return client.ResponsesRequest(reqCtx, responsesReq)
+	}
 
-		retryConfig := StreamingRetryConfig()
-		retryContext := TestRetryContext{
-			ScenarioName: "StructuredOutputResponsesStream",
-			ExpectedBehavior: map[string]interface{}{
-				"should_stream_json":  true,
-				"should_match_schema": true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider": testConfig.Provider,
-				"model":    testConfig.ChatModel,
-			},
+	expectations := GetExpectationsForScenario("StructuredOutputResponses", testConfig, map[string]interface{}{})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+	responsesResponse, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "StructuredOutputResponses", responsesOperation)
+
+	if responsesError != nil {
+		return fmt.Errorf("Responses API with structured output failed: %s", GetErrorMessage(responsesError))
+	}
+
+	// Validate the response is valid JSON matching our schema
+	if responsesResponse != nil {
+		content := GetResponsesContent(responsesResponse)
+		t.Logf("📝 Structured output response: %s", content)
+
+		// Parse and validate the JSON
+		var result map[string]interface{}
+		if err := json.Unmarshal([]byte(content), &result); err != nil {
+			return fmt.Errorf("Failed to parse structured output as JSON: %v", err)
 		}
 
-		// Use validation retry wrapper
-		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
-				return client.ResponsesStreamRequest(reqCtx, request)
+		// Validate required fields
+		if action, ok := result["action"].(string); !ok || action == "" {
+			return fmt.Errorf("Missing or invalid 'action' field in structured output")
+		} else {
+			t.Logf("✅ Action: %s", action)
+		}
+
+		if reason, ok := result["reason"].(string); !ok || reason == "" {
+			return fmt.Errorf("Missing or invalid 'reason' field in structured output")
+		} else {
+			t.Logf("✅ Reason: %s", reason)
+		}
+
+		// target_node_id validation - should be a string value for "transition" action
+		targetNodeID, hasTargetNode := result["target_node_id"]
+		if !hasTargetNode {
+			return fmt.Errorf("Missing 'target_node_id' field in structured output")
+		}
+		if targetStr, ok := targetNodeID.(string); !ok || targetStr == "" {
+			return fmt.Errorf("Expected 'target_node_id' to be a non-empty string, got: %v (type: %T)", targetNodeID, targetNodeID)
+		} else {
+			t.Logf("✅ Target Node ID has value: %s", targetStr)
+		}
+
+		// priority can be string or integer
+		if priority, ok := result["priority"]; ok {
+			t.Logf("✅ Priority: %v (type: %T)", priority, priority)
+		} else {
+			return fmt.Errorf("Missing 'priority' field in structured output")
+		}
+
+		t.Logf("🎉 Responses API with structured output test passed!")
+	}
+
+	return nil
+}
+
+// RunStructuredOutputResponsesStreamTest tests structured outputs with Responses API (streaming)
+func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.StructuredOutputs || !testConfig.Scenarios.CompletionStream {
+		t.Logf("Structured outputs streaming not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("StructuredOutputResponsesStream", func(t *testing.T) {
+		WrapTestScenario(t, client, ctx, testConfig, "StructuredOutputResponsesStream", ModelTypeChat, runStructuredOutputResponsesStreamTestForModel)
+	})
+}
+
+// runStructuredOutputResponsesStreamTestForModel runs the structured output responses stream test for a specific model
+func runStructuredOutputResponsesStreamTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Test with null target_node_id
+	responsesMessages := []schemas.ResponsesMessage{
+		{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: schemas.Ptr("You are a workflow manager. User says: 'Continue current task'. Analyze this and return: action='continue', target_node_id=null (must be null), priority=7 (as integer). Provide reasoning."),
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
-				var fullContent strings.Builder
-				var responseCount int
+		},
+	}
 
-				streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
-				defer cancel()
+	// Add Anthropic beta header for structured outputs if model contains "claude"
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	if strings.Contains(strings.ToLower(GetChatModelOrFirst(testConfig)), "claude") {
+		extraHeaders := map[string][]string{
+			"anthropic-beta": {"structured-outputs-2025-11-13"},
+		}
+		reqCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+	}
 
-				t.Logf("📡 Starting to read structured output streaming response...")
+	typeStr := "object"
+	props := structuredOutputSchema["properties"].(map[string]interface{})
+	additionalProps := structuredOutputSchema["additionalProperties"].(bool)
+	request := &schemas.BifrostResponsesRequest{
+		Provider: testConfig.Provider,
+		Model:    GetChatModelOrFirst(testConfig),
+		Input:    responsesMessages,
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: bifrost.Ptr(5000),
+			Text: &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_schema",
+					Name: bifrost.Ptr("decision_schema"),
+					JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+						Type:       &typeStr,
+						Properties: &props,
+						Required:   structuredOutputSchema["required"].([]string),
+						AdditionalProperties: &schemas.AdditionalPropertiesStruct{
+							AdditionalPropertiesBool: &additionalProps,
+						},
+					},
+				},
+			},
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
 
-				for {
-					select {
-					case response, ok := <-responseChannel:
-						if !ok {
-							if responseCount == 0 {
-								return ResponsesStreamValidationResult{
-									Passed:       false,
-									Errors:       []string{"❌ Stream closed without receiving any data"},
-									ReceivedData: false,
+	retryConfig := StreamingRetryConfig()
+	retryContext := TestRetryContext{
+		ScenarioName: "StructuredOutputResponsesStream",
+		ExpectedBehavior: map[string]interface{}{
+			"should_stream_json":  true,
+			"should_match_schema": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider": testConfig.Provider,
+			"model":    GetChatModelOrFirst(testConfig),
+		},
+	}
+
+	// Use validation retry wrapper
+	validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
+		func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			return client.ResponsesStreamRequest(reqCtx, request)
+		},
+		func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			var fullContent strings.Builder
+			var responseCount int
+
+			streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
+			defer cancel()
+
+			t.Logf("📡 Starting to read structured output streaming response...")
+
+			for {
+				select {
+				case response, ok := <-responseChannel:
+					if !ok {
+						if responseCount == 0 {
+							return ResponsesStreamValidationResult{
+								Passed:       false,
+								Errors:       []string{"Stream closed without receiving any data"},
+								ReceivedData: false,
+							}
+						}
+						goto streamComplete
+					}
+
+					if response == nil {
+						return ResponsesStreamValidationResult{
+							Passed: false,
+							Errors: []string{"Streaming response should not be nil"},
+						}
+					}
+					responseCount++
+
+					if response.BifrostResponsesStreamResponse != nil {
+						streamResp := response.BifrostResponsesStreamResponse
+
+						switch streamResp.Type {
+						case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+							if streamResp.Delta != nil {
+								fullContent.WriteString(*streamResp.Delta)
+							}
+
+						case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+							if streamResp.Item != nil && streamResp.Item.Content != nil {
+								if streamResp.Item.Content.ContentStr != nil {
+									fullContent.WriteString(*streamResp.Item.Content.ContentStr)
 								}
 							}
-							goto streamComplete
-						}
 
-						if response == nil {
+						case schemas.ResponsesStreamResponseTypeContentPartAdded:
+							if streamResp.Part != nil && streamResp.Part.Text != nil {
+								fullContent.WriteString(*streamResp.Part.Text)
+							}
+
+						case schemas.ResponsesStreamResponseTypeError:
+							errorMsg := "unknown error"
+							if streamResp.Message != nil {
+								errorMsg = *streamResp.Message
+							}
 							return ResponsesStreamValidationResult{
 								Passed: false,
-								Errors: []string{"❌ Streaming response should not be nil"},
+								Errors: []string{fmt.Sprintf("Error in streaming: %s", errorMsg)},
 							}
 						}
-						responseCount++
-
-						if response.BifrostResponsesStreamResponse != nil {
-							streamResp := response.BifrostResponsesStreamResponse
-
-							switch streamResp.Type {
-							case schemas.ResponsesStreamResponseTypeOutputTextDelta:
-								if streamResp.Delta != nil {
-									fullContent.WriteString(*streamResp.Delta)
-								}
-
-							case schemas.ResponsesStreamResponseTypeOutputItemAdded:
-								if streamResp.Item != nil && streamResp.Item.Content != nil {
-									if streamResp.Item.Content.ContentStr != nil {
-										fullContent.WriteString(*streamResp.Item.Content.ContentStr)
-									}
-								}
-
-							case schemas.ResponsesStreamResponseTypeContentPartAdded:
-								if streamResp.Part != nil && streamResp.Part.Text != nil {
-									fullContent.WriteString(*streamResp.Part.Text)
-								}
-
-							case schemas.ResponsesStreamResponseTypeError:
-								errorMsg := "unknown error"
-								if streamResp.Message != nil {
-									errorMsg = *streamResp.Message
-								}
-								return ResponsesStreamValidationResult{
-									Passed: false,
-									Errors: []string{fmt.Sprintf("❌ Error in streaming: %s", errorMsg)},
-								}
-							}
-						}
-
-						if responseCount > 500 {
-							goto streamComplete
-						}
-
-					case <-streamCtx.Done():
-						return ResponsesStreamValidationResult{
-							Passed:       false,
-							Errors:       []string{"❌ Timeout waiting for structured output streaming response"},
-							ReceivedData: responseCount > 0,
-						}
 					}
-				}
 
-			streamComplete:
-				finalContent := strings.TrimSpace(fullContent.String())
-				t.Logf("📝 Assembled structured output (%d chars): %s", len(finalContent), finalContent)
-
-				// Validate the assembled content is valid JSON matching our schema
-				var result map[string]interface{}
-				if err := json.Unmarshal([]byte(finalContent), &result); err != nil {
-					return ResponsesStreamValidationResult{
-						Passed: false,
-						Errors: []string{fmt.Sprintf("❌ Failed to parse assembled structured output as JSON: %v", err)},
+					if responseCount > 500 {
+						goto streamComplete
 					}
-				}
 
-				// Validate required fields
-				var validationErrors []string
-
-				if action, ok := result["action"].(string); !ok || action == "" {
-					validationErrors = append(validationErrors, "❌ Missing or invalid 'action' field in structured output")
-				} else {
-					t.Logf("✅ Action: %s", action)
-				}
-
-				if reason, ok := result["reason"].(string); !ok || reason == "" {
-					validationErrors = append(validationErrors, "❌ Missing or invalid 'reason' field in structured output")
-				} else {
-					t.Logf("✅ Reason: %s", reason)
-				}
-
-				// target_node_id validation - should be null for "continue" action
-				targetNodeID, hasTargetNode := result["target_node_id"]
-				if !hasTargetNode {
-					validationErrors = append(validationErrors, "❌ Missing 'target_node_id' field in structured output")
-				} else {
-					if targetNodeID != nil {
-						t.Logf("⚠️  Expected 'target_node_id' to be null, got: %v (type: %T)", targetNodeID, targetNodeID)
-					} else {
-						t.Logf("✅ Target Node ID is null (as expected)")
-					}
-				}
-
-				if priority, ok := result["priority"]; !ok {
-					validationErrors = append(validationErrors, "❌ Missing 'priority' field in structured output")
-				} else {
-					t.Logf("✅ Priority: %v (type: %T)", priority, priority)
-				}
-
-				if len(validationErrors) > 0 {
+				case <-streamCtx.Done():
 					return ResponsesStreamValidationResult{
 						Passed:       false,
-						Errors:       validationErrors,
+						Errors:       []string{"Timeout waiting for structured output streaming response"},
 						ReceivedData: responseCount > 0,
 					}
 				}
+			}
 
+		streamComplete:
+			finalContent := strings.TrimSpace(fullContent.String())
+			t.Logf("📝 Assembled structured output (%d chars): %s", len(finalContent), finalContent)
+
+			// Validate the assembled content is valid JSON matching our schema
+			var result map[string]interface{}
+			if err := json.Unmarshal([]byte(finalContent), &result); err != nil {
 				return ResponsesStreamValidationResult{
-					Passed:       true,
+					Passed: false,
+					Errors: []string{fmt.Sprintf("Failed to parse assembled structured output as JSON: %v", err)},
+				}
+			}
+
+			// Validate required fields
+			var validationErrors []string
+
+			if action, ok := result["action"].(string); !ok || action == "" {
+				validationErrors = append(validationErrors, "Missing or invalid 'action' field in structured output")
+			} else {
+				t.Logf("✅ Action: %s", action)
+			}
+
+			if reason, ok := result["reason"].(string); !ok || reason == "" {
+				validationErrors = append(validationErrors, "Missing or invalid 'reason' field in structured output")
+			} else {
+				t.Logf("✅ Reason: %s", reason)
+			}
+
+			// target_node_id validation - should be null for "continue" action
+			targetNodeID, hasTargetNode := result["target_node_id"]
+			if !hasTargetNode {
+				validationErrors = append(validationErrors, "Missing 'target_node_id' field in structured output")
+			} else {
+				if targetNodeID != nil {
+					t.Logf("⚠️  Expected 'target_node_id' to be null, got: %v (type: %T)", targetNodeID, targetNodeID)
+				} else {
+					t.Logf("✅ Target Node ID is null (as expected)")
+				}
+			}
+
+			if priority, ok := result["priority"]; !ok {
+				validationErrors = append(validationErrors, "Missing 'priority' field in structured output")
+			} else {
+				t.Logf("✅ Priority: %v (type: %T)", priority, priority)
+			}
+
+			if len(validationErrors) > 0 {
+				return ResponsesStreamValidationResult{
+					Passed:       false,
+					Errors:       validationErrors,
 					ReceivedData: responseCount > 0,
 				}
-			})
-
-		if !validationResult.Passed {
-			allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
-			errorMsg := strings.Join(allErrors, "; ")
-			if !strings.Contains(errorMsg, "❌") {
-				errorMsg = fmt.Sprintf("❌ %s", errorMsg)
 			}
-			t.Fatalf("❌ Responses streaming with structured output validation failed: %s", errorMsg)
-		}
 
-		t.Logf("🎉 Responses streaming with structured output test passed!")
-	})
+			return ResponsesStreamValidationResult{
+				Passed:       true,
+				ReceivedData: responseCount > 0,
+			}
+		})
+
+	if !validationResult.Passed {
+		allErrors := append(validationResult.Errors, validationResult.StreamErrors...)
+		errorMsg := strings.Join(allErrors, "; ")
+		return fmt.Errorf("Responses streaming with structured output validation failed: %s", errorMsg)
+	}
+
+	t.Logf("🎉 Responses streaming with structured output test passed!")
+	return nil
 }

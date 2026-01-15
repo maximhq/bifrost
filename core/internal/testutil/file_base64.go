@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -65,6 +65,7 @@ func CreateDocumentResponsesMessage(text, documentBase64 string) schemas.Respons
 }
 
 // RunFileBase64Test executes the PDF file input test scenario with separate subtests for each API
+// This function now supports testing multiple vision models - the test passes only if ALL models pass
 func RunFileBase64Test(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.FileBase64 {
 		t.Logf("File base64 not supported for provider %s", testConfig.Provider)
@@ -86,77 +87,85 @@ func RunFileBase64ChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx
 	}
 
 	t.Run("FileBase64-ChatCompletions", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Create messages for Chat Completions API with base64 PDF document
-		chatMessages := []schemas.ChatMessage{
-			CreateDocumentChatMessage("What is the main content of this PDF document? Summarize it.", HelloWorldPDFBase64),
-		}
-
-		// Use retry framework for document input requests
-		retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
-		retryContext := TestRetryContext{
-			ScenarioName: "FileBase64-ChatCompletions",
-			ExpectedBehavior: map[string]interface{}{
-				"should_process_pdf":     true,
-				"should_read_document":   true,
-				"should_extract_content": true,
-				"document_understanding": true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ChatModel,
-				"file_type":         "pdf",
-				"encoding":          "base64",
-				"test_content":      "Hello World!",
-				"expected_keywords": []string{"hello", "world", "pdf", "document"},
-			},
-		}
-
-		// Enhanced validation for PDF document processing
-		expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "hello", "world")
-		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot process", "invalid format", "decode error",
-			"unable to read", "no file", "corrupted", "unsupported",
-		}...) // PDF processing failure indicators
-
-		chatRetryConfig := ChatRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ChatRetryCondition{},
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "FileBase64", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			chatReq := &schemas.BifrostChatRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    chatMessages,
-				Params: &schemas.ChatParameters{
-					MaxCompletionTokens: bifrost.Ptr(500),
-				},
-				Fallbacks: testConfig.Fallbacks,
-			}
-			return client.ChatCompletionRequest(bfCtx, chatReq)
-		})
-
-		if chatError != nil {
-			t.Fatalf("❌ FileBase64 Chat Completions test failed: %v", GetErrorMessage(chatError))
-		}
-
-		// Additional validation for PDF document processing
-		content := GetChatContent(response)
-		validateDocumentContent(t, content, "Chat Completions")
-
-		t.Logf("🎉 Chat Completions API passed FileBase64 test!")
+		WrapTestScenario(t, client, ctx, testConfig, "FileBase64-ChatCompletions", ModelTypeVision, runFileBase64ChatCompletionsTestForModel)
 	})
+}
+
+// runFileBase64ChatCompletionsTestForModel runs the file base64 Chat Completions test for a specific model
+func runFileBase64ChatCompletionsTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Get the single model from the config
+	model := GetVisionModelOrFirst(testConfig)
+
+	// Create messages for Chat Completions API with base64 PDF document
+	chatMessages := []schemas.ChatMessage{
+		CreateDocumentChatMessage("What is the main content of this PDF document? Summarize it.", HelloWorldPDFBase64),
+	}
+
+	// Use retry framework for document input requests
+	retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
+	retryContext := TestRetryContext{
+		ScenarioName: "FileBase64-ChatCompletions",
+		ExpectedBehavior: map[string]interface{}{
+			"should_process_pdf":     true,
+			"should_read_document":   true,
+			"should_extract_content": true,
+			"document_understanding": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             model,
+			"file_type":         "pdf",
+			"encoding":          "base64",
+			"test_content":      "Hello World!",
+			"expected_keywords": []string{"hello", "world", "pdf", "document"},
+		},
+	}
+
+	// Enhanced validation for PDF document processing
+	expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+	expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "hello", "world")
+	expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
+		"cannot process", "invalid format", "decode error",
+		"unable to read", "no file", "corrupted", "unsupported",
+	}...) // PDF processing failure indicators
+
+	chatRetryConfig := ChatRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ChatRetryCondition{},
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
+
+	response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "FileBase64", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		chatReq := &schemas.BifrostChatRequest{
+			Provider: testConfig.Provider,
+			Model:    model,
+			Input:    chatMessages,
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: bifrost.Ptr(500),
+			},
+			Fallbacks: testConfig.Fallbacks,
+		}
+		return client.ChatCompletionRequest(bfCtx, chatReq)
+	})
+
+	if chatError != nil {
+		return fmt.Errorf("FileBase64 Chat Completions test failed: %v", GetErrorMessage(chatError))
+	}
+
+	// Additional validation for PDF document processing
+	content := GetChatContent(response)
+	err := validateDocumentContentWithError(content, "Chat Completions")
+	if err != nil {
+		return err
+	}
+
+	t.Logf("🎉 Chat Completions API passed FileBase64 test!")
+	return nil
 }
 
 // RunFileBase64ResponsesTest executes the file base64 test using Responses API
@@ -167,77 +176,103 @@ func RunFileBase64ResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 	}
 
 	t.Run("FileBase64-Responses", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Create messages for Responses API with base64 PDF document
-		responsesMessages := []schemas.ResponsesMessage{
-			CreateDocumentResponsesMessage("What is the main content of this PDF document? Summarize it.", HelloWorldPDFBase64),
-		}
-
-		// Set up retry context for document input requests
-		retryContext := TestRetryContext{
-			ScenarioName: "FileBase64-Responses",
-			ExpectedBehavior: map[string]interface{}{
-				"should_process_pdf":     true,
-				"should_read_document":   true,
-				"should_extract_content": true,
-				"document_understanding": true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ChatModel,
-				"file_type":         "pdf",
-				"encoding":          "base64",
-				"test_content":      "Hello World!",
-				"expected_keywords": []string{"hello", "world", "pdf", "document"},
-			},
-		}
-
-		// Enhanced validation for PDF document processing
-		expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-		expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "hello", "world")
-		expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
-			"cannot process", "invalid format", "decode error",
-			"unable to read", "no file", "corrupted", "unsupported",
-		}...) // PDF processing failure indicators
-
-		retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
-		responsesRetryConfig := ResponsesRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ResponsesRetryCondition{},
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "FileBase64", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			responsesReq := &schemas.BifrostResponsesRequest{
-				Provider: testConfig.Provider,
-				Model:    testConfig.ChatModel,
-				Input:    responsesMessages,
-				Params: &schemas.ResponsesParameters{
-					MaxOutputTokens: bifrost.Ptr(500),
-				},
-				Fallbacks: testConfig.Fallbacks,
-			}
-			return client.ResponsesRequest(bfCtx, responsesReq)
-		})
-
-		if responsesError != nil {
-			t.Fatalf("❌ FileBase64 Responses test failed: %v", GetErrorMessage(responsesError))
-		}
-
-		// Additional validation for PDF document processing
-		content := GetResponsesContent(response)
-		validateDocumentContent(t, content, "Responses")
-
-		t.Logf("🎉 Responses API passed FileBase64 test!")
+		WrapTestScenario(t, client, ctx, testConfig, "FileBase64-Responses", ModelTypeVision, runFileBase64ResponsesTestForModel)
 	})
+}
+
+// runFileBase64ResponsesTestForModel runs the file base64 Responses test for a specific model
+func runFileBase64ResponsesTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Get the single model from the config
+	model := GetVisionModelOrFirst(testConfig)
+
+	// Create messages for Responses API with base64 PDF document
+	responsesMessages := []schemas.ResponsesMessage{
+		CreateDocumentResponsesMessage("What is the main content of this PDF document? Summarize it.", HelloWorldPDFBase64),
+	}
+
+	// Set up retry context for document input requests
+	retryContext := TestRetryContext{
+		ScenarioName: "FileBase64-Responses",
+		ExpectedBehavior: map[string]interface{}{
+			"should_process_pdf":     true,
+			"should_read_document":   true,
+			"should_extract_content": true,
+			"document_understanding": true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             model,
+			"file_type":         "pdf",
+			"encoding":          "base64",
+			"test_content":      "Hello World!",
+			"expected_keywords": []string{"hello", "world", "pdf", "document"},
+		},
+	}
+
+	// Enhanced validation for PDF document processing
+	expectations := GetExpectationsForScenario("FileInput", testConfig, map[string]interface{}{})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+	expectations.ShouldContainKeywords = append(expectations.ShouldContainKeywords, "hello", "world")
+	expectations.ShouldNotContainWords = append(expectations.ShouldNotContainWords, []string{
+		"cannot process", "invalid format", "decode error",
+		"unable to read", "no file", "corrupted", "unsupported",
+	}...) // PDF processing failure indicators
+
+	retryConfig := GetTestRetryConfigForScenario("FileInput", testConfig)
+	responsesRetryConfig := ResponsesRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ResponsesRetryCondition{},
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
+
+	response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "FileBase64", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		responsesReq := &schemas.BifrostResponsesRequest{
+			Provider: testConfig.Provider,
+			Model:    model,
+			Input:    responsesMessages,
+			Params: &schemas.ResponsesParameters{
+				MaxOutputTokens: bifrost.Ptr(500),
+			},
+			Fallbacks: testConfig.Fallbacks,
+		}
+		return client.ResponsesRequest(bfCtx, responsesReq)
+	})
+
+	if responsesError != nil {
+		return fmt.Errorf("FileBase64 Responses test failed: %v", GetErrorMessage(responsesError))
+	}
+
+	// Additional validation for PDF document processing
+	content := GetResponsesContent(response)
+	err := validateDocumentContentWithError(content, "Responses")
+	if err != nil {
+		return err
+	}
+
+	t.Logf("🎉 Responses API passed FileBase64 test!")
+	return nil
+}
+
+// validateDocumentContentWithError validates document content and returns error instead of failing test
+func validateDocumentContentWithError(content string, apiName string) error {
+	lowerContent := strings.ToLower(content)
+	foundHelloWorld := strings.Contains(lowerContent, "hello") && strings.Contains(lowerContent, "world")
+	foundDocument := strings.Contains(lowerContent, "document") || strings.Contains(lowerContent, "pdf") ||
+		strings.Contains(lowerContent, "file") || strings.Contains(lowerContent, "text")
+
+	if len(content) < 10 {
+		return fmt.Errorf("%s response is too short for document description (got %d chars): %s", apiName, len(content), content)
+	}
+
+	if !foundHelloWorld && !foundDocument {
+		return fmt.Errorf("%s model failed to process PDF document - response doesn't reference expected content or document-related terms. Response: %s", apiName, content)
+	}
+
+	return nil
 }
 
 func validateDocumentContent(t *testing.T, content string, apiName string) {

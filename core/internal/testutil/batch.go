@@ -22,13 +22,13 @@ func RunBatchCreateTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 		// Create a batch request with a simple chat completion
 		request := &schemas.BifrostBatchCreateRequest{
 			Provider: testConfig.Provider,
-			Model:    schemas.Ptr(testConfig.ChatModel),
+			Model:    schemas.Ptr(GetChatModelOrFirst(testConfig)),
 			Endpoint: schemas.BatchEndpointChatCompletions,
 			Requests: []schemas.BatchRequestItem{
 				{
 					CustomID: "test-request-1",
 					Body: map[string]interface{}{
-						"model": testConfig.ChatModel,
+						"model": GetChatModelOrFirst(testConfig),
 						"messages": []map[string]string{
 							{"role": "user", "content": "Say hello"},
 						},
@@ -114,13 +114,13 @@ func RunBatchRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		// Note: In real tests, you might want to use an existing batch ID
 		createRequest := &schemas.BifrostBatchCreateRequest{
 			Provider: testConfig.Provider,
-			Model:    schemas.Ptr(testConfig.ChatModel),
+			Model:    schemas.Ptr(GetChatModelOrFirst(testConfig)),
 			Endpoint: schemas.BatchEndpointChatCompletions,
 			Requests: []schemas.BatchRequestItem{
 				{
 					CustomID: "test-retrieve-1",
 					Body: map[string]interface{}{
-						"model": testConfig.ChatModel,
+						"model": GetChatModelOrFirst(testConfig),
 						"messages": []map[string]string{
 							{"role": "user", "content": "Say hello"},
 						},
@@ -188,13 +188,13 @@ func RunBatchCancelTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 		// First, create a batch to cancel
 		createRequest := &schemas.BifrostBatchCreateRequest{
 			Provider: testConfig.Provider,
-			Model:    schemas.Ptr(testConfig.ChatModel),
+			Model:    schemas.Ptr(GetChatModelOrFirst(testConfig)),
 			Endpoint: schemas.BatchEndpointChatCompletions,
 			Requests: []schemas.BatchRequestItem{
 				{
 					CustomID: "test-cancel-1",
 					Body: map[string]interface{}{
-						"model": testConfig.ChatModel,
+						"model": GetChatModelOrFirst(testConfig),
 						"messages": []map[string]string{
 							{"role": "user", "content": "Say hello"},
 						},
@@ -301,13 +301,13 @@ func RunBatchUnsupportedTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 		// Try to create a batch - should fail with unsupported error
 		request := &schemas.BifrostBatchCreateRequest{
 			Provider: testConfig.Provider,
-			Model:    schemas.Ptr(testConfig.ChatModel),
+			Model:    schemas.Ptr(GetChatModelOrFirst(testConfig)),
 			Endpoint: schemas.BatchEndpointChatCompletions,
 			Requests: []schemas.BatchRequestItem{
 				{
 					CustomID: "test-unsupported-1",
 					Body: map[string]interface{}{
-						"model": testConfig.ChatModel,
+						"model": GetChatModelOrFirst(testConfig),
 						"messages": []map[string]string{
 							{"role": "user", "content": "Say hello"},
 						},
@@ -675,8 +675,8 @@ func RunFileAndBatchIntegrationTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		t.Logf("[RUNNING] File and Batch Integration test for provider: %s", testConfig.Provider)
 
 		// Step 1: Upload a batch input file
-		fileContent := []byte(`{"custom_id": "integration-test-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "` + testConfig.ChatModel + `", "messages": [{"role": "user", "content": "Say hello"}]}}
-{"custom_id": "integration-test-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "` + testConfig.ChatModel + `", "messages": [{"role": "user", "content": "Say goodbye"}]}}
+		fileContent := []byte(`{"custom_id": "integration-test-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "` + GetChatModelOrFirst(testConfig) + `", "messages": [{"role": "user", "content": "Say hello"}]}}
+{"custom_id": "integration-test-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "` + GetChatModelOrFirst(testConfig) + `", "messages": [{"role": "user", "content": "Say goodbye"}]}}
 `)
 
 		uploadRequest := &schemas.BifrostFileUploadRequest{
@@ -708,7 +708,7 @@ func RunFileAndBatchIntegrationTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		// Step 2: Create a batch using the uploaded file
 		batchRequest := &schemas.BifrostBatchCreateRequest{
 			Provider:         testConfig.Provider,
-			Model:            schemas.Ptr(testConfig.ChatModel),
+			Model:            schemas.Ptr(GetChatModelOrFirst(testConfig)),
 			InputFileID:      uploadResponse.ID,
 			Endpoint:         schemas.BatchEndpointChatCompletions,
 			CompletionWindow: "24h",

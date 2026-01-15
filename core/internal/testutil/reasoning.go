@@ -2,7 +2,7 @@ package testutil
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -10,6 +10,7 @@ import (
 )
 
 // RunResponsesReasoningTest executes the reasoning test scenario to test thinking capabilities via Responses API only
+// This function now supports testing multiple reasoning models - the test passes only if ALL models pass
 func RunResponsesReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.Reasoning {
 		t.Logf("⏭️ Reasoning not supported for provider %s", testConfig.Provider)
@@ -17,104 +18,110 @@ func RunResponsesReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 	}
 
 	// Skip if no reasoning model is configured
-	if testConfig.ReasoningModel == "" {
+	if GetReasoningModelOrFirst(testConfig) == "" {
 		t.Logf("⏭️ No reasoning model configured for provider %s", testConfig.Provider)
 		return
 	}
 
 	t.Run("ResponsesReasoning", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		// Create a complex problem that requires step-by-step reasoning
-		problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit? Please show your step-by-step reasoning."
-
-		responsesMessages := []schemas.ResponsesMessage{
-			CreateBasicResponsesMessage(problemPrompt),
-		}
-
-		// Execute Responses API test with retries
-		responsesReq := &schemas.BifrostResponsesRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ReasoningModel,
-			Input:    responsesMessages,
-			Params: &schemas.ResponsesParameters{
-				MaxOutputTokens: bifrost.Ptr(1800),
-				// Configure reasoning-specific parameters
-				Reasoning: &schemas.ResponsesParametersReasoning{
-					Effort: bifrost.Ptr("high"), // High effort for complex reasoning
-					// Summary: bifrost.Ptr("detailed"), // Detailed summary of reasoning process
-				},
-				// Include reasoning content in response
-				Include: []string{"reasoning.encrypted_content"},
-			},
-			Fallbacks: testConfig.Fallbacks,
-		}
-
-		// Use retry framework with enhanced validation for reasoning
-		retryConfig := GetTestRetryConfigForScenario("Reasoning", testConfig)
-		retryContext := TestRetryContext{
-			ScenarioName: "Reasoning",
-			ExpectedBehavior: map[string]interface{}{
-				"should_show_reasoning": true,
-				"mathematical_problem":  true,
-				"step_by_step":          true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ReasoningModel,
-				"problem_type":      "mathematical",
-				"complexity":        "high",
-				"expects_reasoning": true,
-			},
-		}
-		responsesRetryConfig := ResponsesRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ResponsesRetryCondition{}, // Add specific responses retry conditions as needed
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		// Enhanced validation for reasoning scenarios
-		expectations := GetExpectationsForScenario("Reasoning", testConfig, map[string]interface{}{
-			"requires_reasoning": true,
-		})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-
-		response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			return client.ResponsesRequest(bfCtx, responsesReq)
-		})
-
-		if responsesError != nil {
-			t.Fatalf("❌ Reasoning test failed after retries: %v", GetErrorMessage(responsesError))
-		}
-
-		// Log the response content
-		responsesContent := GetResponsesContent(response)
-		if responsesContent == "" {
-			t.Logf("✅ Responses API reasoning result: <no content>")
-		} else {
-			maxLen := 300
-			if len(responsesContent) < maxLen {
-				maxLen = len(responsesContent)
-			}
-			t.Logf("✅ Responses API reasoning result: %s", responsesContent[:maxLen])
-		}
-
-		// Additional reasoning-specific validation (complementary to the main validation)
-		reasoningDetected := validateResponsesAPIReasoning(t, response)
-		if !reasoningDetected {
-			t.Logf("⚠️ No explicit reasoning indicators found in response structure - may still contain valid reasoning in content")
-		} else {
-			t.Logf("🧠 Reasoning structure detected in response")
-		}
-
-		t.Logf("🎉 Responses API passed Reasoning test!")
+		WrapTestScenario(t, client, ctx, testConfig, "ResponsesReasoning", ModelTypeReasoning, runResponsesReasoningTestForModel)
 	})
+}
+
+// runResponsesReasoningTestForModel runs the Responses API reasoning test for a specific model
+// The config passed here will have only ONE model in ReasoningModels array
+func runResponsesReasoningTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Get the single model from the config
+	model := GetReasoningModelOrFirst(testConfig)
+
+	// Create a complex problem that requires step-by-step reasoning
+	problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit? Please show your step-by-step reasoning."
+
+	responsesMessages := []schemas.ResponsesMessage{
+		CreateBasicResponsesMessage(problemPrompt),
+	}
+
+	// Execute Responses API test with retries
+	responsesReq := &schemas.BifrostResponsesRequest{
+		Provider: testConfig.Provider,
+		Model:    model,
+		Input:    responsesMessages,
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: bifrost.Ptr(1800),
+			// Configure reasoning-specific parameters
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				Effort: bifrost.Ptr("high"), // High effort for complex reasoning
+				// Summary: bifrost.Ptr("detailed"), // Detailed summary of reasoning process
+			},
+			// Include reasoning content in response
+			Include: []string{"reasoning.encrypted_content"},
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
+
+	// Use retry framework with enhanced validation for reasoning
+	retryConfig := GetTestRetryConfigForScenario("Reasoning", testConfig)
+	retryContext := TestRetryContext{
+		ScenarioName: "Reasoning",
+		ExpectedBehavior: map[string]interface{}{
+			"should_show_reasoning": true,
+			"mathematical_problem":  true,
+			"step_by_step":          true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             model,
+			"problem_type":      "mathematical",
+			"complexity":        "high",
+			"expects_reasoning": true,
+		},
+	}
+	responsesRetryConfig := ResponsesRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ResponsesRetryCondition{}, // Add specific responses retry conditions as needed
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
+
+	// Enhanced validation for reasoning scenarios
+	expectations := GetExpectationsForScenario("Reasoning", testConfig, map[string]interface{}{
+		"requires_reasoning": true,
+	})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+	response, responsesError := WithResponsesTestRetry(t, responsesRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		return client.ResponsesRequest(bfCtx, responsesReq)
+	})
+
+	if responsesError != nil {
+		return fmt.Errorf("Reasoning test failed after retries: %v", GetErrorMessage(responsesError))
+	}
+
+	// Log the response content
+	responsesContent := GetResponsesContent(response)
+	if responsesContent == "" {
+		t.Logf("✅ Responses API reasoning result: <no content>")
+	} else {
+		maxLen := 300
+		if len(responsesContent) < maxLen {
+			maxLen = len(responsesContent)
+		}
+		t.Logf("✅ Responses API reasoning result: %s", responsesContent[:maxLen])
+	}
+
+	// Additional reasoning-specific validation (complementary to the main validation)
+	reasoningDetected := validateResponsesAPIReasoning(t, response)
+	if !reasoningDetected {
+		t.Logf("⚠️ No explicit reasoning indicators found in response structure - may still contain valid reasoning in content")
+	} else {
+		t.Logf("🧠 Reasoning structure detected in response")
+	}
+
+	t.Logf("🎉 Responses API passed Reasoning test for model: %s!", model)
+	return nil
 }
 
 // validateResponsesAPIReasoning performs additional validation specific to Responses API reasoning features
@@ -200,6 +207,7 @@ func validateResponsesAPIReasoning(t *testing.T, response *schemas.BifrostRespon
 }
 
 // RunChatCompletionReasoningTest executes the reasoning test scenario to test thinking capabilities via Chat Completions API
+// This function now supports testing multiple reasoning models - the test passes only if ALL models pass
 func RunChatCompletionReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.Reasoning {
 		t.Logf("⏭️ Reasoning not supported for provider %s", testConfig.Provider)
@@ -207,108 +215,114 @@ func RunChatCompletionReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx c
 	}
 
 	// Skip if no reasoning model is configured
-	if testConfig.ReasoningModel == "" {
+	if GetReasoningModelOrFirst(testConfig) == "" {
 		t.Logf("⏭️ No reasoning model configured for provider %s", testConfig.Provider)
 		return
 	}
 
 	t.Run("ChatCompletionReasoning", func(t *testing.T) {
-		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
-			t.Parallel()
-		}
-
-		if testConfig.Provider == schemas.OpenAI {
-			// OpenAI because reasoning for them in chat completions is extremely flaky
-			t.Skip("Skipping ChatCompletionReasoning test for OpenAI")
-			return
-		}
-
-		// Create a complex problem that requires step-by-step reasoning
-		problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit? Please show your step-by-step reasoning."
-
-		chatMessages := []schemas.ChatMessage{
-			CreateBasicChatMessage(problemPrompt),
-		}
-
-		// Execute Chat Completions API test with retries
-		chatReq := &schemas.BifrostChatRequest{
-			Provider: testConfig.Provider,
-			Model:    testConfig.ReasoningModel,
-			Input:    chatMessages,
-			Params: &schemas.ChatParameters{
-				MaxCompletionTokens: bifrost.Ptr(1800),
-				// Configure reasoning-specific parameters
-				Reasoning: &schemas.ChatReasoning{
-					Effort:    bifrost.Ptr("high"), // High effort for complex reasoning
-					MaxTokens: bifrost.Ptr(1500),   // Maximum tokens for reasoning output
-				},
-			},
-			Fallbacks: testConfig.Fallbacks,
-		}
-
-		// Use retry framework with enhanced validation for reasoning
-		retryConfig := GetTestRetryConfigForScenario("Reasoning", testConfig)
-		retryContext := TestRetryContext{
-			ScenarioName: "Reasoning",
-			ExpectedBehavior: map[string]interface{}{
-				"should_show_reasoning": true,
-				"mathematical_problem":  true,
-				"step_by_step":          true,
-			},
-			TestMetadata: map[string]interface{}{
-				"provider":          testConfig.Provider,
-				"model":             testConfig.ReasoningModel,
-				"problem_type":      "mathematical",
-				"complexity":        "high",
-				"expects_reasoning": true,
-			},
-		}
-		chatRetryConfig := ChatRetryConfig{
-			MaxAttempts: retryConfig.MaxAttempts,
-			BaseDelay:   retryConfig.BaseDelay,
-			MaxDelay:    retryConfig.MaxDelay,
-			Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
-			OnRetry:     retryConfig.OnRetry,
-			OnFinalFail: retryConfig.OnFinalFail,
-		}
-
-		// Enhanced validation for reasoning scenarios
-		expectations := GetExpectationsForScenario("Reasoning", testConfig, map[string]interface{}{
-			"requires_reasoning": true,
-		})
-		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
-
-		response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			return client.ChatCompletionRequest(bfCtx, chatReq)
-		})
-
-		if chatError != nil {
-			t.Fatalf("❌ Reasoning test failed after retries: %v", GetErrorMessage(chatError))
-		}
-
-		// Log the response content
-		chatContent := GetChatContent(response)
-		if chatContent == "" {
-			t.Logf("✅ Chat Completions API reasoning result: <no content>")
-		} else {
-			maxLen := 300
-			if len(chatContent) < maxLen {
-				maxLen = len(chatContent)
-			}
-			t.Logf("✅ Chat Completions API reasoning result: %s", chatContent[:maxLen])
-		}
-
-		// Additional reasoning-specific validation (complementary to the main validation)
-		reasoningDetected := validateChatCompletionReasoning(t, response)
-		if !reasoningDetected {
-			t.Logf("⚠️ No explicit reasoning indicators found in response structure - may still contain valid reasoning in content")
-		} else {
-			t.Logf("🧠 Reasoning structure detected in response")
-		}
-
-		t.Logf("🎉 Chat Completions API passed Reasoning test!")
+		WrapTestScenario(t, client, ctx, testConfig, "ChatCompletionReasoning", ModelTypeReasoning, runChatCompletionReasoningTestForModel)
 	})
+}
+
+// runChatCompletionReasoningTestForModel runs the Chat Completions API reasoning test for a specific model
+// The config passed here will have only ONE model in ReasoningModels array
+func runChatCompletionReasoningTestForModel(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) error {
+	// Get the single model from the config
+	model := GetReasoningModelOrFirst(testConfig)
+
+	if testConfig.Provider == schemas.OpenAI {
+		// OpenAI because reasoning for them in chat completions is extremely flaky
+		t.Logf("⏭️ Skipping ChatCompletionReasoning test for OpenAI model: %s", model)
+		return nil
+	}
+
+	// Create a complex problem that requires step-by-step reasoning
+	problemPrompt := "A farmer has 100 chickens and 50 cows. Each chicken lays 5 eggs per week, and each cow produces 20 liters of milk per day. If the farmer sells eggs for $0.25 each and milk for $1.50 per liter, and it costs $2 per week to feed each chicken and $15 per week to feed each cow, what is the farmer's weekly profit? Please show your step-by-step reasoning."
+
+	chatMessages := []schemas.ChatMessage{
+		CreateBasicChatMessage(problemPrompt),
+	}
+
+	// Execute Chat Completions API test with retries
+	chatReq := &schemas.BifrostChatRequest{
+		Provider: testConfig.Provider,
+		Model:    model,
+		Input:    chatMessages,
+		Params: &schemas.ChatParameters{
+			MaxCompletionTokens: bifrost.Ptr(1800),
+			// Configure reasoning-specific parameters
+			Reasoning: &schemas.ChatReasoning{
+				Effort:    bifrost.Ptr("high"), // High effort for complex reasoning
+				MaxTokens: bifrost.Ptr(1500),   // Maximum tokens for reasoning output
+			},
+		},
+		Fallbacks: testConfig.Fallbacks,
+	}
+
+	// Use retry framework with enhanced validation for reasoning
+	retryConfig := GetTestRetryConfigForScenario("Reasoning", testConfig)
+	retryContext := TestRetryContext{
+		ScenarioName: "Reasoning",
+		ExpectedBehavior: map[string]interface{}{
+			"should_show_reasoning": true,
+			"mathematical_problem":  true,
+			"step_by_step":          true,
+		},
+		TestMetadata: map[string]interface{}{
+			"provider":          testConfig.Provider,
+			"model":             model,
+			"problem_type":      "mathematical",
+			"complexity":        "high",
+			"expects_reasoning": true,
+		},
+	}
+	chatRetryConfig := ChatRetryConfig{
+		MaxAttempts: retryConfig.MaxAttempts,
+		BaseDelay:   retryConfig.BaseDelay,
+		MaxDelay:    retryConfig.MaxDelay,
+		Conditions:  []ChatRetryCondition{}, // Add specific chat retry conditions as needed
+		OnRetry:     retryConfig.OnRetry,
+		OnFinalFail: retryConfig.OnFinalFail,
+	}
+
+	// Enhanced validation for reasoning scenarios
+	expectations := GetExpectationsForScenario("Reasoning", testConfig, map[string]interface{}{
+		"requires_reasoning": true,
+	})
+	expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+	response, chatError := WithChatTestRetry(t, chatRetryConfig, retryContext, expectations, "Reasoning", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		return client.ChatCompletionRequest(bfCtx, chatReq)
+	})
+
+	if chatError != nil {
+		return fmt.Errorf("Reasoning test failed after retries: %v", GetErrorMessage(chatError))
+	}
+
+	// Log the response content
+	chatContent := GetChatContent(response)
+	if chatContent == "" {
+		t.Logf("✅ Chat Completions API reasoning result: <no content>")
+	} else {
+		maxLen := 300
+		if len(chatContent) < maxLen {
+			maxLen = len(chatContent)
+		}
+		t.Logf("✅ Chat Completions API reasoning result: %s", chatContent[:maxLen])
+	}
+
+	// Additional reasoning-specific validation (complementary to the main validation)
+	reasoningDetected := validateChatCompletionReasoning(t, response)
+	if !reasoningDetected {
+		t.Logf("⚠️ No explicit reasoning indicators found in response structure - may still contain valid reasoning in content")
+	} else {
+		t.Logf("🧠 Reasoning structure detected in response")
+	}
+
+	t.Logf("🎉 Chat Completions API passed Reasoning test for model: %s!", model)
+	return nil
 }
 
 // validateChatCompletionReasoning performs additional validation specific to Chat Completions API reasoning features
