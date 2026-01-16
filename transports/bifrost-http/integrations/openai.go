@@ -191,6 +191,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return stripExtraFieldsForOpenAIText(resp), nil
 				}
 				if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
 					return stripExtraFieldsForOpenAIText(resp), nil
@@ -206,6 +207,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
+						return "", stripExtraFieldsForOpenAIText(resp), nil
 					}
 					if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
 						return "", stripExtraFieldsForOpenAIText(resp), nil
@@ -213,7 +215,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return "", resp, nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return err
+					return stripExtraFieldsForOpenAIError(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
@@ -246,6 +248,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return StripExtraFieldsForOpenAI(resp), nil
 				}
 				if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
 					return StripExtraFieldsForOpenAI(resp), nil
@@ -261,6 +264,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
+						return "", StripExtraFieldsForOpenAI(resp), nil
 					}
 					if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
 						return "", StripExtraFieldsForOpenAI(resp), nil
@@ -302,6 +306,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return stripExtraFieldsForOpenAIResponses(resp), nil
 				}
 				if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
 					return stripExtraFieldsForOpenAIResponses(resp), nil
@@ -317,6 +322,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						if resp.ExtraFields.RawResponse != nil {
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
+						return string(resp.Type), stripExtraFieldsForOpenAIResponsesStream(resp), nil
 					}
 					if resp.ExtraFields == nil || resp.ExtraFields.Provider != schemas.OpenAI {
 						return string(resp.Type), stripExtraFieldsForOpenAIResponsesStream(resp), nil
@@ -324,7 +330,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return string(resp.Type), resp, nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-					return err
+					return stripExtraFieldsForOpenAIError(err)
 				},
 			},
 			PreCallback: AzureEndpointPreHook(handlerStore),
