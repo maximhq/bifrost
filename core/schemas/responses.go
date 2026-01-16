@@ -82,6 +82,14 @@ type BifrostResponsesResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+func (r *BifrostResponsesResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostResponsesResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 type ResponsesParameters struct {
 	Background         *bool                         `json:"background,omitempty"`
 	Conversation       *string                       `json:"conversation,omitempty"`
@@ -1478,4 +1486,12 @@ type BifrostResponsesStreamResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+func (r *BifrostResponsesStreamResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostResponsesStreamResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }

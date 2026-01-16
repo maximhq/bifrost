@@ -626,10 +626,7 @@ func HandleOpenAITextCompletionStreaming(
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
-			if response.ExtraFields == nil {
-				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-			}
-			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+			providerUtils.ParseAndSetRawRequest(response, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1035,10 +1032,7 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
 						// Set raw request if enabled
 						if sendBackRawRequest {
-							if response.ExtraFields == nil {
-								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-							}
-							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+							providerUtils.ParseAndSetRawRequest(response, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1155,10 +1149,7 @@ func HandleOpenAIChatCompletionStreaming(
 			}
 			// Set raw request if enabled
 			if sendBackRawRequest {
-				if response.ExtraFields == nil {
-					response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-				}
-				providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+				providerUtils.ParseAndSetRawRequest(response, jsonBody)
 			}
 			response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1522,10 +1513,7 @@ func HandleOpenAIResponsesStreaming(
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 				// Set raw request if enabled
 				if sendBackRawRequest {
-					if response.ExtraFields == nil {
-						response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-					}
-					providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+					providerUtils.ParseAndSetRawRequest(&response, jsonBody)
 				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1758,10 +1746,7 @@ func HandleOpenAISpeechRequest(
 	}
 
 	if sendBackRawRequest {
-		if bifrostResponse.ExtraFields == nil {
-			bifrostResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-		}
-		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
 	}
 
 	return bifrostResponse, nil
@@ -2001,10 +1986,7 @@ func HandleOpenAISpeechStreamRequest(
 			if response.Usage != nil {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				if sendBackRawRequest {
-					if response.ExtraFields == nil {
-						response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-					}
-					providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+					providerUtils.ParseAndSetRawRequest(&response, jsonBody)
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil), responseChan)

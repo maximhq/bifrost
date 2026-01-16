@@ -25,6 +25,14 @@ type BifrostTranscriptionResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostTranscriptionResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostTranscriptionResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 type TranscriptionInput struct {
 	File []byte `json:"file"`
 }
@@ -127,4 +135,12 @@ type BifrostTranscriptionStreamResponse struct {
 	Type        TranscriptionStreamResponseType `json:"type"`
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
 	ExtraFields *BifrostResponseExtraFields     `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostTranscriptionStreamResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostTranscriptionStreamResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }

@@ -551,10 +551,10 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
 	}
 
-	// Parse raw response if enabled
+	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		var rawResponse interface{}
 		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
@@ -748,7 +748,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -939,7 +939,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		response.ExtraFields.ModelDeployment = deployment
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonData)
+			providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1008,7 +1008,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(bifrostResponse.ExtraFields, jsonData)
+		providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
 	}
 
 	// Set raw response if enabled
@@ -1115,10 +1115,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// Set raw request if enabled
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 							if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-								if finalResponse.ExtraFields == nil {
-									finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-								}
-								providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonData)
+								providerUtils.ParseAndSetRawRequest(finalResponse, jsonData)
 							}
 							finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						}

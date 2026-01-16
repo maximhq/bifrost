@@ -39,6 +39,14 @@ type BifrostChatResponse struct {
 	Citations     []string       `json:"citations,omitempty"`
 }
 
+func (r *BifrostChatResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostChatResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
 func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletionResponse {
 	if cr == nil {

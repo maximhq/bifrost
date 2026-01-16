@@ -105,6 +105,14 @@ type BifrostFileUploadResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostFileUploadResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostFileUploadResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // BifrostFileListRequest represents a request to list files.
 type BifrostFileListRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -140,6 +148,14 @@ type BifrostFileListResponse struct {
 	After   *string      `json:"after,omitempty"` // Continuation token for pagination
 
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostFileListResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostFileListResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }
 
 // BifrostFileRetrieveRequest represents a request to retrieve file metadata.
@@ -182,6 +198,14 @@ type BifrostFileRetrieveResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostFileRetrieveResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostFileRetrieveResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // BifrostFileDeleteRequest represents a request to delete a file.
 type BifrostFileDeleteRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -211,6 +235,14 @@ type BifrostFileDeleteResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostFileDeleteResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostFileDeleteResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // BifrostFileContentRequest represents a request to download file content.
 type BifrostFileContentRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -238,4 +270,12 @@ type BifrostFileContentResponse struct {
 	ContentType string `json:"content_type,omitempty"` // MIME type
 
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostFileContentResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostFileContentResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }

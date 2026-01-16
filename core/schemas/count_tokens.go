@@ -12,3 +12,11 @@ type BifrostCountTokensResponse struct {
 	TotalTokens        *int                          `json:"total_tokens"`
 	ExtraFields        *BifrostResponseExtraFields   `json:"extra_fields,omitempty"`
 }
+
+func (r *BifrostCountTokensResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostCountTokensResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}

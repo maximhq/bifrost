@@ -74,6 +74,14 @@ type BifrostTextCompletionResponse struct {
 	ExtraFields       *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostTextCompletionResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostTextCompletionResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 type TextCompletionInput struct {
 	PromptStr   *string
 	PromptArray []string

@@ -25,6 +25,14 @@ type BifrostEmbeddingResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostEmbeddingResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostEmbeddingResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // EmbeddingInput represents the input for an embedding request.
 type EmbeddingInput struct {
 	Text       *string

@@ -26,6 +26,14 @@ type BifrostSpeechResponse struct {
 	ExtraFields         *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostSpeechResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostSpeechResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // SpeechAlignment represents character-level timing information for audio-text synchronization
 type SpeechAlignment struct {
 	CharStartTimesMs []float64 `json:"char_start_times_ms"` // Start time in milliseconds for each character
@@ -133,6 +141,14 @@ type BifrostSpeechStreamResponse struct {
 	Audio       []byte                      `json:"audio"`
 	Usage       *SpeechUsage                `json:"usage"`
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostSpeechStreamResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostSpeechStreamResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }
 
 type SpeechUsage struct {

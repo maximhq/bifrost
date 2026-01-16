@@ -691,10 +691,7 @@ func HandleAnthropicChatCompletionStreaming(
 		}
 		// Set raw request if enabled
 		if sendBackRawRequest {
-			if response.ExtraFields == nil {
-				response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-			}
-			providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+			providerUtils.ParseAndSetRawRequest(response, jsonBody)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1038,10 +1035,7 @@ func HandleAnthropicResponsesStream(
 						response.Response.Usage = usage
 						// Set raw request if enabled
 						if sendBackRawRequest {
-							if response.ExtraFields == nil {
-								response.ExtraFields = &schemas.BifrostResponseExtraFields{}
-							}
-							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+							providerUtils.ParseAndSetRawRequest(response, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

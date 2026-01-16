@@ -455,6 +455,12 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+func (r *BifrostResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	// This method is needed to satisfy ResponseWithExtraFields interface
+	// but we don't implement it for BifrostResponse since it wraps other types
+	// that have their own ExtraFields. Calling this on BifrostResponse is a no-op.
+}
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType     RequestType        `json:"request_type"`
@@ -599,4 +605,10 @@ type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider"`
 	ModelRequested string        `json:"model_requested"`
 	RequestType    RequestType   `json:"request_type"`
+}
+
+// ResponseWithExtraFields is an interface for response types that contain ExtraFields.
+type ResponseWithExtraFields interface {
+	GetExtraFields() *BifrostResponseExtraFields
+	SetExtraFields(*BifrostResponseExtraFields)
 }

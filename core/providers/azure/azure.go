@@ -1153,10 +1153,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			}
 
 			if sendBackRawRequest {
-				if finalResponse.ExtraFields == nil {
-					finalResponse.ExtraFields = &schemas.BifrostResponseExtraFields{}
-				}
-				providerUtils.ParseAndSetRawRequest(finalResponse.ExtraFields, jsonBody)
+				providerUtils.ParseAndSetRawRequest(&finalResponse, jsonBody)
 			}
 
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

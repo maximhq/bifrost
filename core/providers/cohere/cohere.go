@@ -235,7 +235,7 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		response.ExtraFields.RawRequest = rawRequest
+		providerUtils.ParseAndSetRawRequest(response, jsonBody)
 	}
 
 	// Set raw response if enabled
@@ -504,7 +504,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 					if isLastChunk {
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+							providerUtils.ParseAndSetRawRequest(response, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -773,7 +773,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 						}
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-							providerUtils.ParseAndSetRawRequest(response.ExtraFields, jsonBody)
+							providerUtils.ParseAndSetRawRequest(response, jsonBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

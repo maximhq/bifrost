@@ -114,6 +114,14 @@ type BifrostBatchCreateResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostBatchCreateResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostBatchCreateResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // BifrostBatchListRequest represents a request to list batch jobs.
 type BifrostBatchListRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -144,6 +152,14 @@ type BifrostBatchListResponse struct {
 	NextCursor *string `json:"next_cursor,omitempty"` // For cursor-based pagination
 
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostBatchListResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostBatchListResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }
 
 // BifrostBatchRetrieveRequest represents a request to retrieve a batch job.
@@ -201,6 +217,14 @@ type BifrostBatchRetrieveResponse struct {
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+func (r *BifrostBatchRetrieveResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostBatchRetrieveResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // BifrostBatchCancelRequest represents a request to cancel a batch job.
 type BifrostBatchCancelRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -228,6 +252,14 @@ type BifrostBatchCancelResponse struct {
 	CancelledAt   *int64             `json:"cancelled_at,omitempty"`
 
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostBatchCancelResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostBatchCancelResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }
 
 // BifrostBatchResultsRequest represents a request to retrieve batch results.
@@ -291,4 +323,12 @@ type BifrostBatchResultsResponse struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 
 	ExtraFields *BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+func (r *BifrostBatchResultsResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostBatchResultsResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
 }

@@ -42,6 +42,14 @@ type BifrostListModelsResponse struct {
 	HasMore *bool   `json:"-"`
 }
 
+func (r *BifrostListModelsResponse) GetExtraFields() *BifrostResponseExtraFields {
+	return r.ExtraFields
+}
+
+func (r *BifrostListModelsResponse) SetExtraFields(ef *BifrostResponseExtraFields) {
+	r.ExtraFields = ef
+}
+
 // ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.
 // Uses opaque tokens with LastID validation to ensure cursor integrity.
 // Returns the paginated response with properly set NextPageToken.
