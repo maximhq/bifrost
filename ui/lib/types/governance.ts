@@ -208,10 +208,10 @@ export interface CreateRateLimitRequest {
 }
 
 export interface UpdateRateLimitRequest {
-	token_max_limit?: number; // Maximum tokens allowed
-	token_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
-	request_max_limit?: number; // Maximum requests allowed
-	request_reset_duration?: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	token_max_limit?: number | null; // Maximum tokens allowed (null to clear)
+	token_reset_duration?: string | null; // e.g., "30s", "5m", "1h", "1d", "1w", "1M" (null to clear)
+	request_max_limit?: number | null; // Maximum requests allowed (null to clear)
+	request_reset_duration?: string | null; // e.g., "30s", "5m", "1h", "1d", "1w", "1M" (null to clear)
 }
 
 export interface ResetUsageRequest {
@@ -276,4 +276,58 @@ export interface HealthCheckResponse {
 			message?: string;
 		}
 	>;
+}
+
+// Model Config for per-model budgeting and rate limiting
+export interface ModelConfig {
+	id: string;
+	model_name: string;
+	provider?: string; // Optional provider - if empty/null, applies to all providers
+	budget_id?: string;
+	rate_limit_id?: string;
+	// Populated relationships
+	budget?: Budget;
+	rate_limit?: RateLimit;
+	created_at: string;
+	updated_at: string;
+}
+
+// Request types for model config operations
+export interface CreateModelConfigRequest {
+	model_name: string;
+	provider?: string; // Optional provider - if empty/null, applies to all providers
+	budget?: CreateBudgetRequest;
+	rate_limit?: CreateRateLimitRequest;
+}
+
+export interface UpdateModelConfigRequest {
+	model_name?: string;
+	provider?: string; // Optional provider - if empty/null, applies to all providers
+	budget?: UpdateBudgetRequest;
+	rate_limit?: UpdateRateLimitRequest;
+}
+
+// Response types for model configs
+export interface GetModelConfigsResponse {
+	model_configs: ModelConfig[];
+	count: number;
+}
+
+// Provider governance - for extending provider with budget/rate limit
+export interface ProviderGovernance {
+	provider: string;
+	budget_id?: string;
+	rate_limit_id?: string;
+	budget?: Budget;
+	rate_limit?: RateLimit;
+}
+
+export interface UpdateProviderGovernanceRequest {
+	budget?: UpdateBudgetRequest;
+	rate_limit?: UpdateRateLimitRequest;
+}
+
+export interface GetProviderGovernanceResponse {
+	providers: ProviderGovernance[];
+	count: number;
 }

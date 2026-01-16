@@ -3,10 +3,11 @@ import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isKnownProvider, ModelProvider } from "@/lib/types/config";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
+import ProviderGovernanceTable from "./providerGovernanceTable";
 import { keysRequired } from "./utils";
 
 interface Props {
@@ -37,6 +38,12 @@ const availableTabs = (provider: ModelProvider) => {
 	availableTabs.push({
 		id: "performance",
 		label: "Performance tuning",
+	});
+
+	// Governance tab for budgets and rate limits
+	availableTabs.push({
+		id: "governance",
+		label: "Governance",
 	});
 
 	return availableTabs;
@@ -97,6 +104,9 @@ export default function ModelProviderConfig({ provider }: Props) {
 								<TabsContent value="performance">
 									<PerformanceFormFragment provider={provider} />
 								</TabsContent>
+								<TabsContent value="governance">
+									<GovernanceFormFragment provider={provider} />
+								</TabsContent>
 							</Tabs>
 						</div>
 					</AccordionContent>
@@ -109,6 +119,7 @@ export default function ModelProviderConfig({ provider }: Props) {
 				</>
 			)}
 			{provider.config_hash && <ConfigSyncAlert className="my-2" />}
+			<ProviderGovernanceTable className="mt-4" provider={provider} />
 		</div>
 	);
 }
