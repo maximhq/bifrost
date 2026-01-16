@@ -538,6 +538,9 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	provider, model, _ := req.GetRequestFields()
+
+	// Check if virtual key is mandatory when none is provided
 	if virtualKeyValue == "" {
 		if p.isVkMandatory != nil && *p.isVkMandatory {
 			return req, &schemas.PluginShortCircuit{
@@ -549,23 +552,18 @@ func (p *GovernancePlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.Bif
 					},
 				},
 			}, nil
-		} else {
-			return req, nil, nil
 		}
 	}
 
-	provider, model, _ := req.GetRequestFields()
+	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
+	result := p.resolver.EvaluateModelAndProviderRequest(ctx, provider, model, requestID)
 
-	// Create request context for evaluation
-	evaluationRequest := &EvaluationRequest{
-		VirtualKey: virtualKeyValue,
-		Provider:   provider,
-		Model:      model,
-		RequestID:  requestID,
+	// If model/provider checks passed and virtual key exists, evaluate virtual key checks
+	// This will overwrite the result with virtual key-specific decision
+	if result.Decision == DecisionAllow && virtualKeyValue != "" {
+		result = p.resolver.EvaluateVirtualKeyRequest(ctx, virtualKeyValue, provider, model, requestID)
 	}
-
-	// Use resolver to make governance decision (pure decision engine)
-	result := p.resolver.EvaluateRequest(ctx, evaluationRequest)
+	// If model/provider checks failed, skip virtual key evaluation and proceed to final decision handling
 
 	if result.Decision != DecisionAllow {
 		if ctx != nil {
@@ -645,11 +643,6 @@ func (p *GovernancePlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	virtualKey := getStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := getStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 
-	// Skip if no virtual key
-	if virtualKey == "" {
-		return result, err, nil
-	}
-
 	// Extract request type, provider, and model
 	requestType, provider, model := bifrost.GetResponseFields(result, err)
 
@@ -667,11 +660,17 @@ func (p *GovernancePlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 		}
 	}
 
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, bifrost.IsFinalChunk(ctx))
-	}()
+	// Always process usage tracking (with or without virtual key)
+	// If virtualKey is empty, it will be passed as empty string to postHookWorker
+	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
+	if model != "" {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			// Pass virtualKey (empty string if not present) - tracker handles this case
+			p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, bifrost.IsFinalChunk(ctx))
+		}()
+	}
 
 	return result, err, nil
 }
@@ -691,12 +690,14 @@ func (p *GovernancePlugin) Cleanup() error {
 
 // postHookWorker is a worker function that processes the response and updates usage tracking
 // It is used to avoid blocking the main thread when updating usage tracking
+// Handles both cases: with virtual key and without virtual key (empty string)
+// When virtualKey is empty, the tracker will only update provider-level and model-level usage
 // Parameters:
 //   - result: The Bifrost response to be processed
 //   - provider: The provider of the request
 //   - model: The model of the request
 //   - requestType: The type of the request
-//   - virtualKey: The virtual key of the request
+//   - virtualKey: The virtual key of the request (empty string if not present)
 //   - requestID: The request ID
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
@@ -751,6 +752,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 		}
 
 		// Queue usage update asynchronously using tracker
+		// UpdateUsage handles empty virtual keys gracefully by only updating provider-level and model-level usage
 		p.tracker.UpdateUsage(p.ctx, usageUpdate)
 	}
 }

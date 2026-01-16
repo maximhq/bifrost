@@ -757,10 +757,12 @@ type AuthConfig struct {
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
 type GovernanceConfig struct {
-	VirtualKeys []tables.TableVirtualKey `json:"virtual_keys"`
-	Teams       []tables.TableTeam       `json:"teams"`
-	Customers   []tables.TableCustomer   `json:"customers"`
-	Budgets     []tables.TableBudget     `json:"budgets"`
-	RateLimits  []tables.TableRateLimit  `json:"rate_limits"`
-	AuthConfig  *AuthConfig              `json:"auth_config,omitempty"`
+	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
+	Teams        []tables.TableTeam        `json:"teams"`
+	Customers    []tables.TableCustomer    `json:"customers"`
+	Budgets      []tables.TableBudget      `json:"budgets"`
+	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
+	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
+	Providers    []tables.TableProvider    `json:"providers"`
+	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
 }

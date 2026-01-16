@@ -34,6 +34,8 @@ type ConfigStore interface {
 	DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
+	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
+	GetProviderByName(ctx context.Context, name string) (*tables.TableProvider, error)
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
@@ -110,6 +112,17 @@ type ConfigStore interface {
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
+	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
+	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
+
+	// Model config CRUD
+	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
+	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)
+	GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error)
+	CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
+	UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error
+	UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error
+	DeleteModelConfig(ctx context.Context, id string) error
 
 	// Governance config CRUD
 	GetGovernanceConfig(ctx context.Context) (*GovernanceConfig, error)
