@@ -89,13 +89,14 @@ if [ ! -f "$APP_DIR/config.json" ]; then
   exit 1
 fi
 
-# Check required environment variables
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-  echo -e "${RED}❌ OPENAI_API_KEY environment variable is required${NC}"
-  echo -e "${YELLOW}Set it with: export OPENAI_API_KEY='sk-...'${NC}"
+# Check required environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY)
+if [ -z "${OPENAI_API_KEY:-}" ] || [ -z "${ANTHROPIC_API_KEY:-}" ] || [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  echo -e "${RED}❌ Required environment variables are not set${NC}"
+  echo -e "${YELLOW}Set them with: export OPENAI_API_KEY='sk-...'${NC}"
+  echo -e "${YELLOW}Set them with: export ANTHROPIC_API_KEY='sk-...'${NC}"
+  echo -e "${YELLOW}Set them with: export OPENROUTER_API_KEY='sk-...'${NC}"
   exit 1
 fi
-
 echo -e "${GREEN}✅ Prerequisites validated${NC}"
 
 # Step 2: Build Bifrost
@@ -104,7 +105,7 @@ echo -e "${CYAN}📦 Step 2: Building Bifrost...${NC}"
 
 # Use make to build with LOCAL=1 to use the workspace (go.work)
 # This ensures we test the local governance plugin code, not the published version
-if ! LOCAL=1 make build; then
+if ! make build LOCAL=1; then
   echo -e "${RED}❌ Failed to build Bifrost${NC}"
   exit 1
 fi
@@ -170,9 +171,10 @@ echo -e "${YELLOW}Running go test in tests/governance...${NC}"
 
 # Run tests with verbose output and timeout
 # Use GOWORK=off to disable the workspace file and test the module independently
-TEST_EXIT_CODE=0
-if ! GOWORK=off go test -v -timeout 10m ./...; then
-  TEST_EXIT_CODE=$?
+# Use -count=1 to disable test cache
+GOWORK=off go test -v -timeout 10m -count=1 ./...
+TEST_EXIT_CODE=$?
+if [ $TEST_EXIT_CODE -ne 0 ]; then
   echo -e "${RED}❌ Governance tests failed (exit code: $TEST_EXIT_CODE)${NC}"
 else
   echo -e "${GREEN}✅ All governance tests passed${NC}"

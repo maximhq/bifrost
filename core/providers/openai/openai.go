@@ -1075,6 +1075,9 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Usage.CompletionTokensDetails != nil {
 						usage.CompletionTokensDetails = response.Usage.CompletionTokensDetails
 					}
+					if response.Usage.Cost != nil {
+						usage.Cost = response.Usage.Cost
+					}
 					response.Usage = nil
 				}
 

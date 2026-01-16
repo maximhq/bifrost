@@ -31,7 +31,7 @@ type TableRateLimit struct {
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 
 	// Virtual fields for runtime use (not stored in DB)
-	LastDBTokenUsage int64 `gorm:"-" json:"-"`
+	LastDBTokenUsage   int64 `gorm:"-" json:"-"`
 	LastDBRequestUsage int64 `gorm:"-" json:"-"`
 }
 

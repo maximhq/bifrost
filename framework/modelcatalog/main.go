@@ -431,16 +431,48 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 	delete(mc.modelPool, provider)
 }
 
-// RefineModelForProvider refines the model for a given provider.
+// RefineModelForProvider refines the model for a given provider by performing a lookup
+// in mc.modelPool and using schemas.ParseModelString to extract provider and model parts.
 // e.g. "gpt-oss-120b" for groq provider -> "openai/gpt-oss-120b"
-func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) string {
+//
+// Behavior:
+// - When the provider's catalog (mc.modelPool) yields multiple matching models, returns an error
+// - When exactly one match is found, returns the fully-qualified model (provider/model format)
+// - When the provider is not handled or no refinement is needed, returns the original model unchanged
+func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, model string) (string, error) {
 	switch provider {
+	// These providers have {provider}/{model} format for models
 	case schemas.Groq:
-		if model == "gpt-oss-120b" {
-			return "openai/" + model
+		if strings.Contains(model, "gpt-") {
+			return "openai/" + model, nil
+		}
+		// Check if the model without provider prefix is present in the provider's catalog
+		// Guard concurrent access to mc.modelPool with read lock
+		mc.mu.RLock()
+		models, ok := mc.modelPool[provider]
+		mc.mu.RUnlock()
+
+		if ok {
+			var candidateModels []string
+			for _, poolModel := range models {
+				providerPart, modelPart := schemas.ParseModelString(poolModel, "")
+				if model == modelPart {
+					candidateModels = append(candidateModels, string(providerPart)+"/"+modelPart)
+				}
+			}
+			// Handle candidateModels based on count
+			if len(candidateModels) == 1 {
+				return candidateModels[0], nil
+			} else if len(candidateModels) == 0 {
+				// No matches found, return original model to allow fallback
+				return model, nil
+			} else {
+				// Multiple matches found, return error
+				return "", fmt.Errorf("multiple compatible models found for model %s: %v", model, candidateModels)
+			}
 		}
 	}
-	return model
+	return model, nil
 }
 
 // populateModelPool populates the model pool with all available models per provider (thread-safe)

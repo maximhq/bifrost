@@ -494,6 +494,8 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 	traceID, hasTraceID := ctx.Value(TraceIDKey).(string)
 	tags, hasTags := ctx.Value(TagsKey).(map[string]string)
 
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
 	go func() {
 		requestType, _, model := bifrost.GetResponseFields(result, bifrostErr)
 
@@ -502,14 +504,14 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 			// Use central tracer's accumulator
 			tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
 			if err == nil && tracer != nil && bifrostTraceID != "" {
-				accResult := tracer.ProcessStreamingChunk(ctx, bifrostTraceID, result, bifrostErr)
+				accResult := tracer.ProcessStreamingChunk(bifrostTraceID, isFinalChunk, result, bifrostErr)
 				if accResult != nil {
 					streamResponse = convertAccResultToProcessedStreamResponse(accResult)
 				}
 			}
 
 			// Return if no stream response or it's a delta response
-			if streamResponse == nil || !bifrost.IsFinalChunk(ctx) {
+			if streamResponse == nil || !isFinalChunk {
 				return
 			}
 		}
@@ -568,7 +570,7 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bifr
 						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
 					}
 				}
-				if streamResponse != nil && bifrost.IsFinalChunk(ctx) {
+				if streamResponse != nil && isFinalChunk {
 					// Cleanup via central tracer
 					tracer, bifrostTraceID, err := bifrost.GetTracerFromContext(ctx)
 					if err == nil && tracer != nil && bifrostTraceID != "" {

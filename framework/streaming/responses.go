@@ -860,114 +860,6 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 
 	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
-	accumulator := a.getOrCreateStreamAccumulator(requestID)
-	accumulator.mu.Lock()
-	startTimestamp := accumulator.StartTimestamp
-	endTimestamp := accumulator.FinalTimestamp
-	accumulator.mu.Unlock()
-
-	// For OpenAI-compatible providers, the last chunk already contains the whole accumulated response
-	// so just return it as is
-	// We maintain the accumulator only for raw response accumulation
-	if provider == schemas.OpenAI || provider == schemas.OpenRouter || (provider == schemas.Azure && !schemas.IsAnthropicModel(model)) {
-		isFinalChunk := bifrost.IsFinalChunk(ctx)
-		chunk := a.getResponsesStreamChunk()
-		chunk.Timestamp = time.Now()
-		chunk.ErrorDetails = bifrostErr
-		if bifrostErr != nil {
-			chunk.FinishReason = bifrost.Ptr("error")
-		} else if result != nil && result.ResponsesStreamResponse != nil {
-			if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
-				rawResponse, ok := result.ResponsesStreamResponse.ExtraFields.RawResponse.(string)
-				if ok {
-					chunk.RawResponse = bifrost.Ptr(rawResponse)
-				}
-			}
-		}
-		if addErr := a.addResponsesStreamChunk(requestID, chunk, isFinalChunk); addErr != nil {
-			return nil, fmt.Errorf("failed to add responses stream chunk for request %s: %w", requestID, addErr)
-		}
-		if isFinalChunk {
-			var rawRequest interface{}
-			if result != nil && result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.ExtraFields.RawRequest != nil {
-				rawRequest = result.ResponsesStreamResponse.ExtraFields.RawRequest
-			}
-			// Get the accumulator and mark as complete (idempotent)
-			accumulator := a.getOrCreateStreamAccumulator(requestID)
-			accumulator.mu.Lock()
-			if !accumulator.IsComplete {
-				accumulator.IsComplete = true
-			}
-			accumulator.mu.Unlock()
-
-			// Always process and return data on final chunk
-			// Multiple plugins can call this - the processing is idempotent
-			accumulatedData, processErr := a.processAccumulatedResponsesStreamingChunks(requestID, bifrostErr, isFinalChunk)
-			if processErr != nil {
-				a.logger.Error("failed to process accumulated responses chunks for request %s: %v", requestID, processErr)
-				return nil, processErr
-			}
-
-			// For OpenAI, the final chunk contains the complete response
-			// Extract the complete response and return it
-			if result != nil && result.ResponsesStreamResponse != nil {
-				// Build the complete response from the final chunk
-				data := &AccumulatedData{
-					RequestID:      requestID,
-					Status:         "success",
-					Stream:         true,
-					StartTimestamp: startTimestamp,
-					EndTimestamp:   endTimestamp,
-					Latency:        result.GetExtraFields().Latency,
-					ErrorDetails:   bifrostErr,
-					RawResponse:    accumulatedData.RawResponse,
-				}
-
-				if bifrostErr != nil {
-					data.Status = "error"
-				}
-
-				// Extract the complete response from the stream response
-				if result.ResponsesStreamResponse.Response != nil {
-					data.OutputMessages = result.ResponsesStreamResponse.Response.Output
-					if result.ResponsesStreamResponse.Response.Usage != nil {
-						// Convert ResponsesResponseUsage to schemas.LLMUsage
-						data.TokenUsage = &schemas.BifrostLLMUsage{
-							PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
-							CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
-							TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
-						}
-					}
-				}
-
-				if a.pricingManager != nil {
-					cost := a.pricingManager.CalculateCostWithCacheDebug(result)
-					data.Cost = bifrost.Ptr(cost)
-				}
-
-				return &ProcessedStreamResponse{
-					RequestID:  requestID,
-					StreamType: StreamTypeResponses,
-					Provider:   provider,
-					Model:      model,
-					Data:       data,
-					RawRequest: &rawRequest,
-				}, nil
-			}
-			return nil, nil
-		}
-
-		// For non-final chunks from OpenAI, just pass through
-		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: StreamTypeResponses,
-			Provider:   provider,
-			Model:      model,
-			Data:       nil, // No accumulated data for delta responses
-		}, nil
-	}
-
-	// For non-OpenAI providers, use the accumulation logic
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	chunk := a.getResponsesStreamChunk()
 	chunk.Timestamp = time.Now()
@@ -988,6 +880,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 				PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
 				CompletionTokens: result.ResponsesStreamResponse.Response.Usage.OutputTokens,
 				TotalTokens:      result.ResponsesStreamResponse.Response.Usage.TotalTokens,
+				Cost:             result.ResponsesStreamResponse.Response.Usage.Cost,
 			}
 		}
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex

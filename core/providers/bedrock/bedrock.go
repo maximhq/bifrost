@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -92,7 +93,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	config := key.BedrockKeyConfig
 
 	region := DefaultBedrockRegion
-	if config.Region != nil  && config.Region.GetValue() != "" {
+	if config.Region != nil && config.Region.GetValue() != "" {
 		region = config.Region.GetValue()
 	}
 
@@ -136,8 +137,25 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 				},
 			}
 		}
+		// Check for timeout first using net.Error before checking net.OpError
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
+		// Check for DNS lookup and network errors after timeout checks
+		var opErr *net.OpError
+		var dnsErr *net.DNSError
+		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+			return nil, latency, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   err,
+				},
+			}
 		}
 		return nil, latency, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -248,6 +266,20 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 					Error:   respErr,
 				},
 			}
+		}
+		// Check for timeout first using net.Error before checking net.OpError
+		var netErr net.Error
+		if errors.As(respErr, &netErr) && netErr.Timeout() {
+			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
+		}
+		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
+			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, respErr, providerName)
+		}
+		// Check for DNS lookup and network errors after timeout checks
+		var opErr *net.OpError
+		var dnsErr *net.DNSError
+		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
+			return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderNetworkError, respErr, providerName)
 		}
 		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
 	}
@@ -419,8 +451,26 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 					Error:   err,
 				},
 			}
-		} else if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		}
+		// Check for timeout first using net.Error before checking net.OpError
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
+		}
+		// Check for DNS lookup and network errors after timeout checks
+		var opErr *net.OpError
+		var dnsErr *net.DNSError
+		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   err,
+				},
+			}
 		}
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,

@@ -1,0 +1,2 @@
+- fix: edge case when usage is reset to 0 on updating config
+- feat: allowed provider config to use in-memory usage tracking for expired counters

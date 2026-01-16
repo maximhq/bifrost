@@ -25,6 +25,7 @@ const (
 	ErrProviderRequestMarshal       = "failed to marshal request body to JSON"
 	ErrProviderCreateRequest        = "failed to create HTTP request to provider API"
 	ErrProviderDoRequest            = "failed to execute HTTP request to provider API"
+	ErrProviderNetworkError         = "network error occurred while connecting to provider API (DNS lookup, connection refused, etc.)"
 	ErrProviderResponseDecode       = "failed to decode response body from provider API"
 	ErrProviderResponseUnmarshal    = "failed to unmarshal response from provider API"
 	ErrProviderResponseEmpty        = "empty response received from provider"

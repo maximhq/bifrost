@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -78,8 +79,26 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 					},
 				}
 			}
+			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+			}
+			// Check if error implements net.Error and has Timeout() == true
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+			}
+			// Check for DNS lookup and network errors after timeout checks
+			var opErr *net.OpError
+			var dnsErr *net.DNSError
+			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+				return latency, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: schemas.ErrProviderNetworkError,
+						Error:   err,
+					},
+				}
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return latency, &schemas.BifrostError{
@@ -392,11 +411,16 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	// Try to unmarshal decoded body for RawResponse
 	var rawErrorResponse interface{}
 	if err := sonic.Unmarshal(decodedBody, &rawErrorResponse); err != nil {
-		if logger != nil {
-			logger.Warn(fmt.Sprintf("Failed to parse raw error response: %v", err))
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &statusCode,
+			Error: &schemas.ErrorField{
+				Message: string(decodedBody),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: string(decodedBody),
+			},
 		}
-		// If unmarshal fails (e.g., for HTML or plain text), store as string so RawResponse is never nil
-		rawErrorResponse = string(decodedBody)
 	}
 
 	// Check for empty response

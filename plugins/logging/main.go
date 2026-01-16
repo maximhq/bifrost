@@ -373,6 +373,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 
 	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
 
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
 	var tracer schemas.Tracer
 	var traceID string
 	if bifrost.IsStreamRequestType(requestType) {
@@ -458,7 +460,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 			// Process streaming response via tracer's central accumulator
 			var streamResponse *streaming.ProcessedStreamResponse
 			if tracer != nil && traceID != "" {
-				accResult := tracer.ProcessStreamingChunk(ctx, traceID, result, bifrostErr)
+				accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
 				if accResult != nil {
 					streamResponse = convertToProcessedStreamResponse(accResult, requestType)
 				}
@@ -468,7 +470,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 
 			if streamResponse == nil {
 				p.logger.Debug("failed to process streaming response: tracer or traceID not available")
-			} else if bifrost.IsFinalChunk(ctx) {
+			} else if isFinalChunk {
 				// Prepare final log data
 				logMsg.Operation = LogOperationStreamUpdate
 				logMsg.StreamResponse = streamResponse
@@ -483,7 +485,7 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 						logMsg.NumberOfRetries,
 						logMsg.SemanticCacheDebug,
 						logMsg.StreamResponse,
-						bifrost.IsFinalChunk(ctx),
+						true,
 					)
 				})
 				if processingErr != nil {

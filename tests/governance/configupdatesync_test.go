@@ -10,7 +10,7 @@ import (
 // ============================================================================
 
 // TestVKRateLimitUpdateSyncToMemory tests that VK rate limit updates sync to in-memory store
-// and that usage resets to 0 when new max limit < current usage
+// and that usage is PRESERVED (not reset) when the rate limit config is updated
 func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 	t.Parallel()
 	testData := NewGlobalTestData()
@@ -112,14 +112,16 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 	rateLimit2 := rateLimitsMap2[rateLimitID2].(map[string]interface{})
 
 	tokenUsageBeforeUpdate, _ := rateLimit2["token_current_usage"].(float64)
-	t.Logf("Token usage after request: %d", int64(tokenUsageBeforeUpdate))
+	t.Logf("DEBUG: Token usage after request: %d", int64(tokenUsageBeforeUpdate))
+	t.Logf("DEBUG: Rate limit ID before update: %s", rateLimitID2)
+	t.Logf("DEBUG: Token max limit before update: %d", int64(rateLimit2["token_max_limit"].(float64)))
 
 	if tokenUsageBeforeUpdate <= 0 {
 		t.Skip("No tokens consumed - cannot test usage reset")
 	}
 
-	// NOW UPDATE: set new limit LOWER than current usage to trigger reset
-	// Usage reset only happens when new max limit <= current usage
+	// NOW UPDATE: set new limit LOWER than current usage
+	// Usage should be PRESERVED (not reset) when updating rate limit config
 	newLowerLimit := int64(tokenUsageBeforeUpdate / 2) // Set to half of current usage to ensure it's lower
 	if newLowerLimit <= 0 {
 		newLowerLimit = int64(tokenUsageBeforeUpdate / 10) // Fallback to 10% if too small
@@ -127,6 +129,9 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 	if newLowerLimit <= 0 {
 		newLowerLimit = 1 // Minimum of 1
 	}
+
+	t.Logf("DEBUG: About to update rate limit with new limit: %d (old usage: %d - should be preserved)", newLowerLimit, int64(tokenUsageBeforeUpdate))
+
 	updateResp := MakeRequest(t, APIRequest{
 		Method: "PUT",
 		Path:   "/api/governance/virtual-keys/" + vkID,
@@ -142,6 +147,7 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 		t.Fatalf("Failed to update VK rate limit: status %d", updateResp.StatusCode)
 	}
 
+	t.Logf("DEBUG: Update response status: %d", updateResp.StatusCode)
 	t.Logf("Updated token limit from %d to %d (new limit %d <= current usage %d)", initialTokenLimit, newLowerLimit, newLowerLimit, int64(tokenUsageBeforeUpdate))
 
 	// Wait for update to sync
@@ -164,8 +170,13 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 	rateLimitsMap3 := getRateLimitsResp3.Body["rate_limits"].(map[string]interface{})
 	rateLimit3 := rateLimitsMap3[rateLimitID3].(map[string]interface{})
 
+	t.Logf("DEBUG: Rate limit ID after update: %s", rateLimitID3)
+	t.Logf("DEBUG: Rate limit ID changed: %v", rateLimitID2 != rateLimitID3)
+
 	newTokenMaxLimit, _ := rateLimit3["token_max_limit"].(float64)
 	tokenUsageAfterUpdate, _ := rateLimit3["token_current_usage"].(float64)
+
+	t.Logf("DEBUG: After update - TokenMaxLimit: %d, TokenCurrentUsage: %d", int64(newTokenMaxLimit), int64(tokenUsageAfterUpdate))
 
 	// Verify new max limit is reflected
 	if int64(newTokenMaxLimit) != newLowerLimit {
@@ -174,12 +185,12 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Token max limit updated in memory: %d", int64(newTokenMaxLimit))
 
-	// Verify usage reset to 0 (since new max limit <= current usage)
-	if tokenUsageAfterUpdate > 0.001 {
-		t.Fatalf("Token usage should reset to 0 when new limit (%d) <= current usage (%d), but got %d", newLowerLimit, int64(tokenUsageBeforeUpdate), int64(tokenUsageAfterUpdate))
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if int64(tokenUsageAfterUpdate) != int64(tokenUsageBeforeUpdate) {
+		t.Fatalf("Token usage should be preserved when updating rate limit config, expected %d, but got %d", int64(tokenUsageBeforeUpdate), int64(tokenUsageAfterUpdate))
 	}
 
-	t.Logf("✓ Token usage correctly reset to 0 (new limit: %d <= old usage: %d)", int64(newTokenMaxLimit), int64(tokenUsageBeforeUpdate))
+	t.Logf("✓ Token usage correctly preserved at %d after config update (new limit: %d)", int64(tokenUsageAfterUpdate), int64(newTokenMaxLimit))
 
 	// Test UPDATE with higher limit (usage should NOT reset)
 	newerHigherLimit := int64(50000)
@@ -226,16 +237,16 @@ func TestVKRateLimitUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Token max limit updated to higher value: %d", int64(newerTokenMaxLimit))
 
-	// Since usage is 0 and new limit is higher, usage stays 0
-	if tokenUsageAfterSecondUpdate != 0 {
-		t.Logf("Note: Token usage is %d (expected 0 since it was reset)", int64(tokenUsageAfterSecondUpdate))
+	// Usage should still be preserved from before
+	if int64(tokenUsageAfterSecondUpdate) != int64(tokenUsageBeforeUpdate) {
+		t.Logf("Note: Token usage changed to %d (was %d before update)", int64(tokenUsageAfterSecondUpdate), int64(tokenUsageBeforeUpdate))
 	}
 
 	t.Logf("VK rate limit update sync to memory verified ✓")
 }
 
 // TestVKBudgetUpdateSyncToMemory tests that VK budget updates sync to in-memory store
-// and that usage resets to 0 when new max budget < current usage
+// and that usage is PRESERVED (not reset) when the budget config is updated
 func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 	t.Parallel()
 	testData := NewGlobalTestData()
@@ -335,8 +346,8 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 		t.Skip("No budget consumed - cannot test usage reset")
 	}
 
-	// UPDATE: set new limit LOWER than current usage to trigger reset
-	// Usage reset only happens when new max limit <= current usage
+	// UPDATE: set new limit LOWER than current usage
+	// Usage should be PRESERVED (not reset) when updating budget config
 	newLowerBudget := usageBeforeUpdate * 0.5 // Set to half of current usage to ensure it's lower
 	if newLowerBudget <= 0 {
 		newLowerBudget = usageBeforeUpdate * 0.1 // Fallback to 10% if too small
@@ -380,12 +391,12 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Budget max limit updated in memory: $%.6f", newMaxLimit)
 
-	// Verify usage reset to 0 (since new max limit <= current usage)
-	if usageAfterUpdate > 0.000001 {
-		t.Fatalf("Budget usage should reset to 0 when new limit (%.6f) <= current usage (%.6f), but got $%.6f", newMaxLimit, usageBeforeUpdate, usageAfterUpdate)
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if usageAfterUpdate < usageBeforeUpdate-0.000001 || usageAfterUpdate > usageBeforeUpdate+0.000001 {
+		t.Fatalf("Budget usage should be preserved when updating budget config, expected $%.6f, but got $%.6f", usageBeforeUpdate, usageAfterUpdate)
 	}
 
-	t.Logf("✓ Budget usage correctly reset to 0 (new limit: $%.6f <= old usage: $%.6f)", newMaxLimit, usageBeforeUpdate)
+	t.Logf("✓ Budget usage correctly preserved at $%.6f after config update (new limit: $%.6f)", usageAfterUpdate, newMaxLimit)
 
 	t.Logf("VK budget update sync to memory verified ✓")
 }
@@ -393,18 +404,16 @@ func TestVKBudgetUpdateSyncToMemory(t *testing.T) {
 // ============================================================================
 // PROVIDER CONFIG RATE LIMIT UPDATE SYNC
 // ============================================================================
-
 // TestProviderRateLimitUpdateSyncToMemory tests that provider config rate limit updates sync to memory
+// and that usage is PRESERVED (not reset) when the rate limit config is updated
 func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 	t.Parallel()
 	testData := NewGlobalTestData()
 	defer testData.Cleanup(t)
-
 	// Create VK with provider config and initial rate limit
 	vkName := "test-vk-provider-rate-update-" + generateRandomID()
 	initialTokenLimit := int64(5000)
 	tokenResetDuration := "1h"
-
 	createVKResp := MakeRequest(t, APIRequest{
 		Method: "POST",
 		Path:   "/api/governance/virtual-keys",
@@ -422,49 +431,38 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 			},
 		},
 	})
-
 	if createVKResp.StatusCode != 200 {
 		t.Fatalf("Failed to create VK: status %d", createVKResp.StatusCode)
 	}
-
 	vkID := ExtractIDFromResponse(t, createVKResp)
 	testData.AddVirtualKey(vkID)
-
 	vk := createVKResp.Body["virtual_key"].(map[string]interface{})
 	vkValue := vk["value"].(string)
-
 	t.Logf("Created VK with provider config, initial token limit: %d", initialTokenLimit)
-
 	// Get initial in-memory state
 	getVKResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-
 	vkData1 := getVKResp1.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
 	providerConfigs1 := vkData1["provider_configs"].([]interface{})
 	providerConfig1 := providerConfigs1[0].(map[string]interface{})
 	providerConfigID := uint(providerConfig1["id"].(float64))
 	rateLimitID1, _ := providerConfig1["rate_limit_id"].(string)
-
 	getRateLimitsResp1 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-
 	rateLimitsMap1 := getRateLimitsResp1.Body["rate_limits"].(map[string]interface{})
 	rateLimit1 := rateLimitsMap1[rateLimitID1].(map[string]interface{})
-
 	initialTokenMaxLimit, _ := rateLimit1["token_max_limit"].(float64)
 	initialTokenUsage, _ := rateLimit1["token_current_usage"].(float64)
-
 	if int64(initialTokenMaxLimit) != initialTokenLimit {
 		t.Fatalf("Initial token max limit not correct: expected %d, got %d", initialTokenLimit, int64(initialTokenMaxLimit))
 	}
-
 	t.Logf("Initial provider rate limit in memory: TokenMaxLimit=%d, TokenCurrentUsage=%d", int64(initialTokenMaxLimit), int64(initialTokenUsage))
 
-	// Make a request to consume some tokens
+	// Make request to consume provider tokens
 	resp := MakeRequest(t, APIRequest{
 		Method: "POST",
 		Path:   "/v1/chat/completions",
@@ -483,37 +481,30 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Skip("Could not make request to consume provider tokens")
 	}
-
 	// Wait for async PostHook goroutine to complete usage update
 	time.Sleep(2 * time.Second)
-
 	// Get state with usage
 	getVKResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-
 	vkData2 := getVKResp2.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
 	providerConfigs2 := vkData2["provider_configs"].([]interface{})
 	providerConfig2 := providerConfigs2[0].(map[string]interface{})
 	rateLimitID2, _ := providerConfig2["rate_limit_id"].(string)
-
 	getRateLimitsResp2 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-
 	rateLimitsMap2 := getRateLimitsResp2.Body["rate_limits"].(map[string]interface{})
 	rateLimit2 := rateLimitsMap2[rateLimitID2].(map[string]interface{})
-
 	tokenUsageBeforeUpdate, _ := rateLimit2["token_current_usage"].(float64)
 	t.Logf("Provider token usage after request: %d", int64(tokenUsageBeforeUpdate))
-
 	if tokenUsageBeforeUpdate <= 0 {
-		t.Skip("No provider tokens consumed - cannot test usage reset")
+		t.Skip("No provider tokens consumed - cannot test usage preservation")
 	}
-
 	// UPDATE: set new limit LOWER than current usage
+	// Usage should be PRESERVED (not reset) when updating rate limit config
 	newLowerLimit := int64(50) // Much lower
 	updateResp := MakeRequest(t, APIRequest{
 		Method: "PUT",
@@ -532,51 +523,38 @@ func TestProviderRateLimitUpdateSyncToMemory(t *testing.T) {
 			},
 		},
 	})
-
 	if updateResp.StatusCode != 200 {
 		t.Fatalf("Failed to update provider rate limit: status %d", updateResp.StatusCode)
 	}
-
 	t.Logf("Updated provider token limit from %d to %d", initialTokenLimit, newLowerLimit)
-
 	time.Sleep(500 * time.Millisecond)
-
 	// Verify update in in-memory store
 	getVKResp3 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/virtual-keys?from_memory=true",
 	})
-
 	vkData3 := getVKResp3.Body["virtual_keys"].(map[string]interface{})[vkValue].(map[string]interface{})
 	providerConfigs3 := vkData3["provider_configs"].([]interface{})
 	providerConfig3 := providerConfigs3[0].(map[string]interface{})
 	rateLimitID3, _ := providerConfig3["rate_limit_id"].(string)
-
 	getRateLimitsResp3 := MakeRequest(t, APIRequest{
 		Method: "GET",
 		Path:   "/api/governance/rate-limits?from_memory=true",
 	})
-
 	rateLimitsMap3 := getRateLimitsResp3.Body["rate_limits"].(map[string]interface{})
 	rateLimit3 := rateLimitsMap3[rateLimitID3].(map[string]interface{})
-
 	newTokenMaxLimit, _ := rateLimit3["token_max_limit"].(float64)
 	tokenUsageAfterUpdate, _ := rateLimit3["token_current_usage"].(float64)
-
 	// Verify new limit is reflected
 	if int64(newTokenMaxLimit) != newLowerLimit {
 		t.Fatalf("Provider token max limit not updated: expected %d, got %d", newLowerLimit, int64(newTokenMaxLimit))
 	}
-
 	t.Logf("✓ Provider token max limit updated in memory: %d", int64(newTokenMaxLimit))
-
-	// Verify usage reset to 0 (since new max < old usage)
-	if tokenUsageAfterUpdate > 0.001 {
-		t.Fatalf("Provider token usage should reset to 0 when new limit < current usage, but got %d", int64(tokenUsageAfterUpdate))
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if int64(tokenUsageAfterUpdate) != int64(tokenUsageBeforeUpdate) {
+		t.Fatalf("Provider token usage should be preserved when updating rate limit config, expected %d, but got %d", int64(tokenUsageBeforeUpdate), int64(tokenUsageAfterUpdate))
 	}
-
-	t.Logf("✓ Provider token usage reset to 0 (new limit: %d < old usage: %d)", int64(newTokenMaxLimit), int64(tokenUsageBeforeUpdate))
-
+	t.Logf("✓ Provider token usage correctly preserved at %d after config update (new limit: %d)", int64(tokenUsageAfterUpdate), int64(newTokenMaxLimit))
 	t.Logf("Provider rate limit update sync to memory verified ✓")
 }
 
@@ -754,12 +732,12 @@ func TestTeamBudgetUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Team budget max limit updated in memory: $%.2f", newMaxLimit)
 
-	// Verify usage reset to 0 (since new max < old usage)
-	if usageAfterUpdate > 0.000001 {
-		t.Fatalf("Team budget usage should reset to 0 when new limit < current usage, but got $%.6f", usageAfterUpdate)
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if usageAfterUpdate < usageBeforeUpdate-0.000001 || usageAfterUpdate > usageBeforeUpdate+0.000001 {
+		t.Fatalf("Team budget usage should be preserved when updating budget config, expected $%.6f, but got $%.6f", usageBeforeUpdate, usageAfterUpdate)
 	}
 
-	t.Logf("✓ Team budget usage correctly reset to 0 (new limit: $%.2f < old usage: $%.6f)", newMaxLimit, usageBeforeUpdate)
+	t.Logf("✓ Team budget usage correctly preserved at $%.6f after config update (new limit: $%.2f)", usageAfterUpdate, newMaxLimit)
 
 	t.Logf("Team budget update sync to memory verified ✓")
 }
@@ -945,12 +923,12 @@ func TestCustomerBudgetUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Customer budget max limit updated in memory: $%.2f", newMaxLimit)
 
-	// Verify usage reset to 0 (since new max < old usage)
-	if usageAfterUpdate > 0.000001 {
-		t.Fatalf("Customer budget usage should reset to 0 when new limit < current usage, but got $%.6f", usageAfterUpdate)
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if usageAfterUpdate < usageBeforeUpdate-0.000001 || usageAfterUpdate > usageBeforeUpdate+0.000001 {
+		t.Fatalf("Customer budget usage should be preserved when updating budget config, expected $%.6f, but got $%.6f", usageBeforeUpdate, usageAfterUpdate)
 	}
 
-	t.Logf("✓ Customer budget usage correctly reset to 0 (new limit: $%.2f < old usage: $%.6f)", newMaxLimit, usageBeforeUpdate)
+	t.Logf("✓ Customer budget usage correctly preserved at $%.6f after config update (new limit: $%.2f)", usageAfterUpdate, newMaxLimit)
 
 	t.Logf("Customer budget update sync to memory verified ✓")
 }
@@ -1115,12 +1093,12 @@ func TestProviderBudgetUpdateSyncToMemory(t *testing.T) {
 
 	t.Logf("✓ Provider budget max limit updated in memory: $%.2f", newMaxLimit)
 
-	// Verify usage reset to 0 (since new max < old usage)
-	if usageAfterUpdate > 0.000001 {
-		t.Fatalf("Provider budget usage should reset to 0 when new limit < current usage, but got $%.6f", usageAfterUpdate)
+	// Verify usage is PRESERVED (not reset) - the fix ensures in-memory usage is maintained
+	if usageAfterUpdate < usageBeforeUpdate-0.000001 || usageAfterUpdate > usageBeforeUpdate+0.000001 {
+		t.Fatalf("Provider budget usage should be preserved when updating budget config, expected $%.6f, but got $%.6f", usageBeforeUpdate, usageAfterUpdate)
 	}
 
-	t.Logf("✓ Provider budget usage correctly reset to 0 (new limit: $%.2f < old usage: $%.6f)", newMaxLimit, usageBeforeUpdate)
+	t.Logf("✓ Provider budget usage correctly preserved at $%.6f after config update (new limit: $%.2f)", usageAfterUpdate, newMaxLimit)
 
 	t.Logf("Provider budget update sync to memory verified ✓")
 }

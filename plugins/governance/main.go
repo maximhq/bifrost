@@ -326,8 +326,7 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	}
 	payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
 	if err != nil {
-		p.logger.Error("failed to load balance provider: %v", err)
-		return nil, nil
+		return nil, err
 	}
 	body, err := sonic.Marshal(payload)
 	if err != nil {
@@ -419,7 +418,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 
 		if isProviderAllowed {
 			// Check if the provider's budget or rate limits are violated using resolver helper methods
-			if p.resolver.isProviderBudgetViolated(config) || p.resolver.isProviderRateLimitViolated(config) {
+			if p.resolver.isProviderBudgetViolated(ctx, virtualKey, config) || p.resolver.isProviderRateLimitViolated(ctx, virtualKey, config) {
 				// Provider config violated budget or rate limits, skip this provider
 				continue
 			}
@@ -456,8 +455,17 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		newModelWithRequestSuffix := string(selectedProvider) + "/" + modelStr + genaiRequestSuffix
 		ctx.SetValue("model", newModelWithRequestSuffix)
 	} else {
+		var err error
+		refinedModel := modelStr
+		// Refine the model for the selected provider
+		if p.modelCatalog != nil {
+			refinedModel, err = p.modelCatalog.RefineModelForProvider(selectedProvider, modelStr)
+			if err != nil {
+				return body, err
+			}
+		}
 		// Update the model field in the request body
-		body["model"] = string(selectedProvider) + "/" + modelStr
+		body["model"] = string(selectedProvider) + "/" + refinedModel
 	}
 
 	// Check if fallbacks field is already present
@@ -472,7 +480,17 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		fallbacks := make([]string, 0, len(allowedProviderConfigs)-1)
 		for _, config := range allowedProviderConfigs {
 			if config.Provider != string(selectedProvider) {
-				fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+modelStr)
+				var err error
+				refinedModel := modelStr
+				if p.modelCatalog != nil {
+					refinedModel, err = p.modelCatalog.RefineModelForProvider(schemas.ModelProvider(config.Provider), modelStr)
+					if err != nil {
+						// Skip fallback if model refinement fails
+						p.logger.Warn("failed to refine model for fallback, skipping fallback in governance plugin: %v", err)
+						continue
+					}
+				}
+				fallbacks = append(fallbacks, string(schemas.ModelProvider(config.Provider))+"/"+refinedModel)
 			}
 		}
 
@@ -667,10 +685,12 @@ func (p *GovernancePlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 		}
 	}
 
+	isFinalChunk := bifrost.IsFinalChunk(ctx)
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, bifrost.IsFinalChunk(ctx))
+		p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, isFinalChunk)
 	}()
 
 	return result, err, nil

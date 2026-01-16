@@ -152,7 +152,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 			})
 
 			testVK, _ = testStore.GetVirtualKey("sk-bf-test")
-			err := testStore.CheckBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+			err := testStore.CheckBudget(context.Background(), testVK, schemas.OpenAI, nil)
 			if tt.shouldErr {
 				assert.Error(t, err, "Expected error for usage check")
 			} else {
@@ -192,7 +192,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 	vk, _ = store.GetVirtualKey("sk-bf-test")
 
 	// Test: All budgets under limit should pass
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	err = store.CheckBudget(context.Background(), vk, schemas.OpenAI, nil)
 	assert.NoError(t, err, "Should pass when all budgets are under limit")
 
 	// Test: If VK budget exceeds limit, should fail
@@ -205,7 +205,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 			}
 		}
 	}
-	err = store.CheckBudget(context.Background(), vk, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
+	err = store.CheckBudget(context.Background(), vk, schemas.OpenAI, nil)
 	assert.Error(t, err, "Should fail when VK budget exceeds limit")
 }
 

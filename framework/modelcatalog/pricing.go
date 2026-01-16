@@ -31,6 +31,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 			PromptTokens:     result.ResponsesResponse.Usage.InputTokens,
 			CompletionTokens: result.ResponsesResponse.Usage.OutputTokens,
 			TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
+			Cost:             result.ResponsesResponse.Usage.Cost,
 		}
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{

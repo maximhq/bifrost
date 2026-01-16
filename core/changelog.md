@@ -1,0 +1,2 @@
+- feat: added retries on network lookup errors
+- fix: properly propagate cost details for openrouter responses

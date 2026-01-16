@@ -3101,9 +3101,9 @@ func executeRequestWithRetries[T any](
 		// Check if we should retry based on status code or error message
 		shouldRetry := false
 
-		if bifrostError.Error != nil && bifrostError.Error.Message == schemas.ErrProviderDoRequest {
+		if bifrostError.Error != nil && (bifrostError.Error.Message == schemas.ErrProviderDoRequest || bifrostError.Error.Message == schemas.ErrProviderNetworkError) {
 			shouldRetry = true
-			logger.Debug("detected request HTTP error, will retry: %s", bifrostError.Error.Message)
+			logger.Debug("detected request HTTP/network error, will retry: %s", bifrostError.Error.Message)
 		}
 
 		// Retry if status code or error object indicates rate limiting
