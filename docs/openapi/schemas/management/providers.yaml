@@ -142,7 +142,14 @@ Key:
       type: string
       description: Name of the key
     value:
-      type: string
+      type: object
+      properties:
+        value:
+          type: string
+        env_var:
+          type: string
+        from_env:
+          type: boolean
       description: API key value (redacted in responses)
     models:
       type: array
@@ -194,6 +201,10 @@ AllowedRequests:
     transcription:
       type: boolean
     transcription_stream:
+      type: boolean
+    image_generation:
+      type: boolean
+    image_generation_stream:
       type: boolean
     batch_create:
       type: boolean

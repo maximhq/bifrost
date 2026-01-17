@@ -81,7 +81,9 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 
 // getVersion handles GET /api/version - Get the current version
 func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
-	SendJSON(ctx, version)
+	SendJSON(ctx, map[string]any{
+		"version": version,
+	})
 }
 
 // getConfig handles GET /config - Get the current configuration

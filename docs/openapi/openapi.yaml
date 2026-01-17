@@ -204,8 +204,6 @@ paths:
   # Image Generation
   /openai/v1/images/generations:
     $ref: './paths/integrations/openai/images.yaml#/image-generation'
-  /openai/images/generations:
-    $ref: './paths/integrations/openai/images.yaml#/image-generation'
   /openai/openai/deployments/{deployment-id}/images/generations:
     $ref: './paths/integrations/openai/images.yaml#/azure-image-generation'
 
@@ -262,6 +260,8 @@ paths:
     $ref: './paths/integrations/genai/generation.yaml#/embed-content'
   /genai/v1beta/models/{model}:countTokens:
     $ref: './paths/integrations/genai/generation.yaml#/count-tokens'
+  /genai/v1beta/models/{model}:predict:
+    $ref: './paths/integrations/genai/generation.yaml#/image-generation'
 
   # Models
   /genai/v1beta/models:

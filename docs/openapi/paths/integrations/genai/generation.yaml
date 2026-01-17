@@ -165,3 +165,52 @@ count-tokens:
           application/json:
             schema:
               $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+
+image-generation:
+  post:
+    operationId: geminiGenerateImage
+    summary: Generate image (Gemini format)
+    description: |
+      For Imagen models, use the `:predict` suffix (e.g., `imagen-3.0-generate-001:predict`).
+      For Gemini models, use `:generateContent` with `generationConfig.responseModalities: ["IMAGE"]` in the request body.
+    tags:
+      - GenAI Integration
+    parameters:
+      - name: model
+        in: path
+        required: true
+        schema:
+          type: string
+        description: |
+          Model name with action suffix. For Imagen models, use `:predict` (e.g., `imagen-3.0-generate-001:predict`).
+          For Gemini models with image generation, use `:generateContent` (e.g., `gemini-1.5-pro:generateContent`).
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns JSON with generated image data in `candidates[0].content.parts[0].inlineData`.
+          When streaming, events are sent via Server-Sent Events (SSE).
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../../schemas/integrations/genai/generation.yaml#/GeminiGenerationResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/genai/common.yaml#/GeminiError'

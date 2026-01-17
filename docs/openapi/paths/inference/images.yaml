@@ -6,29 +6,6 @@ image-generation:
     summary: Generate image
     description: |
       Generates images from text prompts using the specified model.
-      
-      Supports streaming via Server-Sent Events (SSE) when `stream=true`.
-      When streaming, images are sent as base64-encoded or url chunks depending on provider and configuration.
-      
-      **Supported Providers:**
-      - **OpenAI**: `openai/dall-e-2`, `openai/dall-e-3`, `openai/gpt-image-1`
-      - **Gemini**: `gemini/gemini-2.5-flash-image`, `gemini/gemini-2.0-flash-exp`
-      - **Vertex AI** (Imagen): `vertex/imagen-4.0-generate-001` or `gemini/imagen-4.0-generate-001`
-      - **Azure OpenAI**: `azure/{deployment-name}` (DALL-E models via Azure deployments)
-      - **Nebius**: `nebius/{image-generation-model}` (e.g., `nebius/flux-schnell`)
-      - **xAI**: `xai/{image-generation-model}`
-      
-      **Example:**
-      ```json
-      {
-        "model": "openai/dall-e-3",
-        "prompt": "A beautiful sunset over mountains",
-        "n": 1,
-        "size": "1024x1024",
-        "quality": "standard",
-        "response_format": "url"
-      }
-      ```
     tags:
       - Image Generations
     requestBody:

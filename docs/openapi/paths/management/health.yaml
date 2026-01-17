@@ -19,4 +19,4 @@ health:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'

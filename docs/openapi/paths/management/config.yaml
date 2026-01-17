@@ -86,7 +86,7 @@ proxy-config:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
   put:
     operationId: updateProxyConfig
@@ -133,4 +133,4 @@ force-sync-pricing:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
