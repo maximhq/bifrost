@@ -1,2 +1,3 @@
 - feat: added retries on network lookup errors
 - fix: properly propagate cost details for openrouter responses
+- fix: allow flat $defs and propertyOrdering in jsonschema and forward it to Gemini

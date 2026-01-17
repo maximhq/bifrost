@@ -165,10 +165,11 @@ type ResponsesTextConfigFormatJSONSchema struct {
 	Maximum *float64 `json:"maximum,omitempty"` // Maximum number value
 
 	// Misc fields
-	Title    *string     `json:"title,omitempty"`    // Schema title
-	Default  interface{} `json:"default,omitempty"`  // Default value
-	Nullable *bool       `json:"nullable,omitempty"` // Nullable indicator (OpenAPI 3.0 style)
-	Enum     []string    `json:"enum,omitempty"`     // Enum values
+	Title            *string     `json:"title,omitempty"`            // Schema title
+	Default          interface{} `json:"default,omitempty"`          // Default value
+	Nullable         *bool       `json:"nullable,omitempty"`         // Nullable indicator (OpenAPI 3.0 style)
+	Enum             []string    `json:"enum,omitempty"`             // Enum values
+	PropertyOrdering []string    `json:"propertyOrdering,omitempty"` // Ordering of properties, specific to Gemini
 }
 
 type ResponsesResponseConversation struct {
