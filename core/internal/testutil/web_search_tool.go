@@ -339,6 +339,12 @@ func RunWebSearchToolWithDomainsTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		return
 	}
 
+	if testConfig.Provider == "gemini" {
+		// skip because gemini google search tool does not support domain filtering
+		t.Logf("Skipping WebSearchToolWithDomains test for provider %s because gemini google search tool does not support domain filtering", testConfig.Provider)
+		return
+	}
+
 	t.Run("WebSearchToolWithDomains", func(t *testing.T) {
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()
@@ -431,6 +437,12 @@ func RunWebSearchToolWithDomainsTest(t *testing.T, client *bifrost.Bifrost, ctx 
 func RunWebSearchToolContextSizesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.WebSearchTool {
 		t.Logf("Web search tool not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	if testConfig.Provider == "gemini" {
+		// skip because gemini google search tool does not support context size
+		t.Logf("Skipping WebSearchToolContextSizes test for provider %s because gemini google search tool does not support context size", testConfig.Provider)
 		return
 	}
 

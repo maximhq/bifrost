@@ -50,6 +50,7 @@ func TestGemini(t *testing.T) {
 			MultipleToolCalls:     true,
 			End2EndToolCalling:    true,
 			AutomaticFunctionCall: true,
+			WebSearchTool:         true,
 			ImageURL:              false,
 			ImageBase64:           true,
 			MultipleImages:        false,

@@ -88,8 +88,18 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		StreamConfig: &StreamConfig{
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-				geminiResponse := gemini.ToGeminiResponsesStreamResponse(resp)
-				// Skip lifecycle events with no Gemini equivalent
+				// Store state in context so it persists across chunks of the same stream
+				const stateKey = "gemini_stream_state"
+				var state *gemini.BifrostToGeminiStreamState
+
+				if stateValue := ctx.Value(stateKey); stateValue != nil {
+					state = stateValue.(*gemini.BifrostToGeminiStreamState)
+				} else {
+					state = gemini.NewBifrostToGeminiStreamState()
+					ctx.SetValue(stateKey, state)
+				}
+
+				geminiResponse := gemini.ToGeminiResponsesStreamResponse(resp, state)
 				if geminiResponse == nil {
 					return "", nil, nil
 				}

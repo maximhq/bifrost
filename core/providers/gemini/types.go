@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/civil"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -274,10 +275,14 @@ type Interval struct {
 }
 
 func (i *Interval) UnmarshalJSON(data []byte) error {
+	// Try both camelCase and snake_case
 	type Alias Interval
 	aux := &struct {
 		StartTime *time.Time `json:"startTime,omitempty"`
 		EndTime   *time.Time `json:"endTime,omitempty"`
+		// snake_case alternatives
+		StartTimeSnake *time.Time `json:"start_time,omitempty"`
+		EndTimeSnake   *time.Time `json:"end_time,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(i),
@@ -287,12 +292,17 @@ func (i *Interval) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	// Prefer camelCase, fallback to snake_case
 	if !reflect.ValueOf(aux.StartTime).IsZero() {
 		i.StartTime = time.Time(*aux.StartTime)
+	} else if !reflect.ValueOf(aux.StartTimeSnake).IsZero() {
+		i.StartTime = time.Time(*aux.StartTimeSnake)
 	}
 
 	if !reflect.ValueOf(aux.EndTime).IsZero() {
 		i.EndTime = time.Time(*aux.EndTime)
+	} else if !reflect.ValueOf(aux.EndTimeSnake).IsZero() {
+		i.EndTime = time.Time(*aux.EndTimeSnake)
 	}
 
 	return nil
@@ -327,6 +337,33 @@ type GoogleSearch struct {
 	// Optional. List of domains to be excluded from the search results.
 	// The default limit is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (g *GoogleSearch) UnmarshalJSON(data []byte) error {
+	type Alias GoogleSearch
+	aux := &struct {
+		*Alias
+		// snake_case alternatives
+		TimeRangeFilterSnake *Interval `json:"time_range_filter,omitempty"`
+		ExcludeDomainsSnake  []string  `json:"exclude_domains,omitempty"`
+	}{
+		Alias: (*Alias)(g),
+	}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if g.TimeRangeFilter == nil && aux.TimeRangeFilterSnake != nil {
+		g.TimeRangeFilter = aux.TimeRangeFilterSnake
+	}
+	if len(g.ExcludeDomains) == 0 && len(aux.ExcludeDomainsSnake) > 0 {
+		g.ExcludeDomains = aux.ExcludeDomainsSnake
+	}
+
+	return nil
 }
 
 // DynamicRetrievalConfig describes the options to customize dynamic retrieval.
@@ -681,6 +718,57 @@ type Tool struct {
 	ComputerUse *ToolComputerUse `json:"computerUse,omitempty"`
 	// Optional. CodeExecution tool type. Enables the model to execute code as part of generation.
 	CodeExecution *ToolCodeExecution `json:"codeExecution,omitempty"`
+}
+
+// UnmarshalJSON handles both camelCase and snake_case
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	type Alias Tool
+	aux := &struct {
+		*Alias
+		// snake_case alternatives for the most commonly used fields
+		FunctionDeclarationsSnake  []*FunctionDeclaration `json:"function_declarations,omitempty"`
+		GoogleSearchSnake          *GoogleSearch          `json:"google_search,omitempty"`
+		GoogleSearchRetrievalSnake *GoogleSearchRetrieval `json:"google_search_retrieval,omitempty"`
+		EnterpriseWebSearchSnake   *EnterpriseWebSearch   `json:"enterprise_web_search,omitempty"`
+		GoogleMapsSnake            *GoogleMaps            `json:"google_maps,omitempty"`
+		URLContextSnake            *URLContext            `json:"url_context,omitempty"`
+		ComputerUseSnake           *ToolComputerUse       `json:"computer_use,omitempty"`
+		CodeExecutionSnake         *ToolCodeExecution     `json:"code_execution,omitempty"`
+	}{
+		Alias: (*Alias)(t),
+	}
+
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// Use snake_case if camelCase wasn't provided
+	if t.FunctionDeclarations == nil && aux.FunctionDeclarationsSnake != nil {
+		t.FunctionDeclarations = aux.FunctionDeclarationsSnake
+	}
+	if t.GoogleSearch == nil && aux.GoogleSearchSnake != nil {
+		t.GoogleSearch = aux.GoogleSearchSnake
+	}
+	if t.GoogleSearchRetrieval == nil && aux.GoogleSearchRetrievalSnake != nil {
+		t.GoogleSearchRetrieval = aux.GoogleSearchRetrievalSnake
+	}
+	if t.EnterpriseWebSearch == nil && aux.EnterpriseWebSearchSnake != nil {
+		t.EnterpriseWebSearch = aux.EnterpriseWebSearchSnake
+	}
+	if t.GoogleMaps == nil && aux.GoogleMapsSnake != nil {
+		t.GoogleMaps = aux.GoogleMapsSnake
+	}
+	if t.URLContext == nil && aux.URLContextSnake != nil {
+		t.URLContext = aux.URLContextSnake
+	}
+	if t.ComputerUse == nil && aux.ComputerUseSnake != nil {
+		t.ComputerUse = aux.ComputerUseSnake
+	}
+	if t.CodeExecution == nil && aux.CodeExecutionSnake != nil {
+		t.CodeExecution = aux.CodeExecutionSnake
+	}
+
+	return nil
 }
 
 // GenerationConfig represents generation configuration. You can find API default values and more details at https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference#generationconfig
@@ -1338,12 +1426,304 @@ type URLContextMetadata struct {
 	URLMetadata []*URLMetadata `json:"urlMetadata,omitempty"`
 }
 
+// Source attributions for content. This data type is not supported in Gemini API.
+type Citation struct {
+	// Output only. End index into the content.
+	EndIndex int32 `json:"endIndex,omitempty"`
+	// Output only. License of the attribution.
+	License string `json:"license,omitempty"`
+	// Output only. Publication date of the attribution.
+	PublicationDate civil.Date `json:"publicationDate,omitempty"`
+	// Output only. Start index into the content.
+	StartIndex int32 `json:"startIndex,omitempty"`
+	// Output only. Title of the attribution.
+	Title string `json:"title,omitempty"`
+	// Output only. URL reference of the attribution.
+	URI string `json:"uri,omitempty"`
+}
+
+type dateJSON civil.Date
+
+func (d *dateJSON) UnmarshalJSON(data []byte) error {
+	m := make(map[string]int)
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("failed to unmarshal date from map: %w", err)
+	}
+
+	if len(m) == 0 {
+		return nil
+	}
+	if _, ok := m["year"]; !ok {
+		return fmt.Errorf("key %q not found", "year")
+	}
+	d.Year = m["year"]
+
+	if month, ok := m["month"]; ok {
+		d.Month = time.Month(month)
+	}
+	if day, ok := m["day"]; ok {
+		d.Day = day
+	}
+	return nil
+}
+
+func (d *dateJSON) MarshalJSON() ([]byte, error) {
+	m := make(map[string]int)
+	if d == nil || (civil.Date)(*d).IsZero() {
+		return json.Marshal(nil)
+	}
+	if d.Year != 0 {
+		m["year"] = d.Year
+	}
+	if d.Month != 0 {
+		m["month"] = int(d.Month)
+	}
+	if d.Day != 0 {
+		m["day"] = d.Day
+	}
+	return json.Marshal(m)
+}
+
+func (c *Citation) UnmarshalJSON(data []byte) error {
+	type Alias Citation
+	aux := &struct {
+		PublicationDate *dateJSON `json:"publicationDate,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if !reflect.ValueOf(aux.PublicationDate).IsZero() {
+		c.PublicationDate = civil.Date(*aux.PublicationDate)
+	}
+
+	return nil
+}
+
+func (c *Citation) MarshalJSON() ([]byte, error) {
+	type Alias Citation
+	aux := &struct {
+		PublicationDate *dateJSON `json:"publicationDate,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(c),
+	}
+
+	if !reflect.ValueOf(c.PublicationDate).IsZero() {
+		aux.PublicationDate = (*dateJSON)(&c.PublicationDate)
+	}
+
+	return json.Marshal(aux)
+}
+
+// Citation information when the model quotes another source.
+type CitationMetadata struct {
+	// Optional. Contains citation information when the model directly quotes, at
+	// length, from another source. Can include traditional websites and code
+	// repositories.
+	Citations []*Citation `json:"citations,omitempty"`
+}
+
+// Author attribution for a photo or review. This data type is not supported in Gemini
+// API.
+type GroundingChunkMapsPlaceAnswerSourcesAuthorAttribution struct {
+	// Name of the author of the Photo or Review.
+	DisplayName string `json:"displayName,omitempty"`
+	// Profile photo URI of the author of the Photo or Review.
+	PhotoURI string `json:"photoUri,omitempty"`
+	// URI of the author of the Photo or Review.
+	URI string `json:"uri,omitempty"`
+}
+
+// Encapsulates a review snippet. This data type is not supported in Gemini API.
+type GroundingChunkMapsPlaceAnswerSourcesReviewSnippet struct {
+	// This review's author.
+	AuthorAttribution *GroundingChunkMapsPlaceAnswerSourcesAuthorAttribution `json:"authorAttribution,omitempty"`
+	// A link where users can flag a problem with the review.
+	FlagContentURI string `json:"flagContentUri,omitempty"`
+	// A link to show the review on Google Maps.
+	GoogleMapsURI string `json:"googleMapsUri,omitempty"`
+	// A string of formatted recent time, expressing the review time relative to the current
+	// time in a form appropriate for the language and country.
+	RelativePublishTimeDescription string `json:"relativePublishTimeDescription,omitempty"`
+	// A reference representing this place review which may be used to look up this place
+	// review again.
+	Review string `json:"review,omitempty"`
+	// ID of the review referencing the place.
+	ReviewID string `json:"reviewId,omitempty"`
+	// Title of the review.
+	Title string `json:"title,omitempty"`
+}
+
+// Sources used to generate the place answer. This data type is not supported in Gemini
+// API.
+type GroundingChunkMapsPlaceAnswerSources struct {
+	// A link where users can flag a problem with the generated answer.
+	FlagContentURI string `json:"flagContentUri,omitempty"`
+	// Snippets of reviews that are used to generate the answer.
+	ReviewSnippets []*GroundingChunkMapsPlaceAnswerSourcesReviewSnippet `json:"reviewSnippets,omitempty"`
+}
+
+// Chunk from Google Maps. This data type is not supported in Gemini API.
+type GroundingChunkMaps struct {
+	// Sources used to generate the place answer. This includes review snippets and photos
+	// that were used to generate the answer, as well as uris to flag content.
+	PlaceAnswerSources *GroundingChunkMapsPlaceAnswerSources `json:"placeAnswerSources,omitempty"`
+	// This Place's resource name, in `places/{place_id}` format. Can be used to look up
+	// the Place.
+	PlaceID string `json:"placeId,omitempty"`
+	// Text of the place answer.
+	Text string `json:"text,omitempty"`
+	// Title of the place.
+	Title string `json:"title,omitempty"`
+	// URI reference of the place.
+	URI string `json:"uri,omitempty"`
+}
+
+// Represents where the chunk starts and ends in the document. This data type is not
+// supported in Gemini API.
+type RAGChunkPageSpan struct {
+	// Page where chunk starts in the document. Inclusive. 1-indexed.
+	FirstPage int32 `json:"firstPage,omitempty"`
+	// Page where chunk ends in the document. Inclusive. 1-indexed.
+	LastPage int32 `json:"lastPage,omitempty"`
+}
+
+// A RAGChunk includes the content of a chunk of a RAGFile, and associated metadata.
+// This data type is not supported in Gemini API.
+type RAGChunk struct {
+	// If populated, represents where the chunk starts and ends in the document.
+	PageSpan *RAGChunkPageSpan `json:"pageSpan,omitempty"`
+	// The content of the chunk.
+	Text string `json:"text,omitempty"`
+}
+
+// Chunk from context retrieved by the retrieval tools. This data type is not supported
+// in Gemini API.
+type GroundingChunkRetrievedContext struct {
+	// Output only. The full document name for the referenced Vertex AI Search document.
+	DocumentName string `json:"documentName,omitempty"`
+	// Additional context for the RAG retrieval result. This is only populated when using
+	// the RAG retrieval tool.
+	RAGChunk *RAGChunk `json:"ragChunk,omitempty"`
+	// Text of the attribution.
+	Text string `json:"text,omitempty"`
+	// Title of the attribution.
+	Title string `json:"title,omitempty"`
+	// URI reference of the attribution.
+	URI string `json:"uri,omitempty"`
+}
+
+// Chunk from the web.
+type GroundingChunkWeb struct {
+	// Domain of the (original) URI. This field is not supported in Gemini API.
+	Domain string `json:"domain,omitempty"`
+	// Title of the chunk.
+	Title string `json:"title,omitempty"`
+	// URI reference of the chunk.
+	URI string `json:"uri,omitempty"`
+}
+
+// Grounding chunk.
+type GroundingChunk struct {
+	// Grounding chunk from Google Maps. This field is not supported in Gemini API.
+	Maps *GroundingChunkMaps `json:"maps,omitempty"`
+	// Grounding chunk from context retrieved by the retrieval tools. This field is not
+	// supported in Gemini API.
+	RetrievedContext *GroundingChunkRetrievedContext `json:"retrievedContext,omitempty"`
+	// Grounding chunk from the web.
+	Web *GroundingChunkWeb `json:"web,omitempty"`
+}
+
+// Segment of the content.
+type Segment struct {
+	// Output only. End index in the given Part, measured in bytes. Offset from the start
+	// of the Part, exclusive, starting at zero.
+	EndIndex int32 `json:"endIndex,omitempty"`
+	// Output only. The index of a Part object within its parent Content object.
+	PartIndex int32 `json:"partIndex,omitempty"`
+	// Output only. Start index in the given Part, measured in bytes. Offset from the start
+	// of the Part, inclusive, starting at zero.
+	StartIndex int32 `json:"startIndex,omitempty"`
+	// Output only. The text corresponding to the segment from the response.
+	Text string `json:"text,omitempty"`
+}
+
+// Grounding support.
+type GroundingSupport struct {
+	// Confidence score of the support references. Ranges from 0 to 1. 1 is the most confident.
+	// For Gemini 2.0 and before, this list must have the same size as the grounding_chunk_indices.
+	// For Gemini 2.5 and after, this list will be empty and should be ignored.
+	ConfidenceScores []float32 `json:"confidenceScores,omitempty"`
+	// A list of indices (into 'grounding_chunk') specifying the citations associated with
+	// the claim. For instance [1,3,4] means that grounding_chunk[1], grounding_chunk[3],
+	// grounding_chunk[4] are the retrieved content attributed to the claim.
+	GroundingChunkIndices []int32 `json:"groundingChunkIndices,omitempty"`
+	// Segment of the content this support belongs to.
+	Segment *Segment `json:"segment,omitempty"`
+}
+
+// Metadata related to retrieval in the grounding flow.
+type RetrievalMetadata struct {
+	// Optional. Score indicating how likely information from Google Search could help answer
+	// the prompt. The score is in the range `[0, 1]`, where 0 is the least likely and 1
+	// is the most likely. This score is only populated when Google Search grounding and
+	// dynamic retrieval is enabled. It will be compared to the threshold to determine whether
+	// to trigger Google Search.
+	GoogleSearchDynamicRetrievalScore float32 `json:"googleSearchDynamicRetrievalScore,omitempty"`
+}
+
+// Google search entry point.
+type SearchEntryPoint struct {
+	// Optional. Web content snippet that can be embedded in a web page or an app webview.
+	RenderedContent string `json:"renderedContent,omitempty"`
+	// Optional. Base64 encoded JSON representing array of tuple.
+	SDKBlob []byte `json:"sdkBlob,omitempty"`
+}
+
+// Source content flagging URI for a place or review. This is currently populated only
+// for Google Maps grounding. This data type is not supported in Gemini API.
+type GroundingMetadataSourceFlaggingURI struct {
+	// A link where users can flag a problem with the source (place or review).
+	FlagContentURI string `json:"flagContentUri,omitempty"`
+	// ID of the place or review.
+	SourceID string `json:"sourceId,omitempty"`
+}
+
+// Metadata returned to client when grounding is enabled.
+type GroundingMetadata struct {
+	// Optional. Output only. Resource name of the Google Maps widget context token to be
+	// used with the PlacesContextElement widget to render contextual data. This is populated
+	// only for Google Maps grounding. This field is not supported in Gemini API.
+	GoogleMapsWidgetContextToken string `json:"googleMapsWidgetContextToken,omitempty"`
+	// List of supporting references retrieved from specified grounding source.
+	GroundingChunks []*GroundingChunk `json:"groundingChunks,omitempty"`
+	// Optional. List of grounding support.
+	GroundingSupports []*GroundingSupport `json:"groundingSupports,omitempty"`
+	// Optional. Output only. Retrieval metadata.
+	RetrievalMetadata *RetrievalMetadata `json:"retrievalMetadata,omitempty"`
+	// Optional. Queries executed by the retrieval tools. This field is not supported in
+	// Gemini API.
+	RetrievalQueries []string `json:"retrievalQueries,omitempty"`
+	// Optional. Google search entry for the following-up web searches.
+	SearchEntryPoint *SearchEntryPoint `json:"searchEntryPoint,omitempty"`
+	// Optional. Output only. List of source flagging uris. This is currently populated
+	// only for Google Maps grounding. This field is not supported in Gemini API.
+	SourceFlaggingUris []*GroundingMetadataSourceFlaggingURI `json:"sourceFlaggingUris,omitempty"`
+	// Optional. Web search queries for the following-up web search.
+	WebSearchQueries []string `json:"webSearchQueries,omitempty"`
+}
+
 // Candidate represents a response candidate generated from the model.
 type Candidate struct {
 	// Optional. Contains the multi-part content of the response.
 	Content *Content `json:"content,omitempty"`
 	// Optional. Source attribution of the generated content.
-	CitationMetadata *map[string]any `json:"citationMetadata,omitempty"`
+	CitationMetadata *CitationMetadata `json:"citationMetadata,omitempty"`
 	// Optional. Describes the reason the model stopped generating tokens.
 	FinishMessage string `json:"finishMessage,omitempty"`
 	// Optional. Number of tokens for this candidate.
@@ -1357,7 +1737,7 @@ type Candidate struct {
 	// Output only. Average log probability score of the candidate.
 	AvgLogprobs float64 `json:"avgLogprobs,omitempty"`
 	// Output only. Metadata specifies sources used to ground generated content.
-	GroundingMetadata *map[string]any `json:"groundingMetadata,omitempty"`
+	GroundingMetadata *GroundingMetadata `json:"groundingMetadata,omitempty"`
 	// Output only. Index of the candidate.
 	Index int32 `json:"index,omitempty"`
 	// Output only. Log-likelihood scores for the response tokens and top tokens

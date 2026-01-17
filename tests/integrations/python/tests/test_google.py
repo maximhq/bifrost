@@ -49,6 +49,8 @@ Tests all core scenarios using Google GenAI SDK directly:
 39. Batch API - end-to-end with Files API
 40. Count tokens (Cross-Provider)
 41. Image generation
+42. Google Search grounding (non-streaming)
+43. Google Search grounding (streaming)
 """
 
 import io
@@ -2731,6 +2733,197 @@ Joe: Pretty good, thanks for asking."""
         assert response.total_tokens > 100, (
             f"Long text should have >100 tokens, got {response.total_tokens}"
         )
+
+    # =========================================================================
+    # GOOGLE SEARCH GROUNDING TEST CASES
+    # =========================================================================
+
+    @skip_if_no_api_key("google")
+    def test_42_google_search_grounding(self, test_config):
+        """Test Case 42: Google Search grounding (non-streaming)
+        
+        Tests the Google Search tool for grounding responses with real-time web data.
+        Validates that the response includes grounding metadata with search queries,
+        grounding chunks, and grounding supports.
+        """
+        
+        # Get Gemini client (Google Search is a Gemini feature)
+        client = get_provider_google_client("gemini")
+        
+        # Create Google Search tool
+        grounding_tool = types.Tool(
+            google_search=types.GoogleSearch()
+        )
+        
+        # Test with a query that requires recent information
+        response = client.models.generate_content(
+            model=get_model("google", "chat"),
+            contents="Who won the 2024 UEFA European Championship? Provide details about the final match.",
+            config=types.GenerateContentConfig(
+                tools=[grounding_tool]
+            )
+        )
+        
+        # Validate basic response structure
+        assert response is not None, "Response should not be None"
+        assert response.candidates is not None, "Response should have candidates"
+        assert len(response.candidates) > 0, "Should have at least one candidate"
+        
+        # Validate response text
+        assert response.text is not None, "Response should have text"
+        assert len(response.text) > 0, "Response text should not be empty"
+        
+        print(f"Response text: {response.text[:200]}...")
+        
+        # Validate grounding metadata
+        candidate = response.candidates[0]
+        assert hasattr(candidate, "grounding_metadata"), (
+            "Candidate should have grounding_metadata when using Google Search"
+        )
+        
+        grounding_metadata = candidate.grounding_metadata
+        assert grounding_metadata is not None, "Grounding metadata should not be None"
+        
+        # Check for web search queries
+        if hasattr(grounding_metadata, "web_search_queries"):
+            web_queries = grounding_metadata.web_search_queries
+            assert web_queries is not None, "Web search queries should not be None"
+            assert len(web_queries) > 0, "Should have at least one web search query"
+            print(f"Web search queries: {web_queries}")
+        
+        # Check for grounding chunks (search results)
+        if hasattr(grounding_metadata, "grounding_chunks"):
+            chunks = grounding_metadata.grounding_chunks
+            assert chunks is not None, "Grounding chunks should not be None"
+            assert len(chunks) > 0, "Should have at least one grounding chunk"
+            
+            # Validate chunk structure
+            for idx, chunk in enumerate(chunks[:3]):  # Check first 3 chunks
+                if hasattr(chunk, "web"):
+                    assert hasattr(chunk.web, "uri"), f"Chunk {idx} should have URI"
+                    assert hasattr(chunk.web, "title"), f"Chunk {idx} should have title"
+                    print(f"Chunk {idx}: {chunk.web.title} - {chunk.web.uri}")
+        
+        # Check for grounding supports (citations)
+        if hasattr(grounding_metadata, "grounding_supports"):
+            supports = grounding_metadata.grounding_supports
+            assert supports is not None, "Grounding supports should not be None"
+            assert len(supports) > 0, "Should have at least one grounding support"
+            
+            # Validate support structure
+            for idx, support in enumerate(supports[:3]):  # Check first 3 supports
+                assert hasattr(support, "segment"), f"Support {idx} should have segment"
+                if hasattr(support, "grounding_chunk_indices"):
+                    indices = support.grounding_chunk_indices
+                    print(f"Support {idx}: segment at {support.segment.start_index}-{support.segment.end_index}, chunks: {indices}")
+        
+        # Check for search entry point (widget HTML/CSS)
+        if hasattr(grounding_metadata, "search_entry_point"):
+            entry_point = grounding_metadata.search_entry_point
+            if hasattr(entry_point, "rendered_content"):
+                assert entry_point.rendered_content is not None, "Rendered content should not be None"
+                print(f"Search entry point available: {len(entry_point.rendered_content)} chars")
+        
+        print("✓ Google Search grounding test (non-streaming) passed!")
+
+    @skip_if_no_api_key("google")
+    def test_43_google_search_grounding_streaming(self, test_config):
+        """Test Case 43: Google Search grounding (streaming)
+        
+        Tests the Google Search tool in streaming mode. Validates that grounding
+        metadata is available in the final chunk or accumulated across chunks.
+        """
+        from google.genai import types
+        
+        # Get Gemini client
+        client = get_provider_google_client("gemini")
+        
+        # Create Google Search tool
+        grounding_tool = types.Tool(
+            google_search=types.GoogleSearch()
+        )
+        
+        # Test with a query that requires recent information
+        stream = client.models.generate_content_stream(
+            model=get_model("google", "chat"),
+            contents="What are the latest developments in AI as of 2024? List three major breakthroughs.",
+            config=types.GenerateContentConfig(
+                tools=[grounding_tool]
+            )
+        )
+        
+        # Collect streaming content and metadata
+        text_parts = []
+        chunk_count = 0
+        final_grounding_metadata = None
+        
+        for chunk in stream:
+            chunk_count += 1
+            
+            # Collect text content
+            if hasattr(chunk, "candidates") and chunk.candidates and len(chunk.candidates) > 0:
+                candidate = chunk.candidates[0]
+                if hasattr(candidate, "content") and candidate.content:
+                    if hasattr(candidate.content, "parts") and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                text_parts.append(part.text)
+                
+                # Capture grounding metadata (usually in final chunks)
+                if hasattr(candidate, "grounding_metadata") and candidate.grounding_metadata:
+                    final_grounding_metadata = candidate.grounding_metadata
+            
+            # Fallback to direct text attribute
+            elif hasattr(chunk, "text") and chunk.text:
+                text_parts.append(chunk.text)
+            
+            # Safety check
+            if chunk_count > 500:
+                raise AssertionError("Received >500 streaming chunks; possible non-terminating stream")
+        
+        # Combine collected content
+        complete_text = "".join(text_parts)
+        
+        # Validate streaming results
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(complete_text) > 0, "Should have complete text content"
+        
+        print(f"Received {chunk_count} chunks, total text length: {len(complete_text)}")
+        print(f"Text preview: {complete_text[:200]}...")
+        
+        # Validate grounding metadata
+        assert final_grounding_metadata is not None, (
+            "Should have grounding metadata in streaming response when using Google Search"
+        )
+        
+        # Check for web search queries
+        if hasattr(final_grounding_metadata, "web_search_queries"):
+            web_queries = final_grounding_metadata.web_search_queries
+            if web_queries:
+                assert len(web_queries) > 0, "Should have at least one web search query"
+                print(f"Web search queries (streaming): {web_queries}")
+        
+        # Check for grounding chunks
+        if hasattr(final_grounding_metadata, "grounding_chunks"):
+            chunks = final_grounding_metadata.grounding_chunks
+            if chunks:
+                assert len(chunks) > 0, "Should have at least one grounding chunk"
+                print(f"Found {len(chunks)} grounding chunks in streaming response")
+                
+                # Validate first chunk structure
+                if len(chunks) > 0:
+                    chunk = chunks[0]
+                    if hasattr(chunk, "web"):
+                        print(f"First chunk: {chunk.web.title}")
+        
+        # Check for grounding supports
+        if hasattr(final_grounding_metadata, "grounding_supports"):
+            supports = final_grounding_metadata.grounding_supports
+            if supports:
+                assert len(supports) > 0, "Should have at least one grounding support"
+                print(f"Found {len(supports)} grounding supports in streaming response")
+        
+        print("✓ Google Search grounding test (streaming) passed!")
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:

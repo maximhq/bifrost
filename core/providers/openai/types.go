@@ -295,9 +295,15 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 			// Strip CacheControl, FileType, and filter unsupported citation types from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
-				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.Content.ContentBlocks))
+				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0, len(msg.Content.ContentBlocks))
 				hasContentModification := false
-				for j, block := range msg.Content.ContentBlocks {
+				for _, block := range msg.Content.ContentBlocks {
+					// Skip rendered_content blocks entirely - OpenAI doesn't support them
+					if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
+						hasContentModification = true
+						continue
+					}
+
 					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
@@ -325,9 +331,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
-						contentCopy.ContentBlocks[j] = blockCopy
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
-						contentCopy.ContentBlocks[j] = block
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, block)
 					}
 				}
 				if hasContentModification {
@@ -449,6 +455,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				return true
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
+				return true
+			}
+			// OpenAI doesn't support rendered_content blocks
+			if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 				return true
 			}
 		}

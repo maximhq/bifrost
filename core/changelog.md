@@ -1,1 +1,2 @@
 - fix: allow setting authorization header through extra headers and in allow list and deny list
+- feat: added support for gemini google search tool

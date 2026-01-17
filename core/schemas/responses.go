@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"fmt"
+	"reflect"
+	"time"
 )
 
 // =============================================================================
@@ -557,6 +559,9 @@ const (
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
 	ResponsesOutputMessageContentTypeReasoning ResponsesMessageContentBlockType = "reasoning_text"
+
+	// gemini sends rendered content in google search results
+	ResponsesOutputMessageContentTypeRenderedContent ResponsesMessageContentBlockType = "rendered_content"
 )
 
 // ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
@@ -571,12 +576,17 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesInputMessageContentBlockFile
 	Audio *ResponsesInputMessageContentBlockAudio `json:"input_audio,omitempty"`
 
-	*ResponsesOutputMessageContentText    // Normal text output from the model
-	*ResponsesOutputMessageContentRefusal // Model refusal to answer
+	*ResponsesOutputMessageContentText            // Normal text output from the model
+	*ResponsesOutputMessageContentRefusal         // Model refusal to answer
+	*ResponsesOutputMessageContentRenderedContent // Rendered content from search entry point
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
+}
+
+type ResponsesOutputMessageContentRenderedContent struct {
+	RenderedContent string `json:"rendered_content"` // HTML/styled content from search entry point
 }
 
 type Citations struct {
@@ -1723,6 +1733,69 @@ type ResponsesToolWebSearch struct {
 type ResponsesToolWebSearchFilters struct {
 	AllowedDomains []string `json:"allowed_domains,omitempty"` // Allowed domains for the search
 	BlockedDomains []string `json:"blocked_domains,omitempty"` // Blocked domains for the search, only used in anthropic
+
+	// Gemini only
+	// Filter search results to a specific time range.
+	// If users set a start time, they must set an end time (and vice versa).
+	TimeRangeFilter *Interval `json:"time_range_filter,omitempty"`
+}
+
+// Interval represents a time interval, encoded as a start time (inclusive) and an end time (exclusive).
+// The start time must be less than or equal to the end time.
+// When the start equals the end time, the interval is an empty interval.
+// (matches no time)
+// When both start and end are unspecified, the interval matches any time.
+type Interval struct {
+	// Optional. The start time of the interval.
+	StartTime time.Time `json:"start_time,omitempty"`
+	// Optional. The end time of the interval.
+	EndTime time.Time `json:"end_time,omitempty"`
+}
+
+func (i *Interval) UnmarshalJSON(data []byte) error {
+	type Alias Interval
+	aux := &struct {
+		StartTime *time.Time `json:"start_time,omitempty"`
+		EndTime   *time.Time `json:"end_time,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(i),
+	}
+
+	if err := Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if !reflect.ValueOf(aux.StartTime).IsZero() {
+		i.StartTime = time.Time(*aux.StartTime)
+	}
+
+	if !reflect.ValueOf(aux.EndTime).IsZero() {
+		i.EndTime = time.Time(*aux.EndTime)
+	}
+
+	return nil
+}
+
+func (i *Interval) MarshalJSON() ([]byte, error) {
+	type Alias Interval
+	aux := &struct {
+		StartTime *time.Time `json:"start_time,omitempty"`
+		EndTime   *time.Time `json:"end_time,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(i),
+	}
+
+	if !reflect.ValueOf(i.StartTime).IsZero() {
+		aux.StartTime = (*time.Time)(&i.StartTime)
+	}
+
+	if !reflect.ValueOf(i.EndTime).IsZero() {
+		aux.EndTime = (*time.Time)(&i.EndTime)
+	}
+
+	return Marshal(aux)
 }
 
 // ResponsesToolWebSearchUserLocation - The approximate location of the user
