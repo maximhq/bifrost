@@ -27,13 +27,15 @@ login:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '403':
         description: Authentication is not enabled
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
 
 logout:
   post:
@@ -54,7 +56,7 @@ logout:
         content:
           application/json:
             schema:
-              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
 
 is-auth-enabled:
   get:

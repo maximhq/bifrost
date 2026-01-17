@@ -93,7 +93,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if auth is enabled
-	if !authConfig.IsEnabled {
+	if authConfig == nil || !authConfig.IsEnabled {
 		SendError(ctx, fasthttp.StatusForbidden, "Authentication is not enabled")
 		return
 	}

@@ -6,15 +6,7 @@ image-generation:
     summary: Create image
     description: |
       Generates images from text prompts using OpenAI-compatible format.
-      
-      Supports streaming via Server-Sent Events (SSE) when `stream=true`.
-      When streaming, images are sent as base64-encoded chunks.
-      
-      **Supported Models:**
-      - `dall-e-2` - OpenAI DALL-E 2
-      - `dall-e-3` - OpenAI DALL-E 3
-      - `gpt-image-1` - OpenAI GPT Image model
-      
+  
       **Note:** Azure OpenAI deployments are also supported via the Azure integration endpoint.
       
       **Note:** This endpoint also works without the `/v1` prefix (e.g., `/openai/images/generations`).
