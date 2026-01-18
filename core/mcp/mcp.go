@@ -80,7 +80,25 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		clientMap:            make(map[string]*schemas.MCPClientState),
 		healthMonitorManager: NewHealthMonitorManager(),
 	}
-	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc)
+	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
+	var pluginPipelineProvider func() PluginPipeline
+	var releasePluginPipeline func(pipeline PluginPipeline)
+	
+	if config.PluginPipelineProvider != nil && config.ReleasePluginPipeline != nil {
+		pluginPipelineProvider = func() PluginPipeline {
+			if pipeline := config.PluginPipelineProvider(); pipeline != nil {
+				if pp, ok := pipeline.(PluginPipeline); ok {
+					return pp
+				}
+			}
+			return nil
+		}
+		releasePluginPipeline = func(pipeline PluginPipeline) {
+			config.ReleasePluginPipeline(pipeline)
+		}
+	}
+	
+	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline)
 	// Process client configs: create client map entries and establish connections
 	if len(config.ClientConfigs) > 0 {
 		for _, clientConfig := range config.ClientConfigs {
@@ -111,39 +129,21 @@ func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
-// ExecuteChatTool executes a single tool call and returns the result as a chat message.
+// ExecuteToolCall executes a single tool call and returns the result.
 // This is the primary tool executor and is used by both Chat Completions and Responses APIs.
 //
-// The method accepts tool calls in Chat API format (ChatAssistantMessageToolCall) and returns
-// results in Chat API format (ChatMessage). For Responses API users:
-//   - Convert ResponsesToolMessage to ChatAssistantMessageToolCall using ToChatAssistantMessageToolCall()
-//   - Execute the tool with this method
-//   - Convert the result back using ChatMessage.ToResponsesToolMessage()
-//
-// Alternatively, use ExecuteResponsesTool() in the ToolsManager for a type-safe wrapper
-// that handles format conversions automatically.
+// The method accepts an MCP request containing either a ChatAssistantMessageToolCall or
+// ResponsesToolMessage, and returns the appropriate result format based on the request type.
 //
 // Parameters:
 //   - ctx: Context for the tool execution
-//   - toolCall: The tool call to execute in Chat API format
+//   - request: The MCP request containing the tool call (ChatAssistantMessageToolCall or ResponsesToolMessage)
 //
 // Returns:
-//   - *schemas.ChatMessage: The result message containing tool execution output
+//   - *schemas.BifrostMCPResponse: The result response containing tool execution output (ChatMessage or ResponsesMessage)
 //   - error: Any error that occurred during tool execution
-func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	return m.toolsManager.ExecuteChatTool(ctx, toolCall)
-}
-
-// ExecuteResponsesTool executes a single tool call and returns the result as a responses message.
-
-//   - ctx: Context for the tool execution
-//   - toolCall: The tool call to execute in Responses API format
-//
-// Returns:
-//   - *schemas.ResponsesMessage: The result message containing tool execution output
-//   - error: Any error that occurred during tool execution
-func (m *MCPManager) ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, error) {
-	return m.toolsManager.ExecuteResponsesTool(ctx, toolCall)
+func (m *MCPManager) ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	return m.toolsManager.ExecuteTool(ctx, request)
 }
 
 // UpdateToolManagerConfig updates the configuration for the tool manager.

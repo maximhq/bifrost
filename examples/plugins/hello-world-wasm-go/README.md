@@ -94,11 +94,11 @@ To short-circuit, return a response:
 }
 ```
 
-**PreHook Input:**
+**PreLLMHook Input:**
 - `ctx`: `{"request_id": "..."}` (context info)
 - `req`: Bifrost request JSON
 
-**PreHook Output:**
+**PreLLMHook Output:**
 ```json
 {
   "request": { ... },
@@ -107,12 +107,12 @@ To short-circuit, return a response:
 }
 ```
 
-**PostHook Input:**
+**PostLLMHook Input:**
 - `ctx`: Context JSON
 - `resp`: Bifrost response JSON
 - `err`: Bifrost error JSON (or null)
 
-**PostHook Output:**
+**PostLLMHook Output:**
 ```json
 {
   "response": { ... },
@@ -167,4 +167,4 @@ WASM plugins have some limitations compared to native `.so` plugins:
 2. **Security**: WASM provides sandboxed execution
 3. **No CGO**: Pure Go compilation, no C dependencies needed on the host
 4. **Portability**: Easy to distribute and deploy
-5. **Full feature parity**: HTTP transport intercept, PreHook, and PostHook all supported
+5. **Full feature parity**: HTTP transport intercept, PreLLMHook, and PostLLMHook all supported

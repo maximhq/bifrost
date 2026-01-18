@@ -17,7 +17,8 @@ type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
 	Account            Account
-	Plugins            []Plugin
+	LLMPlugins         []LLMPlugin
+	MCPPlugins         []MCPPlugin
 	Logger             Logger
 	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
@@ -139,6 +140,7 @@ const (
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
+	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
@@ -359,6 +361,24 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	}
 }
 
+type MCPRequestType string
+
+const (
+	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
+	MCPRequestTypeResponsesToolCall MCPRequestType = "responses_tool_call" // Responses API format
+)
+
+// BifrostMCPRequest is the request struct for all MCP requests.
+// only ONE of the following fields should be set:
+// - ChatAssistantMessageToolCall
+// - ResponsesToolMessage
+type BifrostMCPRequest struct {
+	RequestType MCPRequestType
+
+	*ChatAssistantMessageToolCall
+	*ResponsesToolMessage
+}
+
 //* Response Structs
 
 // BifrostResponse represents the complete result from any bifrost request.
@@ -438,6 +458,16 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// BifrostMCPResponse is the response struct for all MCP responses.
+// only ONE of the following fields should be set:
+// - ChatMessage
+// - ResponsesMessage
+type BifrostMCPResponse struct {
+	ChatMessage      *ChatMessage
+	ResponsesMessage *ResponsesMessage
+	ExtraFields      BifrostMCPResponseExtraFields
+}
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType     RequestType        `json:"request_type"`
@@ -450,6 +480,13 @@ type BifrostResponseExtraFields struct {
 	RawResponse     interface{}        `json:"raw_response,omitempty"`
 	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
 	ParseErrors     []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+}
+
+type BifrostMCPResponseExtraFields struct {
+	ToolName    string      `json:"tool_name"` // in format "{clientName}_{toolName}"
+	Latency     int64       `json:"latency"`   // in milliseconds
+	RawRequest  interface{} `json:"raw_request,omitempty"`
+	RawResponse interface{} `json:"raw_response,omitempty"`
 }
 
 // BifrostCacheDebug represents debug information about the cache.
@@ -510,7 +547,7 @@ func (bs BifrostStream) MarshalJSON() ([]byte, error) {
 
 // BifrostError represents an error from the Bifrost system.
 //
-// PLUGIN DEVELOPERS: When creating BifrostError in PreHook or PostHook, you can set AllowFallbacks:
+// PLUGIN DEVELOPERS: When creating BifrostError in PreLLMHook or PostLLMHook, you can set AllowFallbacks:
 // - AllowFallbacks = &true: Bifrost will try fallback providers if available
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)

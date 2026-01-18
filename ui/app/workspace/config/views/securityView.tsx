@@ -102,26 +102,17 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
-	const handleAuthToggle = useCallback(
-		(checked: boolean) => {
-			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
-		},
-		[],
-	);
+	const handleAuthToggle = useCallback((checked: boolean) => {
+		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
+	}, []);
 
-	const handleDisableAuthOnInferenceToggle = useCallback(
-		(checked: boolean) => {
-			setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
-		},
-		[],
-	);
+	const handleDisableAuthOnInferenceToggle = useCallback((checked: boolean) => {
+		setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
+	}, []);
 
-	const handleAuthFieldChange = useCallback(
-		(field: "admin_username" | "admin_password", value: string) => {
-			setAuthConfig((prev) => ({ ...prev, [field]: value }));
-		},
-		[],
-	);
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: string) => {
+		setAuthConfig((prev) => ({ ...prev, [field]: value }));
+	}, []);
 
 	const handleSave = useCallback(async () => {
 		try {
@@ -249,7 +240,11 @@ export default function SecurityView() {
 								Enforce Virtual Keys
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
+								Enforce the use of a virtual key for all requests. If enabled, requests without the virtual key header will be rejected. See{" "}
+								<Link href="https://docs.getbifrost.ai/features/governance/virtual-keys" target="_blank" className="text-primary underline">
+									documentation
+								</Link>{" "}
+								for header details.
 							</p>
 						</div>
 						<Switch

@@ -18,6 +18,19 @@ The basic flow is: **Chat Request → Review Tool Calls → Execute Tools → Co
 
 ---
 
+## Authentication
+
+The `/v1/mcp/tool/execute` endpoint uses the same authentication as other inference endpoints like `/v1/chat/completions`:
+
+| Auth Configuration | Behavior |
+|--------------------|----------|
+| `disable_auth_on_inference: true` | No auth required |
+| `disable_auth_on_inference: false` | Auth required |
+
+Virtual keys and authentication are independent layers that work together. For details on how to use virtual keys with authentication, see [Authentication and Virtual Keys](/features/governance/virtual-keys#authentication-and-virtual-keys).
+
+---
+
 ## End-to-End Example
 
 <Tabs>

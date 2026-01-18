@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/gopkg/util/logger"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -232,8 +233,11 @@ type Config struct {
 	ProxyConfig      *configstoreTables.GlobalProxyConfig
 
 	// Plugin configs - atomic for lock-free reads with CAS updates
-	Plugins      atomic.Pointer[[]schemas.Plugin]
-	PluginLoader plugins.PluginLoader
+	BasePlugins          atomic.Pointer[[]schemas.BasePlugin] // Single source of truth for all plugins
+	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]
+	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]
+	HTTPTransportPlugins atomic.Pointer[[]schemas.HTTPTransportPlugin]
+	PluginLoader         plugins.PluginLoader
 
 	// Plugin configs from config file/database
 	PluginConfigs []*schemas.PluginConfig
@@ -305,7 +309,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	config := &Config{
 		configPath: configFilePath,
 		Providers:  make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		Plugins:    atomic.Pointer[[]schemas.Plugin]{},
+		LLMPlugins: atomic.Pointer[[]schemas.LLMPlugin]{},
 	}
 	// Getting absolute path for config file
 	absConfigFilePath, err := filepath.Abs(configFilePath)
@@ -2016,44 +2020,167 @@ func (c *Config) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterCo
 	return c.ClientConfig.HeaderFilterConfig
 }
 
-// GetLoadedPlugins returns the current snapshot of loaded plugins.
+// GetLoadedLLMPlugins returns the current snapshot of loaded LLM plugins.
 // This method is lock-free and safe for concurrent access from hot paths.
 // It returns the plugin slice from the atomic pointer, which is safe to iterate
 // even if plugins are being updated concurrently.
-func (c *Config) GetLoadedPlugins() []schemas.Plugin {
-	if plugins := c.Plugins.Load(); plugins != nil {
-		return *plugins
+// Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
+func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
+	if plugins := c.LLMPlugins.Load(); plugins != nil {
+		return slices.Clone(*plugins)
 	}
 	return nil
 }
 
+// GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.
+// This method is lock-free and safe for concurrent access from hot paths.
+// It returns the plugin slice from the atomic pointer, which is safe to iterate
+// even if plugins are being updated concurrently.
+// Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
+func (c *Config) GetLoadedMCPPlugins() []schemas.MCPPlugin {
+	if plugins := c.MCPPlugins.Load(); plugins != nil {
+		return slices.Clone(*plugins)
+	}
+	return nil
+}
+
+// GetLoadedHTTPTransportPlugins returns all loaded plugins that implement HTTPTransportPlugin interface.
+// This method returns a cached list that is updated on plugin add/reload/remove operations.
+// It is lock-free and safe for concurrent access from hot paths.
+// Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
+func (c *Config) GetLoadedHTTPTransportPlugins() []schemas.HTTPTransportPlugin {
+	if plugins := c.HTTPTransportPlugins.Load(); plugins != nil {
+		return slices.Clone(*plugins)
+	}
+	return nil
+}
+
+// rebuildHTTPTransportPlugins rebuilds the cached list of HTTP transport plugins.
+// This should be called after any plugin add/reload/remove operation.
+// It filters BasePlugins for HTTPTransportPlugin implementations.
+func (c *Config) rebuildHTTPTransportPlugins() {
+	var httpTransportPlugins []schemas.HTTPTransportPlugin
+
+	// Filter BasePlugins for HTTPTransportPlugin implementations
+	if basePlugins := c.BasePlugins.Load(); basePlugins != nil {
+		for _, p := range *basePlugins {
+			if httpPlugin, ok := p.(schemas.HTTPTransportPlugin); ok {
+				httpTransportPlugins = append(httpTransportPlugins, httpPlugin)
+			}
+		}
+	}
+
+	// Store the rebuilt list
+	c.HTTPTransportPlugins.Store(&httpTransportPlugins)
+}
+
+// rebuildLLMPlugins rebuilds the cached list of LLM plugins.
+// This should be called after any plugin add/reload/remove operation.
+// It filters BasePlugins for LLMPlugin implementations.
+func (c *Config) rebuildLLMPlugins() {
+	var llmPlugins []schemas.LLMPlugin
+
+	// Filter BasePlugins for LLMPlugin implementations
+	if basePlugins := c.BasePlugins.Load(); basePlugins != nil {
+		for _, p := range *basePlugins {
+			if llmPlugin, ok := p.(schemas.LLMPlugin); ok {
+				llmPlugins = append(llmPlugins, llmPlugin)
+			}
+		}
+	}
+
+	// Store the rebuilt list
+	c.LLMPlugins.Store(&llmPlugins)
+}
+
+// rebuildMCPPlugins rebuilds the cached list of MCP plugins.
+// This should be called after any plugin add/reload/remove operation.
+// It filters BasePlugins for MCPPlugin implementations.
+func (c *Config) rebuildMCPPlugins() {
+	var mcpPlugins []schemas.MCPPlugin
+
+	// Filter BasePlugins for MCPPlugin implementations
+	if basePlugins := c.BasePlugins.Load(); basePlugins != nil {
+		for _, p := range *basePlugins {
+			if mcpPlugin, ok := p.(schemas.MCPPlugin); ok {
+				mcpPlugins = append(mcpPlugins, mcpPlugin)
+			}
+		}
+	}
+
+	// Store the rebuilt list
+	c.MCPPlugins.Store(&mcpPlugins)
+}
+
+// rebuildPluginCaches rebuilds all plugin caches from BasePlugins.
+// This should be called after any plugin add/reload/remove operation.
+func (c *Config) rebuildPluginCaches() {
+	c.rebuildLLMPlugins()
+	c.rebuildMCPPlugins()
+	c.rebuildHTTPTransportPlugins()
+}
+
 // AddLoadedPlugin adds a plugin to the loaded plugins list.
 // This method is lock-free and safe for concurrent access from hot paths.
-// It iterates through the plugin slice (typically 5-10 plugins, ~50ns overhead).
-// For small plugin counts, this is faster than maintaining a separate map.
-func (c *Config) AddLoadedPlugin(plugin schemas.Plugin) error {
+// It adds the plugin to BasePlugins and rebuilds all interface-specific caches.
+// Updates the LLM, MCP, and HTTPTransportPlugins caches after successful addition.
+func (c *Config) AddLoadedPlugin(plugin schemas.BasePlugin, _ schemas.PluginType) error {
 	for {
-		oldPlugins := c.Plugins.Load()
+		oldPlugins := c.BasePlugins.Load()
+		var newPlugins []schemas.BasePlugin
+
 		if oldPlugins == nil {
 			// Initialize with the new plugin
-			newPlugins := []schemas.Plugin{plugin}
-			if c.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
-				return nil
+			newPlugins = []schemas.BasePlugin{plugin}
+		} else {
+			// Copy existing plugins
+			newPlugins = make([]schemas.BasePlugin, 0, len(*oldPlugins)+1)
+
+			// Add all plugins except the one we're adding/updating
+			for _, p := range *oldPlugins {
+				if p.GetName() != plugin.GetName() {
+					newPlugins = append(newPlugins, p)
+				}
 			}
-			continue
+
+			// Add the new/updated plugin
+			newPlugins = append(newPlugins, plugin)
 		}
-		newPlugins := make([]schemas.Plugin, len(*oldPlugins))
-		copy(newPlugins, *oldPlugins)
-		// Checking if the plugin is already loaded
-		for i, p := range *oldPlugins {
-			if p.GetName() == plugin.GetName() {
-				// Removing the plugin from the list
-				newPlugins = append(newPlugins[:i], newPlugins[i+1:]...)
-				break
+
+		if c.BasePlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			c.rebuildPluginCaches()
+			return nil
+		}
+	}
+}
+
+// RemoveLoadedPlugin removes a plugin from the loaded plugins list.
+// This method is lock-free and safe for concurrent access.
+// Updates all plugin caches after successful removal.
+func (c *Config) RemoveLoadedPlugin(name string, _ schemas.PluginType) error {
+	for {
+		oldPlugins := c.BasePlugins.Load()
+		if oldPlugins == nil {
+			return fmt.Errorf("plugin %s not found", name)
+		}
+
+		// Create new slice without the removed plugin
+		newPlugins := make([]schemas.BasePlugin, 0, len(*oldPlugins))
+		found := false
+		for _, p := range *oldPlugins {
+			if p.GetName() == name {
+				found = true
+				continue
 			}
+			newPlugins = append(newPlugins, p)
 		}
-		newPlugins = append(newPlugins, plugin)
-		if c.Plugins.CompareAndSwap(oldPlugins, &newPlugins) {
+
+		if !found {
+			return fmt.Errorf("plugin %s not found", name)
+		}
+
+		if c.BasePlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			c.rebuildPluginCaches()
 			return nil
 		}
 	}
@@ -2061,18 +2188,18 @@ func (c *Config) AddLoadedPlugin(plugin schemas.Plugin) error {
 
 // IsPluginLoaded checks if a plugin with the given name is currently loaded.
 // This method is lock-free and safe for concurrent access from hot paths.
-// It iterates through the plugin slice (typically 5-10 plugins, ~50ns overhead).
-// For small plugin counts, this is faster than maintaining a separate map.
 func (c *Config) IsPluginLoaded(name string) bool {
-	plugins := c.Plugins.Load()
-	if plugins == nil {
+	basePlugins := c.BasePlugins.Load()
+	if basePlugins == nil {
 		return false
 	}
-	for _, p := range *plugins {
+
+	for _, p := range *basePlugins {
 		if p.GetName() == name {
 			return true
 		}
 	}
+
 	return false
 }
 

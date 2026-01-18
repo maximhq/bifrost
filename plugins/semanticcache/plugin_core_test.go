@@ -136,7 +136,7 @@ func TestSemanticSearch(t *testing.T) {
 	t.Logf("First request completed in %v", duration1)
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
-	// Wait for cache to be written (async PostHook needs time to complete)
+	// Wait for cache to be written (async PostLLMHook needs time to complete)
 	WaitForCache()
 
 	// Second request - very similar text to test semantic matching

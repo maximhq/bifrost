@@ -523,8 +523,8 @@ func categorizeGoroutine(g *GoroutineGroup) {
 
 	// Per-request goroutines - should complete when request ends
 	perRequestPatterns := []string{
-		"PreHook",
-		"PostHook",
+		"PreLLMHook",
+		"PostLLMHook",
 		"completeAndFlushTrace",
 		"ProcessAndSend",
 		"handleProvider",
