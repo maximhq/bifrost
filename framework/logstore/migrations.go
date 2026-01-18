@@ -43,6 +43,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateMCPToolLogsTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddImageGenerationOutputColumn(ctx, db); err != nil {
 		return err
 	}
@@ -677,6 +680,68 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding raw request column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCreateMCPToolLogsTable creates the mcp_tool_logs table for MCP tool execution logs
+func migrationCreateMCPToolLogsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "mcp_tool_logs_init",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&MCPToolLog{}) {
+				if err := migrator.CreateTable(&MCPToolLog{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id"); err != nil {
+					return fmt.Errorf("failed to create index on llm_request_id: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name"); err != nil {
+					return fmt.Errorf("failed to create index on tool_name: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_server_label") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_server_label"); err != nil {
+					return fmt.Errorf("failed to create index on server_label: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_latency") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_latency"); err != nil {
+					return fmt.Errorf("failed to create index on latency: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_status") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_status"); err != nil {
+					return fmt.Errorf("failed to create index on status: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropTable(&MCPToolLog{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating mcp_tool_logs table: %s", err.Error())
 	}
 	return nil
 }

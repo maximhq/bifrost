@@ -182,6 +182,7 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	response *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -197,7 +198,7 @@ func (m *MCPManager) CheckAndExecuteAgentForChatRequest(
 		return response, nil
 	}
 	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq)
+	return m.toolsManager.ExecuteAgentForChatRequest(ctx, req, response, makeReq, executeTool)
 }
 
 // CheckAndExecuteAgentForResponsesRequest checks if the responses response contains tool calls,
@@ -233,6 +234,7 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	response *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if makeReq == nil {
 		return nil, &schemas.BifrostError{
@@ -248,7 +250,7 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 		return response, nil
 	}
 	// Execute agent mode
-	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq)
+	return m.toolsManager.ExecuteAgentForResponsesRequest(ctx, req, response, makeReq, executeTool)
 }
 
 // Cleanup performs cleanup of all MCP resources including clients and local server.
