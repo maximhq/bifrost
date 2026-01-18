@@ -120,9 +120,10 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 	}
 
 	bifrostResp := &schemas.BifrostEmbeddingResponse{
-		Data:   make([]schemas.EmbeddingData, len(geminiResp.Embeddings)),
-		Model:  model,
-		Object: "list",
+		Data:        make([]schemas.EmbeddingData, len(geminiResp.Embeddings)),
+		Model:       model,
+		Object:      "list",
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
 	}
 
 	// Convert each embedding from Gemini format to Bifrost format

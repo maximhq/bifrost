@@ -123,8 +123,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 
 // ToBifrostSpeechResponse converts a GenerateContentResponse to a BifrostSpeechResponse
 func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Context) (*schemas.BifrostSpeechResponse, error) {
-	bifrostResp := &schemas.BifrostSpeechResponse{}
-
+	bifrostResp := &schemas.BifrostSpeechResponse{
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
+	}
 	// Process candidates to extract audio content
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]

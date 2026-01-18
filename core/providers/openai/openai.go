@@ -1461,6 +1461,7 @@ func HandleOpenAIResponsesStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
+			response.ExtraFields = &schemas.BifrostResponseExtraFields{}
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
 				continue

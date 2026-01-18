@@ -69,9 +69,10 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 // ToBifrostChatResponse converts a GenerateContentResponse to a BifrostChatResponse
 func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.BifrostChatResponse {
 	bifrostResp := &schemas.BifrostChatResponse{
-		ID:     response.ResponseID,
-		Model:  response.ModelVersion,
-		Object: "chat.completion",
+		ID:          response.ResponseID,
+		Model:       response.ModelVersion,
+		Object:      "chat.completion",
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
 	}
 
 	// Set creation timestamp if available

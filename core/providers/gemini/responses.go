@@ -143,7 +143,8 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 
 	// Create the BifrostResponse with Responses structure
 	bifrostResp := &schemas.BifrostResponsesResponse{
-		Model: response.ModelVersion,
+		Model:       response.ModelVersion,
+		ExtraFields: &schemas.BifrostResponseExtraFields{},
 	}
 
 	// Convert usage information
