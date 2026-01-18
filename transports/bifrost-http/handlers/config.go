@@ -19,6 +19,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/plugins/litellmcompat"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -48,6 +49,7 @@ type ConfigManager interface {
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
 	ReloadHeaderFilterConfig(ctx context.Context, config *configstoreTables.GlobalHeaderFilterConfig) error
 }
@@ -325,6 +327,21 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	updatedConfig.MaxRequestBodySizeMB = payload.ClientConfig.MaxRequestBodySizeMB
 
+	// Handle LiteLLM compat plugin toggle
+	if payload.ClientConfig.EnableLiteLLMFallbacks != currentConfig.EnableLiteLLMFallbacks {
+		if payload.ClientConfig.EnableLiteLLMFallbacks {
+			// Load and register the litellmcompat plugin
+			if err := h.configManager.ReloadPlugin(ctx, "litellmcompat", nil, &litellmcompat.Config{Enabled: true}); err != nil {
+				logger.Warn(fmt.Sprintf("failed to load litellmcompat plugin: %v", err))
+			}
+		} else {
+			// Remove the litellmcompat plugin
+			disabledCtx := context.WithValue(ctx, "isDisabled", true)
+			if err := h.configManager.RemovePlugin(disabledCtx, "litellmcompat"); err != nil {
+				logger.Warn(fmt.Sprintf("failed to remove litellmcompat plugin: %v", err))
+			}
+		}
+	}
 	updatedConfig.EnableLiteLLMFallbacks = payload.ClientConfig.EnableLiteLLMFallbacks
 	updatedConfig.MCPAgentDepth = payload.ClientConfig.MCPAgentDepth
 	updatedConfig.MCPToolExecutionTimeout = payload.ClientConfig.MCPToolExecutionTimeout

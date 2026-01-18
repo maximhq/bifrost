@@ -27,6 +27,7 @@ import (
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/litellmcompat"
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
@@ -322,6 +323,19 @@ func LoadPlugin[T schemas.Plugin](ctx context.Context, name string, path *string
 			return p, nil
 		}
 		return zero, fmt.Errorf("otel plugin type mismatch")
+	case litellmcompat.PluginName:
+		litellmConfig, err := MarshalPluginConfig[litellmcompat.Config](pluginConfig)
+		if err != nil {
+			return zero, fmt.Errorf("failed to marshal litellmcompat plugin config: %v", err)
+		}
+		plugin, err := litellmcompat.Init(*litellmConfig, logger)
+		if err != nil {
+			return zero, err
+		}
+		if p, ok := any(plugin).(T); ok {
+			return p, nil
+		}
+		return zero, fmt.Errorf("litellmcompat plugin type mismatch")
 	}
 	return zero, fmt.Errorf("plugin %s not found", name)
 }
@@ -437,6 +451,32 @@ func LoadPlugins(ctx context.Context, config *lib.Config) ([]schemas.Plugin, []s
 				Logs:   []string{fmt.Sprintf("plugin %s initialized successfully", plugin.Name)},
 			})
 		}
+	}
+	// Initialize litellmcompat plugin if LiteLLM fallbacks are enabled
+	// We initialize litellm plugin at the end to make sure it runs after all the load-balancing plugins
+	if config.ClientConfig.EnableLiteLLMFallbacks {
+		litellmCompatPlugin, err := LoadPlugin[schemas.Plugin](ctx, litellmcompat.PluginName, nil, &litellmcompat.Config{Enabled: true}, config)
+		if err != nil {
+			logger.Error("failed to initialize litellmcompat plugin: %v", err)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   litellmcompat.PluginName,
+				Status: schemas.PluginStatusError,
+				Logs:   []string{fmt.Sprintf("error initializing litellmcompat plugin %v", err)},
+			})
+		} else {
+			plugins = append(plugins, litellmCompatPlugin)
+			pluginStatus = append(pluginStatus, schemas.PluginStatus{
+				Name:   litellmcompat.PluginName,
+				Status: schemas.PluginStatusActive,
+				Logs:   []string{"litellmcompat plugin initialized successfully"},
+			})
+		}
+	} else {
+		pluginStatus = append(pluginStatus, schemas.PluginStatus{
+			Name:   litellmcompat.PluginName,
+			Status: schemas.PluginStatusDisabled,
+			Logs:   []string{"litellmcompat plugin disabled"},
+		})
 	}
 
 	// Atomically publish the plugin state

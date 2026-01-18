@@ -80,77 +80,14 @@ func (provider *GroqProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 
 // TextCompletion is not supported by the Groq provider.
 func (provider *GroqProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	// Checking if litellm fallback is set
-	if _, ok := ctx.Value(schemas.BifrostContextKey("x-litellm-fallback")).(string); !ok {
-		return nil, providerUtils.NewUnsupportedOperationError("text completion", "groq")
-	}
-	// Here we will call the chat.completions endpoint and mock it as a text-completion response
-	chatRequest := request.ToBifrostChatRequest()
-	if chatRequest == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "invalid text completion request: missing or empty prompt",
-			},
-		}
-	}
-	chatResponse, err := provider.ChatCompletion(ctx, key, chatRequest)
-	if err != nil {
-		return nil, err
-	}
-	response := chatResponse.ToTextCompletionResponse()
-	response.ExtraFields.RequestType = schemas.TextCompletionRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
-	return response, nil
+	return nil, providerUtils.NewUnsupportedOperationError("text completion", "groq")
 }
 
 // TextCompletionStream performs a streaming text completion request to Groq's API.
 // It formats the request, sends it to Groq, and processes the response.
 // Returns a channel of BifrostStream objects or an error if the request fails.
 func (provider *GroqProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	// Checking if litellm fallback is set
-	if _, ok := ctx.Value(schemas.BifrostContextKey("x-litellm-fallback")).(string); !ok {
-		return nil, providerUtils.NewUnsupportedOperationError("text completion", "groq")
-	}
-	// Here we will call the chat.completions endpoint and mock it as a text-completion stream response
-	chatRequest := request.ToBifrostChatRequest()
-	if chatRequest == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "invalid text completion request: missing or empty prompt",
-			},
-		}
-	}
-	response, err := provider.ChatCompletionStream(ctx, postHookRunner, key, chatRequest)
-	if err != nil {
-		return nil, err
-	}
-	// Creating a converter from chat completion stream to text completion stream
-	responseChan := make(chan *schemas.BifrostStream, 1)
-	go func() {
-		defer close(responseChan)
-		for response := range response {
-			if response.BifrostError != nil {
-				responseChan <- response
-				continue
-			}
-			if response.BifrostChatResponse != nil {
-				textCompletionResponse := response.BifrostChatResponse.ToTextCompletionResponse()
-				if textCompletionResponse != nil {
-					textCompletionResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
-					textCompletionResponse.ExtraFields.Provider = provider.GetProviderKey()
-					textCompletionResponse.ExtraFields.ModelRequested = request.Model
-
-					responseChan <- &schemas.BifrostStream{
-						BifrostTextCompletionResponse: textCompletionResponse,
-					}
-				}
-			}
-		}
-	}()
-	return responseChan, nil
+	return nil, providerUtils.NewUnsupportedOperationError("text completion", "groq")
 }
 
 // ChatCompletion performs a chat completion request to the Groq API.

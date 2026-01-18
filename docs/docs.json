@@ -195,6 +195,7 @@
             "pages": [
               "features/drop-in-replacement",
               "features/fallbacks",
+              "features/litellm-compat",
               "features/keys-management",
               {
                 "group": "Governance",

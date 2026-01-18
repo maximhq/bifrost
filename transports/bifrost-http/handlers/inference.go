@@ -587,10 +587,6 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	} else {
 		req.TextCompletionParameters.ExtraParams = extraParams
 	}
-	// Adding fallback context
-	if h.config.ClientConfig.EnableLiteLLMFallbacks {
-		ctx.SetUserValue(schemas.BifrostContextKey("x-litellm-fallback"), "true")
-	}
 	// Create segregated BifrostTextCompletionRequest
 	bifrostTextReq := &schemas.BifrostTextCompletionRequest{
 		Provider:  schemas.ModelProvider(provider),

@@ -1,7 +1,6 @@
 package groq_test
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -29,15 +28,15 @@ func TestGroq(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-120b"},
 		},
-		TextModel: "llama-3.3-70b-versatile", // Use same model for text completion (via conversion)
+		TextModel: "llama-3.3-70b-versatile",
 		TextCompletionFallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
 		EmbeddingModel: "", // Groq doesn't support embedding
 		ReasoningModel: "openai/gpt-oss-120b",
 		Scenarios: testutil.TestScenarios{
-			TextCompletion:        true, // Supported via chat completion conversion
-			TextCompletionStream:  true, // Supported via chat completion streaming conversion
+			TextCompletion:        false,
+			TextCompletionStream:  false,
 			SimpleChat:            true,
 			CompletionStream:      true,
 			MultiTurnConversation: true,
@@ -57,9 +56,6 @@ func TestGroq(t *testing.T) {
 			Reasoning:             true,
 		},
 	}
-
-	ctx = context.WithValue(ctx, schemas.BifrostContextKey("x-litellm-fallback"), "true")
-
 	t.Run("GroqTests", func(t *testing.T) {
 		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})

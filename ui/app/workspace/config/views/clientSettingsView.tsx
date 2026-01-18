@@ -263,7 +263,7 @@ export default function ClientSettingsView() {
 						<label htmlFor="enable-litellm-fallbacks" className="text-sm font-medium">
 							Enable LiteLLM Fallbacks
 						</label>
-						<p className="text-muted-foreground text-sm">Enable litellm-specific fallbacks for text completion for Groq.</p>
+						<p className="text-muted-foreground text-sm">Enable litellm-specific fallbacks. <a className="text-primary underline cursor-pointer" href="https://docs.getbifrost.ai/features/litellm-compatibility" target="_blank" rel="noopener noreferrer">Learn more</a></p>
 					</div>
 					<Switch
 						id="enable-litellm-fallbacks"

@@ -10,14 +10,6 @@ import (
 // makeKey creates a unique key for a model, provider, and mode for pricingData map
 func makeKey(model, provider, mode string) string { return model + "|" + provider + "|" + mode }
 
-// isBatchRequest checks if the request is for batch processing
-func isBatchRequest(req *schemas.BifrostRequest) bool {
-	// Check for batch endpoints or batch-specific headers
-	// This could be detected via specific endpoint patterns or headers
-	// For now, return false
-	return false
-}
-
 // normalizeProvider normalizes the provider name to a consistent format
 func normalizeProvider(p string) string {
 	if strings.Contains(p, "vertex_ai") || p == "google-vertex" {

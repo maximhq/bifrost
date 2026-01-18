@@ -309,7 +309,7 @@ for config in "${CONFIGS_TO_TEST[@]}"; do
 done
 
 cd ..
-echo "✅ Transport build validation successful"
+  echo "✅ Transport build validation successful"
 
 # Commit and push changes if any
 # First, pull latest changes to avoid conflicts

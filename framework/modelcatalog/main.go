@@ -82,7 +82,7 @@ type PricingEntry struct {
 	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
 	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
 	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`	
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced
@@ -473,6 +473,19 @@ func (mc *ModelCatalog) RefineModelForProvider(provider schemas.ModelProvider, m
 		}
 	}
 	return model, nil
+}
+
+// IsTextCompletionSupported checks if a model supports text completion for the given provider.
+// Returns true if the model has pricing data for text completion ("text_completion"),
+// false otherwise. This is used by the litellmcompat plugin to determine whether to
+// convert text completion requests to chat completion requests.
+func (mc *ModelCatalog) IsTextCompletionSupported(model string, provider schemas.ModelProvider) bool {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	// Check for text completion mode in pricing data
+	key := makeKey(model, normalizeProvider(string(provider)), normalizeRequestType(schemas.TextCompletionRequest))
+	_, ok := mc.pricingData[key]
+	return ok
 }
 
 // populateModelPool populates the model pool with all available models per provider (thread-safe)

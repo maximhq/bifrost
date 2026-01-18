@@ -507,7 +507,6 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 // convertContent converts Bifrost message content to Bedrock content blocks
 func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
-
 	if content.ContentStr != nil {
 		// Simple text content
 		contentBlocks = append(contentBlocks, BedrockContentBlock{
@@ -531,6 +530,9 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
 	switch block.Type {
 	case schemas.ChatContentBlockTypeText:
+		if block.Text == nil {
+			return []BedrockContentBlock{}, nil
+		}
 		blocks := []BedrockContentBlock{
 			{
 				Text: block.Text,

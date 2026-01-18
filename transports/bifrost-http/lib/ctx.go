@@ -400,10 +400,5 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 		}
 	}
-	// Adding fallback context
-	if ctx.UserValue(schemas.BifrostContextKey("x-litellm-fallback")) != nil {
-		bifrostCtx.SetValue(schemas.BifrostContextKey("x-litellm-fallback"), "true")
-	}
-
 	return bifrostCtx, cancel
 }
