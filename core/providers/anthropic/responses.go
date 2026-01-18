@@ -379,9 +379,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
-					ID:   &itemID,
-					Type: &messageType,
-					Role: &role,
+					ID:     &itemID,
+					Status: schemas.Ptr("in_progress"),
+					Type:   &messageType,
+					Role:   &role,
 					Content: &schemas.ResponsesMessageContent{
 						ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
 					},
@@ -408,6 +409,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
 					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
@@ -949,7 +954,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			statusCompleted := "completed"
 			doneItemID := state.ItemIDs[outputIndex]
 			doneItem := &schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 				Status: &statusCompleted,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				},
 			}
 			if doneItemID != "" {
 				doneItem.ID = &doneItemID
@@ -2730,6 +2740,10 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					accumulatedTextContent = append(accumulatedTextContent, schemas.ResponsesMessageContentBlock{
 						Type: schemas.ResponsesOutputMessageContentTypeText,
 						Text: block.Text,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						},
 					})
 				} else {
 					// For input messages, emit text immediately as separate message
@@ -2742,6 +2756,10 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 									Type:         schemas.ResponsesOutputMessageContentTypeText,
 									Text:         block.Text,
 									CacheControl: block.CacheControl,
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+									},
 								},
 							},
 						},
@@ -2976,6 +2994,10 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 						Type:         schemas.ResponsesOutputMessageContentTypeText,
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						},
 					}
 
 					// Convert Anthropic citations to OpenAI annotations
@@ -2995,9 +3017,10 @@ func convertAnthropicContentBlocksToResponsesMessages(contentBlocks []AnthropicC
 					}
 
 					bifrostMsg = schemas.ResponsesMessage{
-						ID:   schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: role,
+						ID:     schemas.Ptr("msg_" + providerUtils.GetRandomString(50)),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   role,
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{contentBlock},
 						},

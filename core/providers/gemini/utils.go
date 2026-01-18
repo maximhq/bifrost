@@ -1214,8 +1214,8 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							})
 						}
 					} else if block.InputAudio != nil {
-						// Decode the audio data (already base64 encoded in the schema)
-						decodedData, err := base64.StdEncoding.DecodeString(block.InputAudio.Data)
+						// Decode the audio data (handles both standard and URL-safe base64)
+						decodedData, err := decodeBase64StringToBytes(block.InputAudio.Data)
 						if err != nil || len(decodedData) == 0 {
 							continue
 						}

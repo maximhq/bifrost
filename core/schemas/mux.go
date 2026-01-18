@@ -416,8 +416,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			}
 
 			rm := ResponsesMessage{
-				Type: &messageType,
-				Role: Ptr(ResponsesInputMessageRoleAssistant),
+				ID:     Ptr("fc_" + GetRandomString(50)),
+				Type:   &messageType,
+				Role:   Ptr(ResponsesInputMessageRoleAssistant),
+				Status: Ptr("completed"),
 				ResponsesToolMessage: &ResponsesToolMessage{
 					CallID:    callID,
 					Name:      namePtr,
@@ -461,6 +463,10 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		rm.Role = &role
 	}
 
+	if role == ResponsesInputMessageRoleAssistant && messageType != ResponsesMessageTypeFunctionCallOutput {
+		rm.ID = Ptr("msg_" + GetRandomString(50))
+	}
+
 	// Handle refusal content specifically - use content blocks with ResponsesOutputMessageContentRefusal
 	if messageType == ResponsesMessageTypeRefusal && cm.ChatAssistantMessage != nil && cm.ChatAssistantMessage.Refusal != nil {
 		refusalBlock := ResponsesMessageContentBlock{
@@ -480,9 +486,18 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		} else if cm.Role == ChatMessageRoleAssistant {
 			rm.Content = &ResponsesMessageContent{
 				ContentBlocks: []ResponsesMessageContentBlock{
-					{Type: ResponsesOutputMessageContentTypeText, Text: cm.Content.ContentStr},
+					{
+						Type: ResponsesOutputMessageContentTypeText,
+						Text: cm.Content.ContentStr,
+						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+							LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+						},
+					},
 				},
 			}
+
+			rm.Status = Ptr("completed")
 		} else {
 			rm.Content = &ResponsesMessageContent{
 				ContentStr: cm.Content.ContentStr,
@@ -1069,6 +1084,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 
 	// Create new BifrostResponsesResponse from Chat fields
 	responsesResp := &BifrostResponsesResponse{
+		ID:            Ptr(cr.ID),
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,
 		Citations:     cr.Citations,
@@ -1380,6 +1396,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			part := &ResponsesMessageContentBlock{
 				Type: ResponsesOutputMessageContentTypeText,
 				Text: &emptyText,
+				ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+					LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+				},
 			}
 			responses = append(responses, &BifrostResponsesStreamResponse{
 				Type:           ResponsesStreamResponseTypeContentPartAdded,
@@ -1412,6 +1432,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				OutputIndex:    Ptr(0),
 				ContentIndex:   Ptr(0),
 				Delta:          &contentDelta,
+				LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 				ExtraFields:    cr.ExtraFields,
 			}
 			if itemID != "" {
@@ -1460,25 +1481,42 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 						ContentIndex:   Ptr(0),
 						ItemID:         &itemID,
 						Text:           &emptyText,
+						LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 						ExtraFields:    cr.ExtraFields,
 					})
 					state.SequenceNumber++
 
 					// Emit content_part.done
+					part := &ResponsesMessageContentBlock{
+						Type: ResponsesOutputMessageContentTypeText,
+						Text: &emptyText,
+						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+							LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+						},
+					}
 					responses = append(responses, &BifrostResponsesStreamResponse{
 						Type:           ResponsesStreamResponseTypeContentPartDone,
 						SequenceNumber: state.SequenceNumber,
 						OutputIndex:    Ptr(outputIndex),
 						ContentIndex:   Ptr(0),
 						ItemID:         &itemID,
+						Part:           part,
 						ExtraFields:    cr.ExtraFields,
 					})
 					state.SequenceNumber++
 
 					// Emit output_item.done
 					statusCompleted := "completed"
+					messageType := ResponsesMessageTypeMessage
+					role := ResponsesInputMessageRoleAssistant
 					doneItem := &ResponsesMessage{
+						Type:   &messageType,
+						Role:   &role,
 						Status: &statusCompleted,
+						Content: &ResponsesMessageContent{
+							ContentBlocks: []ResponsesMessageContentBlock{},
+						},
 					}
 					if itemID != "" {
 						doneItem.ID = &itemID
@@ -1603,25 +1641,42 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				ContentIndex:   Ptr(0),
 				ItemID:         &itemID,
 				Text:           &emptyText,
+				LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 				ExtraFields:    cr.ExtraFields,
 			})
 			state.SequenceNumber++
 
 			// Emit content_part.done
+			part := &ResponsesMessageContentBlock{
+				Type: ResponsesOutputMessageContentTypeText,
+				Text: &emptyText,
+				ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+					LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
 			responses = append(responses, &BifrostResponsesStreamResponse{
 				Type:           ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: state.SequenceNumber,
 				OutputIndex:    Ptr(outputIndex),
 				ContentIndex:   Ptr(0),
 				ItemID:         &itemID,
+				Part:           part,
 				ExtraFields:    cr.ExtraFields,
 			})
 			state.SequenceNumber++
 
 			// Emit output_item.done
 			statusCompleted := "completed"
+			messageType := ResponsesMessageTypeMessage
+			role := ResponsesInputMessageRoleAssistant
 			doneItem := &ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
 				Status: &statusCompleted,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{},
+				},
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -1662,8 +1717,21 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 				// Emit output_item.done for function call
 				statusCompleted := "completed"
+				messageType := ResponsesMessageTypeFunctionCall
+				callName, hasName := state.ToolCallNames[toolCallID]
+				var callNamePtr *string
+				if hasName && callName != "" {
+					callNamePtr = &callName
+				}
+				argsValue := args
 				outputItemDone := &ResponsesMessage{
+					Type:   &messageType,
 					Status: &statusCompleted,
+					ResponsesToolMessage: &ResponsesToolMessage{
+						CallID:    &toolCallID,
+						Name:      callNamePtr,
+						Arguments: &argsValue,
+					},
 				}
 				if itemID != "" {
 					outputItemDone.ID = &itemID

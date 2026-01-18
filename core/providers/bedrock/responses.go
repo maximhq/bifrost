@@ -254,11 +254,16 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				responses = append(responses, reasoningDoneResponse)
 
 				// Emit content_part.done for reasoning
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text: &emptyText,
+				}
 				partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(prevOutputIndex),
 					ContentIndex:   &reasoningContentIndex,
+					Part:           part,
 				}
 				if itemID != "" {
 					partDoneResponse.ItemID = &itemID
@@ -267,8 +272,15 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 				// Emit output_item.done for reasoning
 				statusCompleted := "completed"
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
 				doneItem := &schemas.ResponsesMessage{
+					Type:   &messageType,
+					Role:   &role,
 					Status: &statusCompleted,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary: []schemas.ResponsesReasoningSummary{},
+					},
 				}
 				if itemID != "" {
 					doneItem.ID = &itemID
@@ -310,12 +322,22 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				accumulatedArgs := state.ToolArgumentBuffers[prevOutputIndex]
 
 				// Emit content_part.done for tool call
+				emptyText := ""
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
+				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(prevOutputIndex),
 					ContentIndex:   schemas.Ptr(prevContentIndex),
 					ItemID:         &prevItemID,
+					Part:           part,
 				})
 
 				// Emit function_call_arguments.done with full arguments
@@ -450,11 +472,16 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 						responses = append(responses, reasoningDoneResponse)
 
 						// Emit content_part.done for reasoning
+						part := &schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text: &emptyText,
+						}
 						partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 							Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 							SequenceNumber: sequenceNumber + len(responses),
 							OutputIndex:    schemas.Ptr(prevOutputIndex),
 							ContentIndex:   &reasoningContentIndex,
+							Part:           part,
 						}
 						if itemID != "" {
 							partDoneResponse.ItemID = &itemID
@@ -463,8 +490,15 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 
 						// Emit output_item.done for reasoning
 						statusCompleted := "completed"
+						messageType := schemas.ResponsesMessageTypeReasoning
+						role := schemas.ResponsesInputMessageRoleAssistant
 						doneItem := &schemas.ResponsesMessage{
+							Type:   &messageType,
+							Role:   &role,
 							Status: &statusCompleted,
+							ResponsesReasoning: &schemas.ResponsesReasoning{
+								Summary: []schemas.ResponsesReasoningSummary{},
+							},
 						}
 						if itemID != "" {
 							doneItem.ID = &itemID
@@ -528,6 +562,10 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
 					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
@@ -549,6 +587,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   &contentBlockIndex,
 					Delta:          &text,
+					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				}
 				if itemID != "" {
 					textDeltaResponse.ItemID = &itemID
@@ -574,6 +613,7 @@ func (chunk *BedrockStreamEvent) ToBifrostResponsesStream(sequenceNumber int, st
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   &contentBlockIndex,
 					Delta:          &text,
+					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				}
 				if itemID != "" {
 					response.ItemID = &itemID
@@ -768,12 +808,22 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 			// This is a tool call that needs to be closed
 
 			// Emit content_part.done for tool call
+			emptyText := ""
+			part := &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &emptyText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
+				Part:           part,
 			})
 
 			// Emit function_call_arguments.done with full arguments
@@ -841,21 +891,38 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
 				Text:           &emptyText,
+				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
 			// Emit content_part.done for text
+			part := &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &emptyText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   &contentIndex,
 				ItemID:         &itemID,
+				Part:           part,
 			})
 
 			// Emit output_item.done for text
 			statusCompleted := "completed"
+			messageType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
 			doneItem := &schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
 				Status: &statusCompleted,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				},
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -905,11 +972,16 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		responses = append(responses, reasoningDoneResponse)
 
 		// Emit content_part.done for reasoning
+		part := &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+			Text: &emptyText,
+		}
 		partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 			SequenceNumber: sequenceNumber + len(responses),
 			OutputIndex:    schemas.Ptr(outputIndex),
 			ContentIndex:   &reasoningContentIndex,
+			Part:           part,
 		}
 		if itemID != "" {
 			partDoneResponse.ItemID = &itemID
@@ -918,8 +990,15 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 
 		// Emit output_item.done for reasoning
 		statusCompleted := "completed"
+		messageType := schemas.ResponsesMessageTypeReasoning
+		role := schemas.ResponsesInputMessageRoleAssistant
 		doneItem := &schemas.ResponsesMessage{
+			Type:   &messageType,
+			Role:   &role,
 			Status: &statusCompleted,
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
 		}
 		if itemID != "" {
 			doneItem.ID = &itemID
@@ -2601,16 +2680,22 @@ func createTextMessage(
 	textBlockType schemas.ResponsesMessageContentBlockType,
 	isOutputMessage bool,
 ) schemas.ResponsesMessage {
+	contentBlock := schemas.ResponsesMessageContentBlock{
+		Type: textBlockType,
+		Text: text,
+	}
+	if textBlockType == schemas.ResponsesOutputMessageContentTypeText {
+		contentBlock.ResponsesOutputMessageContentText = &schemas.ResponsesOutputMessageContentText{
+			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+		}
+	}
 	bifrostMsg := schemas.ResponsesMessage{
-		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-		Role: &role,
+		Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Status: schemas.Ptr("completed"),
+		Role:   &role,
 		Content: &schemas.ResponsesMessageContent{
-			ContentBlocks: []schemas.ResponsesMessageContentBlock{
-				{
-					Type: textBlockType,
-					Text: text,
-				},
-			},
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{contentBlock},
 		},
 	}
 	if isOutputMessage {

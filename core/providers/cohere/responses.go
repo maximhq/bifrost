@@ -15,6 +15,7 @@ import (
 type CohereResponsesStreamState struct {
 	ContentIndexToOutputIndex     map[int]int    // Maps Cohere content_index to OpenAI output_index
 	ToolArgumentBuffers           map[int]string // Maps output_index to accumulated tool argument JSON
+	ToolCallNames                 map[int]string // Maps output_index to tool name
 	ItemIDs                       map[int]string // Maps output_index to item ID for stable IDs
 	ReasoningContentIndices       map[int]bool   // Tracks which content indices are reasoning blocks
 	AnnotationIndexToContentIndex map[int]int    // Maps annotation index to content index for citation pairing
@@ -33,6 +34,7 @@ var cohereResponsesStreamStatePool = sync.Pool{
 		return &CohereResponsesStreamState{
 			ContentIndexToOutputIndex:     make(map[int]int),
 			ToolArgumentBuffers:           make(map[int]string),
+			ToolCallNames:                 make(map[int]string),
 			ItemIDs:                       make(map[int]string),
 			ReasoningContentIndices:       make(map[int]bool),
 			AnnotationIndexToContentIndex: make(map[int]int),
@@ -59,6 +61,11 @@ func acquireCohereResponsesStreamState() *CohereResponsesStreamState {
 		state.ToolArgumentBuffers = make(map[int]string)
 	} else {
 		clear(state.ToolArgumentBuffers)
+	}
+	if state.ToolCallNames == nil {
+		state.ToolCallNames = make(map[int]string)
+	} else {
+		clear(state.ToolCallNames)
 	}
 	if state.ItemIDs == nil {
 		state.ItemIDs = make(map[int]string)
@@ -106,6 +113,11 @@ func (state *CohereResponsesStreamState) flush() {
 		state.ToolArgumentBuffers = make(map[int]string)
 	} else {
 		clear(state.ToolArgumentBuffers)
+	}
+	if state.ToolCallNames == nil {
+		state.ToolCallNames = make(map[int]string)
+	} else {
+		clear(state.ToolCallNames)
 	}
 	if state.ItemIDs == nil {
 		state.ItemIDs = make(map[int]string)
@@ -158,6 +170,10 @@ func convertCohereContentBlockToBifrost(cohereBlock CohereContentBlock) schemas.
 		return schemas.ResponsesMessageContentBlock{
 			Type: schemas.ResponsesOutputMessageContentTypeText,
 			Text: cohereBlock.Text,
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+				Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			},
 		}
 	case CohereContentBlockTypeImage:
 		// For images, create a text block describing the image (should never happen)
@@ -181,6 +197,10 @@ func convertCohereContentBlockToBifrost(cohereBlock CohereContentBlock) schemas.
 		return schemas.ResponsesMessageContentBlock{
 			Type: schemas.ResponsesInputMessageContentBlockTypeText,
 			Text: schemas.Ptr(string(cohereBlock.Type)),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+				Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			},
 		}
 	}
 }
@@ -247,21 +267,38 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
 				Text:           &emptyText,
+				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
 			// Emit content_part.done
+			part := &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &emptyText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
+				Part:           part,
 			})
 
 			// Emit output_item.done
 			statusCompleted := "completed"
+			messageType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
 			doneItem := &schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
 				Status: &statusCompleted,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				},
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -316,6 +353,10 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
 					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
@@ -393,6 +434,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					Delta:          chunk.Delta.Message.Content.CohereStreamContentObject.Text,
+					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				}
 				if itemID != "" {
 					response.ItemID = &itemID
@@ -424,9 +466,10 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 			itemID := state.ItemIDs[outputIndex]
 			var responses []*schemas.BifrostResponsesStreamResponse
+			isReasoning := state.ReasoningContentIndices[*chunk.Index]
 
 			// Check if this content index is a reasoning block
-			if state.ReasoningContentIndices[*chunk.Index] {
+			if isReasoning {
 				// Emit reasoning_summary_text.done (reasoning equivalent of output_text.done)
 				emptyText := ""
 				reasoningDoneResponse := &schemas.BifrostResponsesStreamResponse{
@@ -442,11 +485,16 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				responses = append(responses, reasoningDoneResponse)
 
 				// Emit content_part.done for reasoning
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+					Text: &emptyText,
+				}
 				partDoneResponse := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
+					Part:           part,
 				}
 				if itemID != "" {
 					partDoneResponse.ItemID = &itemID
@@ -465,22 +513,53 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 					ContentIndex:   chunk.Index,
 					ItemID:         &itemID,
 					Text:           &emptyText,
+					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 				})
 
 				// Emit content_part.done
+				part := &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
+				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 					SequenceNumber: sequenceNumber + len(responses),
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
 					ItemID:         &itemID,
+					Part:           part,
 				})
 			}
 
 			// Emit output_item.done for all content blocks (text, reasoning, etc.)
 			statusCompleted := "completed"
-			doneItem := &schemas.ResponsesMessage{
-				Status: &statusCompleted,
+			var doneItem *schemas.ResponsesMessage
+			if isReasoning {
+				messageType := schemas.ResponsesMessageTypeReasoning
+				role := schemas.ResponsesInputMessageRoleAssistant
+				doneItem = &schemas.ResponsesMessage{
+					Type:   &messageType,
+					Role:   &role,
+					Status: &statusCompleted,
+					ResponsesReasoning: &schemas.ResponsesReasoning{
+						Summary: []schemas.ResponsesReasoningSummary{},
+					},
+				}
+			} else {
+				messageType := schemas.ResponsesMessageTypeMessage
+				role := schemas.ResponsesInputMessageRoleAssistant
+				doneItem = &schemas.ResponsesMessage{
+					Type:   &messageType,
+					Role:   &role,
+					Status: &statusCompleted,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					},
+				}
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -545,6 +624,10 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				part := &schemas.ResponsesMessageContentBlock{
 					Type: schemas.ResponsesOutputMessageContentTypeText,
 					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
 				}
 				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
@@ -564,6 +647,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0), // Tool plan is typically at index 0
 				Delta:          chunk.Delta.Message.ToolPlan,
+				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			}
 			if itemID != "" {
 				response.ItemID = &itemID
@@ -588,21 +672,38 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
 				Text:           &emptyText,
+				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
 			})
 
 			// Emit content_part.done
+			part := &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &emptyText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
 			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
 				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
 				SequenceNumber: sequenceNumber + len(responses),
 				OutputIndex:    schemas.Ptr(outputIndex),
 				ContentIndex:   schemas.Ptr(0),
 				ItemID:         &itemID,
+				Part:           part,
 			})
 
 			// Emit output_item.done
 			statusCompleted := "completed"
+			messageType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
 			doneItem := &schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
 				Status: &statusCompleted,
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+				},
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -638,6 +739,9 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 				if toolCall.ID != nil {
 					itemID = *toolCall.ID
 					state.ItemIDs[outputIndex] = itemID
+				}
+				if toolCall.Function.Name != nil {
+					state.ToolCallNames[outputIndex] = *toolCall.Function.Name
 				}
 
 				item := &schemas.ResponsesMessage{
@@ -701,16 +805,18 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 			// Tool call end - emit function_call_arguments.done then output_item.done
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 			var responses []*schemas.BifrostResponsesStreamResponse
+			argsValue := ""
 
 			// Emit function_call_arguments.done with full accumulated JSON
 			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && accumulatedArgs != "" {
+				argsValue = accumulatedArgs
 				itemID := state.ItemIDs[outputIndex]
 				response := &schemas.BifrostResponsesStreamResponse{
 					Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 					SequenceNumber: sequenceNumber,
 					OutputIndex:    schemas.Ptr(outputIndex),
 					ContentIndex:   chunk.Index,
-					Arguments:      &accumulatedArgs,
+					Arguments:      &argsValue,
 				}
 				if itemID != "" {
 					response.ItemID = &itemID
@@ -723,8 +829,19 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 			// Emit output_item.done for the function call
 			statusCompleted := "completed"
 			itemID := state.ItemIDs[outputIndex]
+			callName, hasName := state.ToolCallNames[outputIndex]
+			var callNamePtr *string
+			if hasName && callName != "" {
+				callNamePtr = &callName
+			}
 			doneItem := &schemas.ResponsesMessage{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 				Status: &statusCompleted,
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &itemID,
+					Name:      callNamePtr,
+					Arguments: &argsValue,
+				},
 			}
 			if itemID != "" {
 				doneItem.ID = &itemID
@@ -1479,6 +1596,7 @@ func convertSingleCohereMessageToBifrostMessages(cohereMsg *CohereMessage, isOut
 
 			if isOutputMessage {
 				outputMsg.ID = schemas.Ptr("msg_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+				outputMsg.Status = schemas.Ptr("completed")
 			}
 
 			outputMessages = append(outputMessages, outputMsg)

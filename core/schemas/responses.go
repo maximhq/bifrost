@@ -45,23 +45,26 @@ type BifrostResponsesResponse struct {
 
 	Background         *bool                               `json:"background,omitempty"`
 	Conversation       *ResponsesResponseConversation      `json:"conversation,omitempty"`
-	CreatedAt          int                                 `json:"created_at"` // Unix timestamp when Response was created
-	Error              *ResponsesResponseError             `json:"error,omitempty"`
-	Include            []string                            `json:"include,omitempty"`            // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
-	IncompleteDetails  *ResponsesResponseIncompleteDetails `json:"incomplete_details,omitempty"` // Details about why the response is incomplete
-	Instructions       *ResponsesResponseInstructions      `json:"instructions,omitempty"`
-	MaxOutputTokens    *int                                `json:"max_output_tokens,omitempty"`
-	MaxToolCalls       *int                                `json:"max_tool_calls,omitempty"`
+	CreatedAt          int                                 `json:"created_at"`   // Unix timestamp when Response was created
+	CompletedAt        *int                                `json:"completed_at"` // Unix timestamp when Response was completed
+	Error              *ResponsesResponseError             `json:"error"`
+	Include            []string                            `json:"include,omitempty"`  // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
+	IncompleteDetails  *ResponsesResponseIncompleteDetails `json:"incomplete_details"` // Details about why the response is incomplete
+	Instructions       *ResponsesResponseInstructions      `json:"instructions"`
+	MaxOutputTokens    *int                                `json:"max_output_tokens"`
+	MaxToolCalls       *int                                `json:"max_tool_calls"`
 	Metadata           *map[string]any                     `json:"metadata,omitempty"`
 	Model              string                              `json:"model"`
 	Output             []ResponsesMessage                  `json:"output"`
 	ParallelToolCalls  *bool                               `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID *string                             `json:"previous_response_id,omitempty"`
-	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"`            // Reference to a prompt template and variables
-	PromptCacheKey     *string                             `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning          *ResponsesParametersReasoning       `json:"reasoning,omitempty"`         // Configuration options for reasoning models
-	SafetyIdentifier   *string                             `json:"safety_identifier,omitempty"` // Safety identifier
-	ServiceTier        *string                             `json:"service_tier,omitempty"`
+	PreviousResponseID *string                             `json:"previous_response_id"`
+	Prompt             *ResponsesPrompt                    `json:"prompt,omitempty"` // Reference to a prompt template and variables
+	PromptCacheKey     *string                             `json:"prompt_cache_key"` // Prompt cache key
+	PresencePenalty    *float64                            `json:"presence_penalty,omitempty"`
+	FrequencyPenalty   *float64                            `json:"frequency_penalty,omitempty"`
+	Reasoning          *ResponsesParametersReasoning       `json:"reasoning"`         // Configuration options for reasoning models
+	SafetyIdentifier   *string                             `json:"safety_identifier"` // Safety identifier
+	ServiceTier        *string                             `json:"service_tier"`
 	Status             *string                             `json:"status,omitempty"` // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions      *ResponsesStreamOptions             `json:"stream_options,omitempty"`
 	StopReason         *string                             `json:"stop_reason,omitempty"` // Not in OpenAI's spec, but sent by other providers
@@ -71,15 +74,140 @@ type BifrostResponsesResponse struct {
 	TopLogProbs        *int                                `json:"top_logprobs,omitempty"`
 	TopP               *float64                            `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
 	ToolChoice         *ResponsesToolChoice                `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools              []ResponsesTool                     `json:"tools,omitempty"`       // Tools to use
+	Tools              []ResponsesTool                     `json:"tools"`                 // Tools to use
 	Truncation         *string                             `json:"truncation,omitempty"`
-	Usage              *ResponsesResponseUsage             `json:"usage,omitempty"`
+	Usage              *ResponsesResponseUsage             `json:"usage"`
 	ExtraFields        BifrostResponseExtraFields          `json:"extra_fields"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
+	if resp == nil {
+		return nil
+	}
+
+	result := &BifrostResponsesResponse{
+		ID:        resp.ID,
+		CreatedAt: resp.CreatedAt,
+		Model:     resp.Model,
+	}
+
+	result.Conversation = resp.Conversation
+	result.Include = resp.Include
+	result.Metadata = resp.Metadata
+	result.Prompt = resp.Prompt
+	result.StreamOptions = resp.StreamOptions
+	result.StopReason = resp.StopReason
+	result.ExtraFields = resp.ExtraFields
+	result.SearchResults = resp.SearchResults
+	result.Videos = resp.Videos
+	result.Citations = resp.Citations
+	result.IncompleteDetails = resp.IncompleteDetails
+	result.PreviousResponseID = resp.PreviousResponseID
+	result.PromptCacheKey = resp.PromptCacheKey
+	result.SafetyIdentifier = resp.SafetyIdentifier
+	result.MaxToolCalls = resp.MaxToolCalls
+	result.Instructions = resp.Instructions
+	result.Error = resp.Error
+	result.CompletedAt = resp.CompletedAt
+	result.MaxOutputTokens = resp.MaxOutputTokens
+
+	// Status - default: "completed"
+	if resp.Status != nil {
+		result.Status = resp.Status
+	} else {
+		result.Status = Ptr("completed")
+	}
+
+	// Output array - default: empty array
+	if resp.Output != nil {
+		result.Output = resp.Output
+	} else {
+		result.Output = []ResponsesMessage{}
+	}
+
+	if resp.Reasoning != nil {
+		result.Reasoning = resp.Reasoning
+	} else {
+		result.Reasoning = &ResponsesParametersReasoning{}
+	}
+
+	// Sampling parameters - defaults: standard values
+	result.Temperature = orDefault(resp.Temperature, 1.0)
+	result.TopP = orDefault(resp.TopP, 1.0)
+	result.PresencePenalty = orDefault(resp.PresencePenalty, 0.0)
+	result.FrequencyPenalty = orDefault(resp.FrequencyPenalty, 0.0)
+
+	// Response configuration - defaults: standard behavior
+	result.Store = orDefault(resp.Store, true)
+	result.Background = orDefault(resp.Background, false)
+	result.ServiceTier = orDefault(resp.ServiceTier, "auto")
+	result.Truncation = orDefault(resp.Truncation, "disabled")
+	result.ParallelToolCalls = orDefault(resp.ParallelToolCalls, true)
+
+	// Token limits - defaults: 0 (unlimited)
+	result.TopLogProbs = orDefault(resp.TopLogProbs, 0)
+
+	// Tools array - default: empty array
+	if resp.Tools != nil {
+		result.Tools = resp.Tools
+	} else {
+		result.Tools = []ResponsesTool{}
+	}
+
+	// Tool choice - default: "auto"
+	if resp.ToolChoice != nil {
+		result.ToolChoice = resp.ToolChoice
+	} else {
+		autoStr := "auto"
+		result.ToolChoice = &ResponsesToolChoice{
+			ResponsesToolChoiceStr: &autoStr,
+		}
+	}
+
+	// Text config - default: text format with medium verbosity
+	if resp.Text != nil {
+		result.Text = &ResponsesTextConfig{
+			Format:    resp.Text.Format,
+			Verbosity: resp.Text.Verbosity,
+		}
+		if result.Text.Format == nil {
+			result.Text.Format = &ResponsesTextConfigFormat{Type: "text"}
+		}
+		if result.Text.Verbosity == nil {
+			result.Text.Verbosity = Ptr("medium")
+		}
+	} else {
+		result.Text = &ResponsesTextConfig{
+			Format:    &ResponsesTextConfigFormat{Type: "text"},
+			Verbosity: Ptr("medium"),
+		}
+	}
+
+	// Usage - ensure token details exist
+	result.Usage = resp.Usage
+	if result.Usage != nil {
+		if result.Usage.InputTokensDetails == nil {
+			result.Usage.InputTokensDetails = &ResponsesResponseInputTokens{CachedTokens: 0}
+		}
+		if result.Usage.OutputTokensDetails == nil {
+			result.Usage.OutputTokensDetails = &ResponsesResponseOutputTokens{ReasoningTokens: 0}
+		}
+	}
+
+	return result
+}
+
+// orDefault returns src if non-nil, otherwise returns a pointer to defaultVal
+func orDefault[T any](src *T, defaultVal T) *T {
+	if src != nil {
+		return src
+	}
+	return Ptr(defaultVal)
 }
 
 type ResponsesParameters struct {
@@ -266,9 +394,9 @@ type ResponsesPrompt struct {
 }
 
 type ResponsesParametersReasoning struct {
-	Effort          *string `json:"effort,omitempty"`           // "none" | "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
+	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
-	Summary         *string `json:"summary,omitempty"`          // "auto" | "concise" | "detailed"
+	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
 
@@ -301,7 +429,7 @@ type ResponsesResponseInputTokens struct {
 
 	// For Providers which follow OpenAI's spec, CachedTokens means the number of input tokens read from the cache+input tokens used to create the cache entry. (because they do not differentiate between cache creation and cache read tokens)
 	// For Providers which do not follow OpenAI's spec, CachedTokens means only the number of input tokens read from the cache.
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens int `json:"cached_tokens"`
 }
 
 type ResponsesResponseOutputTokens struct {
@@ -476,8 +604,8 @@ type ResponsesInputMessageContentBlockAudio struct {
 // =============================================================================
 
 type ResponsesOutputMessageContentText struct {
-	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"`        // Citations and references
-	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs,omitempty"` // Token log probabilities
+	Annotations []ResponsesOutputMessageContentTextAnnotation `json:"annotations"` // Citations and references
+	LogProbs    []ResponsesOutputMessageContentTextLogProb    `json:"logprobs"`    // Token log probabilities
 }
 
 type ResponsesOutputMessageContentTextAnnotation struct {
@@ -611,7 +739,6 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 		action.ResponsesComputerToolCallAction = &computerToolCallAction
 		return nil
 	}
-	return fmt.Errorf("unknown action type: %s", typeStruct.Type)
 }
 
 type ResponsesToolMessageOutputStruct struct {
@@ -1433,7 +1560,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 // ResponsesToolFunction represents a tool function
 type ResponsesToolFunction struct {
 	Parameters *ToolFunctionParameters `json:"parameters,omitempty"` // A JSON schema object describing the parameters
-	Strict     *bool                   `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
+	Strict     *bool                   `json:"strict"`               // Whether to enforce strict parameter validation
 }
 
 // ResponsesToolFileSearch represents a tool file search
@@ -1825,7 +1952,7 @@ type BifrostResponsesStreamResponse struct {
 	Response *BifrostResponsesResponse `json:"response,omitempty"`
 
 	OutputIndex *int              `json:"output_index,omitempty"`
-	Item        *ResponsesMessage `json:"item,omitempty"`
+	Item        *ResponsesMessage `json:"item"`
 
 	ContentIndex *int                          `json:"content_index,omitempty"`
 	ItemID       *string                       `json:"item_id,omitempty"`
@@ -1833,7 +1960,7 @@ type BifrostResponsesStreamResponse struct {
 
 	Delta     *string                                    `json:"delta,omitempty"`
 	Signature *string                                    `json:"signature,omitempty"` // Not in OpenAI's spec, but sent by other providers
-	LogProbs  []ResponsesOutputMessageContentTextLogProb `json:"logprobs,omitempty"`
+	LogProbs  []ResponsesOutputMessageContentTextLogProb `json:"logprobs"`
 
 	Text *string `json:"text,omitempty"` // Full text of the output item, comes with event "response.output_text.done"
 
@@ -1857,4 +1984,86 @@ type BifrostResponsesStreamResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
+	if resp == nil {
+		return nil
+	}
+
+	// Filter out non-OpenAI response types
+	if resp.Type == ResponsesStreamResponseTypePing {
+		return nil
+	}
+
+	result := &BifrostResponsesStreamResponse{
+		Type:           resp.Type,
+		SequenceNumber: resp.SequenceNumber,
+	}
+
+	// Copy nested response (applies defaults)
+	result.Response = resp.Response.WithDefaults()
+
+	// Copy all streaming-specific fields
+	result.OutputIndex = resp.OutputIndex
+	result.Item = resp.Item
+	result.ContentIndex = resp.ContentIndex
+	result.ItemID = resp.ItemID
+	result.Part = resp.Part
+	result.Delta = resp.Delta
+	result.Signature = resp.Signature
+	result.Text = resp.Text
+	result.Refusal = resp.Refusal
+	result.Arguments = resp.Arguments
+	result.PartialImageB64 = resp.PartialImageB64
+	result.PartialImageIndex = resp.PartialImageIndex
+	result.Annotation = resp.Annotation
+	result.AnnotationIndex = resp.AnnotationIndex
+	result.Code = resp.Code
+	result.Message = resp.Message
+	result.Param = resp.Param
+	result.LogProbs = resp.LogProbs
+
+	// Apply event-specific defaults
+	switch resp.Type {
+	case ResponsesStreamResponseTypeOutputItemAdded:
+		// Default item status to "in_progress"
+		if result.Item != nil && result.Item.Status == nil {
+			result.Item.Status = Ptr("in_progress")
+		}
+
+	case ResponsesStreamResponseTypeOutputTextDelta, ResponsesStreamResponseTypeOutputTextDone:
+		// Ensure logprobs array exists
+		if result.LogProbs == nil {
+			result.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
+		}
+
+	case ResponsesStreamResponseTypeContentPartAdded, ResponsesStreamResponseTypeContentPartDone:
+		// Ensure part has proper structure
+		if result.Part == nil {
+			result.Part = &ResponsesMessageContentBlock{
+				Type: ResponsesOutputMessageContentTypeText,
+				Text: Ptr(""),
+				ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+					LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+				},
+			}
+		} else if result.Part.ResponsesOutputMessageContentText == nil {
+			result.Part.ResponsesOutputMessageContentText = &ResponsesOutputMessageContentText{
+				LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+				Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+			}
+		} else {
+			// Ensure nested arrays exist
+			if result.Part.ResponsesOutputMessageContentText.LogProbs == nil {
+				result.Part.ResponsesOutputMessageContentText.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
+			}
+			if result.Part.ResponsesOutputMessageContentText.Annotations == nil {
+				result.Part.ResponsesOutputMessageContentText.Annotations = []ResponsesOutputMessageContentTextAnnotation{}
+			}
+		}
+	}
+
+	return result
 }

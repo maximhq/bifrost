@@ -1125,6 +1125,40 @@ type Blob struct {
 	MIMEType string `json:"mimeType,omitempty"`
 }
 
+// UnmarshalJSON custom unmarshaler for Blob to handle URL-safe base64
+func (b *Blob) UnmarshalJSON(data []byte) error {
+	type BlobAlias struct {
+		DisplayName string `json:"displayName,omitempty"`
+		Data        string `json:"data,omitempty"`
+		MIMEType    string `json:"mimeType,omitempty"`
+	}
+
+	var aux BlobAlias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	b.DisplayName = aux.DisplayName
+	b.MIMEType = aux.MIMEType
+
+	if aux.Data != "" {
+		// Convert URL-safe base64 to standard base64
+		standardBase64 := strings.ReplaceAll(strings.ReplaceAll(aux.Data, "_", "/"), "-", "+")
+		// Add padding if necessary
+		switch len(standardBase64) % 4 {
+		case 2:
+			standardBase64 += "=="
+		case 3:
+			standardBase64 += "="
+		}
+		b.Data = standardBase64
+	} else {
+		b.Data = aux.Data
+	}
+
+	return nil
+}
+
 // VideoMetadata describes how the video in the Part should be used by the model.
 type VideoMetadata struct {
 	// Optional. The frame rate of the video sent to the model. If not specified, the

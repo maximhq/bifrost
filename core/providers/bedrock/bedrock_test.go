@@ -865,13 +865,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("Hello, world!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -917,13 +922,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 						},
 					},
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("Hello!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -957,13 +967,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("Hello!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -1002,13 +1017,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("Hello!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -1066,13 +1086,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("What's the weather?"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -1136,13 +1161,18 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				Model:    "claude-3-sonnet",
 				Input: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesInputMessageContentBlockTypeText,
 									Text: schemas.Ptr("Hello!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -1933,13 +1963,18 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 			expected: &schemas.BifrostResponsesResponse{
 				Output: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesOutputMessageContentTypeText,
 									Text: schemas.Ptr("Hello, world!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},
@@ -1970,13 +2005,18 @@ func TestBedrockToBifrostResponseConversion(t *testing.T) {
 			expected: &schemas.BifrostResponsesResponse{
 				Output: []schemas.ResponsesMessage{
 					{
-						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
-						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role:   schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Status: schemas.Ptr("completed"),
 						Content: &schemas.ResponsesMessageContent{
 							ContentBlocks: []schemas.ResponsesMessageContentBlock{
 								{
 									Type: schemas.ResponsesOutputMessageContentTypeText,
 									Text: schemas.Ptr("Hello!"),
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+									},
 								},
 							},
 						},

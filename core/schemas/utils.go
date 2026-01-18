@@ -3,16 +3,32 @@ package schemas
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Ptr creates a pointer to any value.
 // This is a helper function for creating pointers to values.
 func Ptr[T any](v T) *T {
 	return &v
+}
+
+// GetRandomString generates a random alphanumeric string of the given length.
+func GetRandomString(length int) string {
+	if length <= 0 {
+		return ""
+	}
+	randomSource := rand.New(rand.NewSource(time.Now().UnixNano()))
+	letters := []rune("abcdef0123456789")
+	b := make([]rune, length)
+	for i := range b {
+		b[i] = letters[randomSource.Intn(len(letters))]
+	}
+	return string(b)
 }
 
 // ParseModelString extracts provider and model from a model string.
