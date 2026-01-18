@@ -14,7 +14,7 @@ export interface MCPStdioConfig {
 }
 
 export interface MCPClientConfig {
-	id: string;
+	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
@@ -23,6 +23,7 @@ export interface MCPClientConfig {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
+	tool_pricing?: Record<string, number>;
 }
 
 export interface MCPClient {
@@ -48,4 +49,5 @@ export interface UpdateMCPClientRequest {
 	headers?: Record<string, EnvVar>;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	tool_pricing?: Record<string, number>;
 }

@@ -31,7 +31,7 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
 		RequestID:  "req-123",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionAllow, result)
 	assertVirtualKeyFound(t, result)
@@ -50,7 +50,7 @@ func TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound(t *testing.T) {
 		VirtualKey: "sk-bf-nonexistent",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionVirtualKeyNotFound, result)
 }
@@ -72,7 +72,7 @@ func TestBudgetResolver_EvaluateRequest_VirtualKeyBlocked(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionVirtualKeyBlocked, result)
 }
@@ -100,7 +100,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderBlocked(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionProviderBlocked, result)
 	assertVirtualKeyFound(t, result)
@@ -136,7 +136,7 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4o-mini",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionModelBlocked, result)
 }
@@ -162,7 +162,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionTokenLimited, result)
 	assertRateLimitInfo(t, result)
@@ -189,7 +189,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_RequestLimit(t *testin
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionRequestLimited, result)
 }
@@ -231,7 +231,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExpired(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	// Should allow because rate limit was expired and has been reset
 	assertDecision(t, DecisionAllow, result)
@@ -257,7 +257,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExceeded(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionBudgetExceeded, result)
 }
@@ -288,7 +288,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExpired(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	// Should allow because budget is expired (will be reset)
 	assertDecision(t, DecisionAllow, result)
@@ -327,7 +327,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 	assertDecision(t, DecisionAllow, result)
 
 	// Test: VK budget exceeds should fail
@@ -342,7 +342,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 	assertDecision(t, DecisionBudgetExceeded, result)
 }
 
@@ -368,7 +368,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderLevelRateLimit(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionTokenLimited, result)
 	assertRateLimitInfo(t, result)
@@ -395,7 +395,7 @@ func TestBudgetResolver_CheckRateLimits_BothExceeded(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assertDecision(t, DecisionRateLimited, result)
 	assert.Contains(t, result.Reason, "rate limit")
@@ -537,7 +537,7 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 		VirtualKey: "sk-bf-test",
 		Provider:   schemas.OpenAI,
 		Model:      "gpt-4",
-	})
+	}, schemas.ChatCompletionRequest)
 
 	assert.Equal(t, DecisionAllow, result.Decision)
 

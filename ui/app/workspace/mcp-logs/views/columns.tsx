@@ -87,6 +87,16 @@ export const createMCPColumns = (
 		},
 	},
 	{
+		accessorKey: "cost",
+		header: "Cost",
+		size: 120,
+		cell: ({ row }) => {
+			const cost = row.original.cost;
+			const isValidNumber = typeof cost === "number" && Number.isFinite(cost);
+			return <div className="font-mono text-sm">{isValidNumber ? `${cost.toFixed(4)}` : "N/A"}</div>;
+		},
+	},
+	{
 		id: "actions",
 		cell: ({ row }) => {
 			const log = row.original;
