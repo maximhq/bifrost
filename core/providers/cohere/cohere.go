@@ -235,7 +235,7 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-		providerUtils.ParseAndSetRawRequest(response, jsonBody)
+		response.ExtraFields.RawRequest = rawRequest
 	}
 
 	// Set raw response if enabled

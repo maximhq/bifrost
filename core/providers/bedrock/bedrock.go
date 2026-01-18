@@ -939,7 +939,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		response.ExtraFields.ModelDeployment = deployment
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(bifrostResponse, jsonData)
+			providerUtils.ParseAndSetRawRequest(response, jsonData)
 		}
 		response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)

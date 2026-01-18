@@ -161,6 +161,51 @@ func stripExtraFieldsForOpenAIError(err *schemas.BifrostError) *schemas.BifrostE
 	return &clone
 }
 
+func stripExtraFieldsForOpenAICountTokens(resp *schemas.BifrostCountTokensResponse) *schemas.BifrostCountTokensResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
+	return &clone
+}
+
+func stripExtraFieldsForOpenAIEmbedding(resp *schemas.BifrostEmbeddingResponse) *schemas.BifrostEmbeddingResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
+	return &clone
+}
+
+func stripExtraFieldsForOpenAISpeechStream(resp *schemas.BifrostSpeechStreamResponse) *schemas.BifrostSpeechStreamResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
+	return &clone
+}
+
+func stripExtraFieldsForOpenAITranscription(resp *schemas.BifrostTranscriptionResponse) *schemas.BifrostTranscriptionResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
+	return &clone
+}
+
+func stripExtraFieldsForOpenAITranscriptionStream(resp *schemas.BifrostTranscriptionStreamResponse) *schemas.BifrostTranscriptionStreamResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.ExtraFields = (*schemas.BifrostResponseExtraFields)(nil)
+	return &clone
+}
+
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
 func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -193,10 +238,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 					return stripExtraFieldsForOpenAIText(resp), nil
 				}
-				if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
-					return stripExtraFieldsForOpenAIText(resp), nil
-				}
-				return resp, nil
+				return stripExtraFieldsForOpenAIText(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return stripExtraFieldsForOpenAIError(err)
@@ -209,10 +251,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						}
 						return "", stripExtraFieldsForOpenAIText(resp), nil
 					}
-					if resp.ExtraFields != nil && resp.ExtraFields.Provider != schemas.OpenAI {
-						return "", stripExtraFieldsForOpenAIText(resp), nil
-					}
-					return "", resp, nil
+					return "", stripExtraFieldsForOpenAIText(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return stripExtraFieldsForOpenAIError(err)
@@ -363,8 +402,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return stripExtraFieldsForOpenAICountTokens(resp), nil
 				}
-				return resp, nil
+				return stripExtraFieldsForOpenAICountTokens(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return stripExtraFieldsForOpenAIError(err)
@@ -399,8 +439,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return stripExtraFieldsForOpenAIEmbedding(resp), nil
 				}
-				return resp, nil
+				return stripExtraFieldsForOpenAIEmbedding(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return stripExtraFieldsForOpenAIError(err)
@@ -439,8 +480,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
+						return "", stripExtraFieldsForOpenAISpeechStream(resp), nil
 					}
-					return "", resp, nil
+					return "", stripExtraFieldsForOpenAISpeechStream(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -477,8 +519,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
 					}
+					return stripExtraFieldsForOpenAITranscription(resp), nil
 				}
-				return resp, nil
+				return stripExtraFieldsForOpenAITranscription(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return stripExtraFieldsForOpenAIError(err)
@@ -489,8 +532,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil
 						}
+						return "", stripExtraFieldsForOpenAITranscriptionStream(resp), nil
 					}
-					return "", resp, nil
+					return "", stripExtraFieldsForOpenAITranscriptionStream(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
