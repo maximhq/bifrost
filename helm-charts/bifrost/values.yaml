@@ -34,6 +34,17 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: ""
 
+# Annotations to add to the deployment metadata
+# Useful for tools like Keel (keel.sh) for automatic image updates
+# Example:
+#   deploymentAnnotations:
+#     keel.sh/policy: force
+#     keel.sh/trigger: poll
+deploymentAnnotations: {}
+
+# Labels to add to the deployment metadata (in addition to default labels)
+deploymentLabels: {}
+
 podAnnotations: {}
 podLabels: {}
 
