@@ -66,6 +66,9 @@ func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schem
 			if request.Parameters.EnhancePrompt != nil {
 				bifrostReq.Params.ExtraParams["enhancePrompt"] = *request.Parameters.EnhancePrompt
 			}
+			if request.Parameters.AddWatermark != nil {
+				bifrostReq.Params.ExtraParams["addWatermark"] = *request.Parameters.AddWatermark
+			}
 			if len(request.Parameters.SafetySettings) > 0 {
 				bifrostReq.Params.ExtraParams["safetySettings"] = request.Parameters.SafetySettings
 			}
@@ -334,6 +337,9 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 		// Handle extra parameters for Imagen-specific fields
 		if bifrostReq.Params.ExtraParams != nil {
+			if addWatermark, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["addWatermark"]); ok {
+				req.Parameters.AddWatermark = addWatermark
+			}
 			if sampleImageSize, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["sampleImageSize"]); ok {
 				req.Parameters.SampleImageSize = &sampleImageSize
 			}

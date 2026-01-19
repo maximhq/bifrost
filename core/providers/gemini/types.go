@@ -2122,6 +2122,7 @@ type GeminiImagenRequest struct {
 }
 
 type GeminiImagenParameters struct {
+	AddWatermark     *bool                `json:"addWatermark,omitempty"`     // Whether to add a watermark to the image
 	SampleCount      *int                 `json:"sampleCount,omitempty"`      // 1 - 4
 	SampleImageSize  *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K", "4K"
 	AspectRatio      *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"

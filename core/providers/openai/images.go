@@ -22,6 +22,8 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	switch bifrostReq.Provider {
 	case schemas.XAI:
 		filterXAISpecificParameters(req)
+	case schemas.OpenAI, schemas.Azure:
+		filterOpenAISpecificParameters(req)
 	}
 	return req
 }
@@ -31,6 +33,12 @@ func filterXAISpecificParameters(req *OpenAIImageGenerationRequest) {
 	req.ImageGenerationParameters.Style = nil
 	req.ImageGenerationParameters.Size = nil
 	req.ImageGenerationParameters.OutputCompression = nil
+}
+
+func filterOpenAISpecificParameters(req *OpenAIImageGenerationRequest) {
+	req.ImageGenerationParameters.Seed = nil
+	req.NumInferenceSteps = nil
+	req.NegativePrompt = nil
 }
 
 // ToBifrostImageGenerationRequest converts an OpenAI image generation request to Bifrost format
