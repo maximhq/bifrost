@@ -18,14 +18,14 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 
 ### Model Family Support
 
-| Family | Chat | Responses | Text | Embeddings |
-|--------|------|-----------|------|------------|
-| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ |
-| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ |
-| **Mistral** | ✅ | ✅ | ✅ | ❌ |
-| **Llama** | ✅ | ✅ | ❌ | ❌ |
-| **Cohere** | ✅ | ✅ | ❌ | ✅ |
-| **Titan** | ✅ | ✅ | ❌ | ✅ |
+| Family | Chat | Responses | Text | Embeddings | Image Generation |
+|--------|------|-----------|------|------------|------------|
+| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Mistral** | ✅ | ✅ | ✅ | ❌ | ❌ |
+| **Llama** | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Cohere** | ✅ | ✅ | ❌ | ✅ | ❌ |
+| **Titan** | ✅ | ✅ | ❌ | ✅ | ✅ |
 
 ### Supported Operations
 
@@ -38,7 +38,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 | Files | ✅ | - | S3 (via SDK) |
 | Batch | ✅ | - | `batch` |
 | List Models | ✅ | - | `listFoundationModels` |
-| Image Generation | ❌ | ❌ | - |
+| Image Generation | ✅ | ❌ | `invoke` |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 
@@ -519,7 +519,71 @@ Supported embedding models: **Titan**, **Cohere**
 
 ---
 
-# 5. Batch API
+# 5. Image Generation
+
+Supported image generation models: **Titan Image Generator v1**, **Titan Image Generator v2**, **Nova Canvas v1**
+
+## Request Conversion
+
+| Parameter(Bifrost) | Transformation (Bedrock) |
+|---------------------|----------------|
+| `prompt` | `textToImageParams.text` |
+| `n` | `imageGenerationConfig.numberOfImages` |
+| `negativePrompt` | `textToImageParams.negativeText` |
+| `seed` | `imageGenerationConfig.seed` |
+| `quality` | `imageGenerationConfig.quality` |
+| `style` | `textToImageParams.style` |
+| `size` | `imageGenerationConfig.width` & `imageGenerationConfig.height` |
+
+## Response Conversion
+
+| Parameter(Bedrock) | Transformation (Bifrost) |
+|---------------------|--------------------------|
+| `images` | `data.b64_json` |
+
+### Example Request
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/amazon.nova-canvas-v1:0",
+    "prompt": "A futuristic cityscape with a flying car",
+    "size": "1024x1024",
+    "seed": 123,
+    "negative_prompt": "bikes",
+    "n": 2
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+    Provider: schemas.Bedrock,
+    Model:    "amazon.nova-canvas-v1:0",
+    Input: &schemas.ImageGenerationInput{
+        Prompt: "A futuristic cityscape with a flying car",
+    },
+    Params: &schemas.ImageGenerationParameters{
+        N: schemas.Ptr(2),
+        Seed: schemas.Ptr(123),
+        NegativePrompt: schemas.Ptr("bikes"),
+        Quality: schemas.Ptr("auto"),
+        Style: schemas.Ptr("natural"),
+        Size: schemas.Ptr("1024x1024"),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+# 6. Batch API
 
 **Request formats**: `requests` array (CustomID + Params) or `input_file_id`
 
@@ -548,7 +612,7 @@ Supported embedding models: **Titan**, **Cohere**
 
 ---
 
-# 6. Files API
+# 7. Files API
 
 <Note>
 S3-backed file operations. Files are stored in S3 buckets integrated with Bedrock.
@@ -574,7 +638,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 ---
 
-# 7. List Models
+# 8. List Models
 
 **Request**: GET `/v1/models` (no body)
 
@@ -594,7 +658,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 ---
 
-# 8. AWS Authentication & Configuration
+# 9. AWS Authentication & Configuration
 
 Bifrost automatically handles AWS Bedrock authentication via multiple methods including explicit credentials, IAM roles, and bearer tokens with automatic Signature Version 4 (SigV4) signing.
 
@@ -623,7 +687,7 @@ See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/go-sdk/p
 
 ---
 
-# 9. Error Handling
+# 10. Error Handling
 
 **HTTP Status Mapping**:
 

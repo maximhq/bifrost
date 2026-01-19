@@ -1536,9 +1536,82 @@ func (provider *BedrockProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, schemas.Bedrock)
 }
 
-// ImageGeneration is not supported by the Bedrock provider.
+// ImageGeneration generates images using Amazon Bedrock.
+// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
+// Returns a BifrostImageGenerationResponse containing the generated images and any error that occurred.
 func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, schemas.Bedrock)
+	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if key.BedrockKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	modelType := DetermineImageGenModelType(request.Model)
+	var rawResponse []byte
+	var jsonData []byte
+	var bifrostError *schemas.BifrostError
+	var latency time.Duration
+	var path string
+	var deployment string
+	switch modelType {
+
+	case "titan-image-generator-v1", "nova-canvas-v1:0", "titan-image-generator-v2:0":
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (any, error) { return ToBedrockImageGenerationRequest(request) },
+			provider.GetProviderKey())
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		path, deployment = provider.getModelPath("invoke", request.Model, key)
+		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+	default:
+		return nil, providerUtils.NewConfigurationError("unsupported image generation model type", providerName)
+	}
+	if bifrostError != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Parse response based on model type
+	var bifrostResponse *schemas.BifrostImageGenerationResponse
+	switch modelType {
+	case "titan-image-generator-v1", "nova-canvas-v1:0", "titan-image-generator-v2:0":
+		var imageResp BedrockImageGenerationResponse
+		if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+
+		if imageResp.Error != "" {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+
+		bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
+		bifrostResponse.Model = request.Model
+		bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		bifrostResponse.ExtraFields.Provider = providerName
+		bifrostResponse.ExtraFields.ModelRequested = request.Model
+		bifrostResponse.ExtraFields.ModelDeployment = deployment
+		bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+		// Set raw request if enabled
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+		}
+
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			var rawResponseData interface{}
+			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+				bifrostResponse.ExtraFields.RawResponse = rawResponseData
+			}
+		}
+
+		return bifrostResponse, nil
+	}
+	return nil, providerUtils.NewConfigurationError("unsupported image generation model type", providerName)
 }
 
 // ImageGenerationStream is not supported by the Bedrock provider.

@@ -569,6 +569,37 @@ type BedrockTitanEmbeddingResponse struct {
 	InputTextTokenCount int       `json:"inputTextTokenCount"` // Number of tokens in input
 }
 
+const TaskTypeTextImage = "TEXT_IMAGE"
+
+// BedrockImageGenerationRequest represents a Bedrock image generation request
+type BedrockImageGenerationRequest struct {
+	TaskType              *string                   `json:"taskType"`              // Should be "TEXT_IMAGE"
+	TextToImageParams     *BedrockTextToImageParams `json:"textToImageParams"`     // Parameters for text-to-image
+	ImageGenerationConfig *ImageGenerationConfig    `json:"imageGenerationConfig"` // Image generation config
+}
+
+type BedrockTextToImageParams struct {
+	Text         string  `json:"text"`                   // Prompt for image generation
+	NegativeText *string `json:"negativeText,omitempty"` // Negative prompt for image generation
+	Style        *string `json:"style,omitempty"`        // Style for image generation
+}
+
+type ImageGenerationConfig struct {
+	NumberOfImages *int     `json:"numberOfImages,omitempty"`
+	Height         *int     `json:"height,omitempty"`
+	Width          *int     `json:"width,omitempty"`
+	CfgScale       *float64 `json:"cfgScale,omitempty"`
+	Quality        *string  `json:"quality,omitempty"`
+	Seed           *int     `json:"seed,omitempty"`
+}
+
+// BedrockImageGenerationResponse represents a Bedrock image generation response
+type BedrockImageGenerationResponse struct {
+	Images    []string `json:"images"`    // list of Base64 encoded images
+	MaskImage string   `json:"maskImage"` // Base64 encoded mask image (optional)
+	Error     string   `json:"error"`     // error message (if present)
+}
+
 // ==================== MODELS TYPES ====================
 type BedrockModelLifecycle struct {
 	Status string `json:"status"`
