@@ -3,3 +3,4 @@
 - feat: support for listing models from specific provider or all providers via a header flag x-bf-list-models-provider from integrations.
 - feat: added support for gemini google search tool
 - fix: function response part handling in gemini
+- fix: call enrich error in vertex to return raw request and response in bifrost errors
