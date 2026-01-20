@@ -32,6 +32,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -2180,10 +2181,10 @@ func (bifrost *Bifrost) UpdateProvider(providerKey schemas.ModelProvider) error 
 
 	// Step 1: Create new ProviderQueue with updated buffer size
 	newPq := &ProviderQueue{
-		queue: make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize),
-		done:  make(chan struct{}),
+		queue:      make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize),
+		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
-		closeOnce: sync.Once{},
+		closeOnce:  sync.Once{},
 	}
 
 	// Step 2: Atomically replace the queue FIRST (new producers immediately get the new queue)
@@ -2684,6 +2685,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return huggingface.NewHuggingFaceProvider(config, bifrost.logger), nil
 	case schemas.XAI:
 		return xai.NewXAIProvider(config, bifrost.logger)
+	case schemas.Replicate:
+		return replicate.NewReplicateProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -2695,10 +2698,10 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
 	// Create ProviderQueue with lifecycle management
 	pq := &ProviderQueue{
-		queue: make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
-		done:  make(chan struct{}),
+		queue:      make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize),
+		done:       make(chan struct{}),
 		signalOnce: sync.Once{},
-		closeOnce: sync.Once{},
+		closeOnce:  sync.Once{},
 	}
 
 	bifrost.requestQueues.Store(providerKey, pq)
@@ -4683,6 +4686,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				if len(key.VertexKeyConfig.Deployments) > 0 {
 					_, deploymentSupported = key.VertexKeyConfig.Deployments[model]
 				}
+			} else if baseProviderType == schemas.Replicate && key.ReplicateKeyConfig != nil {
+				// For Replicate, check if deployment exists for this model
+				if len(key.ReplicateKeyConfig.Deployments) > 0 {
+					_, deploymentSupported = key.ReplicateKeyConfig.Deployments[model]
+				}
 			}
 
 			if modelSupported && deploymentSupported {
@@ -4691,7 +4699,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		}
 	}
 	if len(supportedKeys) == 0 {
-		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex {
+		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex || baseProviderType == schemas.Replicate {
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)

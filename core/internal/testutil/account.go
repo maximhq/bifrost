@@ -132,6 +132,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.HuggingFace,
 		schemas.Nebius,
 		schemas.XAI,
+		schemas.Replicate,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -231,7 +232,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
+					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					Deployments: map[string]string{
 						"gpt-4o":                 "gpt-4o",
@@ -381,6 +382,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.XAI_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Replicate:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -670,6 +680,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				BufferSize:  10,
 			},
 		}, nil
+	case schemas.Replicate:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", providerKey)
 	}
@@ -719,17 +742,17 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			FileList:              true, // OpenAI supports file API
 			FileRetrieve:          true, // OpenAI supports file API
 			FileDelete:            true, // OpenAI supports file API
-			FileContent:           true,  // OpenAI supports file API
-			ChatAudio:             true,  // OpenAI supports chat audio
-			ContainerCreate:       true,  // OpenAI supports container API
-			ContainerList:         true,  // OpenAI supports container API
-			ContainerRetrieve:     true,  // OpenAI supports container API
-			ContainerDelete:       true,  // OpenAI supports container API
-			ContainerFileCreate:   true,  // OpenAI supports container file API
-			ContainerFileList:     true,  // OpenAI supports container file API
-			ContainerFileRetrieve: true,  // OpenAI supports container file API
-			ContainerFileContent:  true,  // OpenAI supports container file API
-			ContainerFileDelete:   true,  // OpenAI supports container file API
+			FileContent:           true, // OpenAI supports file API
+			ChatAudio:             true, // OpenAI supports chat audio
+			ContainerCreate:       true, // OpenAI supports container API
+			ContainerList:         true, // OpenAI supports container API
+			ContainerRetrieve:     true, // OpenAI supports container API
+			ContainerDelete:       true, // OpenAI supports container API
+			ContainerFileCreate:   true, // OpenAI supports container file API
+			ContainerFileList:     true, // OpenAI supports container file API
+			ContainerFileRetrieve: true, // OpenAI supports container file API
+			ContainerFileContent:  true, // OpenAI supports container file API
+			ContainerFileDelete:   true, // OpenAI supports container file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -1152,6 +1175,34 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		ChatModel:            "grok-4-0709",
 		TextModel:            "", // XAI focuses on chat
 		ImageGenerationModel: "grok-2-image",
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not typical
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			Embedding:             false, // Not supported
+			ListModels:            true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
+		},
+	},
+	{
+		Provider:             schemas.Replicate,
+		ChatModel:            "openai/gpt-4.1-mini",
+		TextModel:            "openai/gpt-4.1-mini",
+		ImageGenerationModel: "black-forest-labs/flux-dev",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
