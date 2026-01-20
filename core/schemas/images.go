@@ -45,6 +45,9 @@ type ImageGenerationParameters struct {
 	NegativePrompt    *string                `json:"negative_prompt,omitempty"`     // negative prompt for image generation
 	NumInferenceSteps *int                   `json:"num_inference_steps,omitempty"` // number of inference steps
 	User              *string                `json:"user,omitempty"`
+	InputImages       []string               `json:"input_images,omitempty"` // input images for image generation
+	AspectRatio       *string                `json:"aspect_ratio,omitempty"` // aspect ratio of the image
+	Resolution        *string                `json:"resolution,omitempty"`   // resolution of the image
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 
@@ -134,6 +137,7 @@ type ImageEditInput struct {
 
 type ImageInput struct {
 	Image []byte `json:"image"`
+	URL   string `json:"url,omitempty"` // URL for providers that accept image URLs (e.g., Replicate)
 }
 
 type ImageEditParameters struct {

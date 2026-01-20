@@ -43,7 +43,7 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 // Known fields for CompletionRequest
 var textParamsKnownFields = map[string]bool{
 	"model":             true,
-	"text":              true,
+	"prompt":            true,
 	"fallbacks":         true,
 	"best_of":           true,
 	"echo":              true,
@@ -1729,21 +1729,34 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Extract images (required) - handle both "image[]"
+	// Extract images (required) - handle both files and URLs
 	var imageFiles []*multipart.FileHeader
+	var imageURLs []string
+
+	// Check for file uploads
 	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
 		imageFiles = imageFilesArray
 	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
 		imageFiles = imageFilesSingle
 	}
 
-	if len(imageFiles) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "At least one image is required")
+	// Check for image URLs
+	if imageURLValues := form.Value["image_url[]"]; len(imageURLValues) > 0 {
+		imageURLs = imageURLValues
+	} else if imageURLSingle := form.Value["image_url"]; len(imageURLSingle) > 0 {
+		imageURLs = imageURLSingle
+	}
+
+	// Validate at least one image source is provided
+	if len(imageFiles) == 0 && len(imageURLs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one image (file or URL) is required")
 		return
 	}
 
-	// Read all image files
-	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	// Build ImageInput array
+	images := make([]schemas.ImageInput, 0, len(imageFiles)+len(imageURLs))
+
+	// Process file uploads
 	for _, fileHeader := range imageFiles {
 		file, err := fileHeader.Open()
 		if err != nil {
@@ -1762,6 +1775,22 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		images = append(images, schemas.ImageInput{
 			Image: fileData,
 		})
+	}
+
+	// Process image URLs
+	for _, url := range imageURLs {
+		if url == "" {
+			continue // Skip empty URLs
+		}
+		images = append(images, schemas.ImageInput{
+			URL: url,
+		})
+	}
+
+	// Final validation
+	if len(images) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one valid image is required")
+		return
 	}
 
 	// Create image edit input
@@ -1979,16 +2008,27 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Extract images (required) - handle both "image[]" and "image"
+	// Extract images (required) - handle both files and URLs
 	var imageFiles []*multipart.FileHeader
+	var imageURLs []string
+
+	// Check for file uploads
 	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
 		imageFiles = imageFilesArray
 	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
 		imageFiles = imageFilesSingle
 	}
 
-	if len(imageFiles) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "At least one image is required")
+	// Check for image URLs
+	if imageURLValues := form.Value["image_url[]"]; len(imageURLValues) > 0 {
+		imageURLs = imageURLValues
+	} else if imageURLSingle := form.Value["image_url"]; len(imageURLSingle) > 0 {
+		imageURLs = imageURLSingle
+	}
+
+	// Validate at least one image source is provided
+	if len(imageFiles) == 0 && len(imageURLs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one image (file or URL) is required")
 		return
 	}
 
@@ -2012,11 +2052,24 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 		images = append(images, fileData)
 	}
 
-	// Create image variation input with first image
-	req.ImageVariationInput = &schemas.ImageVariationInput{
-		Image: schemas.ImageInput{
-			Image: images[0],
-		},
+	// Create image variation input with first image (either file or URL)
+	if len(imageFiles) > 0 {
+		// Use file-based input
+		req.ImageVariationInput = &schemas.ImageVariationInput{
+			Image: schemas.ImageInput{
+				Image: images[0],
+			},
+		}
+	} else if len(imageURLs) > 0 && imageURLs[0] != "" {
+		// Use URL-based input
+		req.ImageVariationInput = &schemas.ImageVariationInput{
+			Image: schemas.ImageInput{
+				URL: imageURLs[0],
+			},
+		}
+	} else {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one valid image is required")
+		return
 	}
 
 	// Create image variation parameters
