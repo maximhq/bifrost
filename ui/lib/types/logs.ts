@@ -357,6 +357,18 @@ export interface LogStats {
 	total_cost: number;
 }
 
+export interface HistogramBucket {
+	timestamp: string;
+	count: number;
+	success: number;
+	error: number;
+}
+
+export interface LogsHistogramResponse {
+	buckets: HistogramBucket[];
+	bucket_size_seconds: number;
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;

@@ -267,6 +267,131 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 	return stats, nil
 }
 
+// GetHistogram returns time-bucketed request counts for the given filters.
+func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600 // Default to 1 hour
+	}
+
+	// Determine database type for SQL syntax
+	dialect := s.db.Dialector.Name()
+
+	// Build query with filters
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	// Query for histogram buckets - use int64 for bucket timestamp to avoid parsing issues
+	var results []struct {
+		BucketTimestamp int64 `gorm:"column:bucket_timestamp"`
+		Total           int64 `gorm:"column:total"`
+		Success         int64 `gorm:"column:success"`
+		Error           int64 `gorm:"column:error_count"`
+	}
+
+	// Build select clause with database-specific unix timestamp calculation
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		// SQLite: use strftime to get unix timestamp, then bucket
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		// MySQL: use UNIX_TIMESTAMP
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		// PostgreSQL (and others): use EXTRACT(EPOCH FROM timestamp)
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get histogram: %w", err)
+	}
+
+	// Create a map of bucket timestamp -> result for quick lookup
+	resultMap := make(map[int64]struct {
+		Total   int64
+		Success int64
+		Error   int64
+	})
+	for _, r := range results {
+		resultMap[r.BucketTimestamp] = struct {
+			Total   int64
+			Success int64
+			Error   int64
+		}{
+			Total:   r.Total,
+			Success: r.Success,
+			Error:   r.Error,
+		}
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, just return what we have from the query
+	if len(allTimestamps) == 0 {
+		buckets := make([]HistogramBucket, len(results))
+		for i, r := range results {
+			buckets[i] = HistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				Count:     r.Total,
+				Success:   r.Success,
+				Error:     r.Error,
+			}
+		}
+		return &HistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+		}, nil
+	}
+
+	// Fill in all buckets, using zeros for missing timestamps
+	buckets := make([]HistogramBucket, len(allTimestamps))
+	matchCount := 0
+	for i, ts := range allTimestamps {
+		if data, exists := resultMap[ts]; exists {
+			matchCount++
+			buckets[i] = HistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				Count:     data.Total,
+				Success:   data.Success,
+				Error:     data.Error,
+			}
+		} else {
+			buckets[i] = HistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				Count:     0,
+				Success:   0,
+				Error:     0,
+			}
+		}
+	}
+
+	return &HistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
+}
+
 // HasLogs checks if there are any logs in the database.
 func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	var log Log

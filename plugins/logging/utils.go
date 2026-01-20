@@ -27,6 +27,9 @@ type LogManager interface {
 	// GetStats calculates statistics for logs matching the given filters
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 
+	// GetHistogram returns time-bucketed request counts for the given filters
+	GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
@@ -66,6 +69,13 @@ func (p *PluginLogManager) GetStats(ctx context.Context, filters *logstore.Searc
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.GetStats(ctx, *filters)
+}
+
+func (p *PluginLogManager) GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {

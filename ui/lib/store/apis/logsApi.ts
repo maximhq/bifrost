@@ -1,5 +1,15 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
-import { LogEntry, LogFilters, LogStats, Pagination, RecalculateCostResponse } from "@/lib/types/logs";
+import {
+	CostHistogramResponse,
+	LogEntry,
+	LogFilters,
+	LogsHistogramResponse,
+	LogStats,
+	ModelHistogramResponse,
+	Pagination,
+	RecalculateCostResponse,
+	TokenHistogramResponse,
+} from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
 
 export const logsApi = baseApi.injectEndpoints({
@@ -107,6 +117,62 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get logs histogram with filters
+		getLogsHistogram: builder.query<
+			LogsHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get token usage histogram with filters
+		getLogsTokenHistogram: builder.query<
+			TokenHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/tokens",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get cost histogram with filters and model breakdown
+		getLogsCostHistogram: builder.query<
+			CostHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/cost",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
+		// Get model usage histogram with filters
+		getLogsModelHistogram: builder.query<
+			ModelHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/models",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -143,10 +209,12 @@ export const logsApi = baseApi.injectEndpoints({
 export const {
 	useGetLogsQuery,
 	useGetLogsStatsQuery,
+	useGetLogsHistogramQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
+	useLazyGetLogsHistogramQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,

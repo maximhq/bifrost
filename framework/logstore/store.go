@@ -28,6 +28,7 @@ type LogStore interface {
 	HasLogs(ctx context.Context) (bool, error)
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
+	GetHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*HistogramResult, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error

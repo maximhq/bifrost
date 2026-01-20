@@ -43,6 +43,7 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	// Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
+	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
@@ -291,6 +292,118 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, stats)
+}
+
+// getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
+func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
+	// Parse query parameters into filters (same as getLogsStats)
+	filters := &logstore.SearchFilters{}
+
+	// Extract filters from query parameters
+	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
+		filters.Providers = parseCommaSeparated(providers)
+	}
+	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
+		filters.Models = parseCommaSeparated(models)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
+		filters.Objects = parseCommaSeparated(objects)
+	}
+	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
+		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
+	}
+	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
+		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+			filters.StartTime = &t
+		}
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
+			filters.EndTime = &t
+		}
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		if f, err := strconv.ParseFloat(minLatency, 64); err == nil {
+			filters.MinLatency = &f
+		}
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		if val, err := strconv.ParseFloat(maxLatency, 64); err == nil {
+			filters.MaxLatency = &val
+		}
+	}
+	if minTokens := string(ctx.QueryArgs().Peek("min_tokens")); minTokens != "" {
+		if val, err := strconv.Atoi(minTokens); err == nil {
+			filters.MinTokens = &val
+		}
+	}
+	if maxTokens := string(ctx.QueryArgs().Peek("max_tokens")); maxTokens != "" {
+		if val, err := strconv.Atoi(maxTokens); err == nil {
+			filters.MaxTokens = &val
+		}
+	}
+	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
+		if val, err := strconv.ParseFloat(cost, 64); err == nil {
+			filters.MinCost = &val
+		}
+	}
+	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
+		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
+			filters.MaxCost = &val
+		}
+	}
+	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
+		if val, err := strconv.ParseBool(missingCost); err == nil {
+			filters.MissingCostOnly = val
+		}
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	// Calculate bucket size based on time range
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get log histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// calculateBucketSize determines appropriate bucket size based on time range
+func calculateBucketSize(start, end *time.Time) int64 {
+	if start == nil || end == nil {
+		return 3600 // Default 1 hour
+	}
+	duration := end.Sub(*start)
+	switch {
+	case duration >= 365*24*time.Hour: // >= 12 months
+		return 30 * 24 * 3600 // Monthly (30 days)
+	case duration >= 90*24*time.Hour: // >= 3 months
+		return 7 * 24 * 3600 // Weekly (7 days)
+	case duration >= 30*24*time.Hour: // >= 1 month
+		return 3 * 24 * 3600 // 3 days
+	case duration >= 7*24*time.Hour: // >= 7 days
+		return 24 * 3600 // Daily
+	case duration >= 3*24*time.Hour: // >= 3 days
+		return 8 * 3600 // 8 hours
+	case duration >= 24*time.Hour: // >= 24 hours
+		return 3600 // Hourly
+	case duration >= 2*time.Hour: // >= 2 hours
+		return 600 // 10 minutes
+	default:
+		return 60 // 1 minute buckets for < 2 hours
+	}
 }
 
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests

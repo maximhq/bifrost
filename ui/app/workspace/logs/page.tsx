@@ -4,6 +4,7 @@ import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
 import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
+import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,6 +13,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import {
 	getErrorMessage,
 	useDeleteLogsMutation,
+	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery
 } from "@/lib/store";
@@ -21,6 +23,7 @@ import type {
 	ContentBlock,
 	LogEntry,
 	LogFilters,
+	LogsHistogramResponse,
 	LogStats,
 	Pagination
 } from "@/lib/types/logs";
@@ -42,9 +45,11 @@ export default function LogsPage() {
 	const [logs, setLogs] = useState<LogEntry[]>([]);
 	const [totalItems, setTotalItems] = useState(0); // changes with filters
 	const [stats, setStats] = useState<LogStats | null>(null);
+	const [histogram, setHistogram] = useState<LogsHistogramResponse | null>(null);
 	const [initialLoading, setInitialLoading] = useState(true); // on initial load
 	const [fetchingLogs, setFetchingLogs] = useState(false); // on pagination/filters change
 	const [fetchingStats, setFetchingStats] = useState(false); // on stats fetch
+	const [fetchingHistogram, setFetchingHistogram] = useState(false); // on histogram fetch
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 
@@ -53,9 +58,11 @@ export default function LogsPage() {
 	// RTK Query lazy hooks for manual triggering
 	const [triggerGetLogs] = useLazyGetLogsQuery();
 	const [triggerGetStats] = useLazyGetLogsStatsQuery();
+	const [triggerGetHistogram] = useLazyGetLogsHistogramQuery();
 	const [deleteLogs] = useDeleteLogsMutation();
 
 	const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
+	const [isChartOpen, setIsChartOpen] = useState(true);
 	
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -146,6 +153,37 @@ export default function LogsPage() {
 		},
 		[setUrlState],
 	);
+
+	// Handler for time range changes from the volume chart
+	const handleTimeRangeChange = useCallback(
+		(startTime: number, endTime: number) => {
+			setUrlState({
+				start_time: startTime,
+				end_time: endTime,
+				offset: 0,
+			});
+		},
+		[setUrlState],
+	);
+
+	// Handler for resetting zoom to default 24h view
+	const handleResetZoom = useCallback(() => {
+		const now = Math.floor(Date.now() / 1000);
+		const twentyFourHoursAgo = now - 24 * 60 * 60;
+		setUrlState({
+			start_time: twentyFourHoursAgo,
+			end_time: now,
+			offset: 0,
+		});
+	}, [setUrlState]);
+
+	// Check if user has zoomed (time range is different from default 24h)
+	const isZoomed = useMemo(() => {
+		const currentRange = urlState.end_time - urlState.start_time;
+		const defaultRange = 24 * 60 * 60; // 24 hours in seconds
+		// Consider zoomed if range is less than 90% of default (to account for minor differences)
+		return currentRange < defaultRange * 0.9;
+	}, [urlState.start_time, urlState.end_time]);
 
 	const latest = useRef({ logs, filters, pagination, showEmptyState, liveEnabled });
 	useEffect(() => {
@@ -282,6 +320,48 @@ export default function LogsPage() {
 
 						return newStats;
 					});
+
+					// Update histogram for completed requests
+					setHistogram((prevHistogram) => {
+						if (!prevHistogram || !prevHistogram.bucket_size_seconds) return prevHistogram;
+
+						const logTime = new Date(log.timestamp).getTime();
+						const bucketSizeMs = prevHistogram.bucket_size_seconds * 1000;
+						const bucketTime = Math.floor(logTime / bucketSizeMs) * bucketSizeMs;
+
+						const updatedBuckets = [...prevHistogram.buckets];
+						const bucketIndex = updatedBuckets.findIndex((b) => {
+							const bTime = new Date(b.timestamp).getTime();
+							return Math.floor(bTime / bucketSizeMs) * bucketSizeMs === bucketTime;
+						});
+
+						if (bucketIndex >= 0) {
+							// Update existing bucket
+							updatedBuckets[bucketIndex] = {
+								...updatedBuckets[bucketIndex],
+								count: updatedBuckets[bucketIndex].count + 1,
+								success: updatedBuckets[bucketIndex].success + (log.status === "success" ? 1 : 0),
+								error: updatedBuckets[bucketIndex].error + (log.status === "error" ? 1 : 0),
+							};
+						} else {
+							// Create new bucket for this timestamp
+							const newBucket = {
+								timestamp: new Date(bucketTime).toISOString(),
+								count: 1,
+								success: log.status === "success" ? 1 : 0,
+								error: log.status === "error" ? 1 : 0,
+							};
+							// Insert in sorted order
+							const insertIndex = updatedBuckets.findIndex((b) => new Date(b.timestamp).getTime() > bucketTime);
+							if (insertIndex === -1) {
+								updatedBuckets.push(newBucket);
+							} else {
+								updatedBuckets.splice(insertIndex, 0, newBucket);
+							}
+						}
+
+						return { ...prevHistogram, buckets: updatedBuckets };
+					});
 				}
 			}
 		}
@@ -378,6 +458,25 @@ export default function LogsPage() {
 		}
 	}, [filters, triggerGetStats]);
 
+	const fetchHistogram = useCallback(async () => {
+		setFetchingHistogram(true);
+
+		try {
+			const result = await triggerGetHistogram({ filters });
+
+			if (result.error) {
+				// Don't show error for histogram failure, just log it
+				console.error("Failed to fetch histogram:", result.error);
+			} else if (result.data) {
+				setHistogram(result.data);
+			}
+		} catch (error) {
+			console.error("Failed to fetch histogram:", error);
+		} finally {
+			setFetchingHistogram(false);
+		}
+	}, [filters, triggerGetHistogram]);
+
 	// Helper to toggle live updates
 	const handleLiveToggle = useCallback(
 		(enabled: boolean) => {
@@ -398,10 +497,11 @@ export default function LogsPage() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [filters, pagination, initialLoading]);
 
-	// Fetch stats when filters change (but not pagination)
+	// Fetch stats and histogram when filters change (but not pagination)
 	useEffect(() => {
 		if (!initialLoading) {
 			fetchStats();
+			fetchHistogram();
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [filters, initialLoading]);
@@ -412,6 +512,7 @@ export default function LogsPage() {
 			// Load logs and stats in parallel, don't wait for stats to show the page
 			await fetchLogs();
 			fetchStats(); // Don't await - let it load in background
+			fetchHistogram(); // Don't await - let it load in background
 			setInitialLoading(false);
 		};
 		initialLoad();
@@ -524,16 +625,16 @@ export default function LogsPage() {
 	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
 	return (
-		<div className="dark:bg-card bg-white">
+		<div className="dark:bg-card h-[calc(100dvh-3.3rem)] max-h-[calc(100dvh-1.5rem)] bg-white">
 			{initialLoading ? (
 				<FullPageLoader />
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
-				<div className="mx-auto max-w-7xl space-y-6">
-					<div className="space-y-6">
+				<div className="mx-auto flex h-full max-w-7xl flex-col">
+					<div className="flex flex-1 flex-col gap-2 overflow-hidden">
 						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-5">
+						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
@@ -546,33 +647,50 @@ export default function LogsPage() {
 							))}
 						</div>
 
+						{/* Volume Chart */}
+						<div className="shrink-0">
+							<LogsVolumeChart
+								data={histogram}
+								loading={fetchingHistogram}
+								onTimeRangeChange={handleTimeRangeChange}
+								onResetZoom={handleResetZoom}
+								isZoomed={isZoomed}
+								startTime={urlState.start_time}
+								endTime={urlState.end_time}
+								isOpen={isChartOpen}
+								onOpenChange={setIsChartOpen}
+							/>
+						</div>
+
 						{/* Error Alert */}
 						{error && (
-							<Alert variant="destructive">
+							<Alert variant="destructive" className="shrink-0">
 								<AlertCircle className="h-4 w-4" />
 								<AlertDescription>{error}</AlertDescription>
 							</Alert>
 						)}
 
-						<LogsDataTable
-							columns={columns}
-							data={logs}
-							totalItems={totalItems}
-							loading={fetchingLogs}
-							filters={filters}
-							pagination={pagination}
-							onFiltersChange={setFilters}
-							onPaginationChange={setPagination}
-							onRowClick={(row, columnId) => {
-								if (columnId === "actions") return;
-								setSelectedLog(row);
-							}}
-							isSocketConnected={isSocketConnected}
-							liveEnabled={liveEnabled}
-							onLiveToggle={handleLiveToggle}
-							fetchLogs={fetchLogs}
-							fetchStats={fetchStats}
-						/>
+						<div className="min-h-0 flex-1">
+							<LogsDataTable
+								columns={columns}
+								data={logs}
+								totalItems={totalItems}
+								loading={fetchingLogs}
+								filters={filters}
+								pagination={pagination}
+								onFiltersChange={setFilters}
+								onPaginationChange={setPagination}
+								onRowClick={(row, columnId) => {
+									if (columnId === "actions") return;
+									setSelectedLog(row);
+								}}
+								isSocketConnected={isSocketConnected}
+								liveEnabled={liveEnabled}
+								onLiveToggle={handleLiveToggle}
+								fetchLogs={fetchLogs}
+								fetchStats={fetchStats}
+							/>
+						</div>
 					</div>
 
 					{/* Log Detail Sheet */}

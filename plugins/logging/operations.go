@@ -372,6 +372,11 @@ func (p *LoggerPlugin) GetStats(ctx context.Context, filters logstore.SearchFilt
 	return p.store.GetStats(ctx, filters)
 }
 
+// GetHistogram returns time-bucketed request counts for the given filters
+func (p *LoggerPlugin) GetHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.HistogramResult, error) {
+	return p.store.GetHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	result, err := p.store.FindAll(ctx, "model IS NOT NULL AND model != ''", "model")

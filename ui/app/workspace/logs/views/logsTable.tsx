@@ -104,17 +104,20 @@ export function LogsDataTable({
 	};
 
 	return (
-		<div className="space-y-2">
-			<LogFiltersComponent
-				filters={filters}
-				onFiltersChange={onFiltersChange}
-				liveEnabled={liveEnabled}
-				onLiveToggle={onLiveToggle}
-				fetchLogs={fetchLogs}
-				fetchStats={fetchStats}
-			/>
-			<div ref={tableContainerRef} className="h-[calc(100vh-16.5rem)] rounded-sm border">
-				<Table containerClassName="max-h-[calc(100vh-16.5rem)]">
+		<div className="flex h-full flex-col gap-2">
+			<div className="shrink-0">
+				<LogFiltersComponent
+					filters={filters}
+					onFiltersChange={onFiltersChange}
+					liveEnabled={liveEnabled}
+					onLiveToggle={onLiveToggle}
+					fetchLogs={fetchLogs}
+					fetchStats={fetchStats}
+				/>
+			</div>
+			
+			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
+				<Table containerClassName="h-full overflow-auto">
 					<TableHeader className="px-2">
 						{table.getHeaderGroups().map((headerGroup) => (
 							<TableRow key={headerGroup.id}>
@@ -184,7 +187,7 @@ export function LogsDataTable({
 			</div>
 
 			{/* Pagination Footer */}
-			<div className="flex items-center justify-between text-xs">
+			<div className="flex shrink-0 items-center justify-between text-xs">
 				<div className="text-muted-foreground flex items-center gap-2">
 					{startItem.toLocaleString()}-{endItem.toLocaleString()} of {totalItems.toLocaleString()} entries
 				</div>

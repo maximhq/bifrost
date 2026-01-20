@@ -561,3 +561,17 @@ func (l *Log) BuildContentSummary() string {
 
 	return strings.Join(parts, " ")
 }
+
+// HistogramBucket represents a single time bucket in the histogram
+type HistogramBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Count     int64     `json:"count"`
+	Success   int64     `json:"success"`
+	Error     int64     `json:"error"`
+}
+
+// HistogramResult represents the histogram query result
+type HistogramResult struct {
+	Buckets           []HistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64             `json:"bucket_size_seconds"`
+}
