@@ -147,6 +147,12 @@ export const bedrockKeyConfigSchema = z
 		},
 	);
 
+// Replicate key config schema
+export const replicateKeyConfigSchema = z.object({
+	signing_secret: envVarSchema.optional(),
+	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -177,6 +183,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		replicate_key_config: replicateKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
