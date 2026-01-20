@@ -15,7 +15,7 @@ import {
 	useDeleteLogsMutation,
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsQuery,
-	useLazyGetLogsStatsQuery
+	useLazyGetLogsStatsQuery,
 } from "@/lib/store";
 import type {
 	ChatMessage,
@@ -25,7 +25,7 @@ import type {
 	LogFilters,
 	LogsHistogramResponse,
 	LogStats,
-	Pagination
+	Pagination,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -63,7 +63,7 @@ export default function LogsPage() {
 
 	const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
 	const [isChartOpen, setIsChartOpen] = useState(true);
-	
+
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 

@@ -18,6 +18,28 @@ type RDBLogStore struct {
 	logger schemas.Logger
 }
 
+// generateBucketTimestamps generates all bucket timestamps for a time range.
+// It aligns the start time to bucket boundaries and generates timestamps up to (but not exceeding) the end time.
+func generateBucketTimestamps(startTime, endTime *time.Time, bucketSizeSeconds int64) []int64 {
+	if startTime == nil || endTime == nil || bucketSizeSeconds <= 0 {
+		return nil
+	}
+
+	startUnix := startTime.Unix()
+	endUnix := endTime.Unix()
+
+	// Align start time to bucket boundary
+	alignedStart := (startUnix / bucketSizeSeconds) * bucketSizeSeconds
+
+	// Generate all bucket timestamps
+	var timestamps []int64
+	for ts := alignedStart; ts <= endUnix; ts += bucketSizeSeconds {
+		timestamps = append(timestamps, ts)
+	}
+
+	return timestamps
+}
+
 // applyFilters applies search filters to a GORM query
 func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
 	if len(filters.Providers) > 0 {
@@ -389,6 +411,381 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	return &HistogramResult{
 		Buckets:           buckets,
 		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
+}
+
+// GetTokenHistogram returns time-bucketed token usage for the given filters.
+func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600 // Default to 1 hour
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	// Only count completed requests for token stats
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var results []struct {
+		BucketTimestamp  int64 `gorm:"column:bucket_timestamp"`
+		PromptTokens     int64 `gorm:"column:prompt_tokens"`
+		CompletionTokens int64 `gorm:"column:completion_tokens"`
+		TotalTokens      int64 `gorm:"column:total_tokens"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get token histogram: %w", err)
+	}
+
+	// Create a map of bucket timestamp -> result for quick lookup
+	resultMap := make(map[int64]struct {
+		PromptTokens     int64
+		CompletionTokens int64
+		TotalTokens      int64
+	})
+	for _, r := range results {
+		resultMap[r.BucketTimestamp] = struct {
+			PromptTokens     int64
+			CompletionTokens int64
+			TotalTokens      int64
+		}{
+			PromptTokens:     r.PromptTokens,
+			CompletionTokens: r.CompletionTokens,
+			TotalTokens:      r.TotalTokens,
+		}
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, just return what we have from the query
+	if len(allTimestamps) == 0 {
+		buckets := make([]TokenHistogramBucket, len(results))
+		for i, r := range results {
+			buckets[i] = TokenHistogramBucket{
+				Timestamp:        time.Unix(r.BucketTimestamp, 0).UTC(),
+				PromptTokens:     r.PromptTokens,
+				CompletionTokens: r.CompletionTokens,
+				TotalTokens:      r.TotalTokens,
+			}
+		}
+		return &TokenHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+		}, nil
+	}
+
+	// Fill in all buckets, using zeros for missing timestamps
+	buckets := make([]TokenHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if data, exists := resultMap[ts]; exists {
+			buckets[i] = TokenHistogramBucket{
+				Timestamp:        time.Unix(ts, 0).UTC(),
+				PromptTokens:     data.PromptTokens,
+				CompletionTokens: data.CompletionTokens,
+				TotalTokens:      data.TotalTokens,
+			}
+		} else {
+			buckets[i] = TokenHistogramBucket{
+				Timestamp:        time.Unix(ts, 0).UTC(),
+				PromptTokens:     0,
+				CompletionTokens: 0,
+				TotalTokens:      0,
+			}
+		}
+	}
+
+	return &TokenHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
+}
+
+// GetCostHistogram returns time-bucketed cost data with model breakdown for the given filters.
+func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600 // Default to 1 hour
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	// Only count completed requests with cost
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
+
+	// Query grouped by bucket and model
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Model           string  `gorm:"column:model"`
+		TotalCost       float64 `gorm:"column:total_cost"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			model,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			model,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			model,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, model").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get cost histogram: %w", err)
+	}
+
+	// Aggregate results into buckets with model breakdown
+	bucketMap := make(map[int64]*CostHistogramBucket)
+	modelsSet := make(map[string]bool)
+
+	for _, r := range results {
+		modelsSet[r.Model] = true
+		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
+			bucket.TotalCost += r.TotalCost
+			bucket.ByModel[r.Model] = r.TotalCost
+		} else {
+			bucketMap[r.BucketTimestamp] = &CostHistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				TotalCost: r.TotalCost,
+				ByModel:   map[string]float64{r.Model: r.TotalCost},
+			}
+		}
+	}
+
+	// Extract unique models
+	models := make([]string, 0, len(modelsSet))
+	for model := range modelsSet {
+		models = append(models, model)
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, just return what we have from the query
+	if len(allTimestamps) == 0 {
+		// Convert map to sorted slice
+		buckets := make([]CostHistogramBucket, 0, len(bucketMap))
+		for _, bucket := range bucketMap {
+			buckets = append(buckets, *bucket)
+		}
+
+		// Sort by timestamp
+		for i := 0; i < len(buckets)-1; i++ {
+			for j := i + 1; j < len(buckets); j++ {
+				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
+					buckets[i], buckets[j] = buckets[j], buckets[i]
+				}
+			}
+		}
+
+		return &CostHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+			Models:            models,
+		}, nil
+	}
+
+	// Fill in all buckets, using zeros for missing timestamps
+	buckets := make([]CostHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := bucketMap[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = CostHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				TotalCost: 0,
+				ByModel:   make(map[string]float64),
+			}
+		}
+	}
+
+	return &CostHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+		Models:            models,
+	}, nil
+}
+
+// GetModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters.
+func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600 // Default to 1 hour
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+
+	// Query grouped by bucket and model with status counts
+	var results []struct {
+		BucketTimestamp int64  `gorm:"column:bucket_timestamp"`
+		Model           string `gorm:"column:model"`
+		Total           int64  `gorm:"column:total"`
+		Success         int64  `gorm:"column:success"`
+		Error           int64  `gorm:"column:error_count"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			model,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			model,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			model,
+			COUNT(*) as total,
+			SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+			SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, model").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get model histogram: %w", err)
+	}
+
+	// Aggregate results into buckets with model breakdown
+	bucketMap := make(map[int64]*ModelHistogramBucket)
+	modelsSet := make(map[string]bool)
+
+	for _, r := range results {
+		modelsSet[r.Model] = true
+		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
+			bucket.ByModel[r.Model] = ModelUsageStats{
+				Total:   r.Total,
+				Success: r.Success,
+				Error:   r.Error,
+			}
+		} else {
+			bucketMap[r.BucketTimestamp] = &ModelHistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByModel: map[string]ModelUsageStats{
+					r.Model: {
+						Total:   r.Total,
+						Success: r.Success,
+						Error:   r.Error,
+					},
+				},
+			}
+		}
+	}
+
+	// Extract unique models
+	models := make([]string, 0, len(modelsSet))
+	for model := range modelsSet {
+		models = append(models, model)
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	// If no time range specified, just return what we have from the query
+	if len(allTimestamps) == 0 {
+		// Convert map to sorted slice
+		buckets := make([]ModelHistogramBucket, 0, len(bucketMap))
+		for _, bucket := range bucketMap {
+			buckets = append(buckets, *bucket)
+		}
+
+		// Sort by timestamp
+		for i := 0; i < len(buckets)-1; i++ {
+			for j := i + 1; j < len(buckets); j++ {
+				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
+					buckets[i], buckets[j] = buckets[j], buckets[i]
+				}
+			}
+		}
+
+		return &ModelHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+			Models:            models,
+		}, nil
+	}
+
+	// Fill in all buckets, using empty maps for missing timestamps
+	buckets := make([]ModelHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := bucketMap[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = ModelHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+				ByModel:   make(map[string]ModelUsageStats),
+			}
+		}
+	}
+
+	return &ModelHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+		Models:            models,
 	}, nil
 }
 

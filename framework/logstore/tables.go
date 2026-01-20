@@ -575,3 +575,51 @@ type HistogramResult struct {
 	Buckets           []HistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64             `json:"bucket_size_seconds"`
 }
+
+// TokenHistogramBucket represents a single time bucket for token usage
+type TokenHistogramBucket struct {
+	Timestamp        time.Time `json:"timestamp"`
+	PromptTokens     int64     `json:"prompt_tokens"`
+	CompletionTokens int64     `json:"completion_tokens"`
+	TotalTokens      int64     `json:"total_tokens"`
+}
+
+// TokenHistogramResult represents the token histogram query result
+type TokenHistogramResult struct {
+	Buckets           []TokenHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
+}
+
+// CostHistogramBucket represents a single time bucket for cost data
+type CostHistogramBucket struct {
+	Timestamp time.Time          `json:"timestamp"`
+	TotalCost float64            `json:"total_cost"`
+	ByModel   map[string]float64 `json:"by_model"`
+}
+
+// CostHistogramResult represents the cost histogram query result
+type CostHistogramResult struct {
+	Buckets           []CostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                 `json:"bucket_size_seconds"`
+	Models            []string              `json:"models"`
+}
+
+// ModelUsageStats represents usage statistics for a single model
+type ModelUsageStats struct {
+	Total   int64 `json:"total"`
+	Success int64 `json:"success"`
+	Error   int64 `json:"error"`
+}
+
+// ModelHistogramBucket represents a single time bucket for model usage
+type ModelHistogramBucket struct {
+	Timestamp time.Time                  `json:"timestamp"`
+	ByModel   map[string]ModelUsageStats `json:"by_model"`
+}
+
+// ModelHistogramResult represents the model histogram query result
+type ModelHistogramResult struct {
+	Buckets           []ModelHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
+	Models            []string               `json:"models"`
+}

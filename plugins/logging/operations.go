@@ -377,6 +377,21 @@ func (p *LoggerPlugin) GetHistogram(ctx context.Context, filters logstore.Search
 	return p.store.GetHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetTokenHistogram returns time-bucketed token usage for the given filters
+func (p *LoggerPlugin) GetTokenHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.TokenHistogramResult, error) {
+	return p.store.GetTokenHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetCostHistogram returns time-bucketed cost data with model breakdown for the given filters
+func (p *LoggerPlugin) GetCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.CostHistogramResult, error) {
+	return p.store.GetCostHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters
+func (p *LoggerPlugin) GetModelHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ModelHistogramResult, error) {
+	return p.store.GetModelHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	result, err := p.store.FindAll(ctx, "model IS NOT NULL AND model != ''", "model")

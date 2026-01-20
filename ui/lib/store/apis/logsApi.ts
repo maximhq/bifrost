@@ -12,6 +12,40 @@ import {
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
 
+// Helper function to build filter params
+function buildFilterParams(filters: LogFilters): Record<string, string | number> {
+	const params: Record<string, string | number> = {};
+
+	if (filters.providers && filters.providers.length > 0) {
+		params.providers = filters.providers.join(",");
+	}
+	if (filters.models && filters.models.length > 0) {
+		params.models = filters.models.join(",");
+	}
+	if (filters.status && filters.status.length > 0) {
+		params.status = filters.status.join(",");
+	}
+	if (filters.objects && filters.objects.length > 0) {
+		params.objects = filters.objects.join(",");
+	}
+	if (filters.selected_key_ids && filters.selected_key_ids.length > 0) {
+		params.selected_key_ids = filters.selected_key_ids.join(",");
+	}
+	if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
+		params.virtual_key_ids = filters.virtual_key_ids.join(",");
+	}
+	if (filters.start_time) params.start_time = filters.start_time;
+	if (filters.end_time) params.end_time = filters.end_time;
+	if (filters.min_latency) params.min_latency = filters.min_latency;
+	if (filters.max_latency) params.max_latency = filters.max_latency;
+	if (filters.min_tokens) params.min_tokens = filters.min_tokens;
+	if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+	if (filters.missing_cost_only) params.missing_cost_only = "true";
+	if (filters.content_search) params.content_search = filters.content_search;
+
+	return params;
+}
+
 export const logsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get logs with filters and pagination
@@ -210,11 +244,17 @@ export const {
 	useGetLogsQuery,
 	useGetLogsStatsQuery,
 	useGetLogsHistogramQuery,
+	useGetLogsTokenHistogramQuery,
+	useGetLogsCostHistogramQuery,
+	useGetLogsModelHistogramQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
 	useLazyGetLogsQuery,
 	useLazyGetLogsStatsQuery,
 	useLazyGetLogsHistogramQuery,
+	useLazyGetLogsTokenHistogramQuery,
+	useLazyGetLogsCostHistogramQuery,
+	useLazyGetLogsModelHistogramQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,

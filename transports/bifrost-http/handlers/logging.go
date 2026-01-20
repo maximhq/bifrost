@@ -44,6 +44,9 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
+	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
+	r.GET("/api/logs/histogram/cost", lib.ChainMiddlewares(h.getLogsCostHistogram, middlewares...))
+	r.GET("/api/logs/histogram/models", lib.ChainMiddlewares(h.getLogsModelHistogram, middlewares...))
 	r.GET("/api/logs/dropped", lib.ChainMiddlewares(h.getDroppedRequests, middlewares...))
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
@@ -404,6 +407,125 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	default:
 		return 60 // 1 minute buckets for < 2 hours
 	}
+}
+
+// parseHistogramFilters extracts common filter parameters from query args
+func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
+	filters := &logstore.SearchFilters{}
+
+	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
+		filters.Providers = parseCommaSeparated(providers)
+	}
+	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
+		filters.Models = parseCommaSeparated(models)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
+		filters.Objects = parseCommaSeparated(objects)
+	}
+	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
+		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
+	}
+	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
+		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
+			filters.StartTime = &t
+		}
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
+			filters.EndTime = &t
+		}
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		if f, err := strconv.ParseFloat(minLatency, 64); err == nil {
+			filters.MinLatency = &f
+		}
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		if val, err := strconv.ParseFloat(maxLatency, 64); err == nil {
+			filters.MaxLatency = &val
+		}
+	}
+	if minTokens := string(ctx.QueryArgs().Peek("min_tokens")); minTokens != "" {
+		if val, err := strconv.Atoi(minTokens); err == nil {
+			filters.MinTokens = &val
+		}
+	}
+	if maxTokens := string(ctx.QueryArgs().Peek("max_tokens")); maxTokens != "" {
+		if val, err := strconv.Atoi(maxTokens); err == nil {
+			filters.MaxTokens = &val
+		}
+	}
+	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
+		if val, err := strconv.ParseFloat(cost, 64); err == nil {
+			filters.MinCost = &val
+		}
+	}
+	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
+		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
+			filters.MaxCost = &val
+		}
+	}
+	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
+		if val, err := strconv.ParseBool(missingCost); err == nil {
+			filters.MissingCostOnly = val
+		}
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	return filters
+}
+
+// getLogsTokenHistogram handles GET /api/logs/histogram/tokens - Get time-bucketed token usage
+func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetTokenHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get token histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Token histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getLogsCostHistogram handles GET /api/logs/histogram/cost - Get time-bucketed cost data with model breakdown
+func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetCostHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get cost histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Cost histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getLogsModelHistogram handles GET /api/logs/histogram/models - Get time-bucketed model usage with success/error breakdown
+func (h *LoggingHandler) getLogsModelHistogram(ctx *fasthttp.RequestCtx) {
+	filters := parseHistogramFilters(ctx)
+	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+
+	result, err := h.logManager.GetModelHistogram(ctx, filters, bucketSizeSeconds)
+	if err != nil {
+		logger.Error("failed to get model histogram: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Model histogram calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, result)
 }
 
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
