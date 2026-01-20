@@ -1096,7 +1096,13 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 	var contents []Content
 	var systemInstruction *Content
 
-	for _, message := range messages {
+	// Track consecutive tool response messages to group them for parallel function calling
+	// According to Gemini docs, all function responses must be in a single message
+	var pendingToolResponseParts []*Part
+	// Map callID to function name for correlating tool responses with function declarations
+	callIDToFunctionName := make(map[string]string)
+
+	for i, message := range messages {
 		// Handle system messages separately - Gemini requires them in SystemInstruction field
 		if message.Role == schemas.ChatMessageRoleSystem {
 			if systemInstruction == nil {
@@ -1122,6 +1128,94 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			continue
 		}
 
+		// Check if this is a tool response message
+		isToolResponse := message.Role == schemas.ChatMessageRoleTool && message.ChatToolMessage != nil
+
+		// If we have pending tool responses and current message is NOT a tool response,
+		// flush the pending tool responses as a single Content (for parallel function calling)
+		if len(pendingToolResponseParts) > 0 && !isToolResponse {
+			contents = append(contents, Content{
+				Parts: pendingToolResponseParts,
+				Role:  "model", // Tool responses use "model" role in Gemini
+			})
+			pendingToolResponseParts = nil
+		}
+
+		// Handle tool response messages - collect them for grouping
+		// According to Gemini parallel function calling docs, multiple function responses
+		// must be sent in a single message with only functionResponse parts (no text parts)
+		if isToolResponse {
+			// Parse the response content
+			var responseData map[string]any
+			var contentStr string
+
+			if message.Content != nil {
+				// Extract content string from ContentStr or ContentBlocks
+				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+					contentStr = *message.Content.ContentStr
+				} else if message.Content.ContentBlocks != nil {
+					// Fallback: try to extract text from content blocks
+					var textParts []string
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							textParts = append(textParts, *block.Text)
+						}
+					}
+					if len(textParts) > 0 {
+						contentStr = strings.Join(textParts, "\n")
+					}
+				}
+			}
+
+			// Try to unmarshal as JSON
+			if contentStr != "" {
+				err := sonic.Unmarshal([]byte(contentStr), &responseData)
+				if err != nil {
+					// If unmarshaling fails, wrap the original string to preserve it
+					responseData = map[string]any{
+						"content": contentStr,
+					}
+				}
+			} else {
+				// If no content at all, use empty map to avoid nil
+				responseData = map[string]any{}
+			}
+
+			// Use ToolCallID if available, ensuring it's not nil
+			callID := ""
+			if message.ChatToolMessage.ToolCallID != nil {
+				callID = *message.ChatToolMessage.ToolCallID
+			}
+
+			// Get the function name from our mapping (fallback to callID if not found)
+			functionName := callID
+			if mappedName, ok := callIDToFunctionName[callID]; ok {
+				functionName = mappedName
+			}
+
+			// Add ONLY the functionResponse part (no text part)
+			// This ensures the number of functionResponse parts equals functionCall parts
+			pendingToolResponseParts = append(pendingToolResponseParts, &Part{
+				FunctionResponse: &FunctionResponse{
+					ID:       callID,
+					Name:     functionName,
+					Response: responseData,
+				},
+			})
+
+			// If this is the last message, flush pending tool responses
+			if i == len(messages)-1 && len(pendingToolResponseParts) > 0 {
+				contents = append(contents, Content{
+					Parts: pendingToolResponseParts,
+					Role:  "model",
+				})
+				pendingToolResponseParts = nil
+			}
+
+			continue // Skip the normal content handling below
+		}
+
+		// For non-tool messages, proceed with normal handling
 		var parts []*Part
 
 		// Handle content
@@ -1267,6 +1361,8 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							Args: argsMap,
 						},
 					}
+					// Store the mapping for later use in FunctionResponse
+					callIDToFunctionName[callID] = *toolCall.Function.Name
 
 					// check in reasoning details array for thought signature with id tool_call_<callID>
 					if len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
@@ -1288,59 +1384,6 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 					parts = append(parts, part)
 				}
 			}
-		}
-
-		// Handle tool response messages
-		if message.Role == schemas.ChatMessageRoleTool && message.ChatToolMessage != nil {
-			// Parse the response content
-			var responseData map[string]any
-			var contentStr string
-
-			if message.Content != nil {
-				// Extract content string from ContentStr or ContentBlocks
-				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
-					contentStr = *message.Content.ContentStr
-				} else if message.Content.ContentBlocks != nil {
-					// Fallback: try to extract text from content blocks
-					var textParts []string
-					for _, block := range message.Content.ContentBlocks {
-						if block.Text != nil && *block.Text != "" {
-							textParts = append(textParts, *block.Text)
-						}
-					}
-					if len(textParts) > 0 {
-						contentStr = strings.Join(textParts, "\n")
-					}
-				}
-			}
-
-			// Try to unmarshal as JSON
-			if contentStr != "" {
-				err := sonic.Unmarshal([]byte(contentStr), &responseData)
-				if err != nil {
-					// If unmarshaling fails, wrap the original string to preserve it
-					responseData = map[string]any{
-						"content": contentStr,
-					}
-				}
-			} else {
-				// If no content at all, use empty map to avoid nil
-				responseData = map[string]any{}
-			}
-
-			// Use ToolCallID if available, ensuring it's not nil
-			callID := ""
-			if message.ChatToolMessage.ToolCallID != nil {
-				callID = *message.ChatToolMessage.ToolCallID
-			}
-
-			parts = append(parts, &Part{
-				FunctionResponse: &FunctionResponse{
-					ID:       callID,
-					Name:     callID, // Gemini uses name for correlation
-					Response: responseData,
-				},
-			})
 		}
 
 		if len(parts) > 0 {

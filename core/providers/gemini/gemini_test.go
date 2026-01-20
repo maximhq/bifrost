@@ -890,6 +890,547 @@ func TestResponsesStructuredOutputConversion(t *testing.T) {
 	}
 }
 
+// TestParallelFunctionCallingConversion tests that multiple consecutive tool responses are properly grouped
+func TestParallelFunctionCallingConversion(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *schemas.BifrostChatRequest
+		validate func(t *testing.T, result *gemini.GeminiGenerationRequest)
+	}{
+		{
+			name: "SingleToolResponse_NotGrouped",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("What's the weather?"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									ID:   schemas.Ptr("call_1"),
+									Type: schemas.Ptr("function"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("get_weather"),
+										Arguments: `{"location":"Tokyo"}`,
+									},
+								},
+							},
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{
+							ToolCallID: schemas.Ptr("call_1"),
+						},
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr(`{"temperature":22,"condition":"sunny"}`),
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.NotNil(t, result)
+				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, tool response")
+
+				// Validate tool response content (last Content)
+				toolResponseContent := result.Contents[2]
+				assert.Equal(t, "model", toolResponseContent.Role, "Tool responses use 'model' role in Gemini")
+				require.Len(t, toolResponseContent.Parts, 1, "Should have exactly 1 part for single tool response")
+
+				// Verify ONLY functionResponse part (no text part)
+				part := toolResponseContent.Parts[0]
+				assert.Empty(t, part.Text, "Tool response should NOT have text part")
+				require.NotNil(t, part.FunctionResponse, "Tool response must have functionResponse")
+				assert.Equal(t, "call_1", part.FunctionResponse.ID)
+				assert.Equal(t, "get_weather", part.FunctionResponse.Name)
+			},
+		},
+		{
+			name: "ParallelFunctionCalling_TwoToolResponses_Grouped",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("What's the weather and time in Tokyo?"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									ID:   schemas.Ptr("call_1"),
+									Type: schemas.Ptr("function"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("get_weather"),
+										Arguments: `{"location":"Tokyo"}`,
+									},
+								},
+								{
+									ID:   schemas.Ptr("call_2"),
+									Type: schemas.Ptr("function"),
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name:      schemas.Ptr("get_time"),
+										Arguments: `{"timezone":"Asia/Tokyo"}`,
+									},
+								},
+							},
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{
+							ToolCallID: schemas.Ptr("call_1"),
+						},
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr(`{"temperature":22,"condition":"sunny"}`),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{
+							ToolCallID: schemas.Ptr("call_2"),
+						},
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr(`{"time":"10:30 AM","date":"2026-01-20"}`),
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.NotNil(t, result)
+				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, grouped tool responses")
+
+				// Validate grouped tool responses (last Content)
+				toolResponseContent := result.Contents[2]
+				assert.Equal(t, "model", toolResponseContent.Role, "Grouped tool responses use 'model' role")
+				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 tool responses (parallel calling)")
+
+				// Verify first tool response - ONLY functionResponse
+				part1 := toolResponseContent.Parts[0]
+				assert.Empty(t, part1.Text, "Tool response 1 should NOT have text part")
+				require.NotNil(t, part1.FunctionResponse, "Tool response 1 must have functionResponse")
+				assert.Equal(t, "call_1", part1.FunctionResponse.ID)
+				assert.Equal(t, "get_weather", part1.FunctionResponse.Name)
+
+				// Verify second tool response - ONLY functionResponse
+				part2 := toolResponseContent.Parts[1]
+				assert.Empty(t, part2.Text, "Tool response 2 should NOT have text part")
+				require.NotNil(t, part2.FunctionResponse, "Tool response 2 must have functionResponse")
+				assert.Equal(t, "call_2", part2.FunctionResponse.ID)
+				assert.Equal(t, "get_time", part2.FunctionResponse.Name)
+			},
+		},
+		{
+			name: "ParallelFunctionCalling_ThreeToolResponses_AllGrouped",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Get weather, time, and news for Tokyo"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{}`}},
+								{ID: schemas.Ptr("call_2"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_time"), Arguments: `{}`}},
+								{ID: schemas.Ptr("call_3"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_news"), Arguments: `{}`}},
+							},
+						},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"temperature":22}`)},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_2")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"time":"10:30"}`)},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_3")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"headline":"Breaking"}`)},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, grouped tool responses")
+
+				toolResponseContent := result.Contents[2]
+				assert.Equal(t, "model", toolResponseContent.Role)
+				require.Len(t, toolResponseContent.Parts, 3, "Should have exactly 3 parts for 3 tool responses")
+
+				// Verify all are functionResponse only (no text)
+				for i, part := range toolResponseContent.Parts {
+					assert.Empty(t, part.Text, "Tool response %d should NOT have text part", i+1)
+					require.NotNil(t, part.FunctionResponse, "Tool response %d must have functionResponse", i+1)
+				}
+			},
+		},
+		{
+			name: "MixedMessages_ToolResponsesFollowedByUser_ProperGrouping",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("First question"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("tool1"), Arguments: `{}`}},
+								{ID: schemas.Ptr("call_2"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("tool2"), Arguments: `{}`}},
+							},
+						},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"result":"1"}`)},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_2")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"result":"2"}`)},
+					},
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Follow up question"),
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Contents, 4, "Should have 4 Contents: user, assistant with tool calls, grouped tool responses, user")
+
+				// First user message
+				assert.Equal(t, "user", result.Contents[0].Role)
+
+				// Assistant with tool calls
+				assert.Equal(t, "model", result.Contents[1].Role)
+
+				// Grouped tool responses
+				toolContent := result.Contents[2]
+				assert.Equal(t, "model", toolContent.Role)
+				require.Len(t, toolContent.Parts, 2, "Tool responses should be grouped")
+				for _, part := range toolContent.Parts {
+					assert.NotNil(t, part.FunctionResponse)
+					assert.Empty(t, part.Text)
+				}
+
+				// Second user message (should trigger flushing of tool responses)
+				assert.Equal(t, "user", result.Contents[3].Role)
+			},
+		},
+		{
+			name: "ToolResponsesAtEnd_ProperlyFlushed",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Question"),
+						},
+					},
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("tool1"), Arguments: `{}`}},
+								{ID: schemas.Ptr("call_2"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("tool2"), Arguments: `{}`}},
+							},
+						},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"result":"1"}`)},
+					},
+					{
+						Role:            schemas.ChatMessageRoleTool,
+						ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_2")},
+						Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{"result":"2"}`)},
+					},
+					// No message after tool responses - they're at the end
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Contents, 3, "Should have 3 Contents: user, assistant with tool calls, grouped tool responses")
+
+				// Grouped tool responses at the end should still be flushed
+				toolContent := result.Contents[2]
+				assert.Equal(t, "model", toolContent.Role)
+				require.Len(t, toolContent.Parts, 2, "Tool responses at end should be grouped and flushed")
+				for _, part := range toolContent.Parts {
+					assert.NotNil(t, part.FunctionResponse)
+					assert.Empty(t, part.Text)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ToGeminiChatCompletionRequest(tt.input)
+			require.NotNil(t, result, "Conversion should not return nil")
+			tt.validate(t, result)
+		})
+	}
+}
+
+// TestResponsesAPIParallelFunctionCalling tests parallel function calling for Responses API
+func TestResponsesAPIParallelFunctionCalling(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *schemas.BifrostResponsesRequest
+		validate func(t *testing.T, result *gemini.GeminiGenerationRequest)
+	}{
+		{
+			name: "ResponsesAPI_ParallelFunctionCalling_TwoOutputs_Grouped",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("What's the weather and time?"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{"location":"Tokyo"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_2"),
+							Name:      schemas.Ptr("get_time"),
+							Arguments: schemas.Ptr(`{"timezone":"Asia/Tokyo"}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Name:   schemas.Ptr("get_weather"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature":22,"condition":"sunny"}`),
+							},
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_2"),
+							Name:   schemas.Ptr("get_time"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr(`{"time":"10:30 AM"}`),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.NotNil(t, result)
+
+				// Find the Content with function responses
+				var toolResponseContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
+						toolResponseContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, toolResponseContent, "Should have a Content with function responses")
+				assert.Equal(t, "model", toolResponseContent.Role, "Function responses use 'model' role")
+				require.Len(t, toolResponseContent.Parts, 2, "Should have exactly 2 parts for 2 function outputs (parallel calling)")
+
+				// Verify first function response - ONLY functionResponse
+				part1 := toolResponseContent.Parts[0]
+				assert.Empty(t, part1.Text, "Function response 1 should NOT have text part")
+				require.NotNil(t, part1.FunctionResponse, "Function response 1 must have functionResponse")
+				assert.Equal(t, "call_1", part1.FunctionResponse.ID)
+				assert.Equal(t, "get_weather", part1.FunctionResponse.Name)
+
+				// Verify second function response - ONLY functionResponse
+				part2 := toolResponseContent.Parts[1]
+				assert.Empty(t, part2.Text, "Function response 2 should NOT have text part")
+				require.NotNil(t, part2.FunctionResponse, "Function response 2 must have functionResponse")
+				assert.Equal(t, "call_2", part2.FunctionResponse.ID)
+				assert.Equal(t, "get_time", part2.FunctionResponse.Name)
+			},
+		},
+		{
+			name: "ResponsesAPI_SingleFunctionOutput_NotGrouped",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("What's the weather?"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("get_weather"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Name:   schemas.Ptr("get_weather"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr(`{"temperature":22}`),
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				// Find the Content with function response
+				var toolResponseContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) > 0 && content.Parts[0].FunctionResponse != nil {
+						toolResponseContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, toolResponseContent)
+				assert.Equal(t, "model", toolResponseContent.Role)
+				require.Len(t, toolResponseContent.Parts, 1, "Single function output should have 1 part")
+
+				// Verify ONLY functionResponse part (no text/content)
+				part := toolResponseContent.Parts[0]
+				assert.Empty(t, part.Text, "Function response should NOT have text part")
+				require.NotNil(t, part.FunctionResponse, "Function response must have functionResponse")
+			},
+		},
+		{
+			name: "ResponsesAPI_MixedMessages_ProperGrouping",
+			input: &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.0-flash",
+				Input: []schemas.ResponsesMessage{
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("First question"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_1"),
+							Name:      schemas.Ptr("tool1"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID:    schemas.Ptr("call_2"),
+							Name:      schemas.Ptr("tool2"),
+							Arguments: schemas.Ptr(`{}`),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_1"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr(`{"result":"1"}`),
+							},
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("call_2"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{
+								ResponsesToolCallOutputStr: schemas.Ptr(`{"result":"2"}`),
+							},
+						},
+					},
+					{
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Follow up question"),
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				// Find grouped function responses
+				var groupedToolContent *gemini.Content
+				for i := range result.Contents {
+					content := &result.Contents[i]
+					if len(content.Parts) >= 2 && content.Parts[0].FunctionResponse != nil {
+						groupedToolContent = content
+						break
+					}
+				}
+
+				require.NotNil(t, groupedToolContent, "Should have grouped function responses")
+				assert.Equal(t, "model", groupedToolContent.Role)
+				require.Len(t, groupedToolContent.Parts, 2, "Function outputs should be grouped before user message")
+
+				// Verify both are functionResponse only
+				for _, part := range groupedToolContent.Parts {
+					assert.Empty(t, part.Text)
+					assert.NotNil(t, part.FunctionResponse)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ToGeminiResponsesRequest(tt.input)
+			require.NotNil(t, result, "Responses API conversion should not return nil")
+			tt.validate(t, result)
+		})
+	}
+}
+
 // TestBifrostResponsesToGeminiToolConversion tests the conversion of tools from Bifrost Responses API to Gemini format
 func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 	tests := []struct {

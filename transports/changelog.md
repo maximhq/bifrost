@@ -2,3 +2,4 @@
 - feat: configure custom CORS headers, allowing clients to specify additional headers that should be allowed in cross-origin requests.
 - feat: support for listing models from specific provider or all providers via a header flag x-bf-list-models-provider from integrations.
 - feat: added support for gemini google search tool
+- fix: function response part handling in gemini

@@ -2655,6 +2655,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	var contents []Content
 	var systemInstruction *Content
 
+	// Track consecutive function call output messages to group them for parallel function calling
+	// According to Gemini docs, all function responses must be in a single message
+	var pendingFunctionResponseParts []*Part
+
 	for i, msg := range messages {
 		// Skip standalone reasoning messages (they're handled as part of function calls)
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeReasoning && msg.ResponsesReasoning != nil {
@@ -2690,6 +2694,19 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 			continue
 		}
 
+		// Check if this is a function call output message
+		isFunctionOutput := msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput && msg.ResponsesToolMessage != nil
+
+		// If we have pending function responses and current message is NOT a function output,
+		// flush the pending responses as a single Content (for parallel function calling)
+		if len(pendingFunctionResponseParts) > 0 && !isFunctionOutput {
+			contents = append(contents, Content{
+				Parts: pendingFunctionResponseParts,
+				Role:  "model", // Function responses use "model" role in Gemini
+			})
+			pendingFunctionResponseParts = nil
+		}
+
 		// Handle regular messages
 		content := Content{}
 
@@ -2705,28 +2722,8 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 				content.Role = "user"
 			}
 		}
-		// Convert message content
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
-				content.Parts = append(content.Parts, &Part{
-					Text: *msg.Content.ContentStr,
-				})
-			}
 
-			if msg.Content.ContentBlocks != nil {
-				for _, block := range msg.Content.ContentBlocks {
-					part, err := convertContentBlockToGeminiPart(block)
-					if err != nil {
-						return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
-					}
-					if part != nil {
-						content.Parts = append(content.Parts, part)
-					}
-				}
-			}
-		}
-
-		// Handle tool calls from assistant messages
+		// Handle tool calls/responses
 		if msg.ResponsesToolMessage != nil && msg.Type != nil {
 			switch *msg.Type {
 			case schemas.ResponsesMessageTypeFunctionCall:
@@ -2780,8 +2777,11 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					content.Parts = append(content.Parts, part)
 				}
+
 			case schemas.ResponsesMessageTypeFunctionCallOutput:
-				// Convert function response to Gemini FunctionResponse
+				// Convert function response - collect for grouping
+				// According to Gemini parallel function calling docs, multiple function responses
+				// must be sent in a single message with only functionResponse parts (no text/content parts)
 				if msg.ResponsesToolMessage.CallID != nil {
 					responseMap := make(map[string]any)
 
@@ -2808,7 +2808,42 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							ID:       *msg.ResponsesToolMessage.CallID,
 						},
 					}
-					content.Parts = append(content.Parts, part)
+					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)
+
+					// If this is the last message, flush pending responses
+					if i == len(messages)-1 && len(pendingFunctionResponseParts) > 0 {
+						contents = append(contents, Content{
+							Parts: pendingFunctionResponseParts,
+							Role:  "model",
+						})
+						pendingFunctionResponseParts = nil
+					}
+
+					continue // Skip normal content handling
+				}
+			}
+		}
+
+		// For non-function-output messages, convert message content normally
+		if !isFunctionOutput {
+			// Convert message content
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					content.Parts = append(content.Parts, &Part{
+						Text: *msg.Content.ContentStr,
+					})
+				}
+
+				if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						part, err := convertContentBlockToGeminiPart(block)
+						if err != nil {
+							return nil, nil, fmt.Errorf("failed to convert message content block: %w", err)
+						}
+						if part != nil {
+							content.Parts = append(content.Parts, part)
+						}
+					}
 				}
 			}
 		}
