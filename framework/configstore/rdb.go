@@ -470,7 +470,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			// ConfigHash should only be set during initial sync from config.json,
 			// not when updating via UI (so DB updates aren't overwritten on restart)
 			dbKey.ID = existingKey.ID
-			dbKey.Enabled = existingKey.Enabled
 			dbKey.ConfigHash = existingKey.ConfigHash
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)

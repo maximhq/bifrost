@@ -1,0 +1,1 @@
+- fix: provider key enabled/disabled state now persists across restarts
