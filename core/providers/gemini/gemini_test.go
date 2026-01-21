@@ -88,6 +88,107 @@ func TestGemini(t *testing.T) {
 	client.Shutdown()
 }
 
+// TestEmptyCandidatesRegression is a regression test for PR #1018
+// Ensures empty/filtered candidates never return empty choices arrays
+func TestEmptyCandidatesRegression(t *testing.T) {
+	tests := []struct {
+		name         string
+		response     *gemini.GenerateContentResponse
+		isStream     bool
+		expectFinish string
+	}{
+		{
+			name: "EmptyCandidates_NonStream",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-1",
+				ModelVersion: "gemini-2.0-flash",
+				Candidates:   []*gemini.Candidate{}, // Empty - the bug case
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount: 10,
+					TotalTokenCount:  10,
+				},
+			},
+			isStream:     false,
+			expectFinish: "stop",
+		},
+		{
+			name: "EmptyCandidates_Stream",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-2",
+				ModelVersion: "gemini-2.0-flash",
+				Candidates:   []*gemini.Candidate{},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount: 10,
+					TotalTokenCount:  10,
+				},
+			},
+			isStream:     true,
+			expectFinish: "stop",
+		},
+		{
+			name: "SafetyFilter_NonStream",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-3",
+				ModelVersion: "gemini-2.0-flash",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonSafety,
+						Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{}},
+					},
+				},
+			},
+			isStream:     false,
+			expectFinish: "content_filter",
+		},
+		{
+			name: "MalformedFunctionCall_Stream",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-4",
+				ModelVersion: "gemini-2.0-flash",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonMalformedFunctionCall,
+						Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{}},
+					},
+				},
+			},
+			isStream:     true,
+			expectFinish: "stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bifrostResp *schemas.BifrostChatResponse
+
+			if tt.isStream {
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+			} else {
+				bifrostResp = tt.response.ToBifrostChatResponse()
+			}
+
+			// Critical: Choices must NEVER be empty (this was the PR #1018 bug)
+			require.NotNil(t, bifrostResp, "Response should not be nil")
+			require.NotEmpty(t, bifrostResp.Choices, "Empty choices array")
+			require.Len(t, bifrostResp.Choices, 1, "Should have exactly one error choice")
+
+			// Verify error signal
+			choice := bifrostResp.Choices[0]
+			require.NotNil(t, choice.FinishReason, "finish_reason must be set")
+			assert.Equal(t, tt.expectFinish, *choice.FinishReason, "finish_reason should signal the error type")
+
+			// Verify message structure exists
+			if !tt.isStream {
+				require.NotNil(t, choice.ChatNonStreamResponseChoice, "Non-stream should have message")
+				require.NotNil(t, choice.ChatNonStreamResponseChoice.Message, "Should have message object")
+				assert.Equal(t, schemas.ChatMessageRoleAssistant, choice.ChatNonStreamResponseChoice.Message.Role)
+			}
+		})
+	}
+}
+
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
 func TestBifrostToGeminiToolConversion(t *testing.T) {
 	tests := []struct {

@@ -483,7 +483,7 @@ var (
 		FinishReasonBlocklist:             "content_filter",
 		FinishReasonProhibitedContent:     "content_filter",
 		FinishReasonSPII:                  "content_filter",
-		FinishReasonMalformedFunctionCall: "tool_calls",
+		FinishReasonMalformedFunctionCall: "stop",
 		FinishReasonImageSafety:           "content_filter",
 		FinishReasonUnexpectedToolCall:    "tool_calls",
 	}

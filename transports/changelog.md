@@ -10,3 +10,4 @@
 - fix: anthropic and gemini responses stream event cycle
 - fix: provider key enabled/disabled state now persists across restarts
 - fix: nil check for value in SetAttribute function call in trace.go
+- fix: return proper error signals for gemini filtered/malformed function call responses
