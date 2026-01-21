@@ -2169,3 +2169,293 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
+
+// TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_EmptyBlocks tests that
+// empty ContentBlocks are not created when required fields are missing, preventing the Bedrock API error:
+// "ContentBlock object at messages.1.content.0 must set one of the following keys: text, image, toolUse, toolResult, document, video, cachePoint, reasoningContent, citationsContent, searchResult."
+func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_EmptyBlocks(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          *schemas.BifrostResponsesResponse
+		expectedBlocks int // Expected number of ContentBlocks in the output
+		description    string
+	}{
+		{
+			name: "ImageBlockWithNilImageURL_ShouldNotCreateEmptyBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+									ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+										ImageURL: nil, // Missing ImageURL - should not create empty block
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 0,
+			description:    "Image block with nil ImageURL should not create an empty ContentBlock",
+		},
+		{
+			name: "ImageBlockWithNilImageBlock_ShouldNotCreateEmptyBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+									ResponsesInputMessageContentBlockImage: nil, // Missing image block - should not create empty block
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 0,
+			description:    "Image block with nil ResponsesInputMessageContentBlockImage should not create an empty ContentBlock",
+		},
+		{
+			name: "ReasoningBlockWithNilText_ShouldNotCreateEmptyBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+									Text: nil, // Missing Text - should not create empty block
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 0,
+			description:    "Reasoning block with nil Text should not create an empty ContentBlock",
+		},
+		{
+			name: "FileBlockWithNilFileData_ShouldNotCreateEmptyBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+									ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+										FileData: nil, // Missing FileData - should not create empty block
+										Filename: schemas.Ptr("test.pdf"),
+										FileType: schemas.Ptr("application/pdf"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 0,
+			description:    "File block with nil FileData should not create an empty ContentBlock",
+		},
+		{
+			name: "FileBlockWithNilFileBlock_ShouldNotCreateEmptyBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+									ResponsesInputMessageContentBlockFile: nil, // Missing file block - should not create empty block
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 0,
+			description:    "File block with nil ResponsesInputMessageContentBlockFile should not create an empty ContentBlock",
+		},
+		{
+			name: "ValidTextBlock_ShouldCreateBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: schemas.Ptr("Valid text content"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 1,
+			description:    "Valid text block should create a ContentBlock",
+		},
+		{
+			name: "ValidReasoningBlock_ShouldCreateBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+									Text: schemas.Ptr("Valid reasoning content"),
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 1,
+			description:    "Valid reasoning block should create a ContentBlock",
+		},
+		{
+			name: "ValidFileBlock_ShouldCreateBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+									ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+										FileData: schemas.Ptr("dGVzdCBmaWxlIGRhdGE="), // base64 encoded "test file data"
+										Filename: schemas.Ptr("test.pdf"),
+										FileType: schemas.Ptr("application/pdf"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 1,
+			description:    "Valid file block should create a ContentBlock",
+		},
+		{
+			name: "MixedValidAndInvalidBlocks_ShouldOnlyCreateValidBlocks",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: schemas.Ptr("Valid text"),
+								},
+								{
+									Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+									ResponsesInputMessageContentBlockImage: nil, // Invalid - should be skipped
+								},
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+									Text: schemas.Ptr("Valid reasoning"),
+								},
+								{
+									Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+									ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+										FileData: nil, // Invalid - should be skipped
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 2, // Only valid text and reasoning blocks
+			description:    "Mixed valid and invalid blocks should only create valid ContentBlocks",
+		},
+		{
+			name: "CacheControlBlock_ShouldCreateCachePointBlock",
+			input: &schemas.BifrostResponsesResponse{
+				CreatedAt: 1234567890,
+				Output: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: schemas.Ptr("Text with cache control"),
+									CacheControl: &schemas.CacheControl{
+										Type: schemas.CacheControlTypeEphemeral,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedBlocks: 2, // Text block + CachePoint block
+			description:    "ContentBlock with CacheControl should create both content and CachePoint blocks",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual, err := bedrock.ToBedrockConverseResponse(tt.input)
+			require.NoError(t, err, "Conversion should not error")
+			require.NotNil(t, actual, "Response should not be nil")
+			require.NotNil(t, actual.Output, "Output should not be nil")
+			require.NotNil(t, actual.Output.Message, "Message should not be nil")
+
+			actualBlocks := len(actual.Output.Message.Content)
+			assert.Equal(t, tt.expectedBlocks, actualBlocks, tt.description)
+
+			// Verify that all created blocks have at least one required field set
+			for i, block := range actual.Output.Message.Content {
+				hasRequiredField := block.Text != nil ||
+					block.Image != nil ||
+					block.Document != nil ||
+					block.ToolUse != nil ||
+					block.ToolResult != nil ||
+					block.ReasoningContent != nil ||
+					block.CachePoint != nil ||
+					block.JSON != nil ||
+					block.GuardContent != nil
+
+				assert.True(t, hasRequiredField,
+					"ContentBlock at index %d must have at least one required field set (text, image, toolUse, toolResult, document, video, cachePoint, reasoningContent, citationsContent, searchResult)",
+					i)
+			}
+		})
+	}
+}

@@ -5,3 +5,6 @@
 - feat: added support for gemini google search tool
 - fix: function response part handling in gemini
 - fix: call enrich error in vertex to return raw request and response in bifrost errors
+- fix: append valid/non-empty content blocks to form bedrock requests
+- fix: handle multiple data types in bedrock tool result
+- fix: anthropic and gemini responses stream event cycle

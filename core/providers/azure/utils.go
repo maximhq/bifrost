@@ -27,6 +27,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		}
 		// Replace model with deployment
 		requestBody["model"] = deployment
+		delete(requestBody, "fallbacks")
 		// Add stream if not present
 		if isStreaming {
 			requestBody["stream"] = true

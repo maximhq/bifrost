@@ -27,6 +27,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		}
 		delete(requestBody, "model")
 		delete(requestBody, "region")
+		delete(requestBody, "fallbacks")
 		// Add anthropic_version if not present
 		if _, exists := requestBody["anthropic_version"]; !exists {
 			requestBody["anthropic_version"] = DefaultVertexAnthropicVersion

@@ -1209,14 +1209,25 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
 				CallID:    &toolUseID,
 				Name:      &part.FunctionCall.Name,
-				Arguments: &argsJSON,
+				Arguments: schemas.Ptr(""),
 			},
 		},
 	}
 
 	responses = append(responses, addedEvent)
 
-	// Gemini sends complete function calls, so immediately emit done event
+	// Generate synthetic argument deltas to simulate streaming behavior
+	if argsJSON != "" {
+		deltaEvents := generateSyntheticFunctionCallArgumentDeltas(
+			argsJSON,
+			&outputIndex,
+			&toolUseID,
+			sequenceNumber+len(responses),
+		)
+		responses = append(responses, deltaEvents...)
+	}
+
+	// Gemini sends complete function calls, so emit done event after synthetic deltas
 	doneEvent := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 		SequenceNumber: sequenceNumber + len(responses),
@@ -1232,6 +1243,27 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 	}
 
 	responses = append(responses, doneEvent)
+
+	outputItemDone := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ItemID:         &toolUseID,
+		Item: &schemas.ResponsesMessage{
+			ID:     &toolUseID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status: schemas.Ptr("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    &toolUseID,
+				Name:      &part.FunctionCall.Name,
+				Arguments: &argsJSON,
+			},
+		},
+	}
+
+	responses = append(responses, outputItemDone)
+
+	delete(state.ToolArgumentBuffers, outputIndex)
 
 	state.HasStartedToolCall = true
 
@@ -3324,4 +3356,31 @@ func emitAnnotationsFromGroundingSupports(
 	}
 
 	return responses
+}
+
+// generateSyntheticFunctionCallArgumentDeltas creates synthetic FunctionCallArgumentsDelta events
+// from complete JSON arguments to simulate streaming behavior for providers that don't natively stream
+func generateSyntheticFunctionCallArgumentDeltas(argumentsJSON string, outputIndex *int, itemID *string, baseSequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	var events []*schemas.BifrostResponsesStreamResponse
+
+	// Chunk size for synthetic streaming (matching realistic streaming patterns)
+	chunkSize := 8 // Small chunks to simulate realistic streaming
+
+	// Break the JSON into chunks
+	runes := []rune(argumentsJSON)
+	for i := 0; i < len(runes); i += chunkSize {
+		end := min(i+chunkSize, len(runes))
+
+		chunk := string(runes[i:end])
+		deltaEvent := &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			SequenceNumber: baseSequenceNumber + len(events),
+			OutputIndex:    outputIndex,
+			ItemID:         itemID,
+			Delta:          &chunk,
+		}
+		events = append(events, deltaEvent)
+	}
+
+	return events
 }

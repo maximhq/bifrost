@@ -430,14 +430,22 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 				})
 			} else {
 				// Use the parsed JSON object
-				// Bedrock does not consider a json array valid for this field, so we wrap it first.
-				if _, isArray := parsedOutput.([]any); isArray {
+				// Bedrock does not accept primitives or arrays directly in the json field
+				switch v := parsedOutput.(type) {
+				case map[string]any:
+					// Objects are valid as-is
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: map[string]any{"results": parsedOutput},
+						JSON: v,
 					})
-				} else {
+				case []any:
+					// Arrays need to be wrapped
 					toolResultContent = append(toolResultContent, BedrockContentBlock{
-						JSON: parsedOutput,
+						JSON: map[string]any{"results": v},
+					})
+				default:
+					// Primitives (string, number, boolean, null) need to be wrapped
+					toolResultContent = append(toolResultContent, BedrockContentBlock{
+						JSON: map[string]any{"value": v},
 					})
 				}
 			}
