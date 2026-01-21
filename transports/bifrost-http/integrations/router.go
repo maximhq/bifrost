@@ -438,6 +438,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
+		// Set available providers to context
+		availableProviders := g.handlerStore.GetAvailableProviders()
+		bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodHead {
 			if config.RequestParser != nil {

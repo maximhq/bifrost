@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -40,6 +41,8 @@ type HandlerStore interface {
 	ShouldAllowDirectKeys() bool
 	// GetHeaderFilterConfig returns the global header filter configuration
 	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
+	// GetAvailableProviders returns the list of available providers
+	GetAvailableProviders() []schemas.ModelProvider
 }
 
 // Retry backoff constants for validation
@@ -2802,12 +2805,31 @@ func (c *Config) RemoveProviderKeysFromSemanticCacheConfig(config *configstoreTa
 	return nil
 }
 
+func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	availableProviders := []schemas.ModelProvider{}
+	for provider, config := range c.Providers {
+		// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
+		for _, key := range config.Keys {
+			if key.Value.GetValue() != "" {
+				if key.Enabled != nil && !*key.Enabled {
+					continue
+				}
+				availableProviders = append(availableProviders, provider)
+				break
+			}
+		}
+	}
+	return availableProviders
+}
+
 func DeepCopy[T any](in T) (T, error) {
 	var out T
-	b, err := json.Marshal(in)
+	b, err := sonic.Marshal(in)
 	if err != nil {
 		return out, err
 	}
-	err = json.Unmarshal(b, &out)
+	err = sonic.Unmarshal(b, &out)
 	return out, err
 }

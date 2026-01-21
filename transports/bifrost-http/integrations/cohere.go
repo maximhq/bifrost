@@ -36,7 +36,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereChatRequest); ok {
 				return &schemas.BifrostRequest{
-					ChatRequest: cohereReq.ToBifrostChatRequest(),
+					ChatRequest: cohereReq.ToBifrostChatRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")
@@ -77,7 +77,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereEmbeddingRequest); ok {
 				return &schemas.BifrostRequest{
-					EmbeddingRequest: cohereReq.ToBifrostEmbeddingRequest(),
+					EmbeddingRequest: cohereReq.ToBifrostEmbeddingRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid embedding request type")
@@ -105,7 +105,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if cohereReq, ok := req.(*cohere.CohereCountTokensRequest); ok {
 				return &schemas.BifrostRequest{
-					CountTokensRequest: cohereReq.ToBifrostResponsesRequest(),
+					CountTokensRequest: cohereReq.ToBifrostResponsesRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid count tokens request type")

@@ -1709,3 +1709,28 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Clear the deferred span from TraceStore
 	tracer.ClearDeferredSpan(traceID)
 }
+
+// CheckAndSetDefaultProvider checks if the default provider should be used based on the context.
+// It returns the default provider if it should be used, otherwise it returns an empty string.
+// Checks if the direct key is set in the context, or if key selection is skipped.
+// Or if the available providers are set in the context and the default provider is in the list.
+func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
+	if ctx != nil {
+		if ctx.Value(schemas.BifrostContextKeyDirectKey) != nil || ctx.Value(schemas.BifrostContextKeySkipKeySelection) != nil {
+			return defaultProvider
+		}
+		if ctx.Value(schemas.BifrostContextKeyAvailableProviders) != nil {
+			availableProviders, ok := ctx.Value(schemas.BifrostContextKeyAvailableProviders).([]schemas.ModelProvider)
+			if !ok || len(availableProviders) == 0 {
+				return ""
+			}
+			logger.Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
+			if slices.Contains(availableProviders, defaultProvider) {
+				return defaultProvider
+			}
+			return ""
+		}
+		return defaultProvider
+	}
+	return defaultProvider
+}

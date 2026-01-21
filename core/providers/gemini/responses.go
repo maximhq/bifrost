@@ -12,12 +12,12 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (request *GeminiGenerationRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
+func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
 
 	// Create the BifrostResponsesRequest
 	bifrostReq := &schemas.BifrostResponsesRequest{

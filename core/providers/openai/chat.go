@@ -8,8 +8,8 @@ import (
 )
 
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
-func (request *OpenAIChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
+func (request *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,

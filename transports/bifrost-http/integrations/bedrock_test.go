@@ -16,6 +16,7 @@ import (
 type mockHandlerStore struct {
 	allowDirectKeys    bool
 	headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig
+	availableProviders []schemas.ModelProvider
 }
 
 func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
@@ -24,6 +25,10 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 
 func (m *mockHandlerStore) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
 	return m.headerFilterConfig
+}
+
+func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
+	return m.availableProviders
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

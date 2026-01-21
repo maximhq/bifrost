@@ -120,7 +120,7 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 				// Mark as streaming request
 				bedrockReq.Stream = true
 				return &schemas.BifrostRequest{
-					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(),
+					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")
@@ -163,7 +163,7 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockTextCompletionRequest); ok {
 				return &schemas.BifrostRequest{
-					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(),
+					TextCompletionRequest: bedrockReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")

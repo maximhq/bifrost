@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -46,12 +47,12 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 }
 
 // ToBifrostTextCompletionRequest converts an Anthropic text request back to Bifrost format
-func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
+func (req *AnthropicTextRequest) ToBifrostTextCompletionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTextCompletionRequest {
 	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, schemas.Anthropic)
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
 
 	bifrostReq := &schemas.BifrostTextCompletionRequest{
 		Provider: provider,

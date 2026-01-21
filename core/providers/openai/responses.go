@@ -8,12 +8,12 @@ import (
 )
 
 // ToBifrostResponsesRequest converts an OpenAI responses request to Bifrost format
-func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
+func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
 	input := request.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {

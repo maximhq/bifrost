@@ -118,7 +118,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
 					return &schemas.BifrostRequest{
-						TextCompletionRequest: openaiReq.ToBifrostTextCompletionRequest(),
+						TextCompletionRequest: openaiReq.ToBifrostTextCompletionRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
@@ -167,7 +167,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 					return &schemas.BifrostRequest{
-						ChatRequest: openaiReq.ToBifrostChatRequest(),
+						ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
@@ -216,7 +216,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
 					return &schemas.BifrostRequest{
-						ResponsesRequest: openaiReq.ToBifrostResponsesRequest(),
+						ResponsesRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 
 				}
@@ -270,7 +270,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if openaiReq, ok := req.(*openai.OpenAIResponsesRequest); ok {
 					return &schemas.BifrostRequest{
-						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(),
+						CountTokensRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type for input tokens")
@@ -306,7 +306,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if embeddingReq, ok := req.(*openai.OpenAIEmbeddingRequest); ok {
 					return &schemas.BifrostRequest{
-						EmbeddingRequest: embeddingReq.ToBifrostEmbeddingRequest(),
+						EmbeddingRequest: embeddingReq.ToBifrostEmbeddingRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid embedding request type")
@@ -342,7 +342,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if speechReq, ok := req.(*openai.OpenAISpeechRequest); ok {
 					return &schemas.BifrostRequest{
-						SpeechRequest: speechReq.ToBifrostSpeechRequest(),
+						SpeechRequest: speechReq.ToBifrostSpeechRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid speech request type")
@@ -384,7 +384,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if transcriptionReq, ok := req.(*openai.OpenAITranscriptionRequest); ok {
 					return &schemas.BifrostRequest{
-						TranscriptionRequest: transcriptionReq.ToBifrostTranscriptionRequest(),
+						TranscriptionRequest: transcriptionReq.ToBifrostTranscriptionRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid transcription request type")
@@ -433,7 +433,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if imageGenReq, ok := req.(*openai.OpenAIImageGenerationRequest); ok {
 					return &schemas.BifrostRequest{
-						ImageGenerationRequest: imageGenReq.ToBifrostImageGenerationRequest(),
+						ImageGenerationRequest: imageGenReq.ToBifrostImageGenerationRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid image generation request type")

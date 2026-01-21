@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -23,12 +24,12 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 }
 
 // ToBifrostTextCompletionRequest converts an OpenAI text completion request to Bifrost format
-func (request *OpenAITextCompletionRequest) ToBifrostTextCompletionRequest() *schemas.BifrostTextCompletionRequest {
+func (request *OpenAITextCompletionRequest) ToBifrostTextCompletionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTextCompletionRequest {
 	if request == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, schemas.OpenAI)
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
 	return &schemas.BifrostTextCompletionRequest{
 		Provider:  provider,

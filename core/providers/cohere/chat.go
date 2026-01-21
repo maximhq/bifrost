@@ -222,12 +222,12 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 }
 
 // ToBifrostChatRequest converts a Cohere v2 chat request to Bifrost format
-func (req *CohereChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
+func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
 	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, schemas.Cohere)
+	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
 
 	bifrostReq := &schemas.BifrostChatRequest{
 		Provider: provider,

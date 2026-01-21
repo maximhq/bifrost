@@ -2330,15 +2330,7 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 // It initializes the request queue and starts worker goroutines for processing requests.
 // Note: This function assumes the caller has already acquired the appropriate mutex for the provider.
 func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) error {
-	providerConfig, err := bifrost.account.GetConfigForProvider(providerKey)
-	if err != nil {
-		return fmt.Errorf("failed to get config for provider: %v", err)
-	}
-	if providerConfig == nil {
-		return fmt.Errorf("config is nil for provider %s", providerKey)
-	}
-
-	queue := make(chan *ChannelMessage, providerConfig.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
+	queue := make(chan *ChannelMessage, config.ConcurrencyAndBufferSize.BufferSize) // Buffered channel per provider
 
 	bifrost.requestQueues.Store(providerKey, queue)
 
@@ -2368,9 +2360,9 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 		}
 	}
 
-	for range providerConfig.ConcurrencyAndBufferSize.Concurrency {
+	for range config.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)
-		go bifrost.requestWorker(provider, providerConfig, queue)
+		go bifrost.requestWorker(provider, config, queue)
 	}
 
 	return nil
@@ -2437,7 +2429,16 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 	// Could happen when provider is not initialized yet, check if provider config exists in account and if so, initialize it
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
 	if err != nil || config == nil {
-		return nil
+		if slices.Contains(dynamicallyConfigurableProviders, providerKey) {
+			logger.Info(fmt.Sprintf("initializing provider %s with default config", providerKey))
+			// If no config found, use default config
+			config = &schemas.ProviderConfig{
+				NetworkConfig:            schemas.DefaultNetworkConfig,
+				ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+			}
+		} else {
+			return nil
+		}
 	}
 	// Lock the provider mutex to avoid races
 	providerMutex := bifrost.getProviderMutex(providerKey)
@@ -4009,6 +4010,8 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 			supportedKeys = append(supportedKeys, k)
 		}
 	}
+
+	bifrost.logger.Debug("[Bifrost] Provider %s: %d enabled keys found", providerKey, len(supportedKeys))
 
 	if len(supportedKeys) == 0 {
 		return nil, fmt.Errorf("no valid keys found for provider: %v", providerKey)

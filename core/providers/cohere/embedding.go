@@ -1,6 +1,9 @@
 package cohere
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	"github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
 // ToCohereEmbeddingRequest converts a Bifrost embedding request to Cohere format
 func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *CohereEmbeddingRequest {
@@ -62,12 +65,12 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 }
 
 // ToBifrostEmbeddingRequest converts a Cohere embedding request to Bifrost format
-func (req *CohereEmbeddingRequest) ToBifrostEmbeddingRequest() *schemas.BifrostEmbeddingRequest {
+func (req *CohereEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) *schemas.BifrostEmbeddingRequest {
 	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, schemas.Cohere)
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
 
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,

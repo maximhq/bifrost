@@ -1289,7 +1289,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	}
 
 	// Extract provider from model ID (format: "bedrock/model-name")
-	provider, model := schemas.ParseModelString(request.ModelID, schemas.Bedrock)
+	provider, model := schemas.ParseModelString(request.ModelID, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,

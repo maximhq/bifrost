@@ -1,5 +1,6 @@
 - feat: added support for addWatermark parameter in Gemini Image Gen
 - fix: allow setting authorization header through extra headers and in allow list and deny list
+- feat: added context aware default provider fallback in integrations
 - feat: added image generation support for bedrock
 - feat: added support for gemini google search tool
 - fix: function response part handling in gemini

@@ -33,7 +33,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if anthropicReq, ok := req.(*anthropic.AnthropicTextRequest); ok {
 				return &schemas.BifrostRequest{
-					TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(),
+					TextCompletionRequest: anthropicReq.ToBifrostTextCompletionRequest(ctx),
 				}, nil
 			}
 			return nil, errors.New("invalid request type")

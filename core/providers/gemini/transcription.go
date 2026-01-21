@@ -9,8 +9,8 @@ import (
 )
 
 // ToBifrostTranscriptionRequest converts a GeminiGenerationRequest to a BifrostTranscriptionRequest
-func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest() (*schemas.BifrostTranscriptionRequest, error) {
-	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest(ctx *schemas.BifrostContext) (*schemas.BifrostTranscriptionRequest, error) {
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
 
 	bifrostReq := &schemas.BifrostTranscriptionRequest{
 		Provider: provider,

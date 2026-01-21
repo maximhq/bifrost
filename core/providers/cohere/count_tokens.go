@@ -5,16 +5,17 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ToBifrostResponsesRequest converts a Cohere count tokens request to Bifrost format.
-func (req *CohereCountTokensRequest) ToBifrostResponsesRequest() *schemas.BifrostResponsesRequest {
+func (req *CohereCountTokensRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
 	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(req.Model, schemas.Cohere)
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Cohere))
 
 	userRole := schemas.ResponsesInputMessageRoleUser
 	return &schemas.BifrostResponsesRequest{

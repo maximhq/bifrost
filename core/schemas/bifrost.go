@@ -157,6 +157,7 @@ const (
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -611,10 +612,10 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider     `json:"provider"`
-	ModelRequested string            `json:"model_requested"`
-	RequestType    RequestType       `json:"request_type"`
-	RawRequest     interface{}       `json:"raw_request,omitempty"`
-	RawResponse    interface{}       `json:"raw_response,omitempty"`
-	LiteLLMCompat  bool              `json:"litellm_compat,omitempty"`
+	Provider       ModelProvider `json:"provider"`
+	ModelRequested string        `json:"model_requested"`
+	RequestType    RequestType   `json:"request_type"`
+	RawRequest     interface{}   `json:"raw_request,omitempty"`
+	RawResponse    interface{}   `json:"raw_response,omitempty"`
+	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
 }

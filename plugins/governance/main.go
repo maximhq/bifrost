@@ -398,6 +398,13 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// No provider configs, continue without modification
 		return body, nil
 	}
+
+	var configuredProviders []string
+	for _, pc := range providerConfigs {
+		configuredProviders = append(configuredProviders, pc.Provider)
+	}
+	p.logger.Debug("[Governance] Virtual key has %d provider configs: %v", len(providerConfigs), configuredProviders)
+
 	allowedProviderConfigs := make([]configstoreTables.TableVirtualKeyProviderConfig, 0)
 	for _, config := range providerConfigs {
 		// Delegate model allowance check to model catalog
@@ -425,6 +432,13 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 			allowedProviderConfigs = append(allowedProviderConfigs, config)
 		}
 	}
+
+	var allowedProviders []string
+	for _, pc := range allowedProviderConfigs {
+		allowedProviders = append(allowedProviders, pc.Provider)
+	}
+	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
+
 	if len(allowedProviderConfigs) == 0 {
 		// No allowed provider configs, continue without modification
 		return body, nil
@@ -450,6 +464,9 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	if selectedProvider == "" && len(allowedProviderConfigs) > 0 {
 		selectedProvider = schemas.ModelProvider(allowedProviderConfigs[0].Provider)
 	}
+
+	p.logger.Debug("[Governance] Selected provider: %s", selectedProvider)
+
 	// For genai integration, model is present in URL path instead of the request body
 	if strings.Contains(req.Path, "/genai") {
 		newModelWithRequestSuffix := string(selectedProvider) + "/" + modelStr + genaiRequestSuffix

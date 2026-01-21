@@ -37,29 +37,29 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			if geminiReq, ok := req.(*gemini.GeminiGenerationRequest); ok {
 				if geminiReq.IsCountTokens {
 					return &schemas.BifrostRequest{
-						CountTokensRequest: geminiReq.ToBifrostResponsesRequest(),
+						CountTokensRequest: geminiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				} else if geminiReq.IsEmbedding {
 					return &schemas.BifrostRequest{
-						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(),
+						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(ctx),
 					}, nil
 				} else if geminiReq.IsSpeech {
 					return &schemas.BifrostRequest{
-						SpeechRequest: geminiReq.ToBifrostSpeechRequest(),
+						SpeechRequest: geminiReq.ToBifrostSpeechRequest(ctx),
 					}, nil
 				} else if geminiReq.IsTranscription {
-					transcriptionReq, err := geminiReq.ToBifrostTranscriptionRequest()
+					transcriptionReq, err := geminiReq.ToBifrostTranscriptionRequest(ctx)
 					if err != nil {
 						return nil, err
 					}
 					return &schemas.BifrostRequest{TranscriptionRequest: transcriptionReq}, nil
 				} else if geminiReq.IsImageGeneration {
 					return &schemas.BifrostRequest{
-						ImageGenerationRequest: geminiReq.ToBifrostImageGenerationRequest(),
+						ImageGenerationRequest: geminiReq.ToBifrostImageGenerationRequest(ctx),
 					}, nil
 				} else {
 					return &schemas.BifrostRequest{
-						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(),
+						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
 			}

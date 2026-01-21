@@ -1,6 +1,7 @@
 - fix: allow setting authorization header through extra headers and in allow list and deny list
 - feat: configure custom CORS headers, allowing clients to specify additional headers that should be allowed in cross-origin requests.
 - feat: support for listing models from specific provider or all providers via a header flag x-bf-list-models-provider from integrations.
+- feat: added context aware default provider fallback in integrations
 - feat: added support for gemini google search tool
 - fix: function response part handling in gemini
 - fix: call enrich error in vertex to return raw request and response in bifrost errors

@@ -6,18 +6,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // ToBifrostImageGenerationRequest converts a Gemini generation request to a Bifrost image generation request
-func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest() *schemas.BifrostImageGenerationRequest {
+func (request *GeminiGenerationRequest) ToBifrostImageGenerationRequest(ctx *schemas.BifrostContext) *schemas.BifrostImageGenerationRequest {
 	if request == nil {
 		return nil
 	}
 
 	// Parse provider from model string (e.g., "openai/gpt-image-1" -> provider="openai", model="gpt-image-1")
 	// This allows cross-provider routing through the GenAI endpoint
-	provider, model := schemas.ParseModelString(request.Model, schemas.Gemini)
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.Gemini))
 
 	bifrostReq := &schemas.BifrostImageGenerationRequest{
 		Provider: provider,
