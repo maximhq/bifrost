@@ -66,6 +66,9 @@ type Span struct {
 
 // SetAttribute sets an attribute on the span in a thread-safe manner
 func (s *Span) SetAttribute(key string, value any) {
+	if value == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Attributes == nil {
@@ -239,41 +242,41 @@ const (
 	AttrFallbackIndex   = "gen_ai.fallback_index"
 
 	// Responses API Request Attributes
-	AttrPromptCacheKey        = "gen_ai.request.prompt_cache_key"
-	AttrReasoningEffort       = "gen_ai.request.reasoning_effort"
-	AttrReasoningSummary      = "gen_ai.request.reasoning_summary"
-	AttrReasoningGenSummary   = "gen_ai.request.reasoning_generate_summary"
-	AttrSafetyIdentifier      = "gen_ai.request.safety_identifier"
-	AttrStore                 = "gen_ai.request.store"
-	AttrTextVerbosity         = "gen_ai.request.text_verbosity"
-	AttrTextFormatType        = "gen_ai.request.text_format_type"
-	AttrTopLogProbs           = "gen_ai.request.top_logprobs"
-	AttrToolChoiceType        = "gen_ai.request.tool_choice_type"
-	AttrToolChoiceName        = "gen_ai.request.tool_choice_name"
-	AttrTools                 = "gen_ai.request.tools"
-	AttrTruncation            = "gen_ai.request.truncation"
+	AttrPromptCacheKey      = "gen_ai.request.prompt_cache_key"
+	AttrReasoningEffort     = "gen_ai.request.reasoning_effort"
+	AttrReasoningSummary    = "gen_ai.request.reasoning_summary"
+	AttrReasoningGenSummary = "gen_ai.request.reasoning_generate_summary"
+	AttrSafetyIdentifier    = "gen_ai.request.safety_identifier"
+	AttrStore               = "gen_ai.request.store"
+	AttrTextVerbosity       = "gen_ai.request.text_verbosity"
+	AttrTextFormatType      = "gen_ai.request.text_format_type"
+	AttrTopLogProbs         = "gen_ai.request.top_logprobs"
+	AttrToolChoiceType      = "gen_ai.request.tool_choice_type"
+	AttrToolChoiceName      = "gen_ai.request.tool_choice_name"
+	AttrTools               = "gen_ai.request.tools"
+	AttrTruncation          = "gen_ai.request.truncation"
 
 	// Responses API Response Attributes
-	AttrRespInclude           = "gen_ai.responses.include"
-	AttrRespMaxOutputTokens   = "gen_ai.responses.max_output_tokens"
-	AttrRespMaxToolCalls      = "gen_ai.responses.max_tool_calls"
-	AttrRespMetadata          = "gen_ai.responses.metadata"
-	AttrRespPreviousRespID    = "gen_ai.responses.previous_response_id"
-	AttrRespPromptCacheKey    = "gen_ai.responses.prompt_cache_key"
-	AttrRespReasoningText     = "gen_ai.responses.reasoning"
-	AttrRespReasoningEffort   = "gen_ai.responses.reasoning_effort"
-	AttrRespReasoningGenSum   = "gen_ai.responses.reasoning_generate_summary"
-	AttrRespSafetyIdentifier  = "gen_ai.responses.safety_identifier"
-	AttrRespStore             = "gen_ai.responses.store"
-	AttrRespTemperature       = "gen_ai.responses.temperature"
-	AttrRespTextVerbosity     = "gen_ai.responses.text_verbosity"
-	AttrRespTextFormatType    = "gen_ai.responses.text_format_type"
-	AttrRespTopLogProbs       = "gen_ai.responses.top_logprobs"
-	AttrRespTopP              = "gen_ai.responses.top_p"
-	AttrRespToolChoiceType    = "gen_ai.responses.tool_choice_type"
-	AttrRespToolChoiceName    = "gen_ai.responses.tool_choice_name"
-	AttrRespTruncation        = "gen_ai.responses.truncation"
-	AttrRespTools             = "gen_ai.responses.tools"
+	AttrRespInclude          = "gen_ai.responses.include"
+	AttrRespMaxOutputTokens  = "gen_ai.responses.max_output_tokens"
+	AttrRespMaxToolCalls     = "gen_ai.responses.max_tool_calls"
+	AttrRespMetadata         = "gen_ai.responses.metadata"
+	AttrRespPreviousRespID   = "gen_ai.responses.previous_response_id"
+	AttrRespPromptCacheKey   = "gen_ai.responses.prompt_cache_key"
+	AttrRespReasoningText    = "gen_ai.responses.reasoning"
+	AttrRespReasoningEffort  = "gen_ai.responses.reasoning_effort"
+	AttrRespReasoningGenSum  = "gen_ai.responses.reasoning_generate_summary"
+	AttrRespSafetyIdentifier = "gen_ai.responses.safety_identifier"
+	AttrRespStore            = "gen_ai.responses.store"
+	AttrRespTemperature      = "gen_ai.responses.temperature"
+	AttrRespTextVerbosity    = "gen_ai.responses.text_verbosity"
+	AttrRespTextFormatType   = "gen_ai.responses.text_format_type"
+	AttrRespTopLogProbs      = "gen_ai.responses.top_logprobs"
+	AttrRespTopP             = "gen_ai.responses.top_p"
+	AttrRespToolChoiceType   = "gen_ai.responses.tool_choice_type"
+	AttrRespToolChoiceName   = "gen_ai.responses.tool_choice_name"
+	AttrRespTruncation       = "gen_ai.responses.truncation"
+	AttrRespTools            = "gen_ai.responses.tools"
 
 	// Batch Operation Attributes
 	AttrBatchID             = "gen_ai.batch.id"
