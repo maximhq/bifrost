@@ -313,6 +313,27 @@ false
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
+{{- /* Top-level Auth Config - for main Bifrost authentication */ -}}
+{{- if .Values.bifrost.authConfig }}
+{{- $authConfig := dict }}
+{{- /* Only use env var reference if governance auth secret is NOT already configured (to avoid referencing uninjected env vars) */ -}}
+{{- if and .Values.bifrost.authConfig.existingSecret .Values.bifrost.authConfig.usernameKey (not (and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret)) }}
+{{- $_ := set $authConfig "admin_username" "env.BIFROST_ADMIN_USERNAME" }}
+{{- else if .Values.bifrost.authConfig.adminUsername }}
+{{- $_ := set $authConfig "admin_username" .Values.bifrost.authConfig.adminUsername }}
+{{- end }}
+{{- if and .Values.bifrost.authConfig.existingSecret .Values.bifrost.authConfig.passwordKey (not (and .Values.bifrost.governance .Values.bifrost.governance.authConfig .Values.bifrost.governance.authConfig.existingSecret)) }}
+{{- $_ := set $authConfig "admin_password" "env.BIFROST_ADMIN_PASSWORD" }}
+{{- else if .Values.bifrost.authConfig.adminPassword }}
+{{- $_ := set $authConfig "admin_password" .Values.bifrost.authConfig.adminPassword }}
+{{- end }}
+{{- if hasKey .Values.bifrost.authConfig "isEnabled" }}
+{{- $_ := set $authConfig "is_enabled" .Values.bifrost.authConfig.isEnabled }}
+{{- end }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- $_ := set $config "auth_config" $authConfig }}
+{{- end }}
+{{- end }}
 {{- /* Cluster Config */ -}}
 {{- if and .Values.bifrost.cluster .Values.bifrost.cluster.enabled }}
 {{- $cluster := dict "enabled" true }}
