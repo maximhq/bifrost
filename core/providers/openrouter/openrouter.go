@@ -4,6 +4,7 @@ package openrouter
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -105,6 +106,17 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 
 	for i := range openrouterResponse.Data {
 		openrouterResponse.Data[i].ID = string(schemas.OpenRouter) + "/" + openrouterResponse.Data[i].ID
+	}
+
+	if len(key.Models) > 0 {
+		filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
+		for _, model := range openrouterResponse.Data {
+			modelID := strings.TrimPrefix(model.ID, string(schemas.OpenRouter)+"/")
+			if slices.Contains(key.Models, modelID) {
+				filteredData = append(filteredData, model)
+			}
+		}
+		openrouterResponse.Data = filteredData
 	}
 
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
