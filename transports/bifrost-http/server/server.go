@@ -793,8 +793,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
 	healthHandler := handlers.NewHealthHandler(s.Config)
-	providerHandler := handlers.NewProviderHandler(callbacks, s.Config.ConfigStore, s.Config, s.Client)
-	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config)
+	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	oauthHandler := handlers.NewOAuthHandler(s.Config.OAuthProvider, s.Client, s.Config)
+	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
@@ -809,6 +810,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpServerHandler.RegisterRoutes(s.Router, middlewares...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
+	oauthHandler.RegisterRoutes(s.Router, middlewares...)
 	if pluginsHandler != nil {
 		pluginsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
@@ -981,6 +983,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
 		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
 		MCPConfig:          mcpConfig,
+		OAuth2Provider:     s.Config.OAuthProvider,
 		Logger:             logger,
 	})
 	if err != nil {
@@ -1114,6 +1117,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.LogsCleaner != nil {
 				logger.Info("stopping log retention cleaner...")
 				s.LogsCleaner.StopCleanupRoutine()
+			}
+			if s.Config != nil && s.Config.TokenRefreshWorker != nil {
+				logger.Info("stopping token refresh worker...")
+				s.Config.TokenRefreshWorker.Stop()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

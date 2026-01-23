@@ -197,3 +197,38 @@ client-reconnect:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-complete-oauth:
+  post:
+    operationId: completeMCPClientOAuth
+    summary: Complete MCP client OAuth flow
+    description: |
+      Completes the OAuth flow for an MCP client after the user has authorized the request.
+      This endpoint should be called after the OAuth provider redirects back to the callback endpoint
+      and the OAuth token has been stored. It retrieves the pending MCP client configuration and
+      establishes the connection with the OAuth-provided credentials.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP client connected successfully with OAuth
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        description: OAuth not authorized yet or MCP client not found in pending OAuth clients
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: MCP client not found in pending OAuth clients or OAuth config not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

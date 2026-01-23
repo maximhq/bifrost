@@ -467,8 +467,9 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 		}
 
 		// Strip the client name prefix from tool name before calling MCP server
-		// The MCP server expects the original tool name, not the prefixed version
-		originalToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
+		// The MCP server expects the original tool name (with hyphens), not the sanitized version
+		sanitizedToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
+		originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
 
 		// Call the tool via MCP client -> MCP server
 		callRequest := mcp.CallToolRequest{
@@ -476,12 +477,10 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 				Method: string(mcp.MethodToolsCall),
 			},
 			Params: mcp.CallToolParams{
-				Name:      originalToolName,
+				Name:      originalMCPToolName,
 				Arguments: arguments,
 			},
 		}
-
-		logger.Debug(fmt.Sprintf("%s Starting tool execution: %s via client: %s", MCPLogPrefix, toolName, client.ExecutionConfig.Name))
 
 		// Create timeout context for tool execution
 		toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
@@ -498,13 +497,11 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
 		}
 
-		logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
-
 		// Extract text from MCP response
 		responseText := extractTextFromMCPResponse(toolResponse, toolName)
 
 		// Create tool response message
-		return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, originalToolName, nil
+		return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
 	}
 }
 

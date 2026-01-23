@@ -1,0 +1,132 @@
+# OAuth API schemas
+
+MCPAuthType:
+  type: string
+  enum: [none, headers, oauth]
+  description: |
+    Authentication type for MCP connections:
+    - none: No authentication
+    - headers: Header-based authentication (API keys, custom headers, etc.)
+    - oauth: OAuth 2.0 authentication
+
+OAuthConfigRequest:
+  type: object
+  description: OAuth configuration for MCP client creation
+  properties:
+    client_id:
+      type: string
+      description: |
+        OAuth client ID. Optional if client supports dynamic client registration (RFC 7591).
+        If not provided, the server_url must be set for OAuth discovery and dynamic registration.
+    client_secret:
+      type: string
+      description: |
+        OAuth client secret. Optional for public clients using PKCE or clients obtained via dynamic registration.
+    authorize_url:
+      type: string
+      description: |
+        OAuth authorization endpoint URL. Optional - will be discovered from server_url if not provided.
+    token_url:
+      type: string
+      description: |
+        OAuth token endpoint URL. Optional - will be discovered from server_url if not provided.
+    registration_url:
+      type: string
+      description: |
+        Dynamic client registration endpoint URL (RFC 7591). Optional - will be discovered from server_url if not provided.
+    scopes:
+      type: array
+      items:
+        type: string
+      description: |
+        OAuth scopes requested. Optional - can be discovered from server_url if not provided.
+        Example: ["read", "write"]
+
+OAuthFlowInitiation:
+  type: object
+  description: Response when initiating an OAuth flow
+  properties:
+    status:
+      type: string
+      enum: [pending_oauth]
+    message:
+      type: string
+    oauth_config_id:
+      type: string
+      description: ID of the OAuth config created for this flow
+    authorize_url:
+      type: string
+      description: URL to redirect the user to for authorization
+    expires_at:
+      type: string
+      format: date-time
+      description: When the OAuth authorization request expires
+    mcp_client_id:
+      type: string
+      description: The MCP client ID that initiated this OAuth flow
+
+OAuthConfigStatus:
+  type: object
+  description: Status of an OAuth configuration
+  properties:
+    id:
+      type: string
+      description: OAuth config ID
+    status:
+      type: string
+      enum: [pending, authorized, failed]
+      description: |
+        Current status of the OAuth flow:
+        - pending: User has not yet authorized
+        - authorized: User authorized and token is stored
+        - failed: Authorization failed
+    created_at:
+      type: string
+      format: date-time
+      description: When this OAuth config was created
+    expires_at:
+      type: string
+      format: date-time
+      description: When this OAuth config expires (becomes invalid if not completed)
+    token_id:
+      type: string
+      description: ID of the associated OAuth token (only present if status is authorized)
+    token_expires_at:
+      type: string
+      format: date-time
+      description: When the OAuth access token expires (only present if status is authorized)
+    token_scopes:
+      type: array
+      items:
+        type: string
+      description: Scopes granted in the OAuth token (only present if status is authorized)
+
+OAuthToken:
+  type: object
+  description: OAuth access and refresh tokens
+  properties:
+    id:
+      type: string
+      description: Unique token identifier
+    access_token:
+      type: string
+      description: OAuth access token
+    refresh_token:
+      type: string
+      description: OAuth refresh token for obtaining new access tokens
+    token_type:
+      type: string
+      description: Token type (typically "Bearer")
+    expires_at:
+      type: string
+      format: date-time
+      description: When the access token expires
+    scopes:
+      type: array
+      items:
+        type: string
+      description: Scopes granted in this token
+    last_refreshed_at:
+      type: string
+      format: date-time
+      description: When the token was last refreshed

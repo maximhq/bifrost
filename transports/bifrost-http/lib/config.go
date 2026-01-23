@@ -29,6 +29,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -266,6 +267,9 @@ type Config struct {
 	// Plugin status tracking (co-located with plugin instances)
 	pluginStatusMu sync.RWMutex
 	pluginStatus   map[string]schemas.PluginStatus // name -> status
+
+	OAuthProvider       *oauth2.OAuth2Provider
+	TokenRefreshWorker  *oauth2.TokenRefreshWorker
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -1493,6 +1497,25 @@ func convertSchemasMCPClientConfigToTable(clientConfig schemas.MCPClientConfig) 
 		ToolsToExecute:     clientConfig.ToolsToExecute,
 		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
 		Headers:            clientConfig.Headers,
+		AuthType:           string(clientConfig.AuthType),
+		OauthConfigID:      clientConfig.OauthConfigID,
+	}
+}
+
+// convertTablesMCPClientToSchemas converts tables.TableMCPClient to schemas.MCPClientConfig
+func convertTablesMCPClientToSchemas(mcpClient configstoreTables.TableMCPClient) schemas.MCPClientConfig {
+	return schemas.MCPClientConfig{
+		ID:                 mcpClient.ClientID,
+		Name:               mcpClient.Name,
+		IsCodeModeClient:   mcpClient.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(mcpClient.ConnectionType),
+		ConnectionString:   mcpClient.ConnectionString,
+		StdioConfig:        mcpClient.StdioConfig,
+		ToolsToExecute:     mcpClient.ToolsToExecute,
+		ToolsToAutoExecute: mcpClient.ToolsToAutoExecute,
+		Headers:            mcpClient.Headers,
+		AuthType:           schemas.MCPAuthType(mcpClient.AuthType),
+		OauthConfigID:      mcpClient.OauthConfigID,
 	}
 }
 
@@ -1569,6 +1592,13 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 		syncDuration := time.Duration(*configData.FrameworkConfig.Pricing.PricingSyncInterval) * time.Second
 		pricingConfig.PricingSyncInterval = &syncDuration
 	}
+
+	// Initialize OAuth provider
+	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+
+	// Start token refresh worker for automatic OAuth token refresh
+	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
+	config.TokenRefreshWorker.Start(ctx)
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
 		Pricing: pricingConfig,
@@ -1922,6 +1952,13 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	}); err != nil {
 		return fmt.Errorf("failed to update framework config: %w", err)
 	}
+
+	// Initialize OAuth provider
+	config.OAuthProvider = oauth2.NewOAuth2Provider(config.ConfigStore, logger)
+
+	// Start token refresh worker for automatic OAuth token refresh
+	config.TokenRefreshWorker = oauth2.NewTokenRefreshWorker(config.OAuthProvider, logger)
+	config.TokenRefreshWorker.Start(ctx)
 
 	config.FrameworkConfig = &framework.FrameworkConfig{
 		Pricing: pricingConfig,

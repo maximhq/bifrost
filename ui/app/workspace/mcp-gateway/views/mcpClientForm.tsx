@@ -1,22 +1,23 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { EnvVarInput } from "@/components/ui/envVarInput";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useCreateMCPClientMutation } from "@/lib/store";
-import { CreateMCPClientRequest, EnvVar, MCPConnectionType, MCPStdioConfig } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, EnvVar, MCPAuthType, MCPConnectionType, MCPStdioConfig, OAuthConfig } from "@/lib/types/mcp";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { Validator } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Info } from "lucide-react";
 import React, { useEffect, useState } from "react";
+import { OAuth2Authorizer } from "./oauth2Authorizer";
 
 interface ClientFormProps {
 	open: boolean;
@@ -32,6 +33,14 @@ const emptyStdioConfig: MCPStdioConfig = {
 
 const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
 
+const emptyOAuthConfig: OAuthConfig = {
+	client_id: "",
+	client_secret: "",
+	authorize_url: "",
+	token_url: "",
+	scopes: [],
+};
+
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
 	is_code_mode_client: false,
@@ -39,6 +48,7 @@ const emptyForm: CreateMCPClientRequest = {
 	connection_type: "http",
 	connection_string: emptyEnvVar,
 	stdio_config: emptyStdioConfig,
+	auth_type: "headers",
 	headers: {},
 };
 
@@ -48,6 +58,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const [isLoading, setIsLoading] = useState(false);
 	const [argsText, setArgsText] = useState("");
 	const [envsText, setEnvsText] = useState("");
+	const [scopesText, setScopesText] = useState("");
+	const [oauthFlow, setOauthFlow] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+	} | null>(null);
 	const { toast } = useToast();
 
 	// RTK Query mutations
@@ -59,6 +75,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 			setForm(emptyForm);
 			setArgsText("");
 			setEnvsText("");
+			setScopesText("");
+			setOauthFlow(null);
 			setIsLoading(false);
 		}
 	}, [open]);
@@ -91,6 +109,16 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		setForm((prev) => ({
 			...prev,
 			connection_string: value,
+		}));
+	};
+
+	const handleOAuthConfigChange = (field: keyof OAuthConfig, value: string | string[]) => {
+		setForm((prev) => ({
+			...prev,
+			oauth_config: {
+				...(prev.oauth_config || emptyOAuthConfig),
+				[field]: value,
+			},
 		}));
 	};
 
@@ -142,6 +170,35 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				Validator.pattern(form.stdio_config?.command || "", /^[^<>|&;]+$/, "Command cannot contain special shell characters"),
 			]
 			: []),
+
+		// OAuth validation
+		...(form.auth_type === "oauth"
+			? [
+				// Client ID is optional if provider supports dynamic registration (RFC 7591)
+				// URLs are optional (will be discovered), but if provided must be valid
+				...(form.oauth_config?.authorize_url
+					? [
+						Validator.pattern(
+							form.oauth_config.authorize_url,
+							/^https?:\/\/.+$/,
+							"Authorize URL must start with http:// or https://",
+						),
+					]
+					: []),
+				...(form.oauth_config?.token_url
+					? [Validator.pattern(form.oauth_config.token_url, /^https?:\/\/.+$/, "Token URL must start with http:// or https://")]
+					: []),
+				...(form.oauth_config?.registration_url
+					? [
+						Validator.pattern(
+							form.oauth_config.registration_url,
+							/^https?:\/\/.+$/,
+							"Registration URL must start with http:// or https://",
+						),
+					]
+					: []),
+			]
+			: []),
 	]);
 
 	const handleSubmit = async () => {
@@ -168,20 +225,43 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						envs: parseArrayFromText(envsText),
 					}
 					: undefined,
+			oauth_config:
+				form.auth_type === "oauth"
+					? {
+						client_id: form.oauth_config?.client_id || "", // Can be empty for dynamic registration
+						client_secret: form.oauth_config?.client_secret || undefined,
+						authorize_url: form.oauth_config?.authorize_url || undefined,
+						token_url: form.oauth_config?.token_url || undefined,
+						registration_url: form.oauth_config?.registration_url || undefined,
+						scopes: scopesText.trim() ? parseArrayFromText(scopesText) : undefined,
+						server_url: form.connection_string?.value || undefined, // Set server_url from connection_string
+					}
+					: undefined,
 			headers: form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
 			tools_to_execute: ["*"],
 		};
 
 		try {
-			await createMCPClient(payload).unwrap();
+			const response = await createMCPClient(payload).unwrap();
 
-			setIsLoading(false);
-			toast({
-				title: "Success",
-				description: "Server created",
-			});
-			onSaved();
-			onClose();
+			// Check if OAuth flow was initiated
+			if (response.status === "pending_oauth" && response.authorize_url) {
+				setIsLoading(false);
+				// Open OAuth authorizer popup
+				setOauthFlow({
+					authorizeUrl: response.authorize_url,
+					oauthConfigId: response.oauth_config_id,
+					mcpClientId: response.mcp_client_id,
+				});
+			} else {
+				setIsLoading(false);
+				toast({
+					title: "Success",
+					description: "Server created",
+				});
+				onSaved();
+				onClose();
+			}
 		} catch (error) {
 			setIsLoading(false);
 			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
@@ -189,12 +269,18 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	};
 
 	return (
-		<Dialog open={open} onOpenChange={onClose}>
-			<DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-				<DialogHeader>
-					<DialogTitle>New MCP Server</DialogTitle>
-				</DialogHeader>
-				<div className="space-y-4">
+		<Sheet open={open} onOpenChange={(open) => !open && onClose()}>
+			<SheetContent
+				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
+				onInteractOutside={(e) => e.preventDefault()}
+				onEscapeKeyDown={(e) => e.preventDefault()}
+			>
+				<SheetHeader className="flex flex-col items-start pt-8">
+					<SheetTitle>New MCP Server</SheetTitle>
+					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
+				</SheetHeader>
+
+				<div className="space-y-4 px-4">
 					<div className="space-y-2">
 						<Label>Name</Label>
 						<Input
@@ -253,6 +339,24 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 					{(form.connection_type === "http" || form.connection_type === "sse") && (
 						<>
+							<div className="w-full space-y-2">
+								<Label>Authentication Type</Label>
+								<Select value={form.auth_type} onValueChange={(value: MCPAuthType) => handleChange("auth_type", value)}>
+									<SelectTrigger className="w-full">
+										<SelectValue placeholder="Select authentication type" />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="none">None</SelectItem>
+										<SelectItem value="headers">Headers</SelectItem>
+										<SelectItem value="oauth">OAuth 2.0</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
+						</>
+					)}
+
+					{(form.connection_type === "http" || form.connection_type === "sse") && (
+						<>
 							<div className="space-y-2">
 								<div className="flex w-fit items-center gap-1">
 									<Label>Connection URL</Label>
@@ -279,17 +383,93 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
 								/>
 							</div>
-							<div className="space-y-2">
-								<HeadersTable
-									value={form.headers || {}}
-									onChange={handleHeadersChange}
-									keyPlaceholder="Header name"
-									valuePlaceholder="Header value"
-									label="Headers (Optional)"
-									useEnvVarInput
-								/>
-								{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
-							</div>
+							{form.auth_type === "headers" && (
+								<div className="space-y-2">
+									<HeadersTable
+										value={form.headers || {}}
+										onChange={handleHeadersChange}
+										keyPlaceholder="Header name"
+										valuePlaceholder="Header value"
+										label="Headers"
+										useEnvVarInput
+									/>
+									{headersValidationError && <p className="text-destructive text-xs">{headersValidationError}</p>}
+								</div>
+							)}
+
+							{form.auth_type === "oauth" && (
+								<>
+									<div className="space-y-2">
+										<div className="flex items-center gap-2">
+											<Label>OAuth Client ID (optional)</Label>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<Info className="h-4 w-4 text-muted-foreground cursor-help" />
+													</TooltipTrigger>
+													<TooltipContent className="max-w-xs">
+														<p>Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth provider if supported.</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<Input
+											value={form.oauth_config?.client_id || ""}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("client_id", e.target.value)}
+											placeholder="your-client-id (auto-generated if empty)"
+										/>
+										<p className="text-xs text-muted-foreground">
+											Will be auto-generated via dynamic registration if left empty and provider supports it
+										</p>
+									</div>
+									<div className="space-y-2">
+										<Label>OAuth Client Secret (optional for PKCE)</Label>
+										<Input
+											type="password"
+											value={form.oauth_config?.client_secret || ""}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("client_secret", e.target.value)}
+											placeholder="your-client-secret"
+										/>
+										<p className="text-xs text-muted-foreground">Leave empty for public clients using PKCE</p>
+									</div>
+									<div className="space-y-2">
+										<Label>Authorization URL (optional, auto-discovered)</Label>
+										<Input
+											value={form.oauth_config?.authorize_url || ""}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("authorize_url", e.target.value)}
+											placeholder="https://provider.com/oauth/authorize"
+										/>
+										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+									</div>
+									<div className="space-y-2">
+										<Label>Token URL (optional, auto-discovered)</Label>
+										<Input
+											value={form.oauth_config?.token_url || ""}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("token_url", e.target.value)}
+											placeholder="https://provider.com/oauth/token"
+										/>
+										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+									</div>
+									<div className="space-y-2">
+										<Label>Registration URL (optional, auto-discovered)</Label>
+										<Input
+											value={form.oauth_config?.registration_url || ""}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("registration_url", e.target.value)}
+											placeholder="https://provider.com/oauth/register"
+										/>
+										<p className="text-xs text-muted-foreground">For dynamic client registration, will be discovered if not provided</p>
+									</div>
+									<div className="space-y-2">
+										<Label>Scopes (optional, comma-separated)</Label>
+										<Input
+											value={scopesText}
+											onChange={(e: React.ChangeEvent<HTMLInputElement>) => setScopesText(e.target.value)}
+											placeholder="read, write, admin"
+										/>
+										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+									</div>
+								</>
+							)}
 						</>
 					)}
 
@@ -333,29 +513,67 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						</>
 					)}
 				</div>
-				<DialogFooter>
-					<Button variant="outline" onClick={onClose} disabled={isLoading}>
-						Cancel
-					</Button>
-					<TooltipProvider>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span>
-									<Button
-										onClick={handleSubmit}
-										disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess}
-										isLoading={isLoading}
-									>
-										Create
-									</Button>
-								</span>
-							</TooltipTrigger>
-							{!validator.isValid() && <TooltipContent>{validator.getFirstError() || "Please fix validation errors"}</TooltipContent>}
-						</Tooltip>
-					</TooltipProvider>
-				</DialogFooter>
-			</DialogContent>
-		</Dialog>
+				{/* Form Footer */}
+				<div className="dark:bg-card border-border bg-white py-6">
+					<div className="flex justify-end gap-2">
+						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading}>
+							Cancel
+						</Button>
+						<TooltipProvider>
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span className="inline-block">
+										<Button onClick={handleSubmit} disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess} isLoading={isLoading}>
+											Create
+										</Button>
+									</span>
+								</TooltipTrigger>
+								{(!validator.isValid() || !hasCreateMCPClientAccess) && (
+									<TooltipContent>
+										<p>
+											{!hasCreateMCPClientAccess
+												? "You don't have permission to perform this action"
+												: validator.getFirstError() || "Please fix validation errors"}
+										</p>
+									</TooltipContent>
+								)}
+							</Tooltip>
+						</TooltipProvider>
+					</div>
+				</div>
+			</SheetContent>
+
+			{/* OAuth Authorizer Popup */}
+			{oauthFlow && (
+				<OAuth2Authorizer
+					open={!!oauthFlow}
+					onClose={() => {
+						setOauthFlow(null);
+						onClose();
+					}}
+					onSuccess={() => {
+						toast({
+							title: "Success",
+							description: "MCP server connected with OAuth",
+						});
+						onSaved();
+						setOauthFlow(null);
+						onClose();
+					}}
+					onError={(error) => {
+						toast({
+							title: "OAuth Error",
+							description: error,
+							variant: "destructive",
+						});
+						setOauthFlow(null);
+					}}
+					authorizeUrl={oauthFlow.authorizeUrl}
+					oauthConfigId={oauthFlow.oauthConfigId}
+					mcpClientId={oauthFlow.mcpClientId}
+				/>
+			)}
+		</Sheet>
 	);
 };
 

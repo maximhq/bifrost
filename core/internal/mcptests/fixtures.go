@@ -1471,7 +1471,7 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	// Create MCP manager
 	logger := &testLogger{t: t}
-	manager := mcpcore.NewMCPManager(context.Background(), *mcpConfig, logger)
+	manager := mcpcore.NewMCPManager(context.Background(), *mcpConfig, nil, logger)
 
 	// Cleanup
 	t.Cleanup(func() {

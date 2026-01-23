@@ -158,6 +158,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAllowedHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOAuthTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOAuthProxyFields(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddDisableDBPingsInHealthColumn(ctx, db); err != nil {
 		return err
 	}
@@ -2923,6 +2929,156 @@ func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOAuthTables creates the oauth_configs and oauth_tokens tables
+func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_oauth_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Create oauth_configs table
+			if !migrator.HasTable(&tables.TableOauthConfig{}) {
+				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
+					return fmt.Errorf("failed to create oauth_configs table: %w", err)
+				}
+			}
+
+			// Create oauth_tokens table
+			if !migrator.HasTable(&tables.TableOauthToken{}) {
+				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
+					return fmt.Errorf("failed to create oauth_tokens table: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop tables in reverse order
+			if migrator.HasTable(&tables.TableOauthToken{}) {
+				if err := migrator.DropTable(&tables.TableOauthToken{}); err != nil {
+					return fmt.Errorf("failed to drop oauth_tokens table: %w", err)
+				}
+			}
+
+			if migrator.HasTable(&tables.TableOauthConfig{}) {
+				if err := migrator.DropTable(&tables.TableOauthConfig{}); err != nil {
+					return fmt.Errorf("failed to drop oauth_configs table: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running oauth tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOAuthProxyFields adds OAuth proxy discovery and PKCE fields to oauth_configs table
+func migrationAddOAuthProxyFields(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_oauth_proxy_fields",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			oauthConfig := &tables.TableOauthConfig{}
+
+			// Add registration_url column for dynamic client registration
+			if !migrator.HasColumn(oauthConfig, "registration_url") {
+				if err := migrator.AddColumn(oauthConfig, "registration_url"); err != nil {
+					return fmt.Errorf("failed to add registration_url column: %w", err)
+				}
+			}
+
+			// Add code_verifier column for PKCE
+			if !migrator.HasColumn(oauthConfig, "code_verifier") {
+				if err := migrator.AddColumn(oauthConfig, "code_verifier"); err != nil {
+					return fmt.Errorf("failed to add code_verifier column: %w", err)
+				}
+			}
+
+			// Add code_challenge column for PKCE
+			if !migrator.HasColumn(oauthConfig, "code_challenge") {
+				if err := migrator.AddColumn(oauthConfig, "code_challenge"); err != nil {
+					return fmt.Errorf("failed to add code_challenge column: %w", err)
+				}
+			}
+
+			// Add server_url column for OAuth discovery
+			if !migrator.HasColumn(oauthConfig, "server_url") {
+				if err := migrator.AddColumn(oauthConfig, "server_url"); err != nil {
+					return fmt.Errorf("failed to add server_url column: %w", err)
+				}
+			}
+
+			// Add use_discovery column
+			if !migrator.HasColumn(oauthConfig, "use_discovery") {
+				if err := migrator.AddColumn(oauthConfig, "use_discovery"); err != nil {
+					return fmt.Errorf("failed to add use_discovery column: %w", err)
+				}
+			}
+
+			// Make authorize_url and token_url nullable (can be discovered)
+			// GORM doesn't provide a direct way to alter column constraints,
+			// but since these fields don't have NOT NULL in the struct anymore,
+			// AutoMigrate will handle it on the next table sync
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			oauthConfig := &tables.TableOauthConfig{}
+
+			// Drop columns in reverse order
+			if migrator.HasColumn(oauthConfig, "use_discovery") {
+				if err := migrator.DropColumn(oauthConfig, "use_discovery"); err != nil {
+					return fmt.Errorf("failed to drop use_discovery column: %w", err)
+				}
+			}
+
+			if migrator.HasColumn(oauthConfig, "server_url") {
+				if err := migrator.DropColumn(oauthConfig, "server_url"); err != nil {
+					return fmt.Errorf("failed to drop server_url column: %w", err)
+				}
+			}
+
+			if migrator.HasColumn(oauthConfig, "code_challenge") {
+				if err := migrator.DropColumn(oauthConfig, "code_challenge"); err != nil {
+					return fmt.Errorf("failed to drop code_challenge column: %w", err)
+				}
+			}
+
+			if migrator.HasColumn(oauthConfig, "code_verifier") {
+				if err := migrator.DropColumn(oauthConfig, "code_verifier"); err != nil {
+					return fmt.Errorf("failed to drop code_verifier column: %w", err)
+				}
+			}
+
+			if migrator.HasColumn(oauthConfig, "registration_url") {
+				if err := migrator.DropColumn(oauthConfig, "registration_url"); err != nil {
+					return fmt.Errorf("failed to drop registration_url column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running oauth proxy fields migration: %s", err.Error())
 	}
 	return nil
 }

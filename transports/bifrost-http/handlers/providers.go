@@ -38,9 +38,9 @@ type ProviderHandler struct {
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(modelsManager ModelsManager, dbStore configstore.ConfigStore, inMemoryStore *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
+func NewProviderHandler(modelsManager ModelsManager, inMemoryStore *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
 	return &ProviderHandler{
-		dbStore:       dbStore,
+		dbStore:       inMemoryStore.ConfigStore,
 		inMemoryStore: inMemoryStore,
 		client:        client,
 		modelsManager: modelsManager,

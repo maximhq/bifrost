@@ -1,5 +1,14 @@
 # MCP API schemas
 
+MCPAuthType:
+  type: string
+  enum: [none, headers, oauth]
+  description: |
+    Authentication type for MCP connections:
+    - none: No authentication
+    - headers: Header-based authentication (API keys, custom headers, etc.)
+    - oauth: OAuth 2.0 authentication
+
 MCPConnectionType:
   type: string
   enum: [http, stdio, sse, inprocess]
@@ -73,11 +82,28 @@ MCPClientCreateRequestBase:
 >>>>>>> 4e846193 (feat: plugin schema extensions for mcp plugins)
     connection_type:
       $ref: '#/MCPConnectionType'
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
+      type: string
+      description: |
+        OAuth config ID for OAuth authentication.
+        Set after OAuth flow is completed. References the oauth_configs table.
+        Only relevant when auth_type is "oauth".
     headers:
       type: object
       additionalProperties:
         type: string
-      description: Custom headers to include in requests
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
+    oauth_config:
+      $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
+      description: |
+        OAuth configuration for initiating OAuth flow.
+        Only include this when creating a client with auth_type "oauth".
+        This will trigger the OAuth flow and return an authorization URL.
     tools_to_execute:
       type: array
       items:
@@ -160,11 +186,22 @@ MCPClientUpdateRequest:
       description: HTTP or SSE URL (required for HTTP or SSE connections)
     stdio_config:
       $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
+      type: string
+      description: |
+        OAuth config ID for OAuth authentication.
+        References the oauth_configs table.
+        Only relevant when auth_type is "oauth".
     headers:
       type: object
       additionalProperties:
         type: string
-      description: Custom headers to include in requests
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
     tools_to_execute:
       type: array
       items:
@@ -215,11 +252,22 @@ MCPClientConfig:
       description: HTTP or SSE URL (required for HTTP or SSE connections)
     stdio_config:
       $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
+      type: string
+      description: |
+        OAuth config ID for OAuth authentication.
+        References the oauth_configs table.
+        Only set when auth_type is "oauth".
     headers:
       type: object
       additionalProperties:
         type: string
-      description: Custom headers to include in requests
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
     tools_to_execute:
       type: array
       items:

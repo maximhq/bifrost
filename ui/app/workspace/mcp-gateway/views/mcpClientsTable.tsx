@@ -213,14 +213,20 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 										)}
 									</TableCell>
 									<TableCell>
-										<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
+										<Badge className={MCP_STATUS_COLORS[c.state]}>
+											{c.state}
+										</Badge>
 									</TableCell>
 									<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
 										<Button
 											variant="ghost"
 											size="icon"
 											onClick={() => handleReconnect(c)}
-											disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
+											disabled={
+												reconnectingClients.includes(c.config.client_id) ||
+												!hasUpdateMCPClientAccess
+											}
+											title="Reconnect"
 										>
 											{reconnectingClients.includes(c.config.client_id) ? (
 												<Loader2 className="h-4 w-4 animate-spin" />

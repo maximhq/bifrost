@@ -39,6 +39,7 @@ type ConfigStore interface {
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error)
+	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig tables.TableMCPClient) error
@@ -181,6 +182,20 @@ type ConfigStore interface {
 	// CleanupExpiredLocks removes all locks that have expired.
 	// Returns the number of locks cleaned up.
 	CleanupExpiredLocks(ctx context.Context) (int64, error)
+
+	// OAuth config CRUD
+	GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error)
+	GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error)
+	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
+	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+
+	// OAuth token CRUD
+	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error)
+	GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error)
+	CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
+	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
+	DeleteOauthToken(ctx context.Context, id string) error
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)

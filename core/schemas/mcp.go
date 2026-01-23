@@ -5,11 +5,21 @@ package schemas
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/server"
+)
+
+// OAuth-related errors
+var (
+	ErrOAuth2ConfigNotFound       = errors.New("oauth2 config not found")
+	ErrOAuth2ProviderNotAvailable = errors.New("oauth2 provider not available")
+	ErrOAuth2TokenExpired         = errors.New("oauth2 token expired")
+	ErrOAuth2TokenInvalid         = errors.New("oauth2 token invalid")
+	ErrOAuth2RefreshFailed        = errors.New("oauth2 token refresh failed")
 )
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
@@ -53,6 +63,15 @@ const (
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
 
+// MCPAuthType defines the authentication type for MCP connections
+type MCPAuthType string
+
+const (
+	MCPAuthTypeNone    MCPAuthType = "none"    // No authentication
+	MCPAuthTypeHeaders MCPAuthType = "headers" // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth   MCPAuthType = "oauth"   // OAuth 2.0 authentication
+)
+
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
 	ID               string            `json:"id"`                          // Client ID
@@ -61,7 +80,10 @@ type MCPClientConfig struct {
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString *EnvVar           `json:"connection_string,omitempty"` // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig      *MCPStdioConfig   `json:"stdio_config,omitempty"`      // STDIO configuration (required for STDIO connections)
-	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request
+	AuthType         MCPAuthType       `json:"auth_type"`                   // Authentication type (none, headers, or oauth)
+	OauthConfigID    *string           `json:"oauth_config_id,omitempty"`   // OAuth config ID (references oauth_configs table)
+	State            string            `json:"state,omitempty"`             // Connection state (connected, disconnected, error)
+	Headers          map[string]EnvVar `json:"headers,omitempty"`           // Headers to send with the request (for headers auth type)
 	InProcessServer  *server.MCPServer `json:"-"`                           // MCP server instance for in-process connections (Go package only)
 	ToolsToExecute   []string          `json:"tools_to_execute,omitempty"`  // Include-only list.
 	// ToolsToExecute semantics:
@@ -94,12 +116,36 @@ func NewMCPClientConfigFromMap(configMap map[string]any) *MCPClientConfig {
 }
 
 // HttpHeaders returns the HTTP headers for the MCP client config.
-func (c *MCPClientConfig) HttpHeaders() map[string]string {
+func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2Provider) (map[string]string, error) {
 	headers := make(map[string]string)
-	for key, value := range c.Headers {
-		headers[key] = value.GetValue()
+
+	switch c.AuthType {
+	case MCPAuthTypeOauth:
+		if c.OauthConfigID == nil {
+			return nil, ErrOAuth2ConfigNotFound
+		}
+		if oauth2Provider == nil {
+			return nil, ErrOAuth2ProviderNotAvailable
+		}
+		accessToken, err := oauth2Provider.GetAccessToken(ctx, *c.OauthConfigID)
+		if err != nil {
+			return nil, err
+		}
+		headers["Authorization"] = "Bearer " + accessToken
+	case MCPAuthTypeHeaders:
+		for key, value := range c.Headers {
+			headers[key] = value.GetValue()
+		}
+	case MCPAuthTypeNone:
+		// No headers to add
+	default:
+		// Default to headers behavior for backward compatibility
+		for key, value := range c.Headers {
+			headers[key] = value.GetValue()
+		}
 	}
-	return headers
+
+	return headers, nil
 }
 
 // MCPConnectionType defines the communication protocol for MCP connections
@@ -130,13 +176,14 @@ const (
 // MCPClientState represents a connected MCP client with its configuration and tools.
 // It is used internally by the MCP manager to track the state of a connected MCP client.
 type MCPClientState struct {
-	Name            string                  // Unique name for this client
-	Conn            *client.Client          // Active MCP client connection
-	ExecutionConfig MCPClientConfig         // Tool filtering settings
-	ToolMap         map[string]ChatTool     // Available tools mapped by name
-	ConnectionInfo  MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc      context.CancelFunc      `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState      // Connection state (connected, disconnected, error)
+	Name               string                  // Unique name for this client
+	Conn               *client.Client          // Active MCP client connection
+	ExecutionConfig    MCPClientConfig         // Tool filtering settings
+	ToolMap            map[string]ChatTool     // Available tools mapped by name
+	ToolNameMapping    map[string]string       // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
+	ConnectionInfo     MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	CancelFunc         context.CancelFunc      `json:"-"`               // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState      // Connection state (connected, disconnected, error)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.

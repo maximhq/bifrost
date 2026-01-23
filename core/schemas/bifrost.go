@@ -19,6 +19,7 @@ type BifrostConfig struct {
 	Account            Account
 	LLMPlugins         []LLMPlugin
 	MCPPlugins         []MCPPlugin
+	OAuth2Provider     OAuth2Provider
 	Logger             Logger
 	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.

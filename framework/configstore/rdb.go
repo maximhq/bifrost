@@ -749,6 +749,7 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 // GetMCPConfig retrieves the MCP configuration from the database.
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
+	// Get all MCP clients
 	if err := s.db.WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
 		return nil, err
 	}
@@ -795,6 +796,8 @@ func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig) *schemas.MCPC
 			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
 			ConnectionString:   dbClient.ConnectionString,
 			StdioConfig:        dbClient.StdioConfig,
+			AuthType:           schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:      dbClient.OauthConfigID,
 			ToolsToExecute:     dbClient.ToolsToExecute,
 			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
 			Headers:            dbClient.Headers,
@@ -805,6 +808,18 @@ func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig) *schemas.MCPC
 		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: tableConfig.ToolManagerConfig,
 	}
+}
+
+// GetMCPClientByID retrieves an MCP client by ID from the database.
+func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
+	var mcpClient tables.TableMCPClient
+	if err := s.db.WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &mcpClient, nil
 }
 
 // GetMCPClientByName retrieves an MCP client by name from the database.
@@ -835,6 +850,8 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ConnectionType:     string(clientConfigCopy.ConnectionType),
 			ConnectionString:   clientConfigCopy.ConnectionString,
 			StdioConfig:        clientConfigCopy.StdioConfig,
+			AuthType:           string(clientConfigCopy.AuthType),
+			OauthConfigID:      clientConfigCopy.OauthConfigID,
 			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
 			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
 			Headers:            clientConfigCopy.Headers,
@@ -2688,4 +2705,116 @@ func (s *RDBConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey st
 	}
 
 	return result.RowsAffected > 0, nil
+}
+
+// ==================== OAuth Methods ====================
+
+// GetOauthConfigByID retrieves an OAuth config by its ID
+func (s *RDBConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config: %w", result.Error)
+	}
+	return &config, nil
+}
+
+// GetOauthConfigByState retrieves an OAuth config by its state token
+// State is unique per OAuth flow (used for CSRF protection on callback)
+func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("state = ?", state).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config by state: %w", result.Error)
+	}
+	return &config, nil
+}
+
+// GetOauthTokenByID retrieves an OAuth token by its ID
+func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
+	var token tables.TableOauthToken
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&token)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth token: %w", result.Error)
+	}
+	return &token, nil
+}
+
+// CreateOauthConfig creates a new OAuth config
+func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	result := s.db.WithContext(ctx).Create(config)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth config: %w", result.Error)
+	}
+	return nil
+}
+
+// CreateOauthToken creates a new OAuth token
+func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	result := s.db.WithContext(ctx).Create(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthConfig updates an existing OAuth config
+func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	result := s.db.WithContext(ctx).Save(config)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth config: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthToken updates an existing OAuth token
+func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	result := s.db.WithContext(ctx).Save(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthToken deletes an OAuth token by its ID
+func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthToken{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// GetExpiringOauthTokens retrieves tokens that are expiring before the given time
+func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+	var tokens []*tables.TableOauthToken
+	result := s.db.WithContext(ctx).
+		Where("expires_at < ?", before).
+		Find(&tokens)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
+	}
+	return tokens, nil
+}
+
+// GetOauthConfigByTokenID retrieves an OAuth config that references a specific token
+func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("token_id = ?", tokenID).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config by token id: %w", result.Error)
+	}
+	return &config, nil
 }

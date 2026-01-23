@@ -1,5 +1,7 @@
-import { CreateMCPClientRequest, MCPClient, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, MCPClient, OAuthFlowResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
+
+type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -10,7 +12,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Create new MCP client
-		createMCPClient: builder.mutation<any, CreateMCPClientRequest>({
+		createMCPClient: builder.mutation<CreateMCPClientResponse, CreateMCPClientRequest>({
 			query: (data) => ({
 				url: "/mcp/client",
 				method: "POST",

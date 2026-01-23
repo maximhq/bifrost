@@ -1,0 +1,106 @@
+oauth-callback:
+  get:
+    operationId: handleOAuthCallback
+    summary: OAuth callback endpoint
+    description: |
+      Handles the OAuth provider callback after user authorization.
+      This endpoint processes the authorization code and exchanges it for an access token.
+      On success, displays an HTML page that closes the authorization window.
+    tags:
+      - OAuth
+    parameters:
+      - name: state
+        in: query
+        required: true
+        description: State parameter for OAuth security (CSRF protection)
+        schema:
+          type: string
+      - name: code
+        in: query
+        required: true
+        description: Authorization code from the OAuth provider
+        schema:
+          type: string
+      - name: error
+        in: query
+        required: false
+        description: Error code if authorization failed
+        schema:
+          type: string
+      - name: error_description
+        in: query
+        required: false
+        description: Error description if authorization failed
+        schema:
+          type: string
+    responses:
+      '200':
+        description: OAuth authorization successful. Returns HTML page that closes the authorization window.
+        content:
+          text/html:
+            schema:
+              type: string
+      '400':
+        description: OAuth authorization failed or missing required parameters
+        content:
+          text/html:
+            schema:
+              type: string
+
+oauth-config-status:
+  get:
+    operationId: getOAuthConfigStatus
+    summary: Get OAuth config status
+    description: |
+      Retrieves the current status of an OAuth configuration.
+      Shows whether the OAuth flow is pending, authorized, or failed,
+      and includes token expiration and scopes if authorized.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: OAuth config ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: OAuth config status retrieved successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/oauth.yaml#/OAuthConfigStatus'
+      '404':
+        description: OAuth config not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: revokeOAuthConfig
+    summary: Revoke OAuth config
+    description: |
+      Revokes an OAuth configuration and its associated access token.
+      After revocation, the MCP client will no longer be able to use this OAuth token.
+    tags:
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: OAuth config ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: OAuth token revoked successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

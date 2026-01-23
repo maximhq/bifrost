@@ -28,7 +28,7 @@ func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(c
 
 	// Create MCP manager
 	logger := &testLogger{t: t}
-	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, logger)
+	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger)
 
 	// Cleanup
 	t.Cleanup(func() {

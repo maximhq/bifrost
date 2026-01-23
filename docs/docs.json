@@ -164,6 +164,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/oauth",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",

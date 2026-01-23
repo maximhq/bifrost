@@ -783,9 +783,10 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 		return nil, fmt.Errorf("client not found for server name: %s", clientName)
 	}
 
-	// Strip the client name prefix from tool name before calling MCP server
-	// The MCP server expects the original tool name, not the prefixed version
-	originalToolName := stripClientPrefix(toolName, clientName)
+	// Strip the client name prefix from tool name to get sanitized name
+	// Then look up the original MCP tool name from the mapping
+	sanitizedToolName := stripClientPrefix(toolName, clientName)
+	originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
 
 	// ==================== PLUGIN PIPELINE INTEGRATION ====================
 	// Set up parent-child request ID tracking and run plugin hooks
@@ -795,7 +796,7 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 	var ok bool
 	if bifrostCtx, ok = ctx.(*schemas.BifrostContext); !ok {
 		// Fallback: if not a BifrostContext, execute directly without plugins
-		return m.callMCPToolDirect(ctx, client, originalToolName, clientName, toolName, args, appendLog)
+		return m.callMCPToolDirect(ctx, client, originalMCPToolName, clientName, toolName, args, appendLog)
 	}
 
 	originalRequestID, _ := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string)
@@ -848,14 +849,14 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 	// Check if plugin pipeline is available
 	if m.pluginPipelineProvider == nil {
 		// Fallback: execute directly without plugins
-		return m.callMCPToolDirect(ctx, client, originalToolName, clientName, toolName, args, appendLog)
+		return m.callMCPToolDirect(ctx, client, originalMCPToolName, clientName, toolName, args, appendLog)
 	}
 
 	// Get plugin pipeline and run hooks
 	pipeline := m.pluginPipelineProvider()
 	if pipeline == nil {
 		// Fallback: execute directly if pipeline is nil
-		return m.callMCPToolDirect(ctx, client, originalToolName, clientName, toolName, args, appendLog)
+		return m.callMCPToolDirect(ctx, client, originalMCPToolName, clientName, toolName, args, appendLog)
 	}
 	defer m.releasePluginPipeline(pipeline)
 
@@ -909,9 +910,9 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 	// Capture start time for latency calculation
 	startTime := time.Now()
 
-	// Derive tool name from originalToolName (ignore pre-hook modifications to tool name)
+	// Derive tool name from originalMCPToolName (ignore pre-hook modifications to tool name)
 	// Pre-hooks should not modify which tool gets called, only arguments
-	toolNameToCall := originalToolName
+	toolNameToCall := originalMCPToolName
 
 	// Call the tool via MCP client
 	callRequest := mcp.CallToolRequest{
@@ -970,7 +971,7 @@ func (m *ToolsManager) callMCPTool(ctx context.Context, clientName, toolName str
 				ChatMessage: createToolResponseMessage(toolCall, rawResult),
 				ExtraFields: schemas.BifrostMCPResponseExtraFields{
 					ClientName: clientName,
-					ToolName:   originalToolName,
+					ToolName:   originalMCPToolName,
 					Latency:    latency,
 				},
 			}

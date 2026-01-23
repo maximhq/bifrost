@@ -123,7 +123,8 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 }
 
 // retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
+// Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
+func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string) (map[string]schemas.ChatTool, map[string]string, error) {
 	// Get available tools from external server
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -135,19 +136,20 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 
 	toolsResponse, err := client.ListTools(ctx, listRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %v", err)
+		return nil, nil, fmt.Errorf("failed to list tools: %v", err)
 	}
 
 	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), nil // No tools available
+		return make(map[string]schemas.ChatTool), make(map[string]string), nil // No tools available
 	}
 
 	tools := make(map[string]schemas.ChatTool)
+	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
-		// Sanitize the original tool name: replace any '-' with '_' to prevent conflicts with our separator
-		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_")
+		originalMCPName := mcpTool.Name                           // Original name from MCP server (e.g., "notion-search")
+		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_") // For code mode and internal use (e.g., "notion_search")
 
 		if err := validateNormalizedToolName(sanitizedToolName); err != nil {
 			logger.Warn(fmt.Sprintf("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err))
@@ -164,9 +166,11 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		}
 		// Store the tool with the prefixed name
 		tools[prefixedToolName] = bifrostTool
+		// Store the mapping from sanitized name to original MCP name for later lookup during execution
+		toolNameMapping[sanitizedToolName] = originalMCPName
 	}
 
-	return tools, nil
+	return tools, toolNameMapping, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
@@ -623,7 +627,7 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 //   - clientName: Client name to strip (e.g., "calculator")
 //
 // Returns:
-//   - string: Original tool name without prefix (e.g., "add")
+//   - string: Sanitized tool name without prefix (e.g., "add")
 func stripClientPrefix(prefixedToolName, clientName string) string {
 	prefix := clientName + "-"
 	if strings.HasPrefix(prefixedToolName, prefix) {
@@ -631,6 +635,29 @@ func stripClientPrefix(prefixedToolName, clientName string) string {
 	}
 	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
 	return prefixedToolName
+}
+
+// getOriginalToolName retrieves the original MCP tool name from the sanitized name using the mapping.
+// This function is used to restore the original tool name (with hyphens) that the MCP server expects.
+//
+// Parameters:
+//   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
+//   - client: The MCP client state containing the name mapping
+//
+// Returns:
+//   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
+func getOriginalToolName(sanitizedToolName string, client *schemas.MCPClientState) string {
+	if client == nil || client.ToolNameMapping == nil {
+		return sanitizedToolName
+	}
+
+	// Look up the original MCP name in the mapping
+	if originalName, exists := client.ToolNameMapping[sanitizedToolName]; exists {
+		return originalName
+	}
+
+	// If not in mapping, return as-is (might not need mapping if names are the same)
+	return sanitizedToolName
 }
 
 // FixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.

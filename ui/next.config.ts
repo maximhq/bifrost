@@ -20,6 +20,15 @@ const nextConfig: NextConfig = {
 	env: {
 		NEXT_PUBLIC_IS_ENTERPRISE: isEnterpriseBuild ? "true" : "false",
 	},
+	// Proxy API requests to backend in development
+	async rewrites() {
+		return [
+			{
+				source: "/api/:path*",
+				destination: "http://localhost:8080/api/:path*",
+			},
+		];
+	},
 	webpack: (config) => {
 		config.resolve = config.resolve || {};
 		config.resolve.alias = config.resolve.alias || {};

@@ -68,6 +68,8 @@ type Bifrost struct {
 	responseStreamPool  sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool                           // Pool for PluginPipeline objects
 	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
+	mcpRequestPool      sync.Pool                           // Pool for BifrostMCPRequest objects
+	oauth2Provider      schemas.OAuth2Provider              // OAuth provider instance
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
 	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
 	mcpManager          *mcp.MCPManager                     // MCP integration manager (nil if MCP not configured)
@@ -171,15 +173,16 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
 	bifrost := &Bifrost{
-		ctx:           bifrostCtx,
-		cancel:        cancel,
-		account:       config.Account,
-		llmPlugins:    atomic.Pointer[[]schemas.LLMPlugin]{},
-		mcpPlugins:    atomic.Pointer[[]schemas.MCPPlugin]{},
-		requestQueues: sync.Map{},
-		waitGroups:    sync.Map{},
-		keySelector:   config.KeySelector,
-		logger:        config.Logger,
+		ctx:            bifrostCtx,
+		cancel:         cancel,
+		account:        config.Account,
+		llmPlugins:     atomic.Pointer[[]schemas.LLMPlugin]{},
+		mcpPlugins:     atomic.Pointer[[]schemas.MCPPlugin]{},
+		requestQueues:  sync.Map{},
+		waitGroups:     sync.Map{},
+		keySelector:    config.KeySelector,
+		oauth2Provider: config.OAuth2Provider,
+		logger:         config.Logger,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	bifrost.llmPlugins.Store(&config.LLMPlugins)
@@ -266,7 +269,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					bifrost.releasePluginPipeline(pp)
 				}
 			}
-			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.logger)
+			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.oauth2Provider, bifrost.logger)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -2739,7 +2742,7 @@ func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 					bifrost.releasePluginPipeline(pp)
 				}
 			}
-			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.logger)
+			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger)
 		})
 	}
 

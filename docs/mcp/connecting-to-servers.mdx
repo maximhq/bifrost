@@ -11,13 +11,13 @@ Bifrost can connect to any MCP-compatible server to discover and execute tools. 
 
 ## Connection Types
 
-Bifrost supports three connection protocols:
+Bifrost supports three connection protocols, each with different authentication options:
 
-| Type | Description | Best For |
-|------|-------------|----------|
-| **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts |
-| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions |
-| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools |
+| Type | Description | Best For | Auth Support |
+|------|-------------|----------|--------------|
+| **STDIO** | Spawns a subprocess and communicates via stdin/stdout | Local tools, CLI utilities, scripts | None |
+| **HTTP** | Sends requests to an HTTP endpoint | Remote APIs, microservices, cloud functions | Headers, OAuth 2.0 |
+| **SSE** | Server-Sent Events for persistent connections | Real-time data, streaming tools | Headers, OAuth 2.0 |
 
 ### STDIO Connections
 
@@ -50,11 +50,20 @@ STDIO connections launch external processes and communicate via standard input/o
 
 HTTP connections communicate with MCP servers via HTTP requests. Ideal for remote services and microservices.
 
+HTTP connections support two authentication methods:
+- **Header-based authentication**: Static headers (API keys, custom tokens)
+- **OAuth 2.0**: Dynamic token-based authentication with automatic token refresh
+
+#### Header-Based Authentication
+
+Use static headers for API keys and custom authentication tokens:
+
 ```json
 {
   "name": "web-search",
   "connection_type": "http",
   "connection_string": "https://mcp-server.example.com/mcp",
+  "auth_type": "headers",
   "headers": {
     "Authorization": "Bearer your-api-key",
     "X-Custom-Header": "value"
@@ -64,6 +73,46 @@ HTTP connections communicate with MCP servers via HTTP requests. Ideal for remot
 ```
 
 **Use Cases:**
+- Static API keys
+- Bearer token authentication
+- Custom header-based auth schemes
+
+#### OAuth 2.0 Authentication
+
+Use OAuth 2.0 for secure, user-based authentication with automatic token refresh:
+
+```json
+{
+  "name": "web-search",
+  "connection_type": "http",
+  "connection_string": "https://mcp-server.example.com/mcp",
+  "auth_type": "oauth",
+  "oauth_config": {
+    "client_id": "your-client-id",
+    "client_secret": "your-client-secret",
+    "authorize_url": "https://auth.example.com/authorize",
+    "token_url": "https://auth.example.com/token",
+    "scopes": ["read", "write"]
+  },
+  "tools_to_execute": ["*"]
+}
+```
+
+**Features:**
+- Automatic token refresh before expiration
+- PKCE support for public clients
+- Dynamic client registration (RFC 7591)
+- OAuth discovery from server URLs
+
+[→ Learn more about OAuth authentication →](./oauth)
+
+**Use Cases:**
+- User-delegated access
+- Third-party service integrations
+- Secure credential management
+- Compliance with OAuth 2.0 standards
+
+**Overall HTTP Use Cases:**
 - Remote API integrations
 - Cloud-hosted MCP services
 - Microservice architectures
@@ -71,15 +120,36 @@ HTTP connections communicate with MCP servers via HTTP requests. Ideal for remot
 
 ### SSE Connections
 
-Server-Sent Events (SSE) connections provide real-time, persistent connections to MCP servers.
+Server-Sent Events (SSE) connections provide real-time, persistent connections to MCP servers. Like HTTP connections, SSE supports both header-based and OAuth authentication.
+
+#### Header-Based Authentication
 
 ```json
 {
   "name": "live-data",
   "connection_type": "sse",
   "connection_string": "https://stream.example.com/mcp/sse",
+  "auth_type": "headers",
   "headers": {
     "Authorization": "Bearer your-api-key"
+  },
+  "tools_to_execute": ["*"]
+}
+```
+
+#### OAuth 2.0 Authentication
+
+```json
+{
+  "name": "live-data",
+  "connection_type": "sse",
+  "connection_string": "https://stream.example.com/mcp/sse",
+  "auth_type": "oauth",
+  "oauth_config": {
+    "client_id": "your-client-id",
+    "authorize_url": "https://auth.example.com/authorize",
+    "token_url": "https://auth.example.com/token",
+    "scopes": ["stream:read"]
   },
   "tools_to_execute": ["*"]
 }
@@ -89,6 +159,9 @@ Server-Sent Events (SSE) connections provide real-time, persistent connections t
 - Real-time market data
 - Live system monitoring
 - Event-driven workflows
+- User-authenticated streaming connections
+
+[→ Learn more about OAuth authentication →](./oauth)
 
 ---
 

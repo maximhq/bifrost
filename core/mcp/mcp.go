@@ -39,6 +39,7 @@ const (
 // both local tool hosting and external MCP server connections.
 type MCPManager struct {
 	ctx                  context.Context
+	oauth2Provider       schemas.OAuth2Provider             // Provider for OAuth2 functionality
 	toolsManager         *ToolsManager                      // Handler for MCP tools
 	server               *server.MCPServer                  // Local MCP server instance for hosting tools (STDIO-based)
 	clientMap            map[string]*schemas.MCPClientState // Map of MCP client names to their configurations
@@ -64,7 +65,7 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // Returns:
 //   - *MCPManager: Initialized manager instance
 //   - error: Any initialization error
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas.Logger) *MCPManager {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider schemas.OAuth2Provider, logger schemas.Logger) *MCPManager {
 	SetLogger(logger)
 	// Set default values
 	if config.ToolManagerConfig == nil {
@@ -78,6 +79,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 		ctx:                  ctx,
 		clientMap:            make(map[string]*schemas.MCPClientState),
 		healthMonitorManager: NewHealthMonitorManager(),
+		oauth2Provider:       oauth2Provider,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
 	var pluginPipelineProvider func() PluginPipeline
@@ -98,6 +100,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 	}
 
 	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline)
+
 	// Process client configs: create client map entries and establish connections
 	if len(config.ClientConfigs) > 0 {
 		// Add clients in parallel
