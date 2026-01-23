@@ -598,3 +598,7 @@ envFrom: []
   # - configMapRef:
   #     name: my-configmap
 
+
+# Init containers to run before the main application container.
+# Provide a list of init containers using standard Kubernetes container spec.
+initContainers: []
