@@ -622,7 +622,7 @@ export const mcpClientUpdateSchema = z.object({
 		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
 		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
 		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
-	headers: z.record(z.string(), envVarSchema).optional(),
+	headers: z.record(z.string(), envVarSchema).optional().nullable(),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()

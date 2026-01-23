@@ -275,7 +275,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				onInteractOutside={(e) => e.preventDefault()}
 				onEscapeKeyDown={(e) => e.preventDefault()}
 			>
-				<SheetHeader className="flex flex-col items-start pt-8">
+				<SheetHeader className="flex flex-col items-start px-4 pt-8">
 					<SheetTitle>New MCP Server</SheetTitle>
 					<SheetDescription>Configure and connect to a new Model Context Protocol server.</SheetDescription>
 				</SheetHeader>
@@ -324,7 +324,8 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									</TooltipTrigger>
 									<TooltipContent className="max-w-xs">
 										<p>
-											Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping - will use listTools instead.
+											Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping - will use
+											listTools instead.
 										</p>
 									</TooltipContent>
 								</Tooltip>
@@ -405,10 +406,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											<TooltipProvider>
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<Info className="h-4 w-4 text-muted-foreground cursor-help" />
+														<Info className="text-muted-foreground h-4 w-4 cursor-help" />
 													</TooltipTrigger>
 													<TooltipContent className="max-w-xs">
-														<p>Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth provider if supported.</p>
+														<p>
+															Leave empty to use Dynamic Client Registration (RFC 7591). Bifrost will automatically register with the OAuth
+															provider if supported.
+														</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -418,7 +422,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("client_id", e.target.value)}
 											placeholder="your-client-id (auto-generated if empty)"
 										/>
-										<p className="text-xs text-muted-foreground">
+										<p className="text-muted-foreground text-xs">
 											Will be auto-generated via dynamic registration if left empty and provider supports it
 										</p>
 									</div>
@@ -430,7 +434,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("client_secret", e.target.value)}
 											placeholder="your-client-secret"
 										/>
-										<p className="text-xs text-muted-foreground">Leave empty for public clients using PKCE</p>
+										<p className="text-muted-foreground text-xs">Leave empty for public clients using PKCE</p>
 									</div>
 									<div className="space-y-2">
 										<Label>Authorization URL (optional, auto-discovered)</Label>
@@ -439,7 +443,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("authorize_url", e.target.value)}
 											placeholder="https://provider.com/oauth/authorize"
 										/>
-										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+										<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
 									</div>
 									<div className="space-y-2">
 										<Label>Token URL (optional, auto-discovered)</Label>
@@ -448,7 +452,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("token_url", e.target.value)}
 											placeholder="https://provider.com/oauth/token"
 										/>
-										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+										<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
 									</div>
 									<div className="space-y-2">
 										<Label>Registration URL (optional, auto-discovered)</Label>
@@ -457,7 +461,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleOAuthConfigChange("registration_url", e.target.value)}
 											placeholder="https://provider.com/oauth/register"
 										/>
-										<p className="text-xs text-muted-foreground">For dynamic client registration, will be discovered if not provided</p>
+										<p className="text-muted-foreground text-xs">For dynamic client registration, will be discovered if not provided</p>
 									</div>
 									<div className="space-y-2">
 										<Label>Scopes (optional, comma-separated)</Label>
@@ -466,7 +470,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onChange={(e: React.ChangeEvent<HTMLInputElement>) => setScopesText(e.target.value)}
 											placeholder="read, write, admin"
 										/>
-										<p className="text-xs text-muted-foreground">Will be discovered from server if not provided</p>
+										<p className="text-muted-foreground text-xs">Will be discovered from server if not provided</p>
 									</div>
 								</>
 							)}
@@ -477,11 +481,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						<>
 							<div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
 								<div className="flex items-start gap-2">
-									<Info className="text-amber-700 mt-0.5 h-4 w-4 flex-shrink-0" />
+									<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700" />
 									<div className="flex-1">
 										<p className="text-xs font-medium text-amber-900">Docker Notice</p>
-										<p className="text-xs text-amber-800 mt-0.5">
-											If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python, etc.) aren't installed. You can safely ignore this if running locally or using a custom image with the necessary dependencies.
+										<p className="mt-0.5 text-xs text-amber-800">
+											If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python,
+											etc.) aren't installed. You can safely ignore this if running locally or using a custom image with the necessary
+											dependencies.
 										</p>
 									</div>
 								</div>
@@ -514,7 +520,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					)}
 				</div>
 				{/* Form Footer */}
-				<div className="dark:bg-card border-border bg-white py-6">
+				<div className="dark:bg-card border-border bg-white px-4 py-6">
 					<div className="flex justify-end gap-2">
 						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading}>
 							Cancel
@@ -523,7 +529,11 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							<Tooltip>
 								<TooltipTrigger asChild>
 									<span className="inline-block">
-										<Button onClick={handleSubmit} disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess} isLoading={isLoading}>
+										<Button
+											onClick={handleSubmit}
+											disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess}
+											isLoading={isLoading}
+										>
 											Create
 										</Button>
 									</span>

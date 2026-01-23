@@ -273,11 +273,20 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
-		"/api/session/logout",
+		"/api/oauth/callback",
 		"/health",
 	}
+	whitelistedPrefixes := []string{
+		"/api/oauth/callback",
+	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return slices.Contains(whitelistedRoutes, url)
+		if slices.Contains(whitelistedRoutes, url) ||
+			slices.IndexFunc(whitelistedPrefixes, func(prefix string) bool {
+				return strings.HasPrefix(url, prefix)
+			}) != -1 {
+			return true
+		}
+		return false
 	})
 }
 

@@ -1,4 +1,4 @@
-import { CreateMCPClientRequest, MCPClient, OAuthFlowResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, MCPClient, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
@@ -48,6 +48,21 @@ export const mcpApi = baseApi.injectEndpoints({
 			}),
 			invalidatesTags: ["MCPClients"],
 		}),
+
+		// Get OAuth config status (for polling)
+		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
+			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
+			providesTags: (result, error, id) => [{ type: "OAuth2Config", id }],
+		}),
+
+		// Complete OAuth flow for MCP client
+		completeOAuthFlow: builder.mutation<{ status: string; message: string }, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/complete-oauth`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
 	}),
 });
 
@@ -58,4 +73,6 @@ export const {
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
 	useLazyGetMCPClientsQuery,
+	useLazyGetOAuthConfigStatusQuery,
+	useCompleteOAuthFlowMutation,
 } = mcpApi;

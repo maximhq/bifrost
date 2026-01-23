@@ -368,7 +368,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		clientID = regResp.ClientID
 		clientSecret = regResp.ClientSecret // May be empty for public clients
 
-		logger.Debug("Dynamic client registration successful", "client_id", clientID, "has_secret", clientSecret != "")
+		logger.Debug("Dynamic client registration successful: client_id: %s, has_secret: %t", clientID, clientSecret != "")
 	}
 
 	// Generate PKCE challenge
@@ -417,7 +417,7 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		scopes,
 	)
 
-	logger.Debug("OAuth flow initiated successfully", "oauth_config_id", oauthConfigID, "client_id", clientID)
+	logger.Debug("OAuth flow initiated successfully: oauth_config_id: %s, client_id: %s", oauthConfigID, clientID)
 
 	return &schemas.OAuth2FlowInitiation{
 		OauthConfigID: oauthConfigID,

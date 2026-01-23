@@ -114,7 +114,7 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.ToolPricingJSON = "{}"
 	}
-	return nil
+		return nil
 }
 
 // AfterFind hooks for deserialization

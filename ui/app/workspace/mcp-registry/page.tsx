@@ -1,10 +1,10 @@
 "use client";
 
-import MCPClientsTable from "@/app/workspace/mcp-gateway/views/mcpClientsTable";
 import FullPageLoader from "@/components/fullPageLoader";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useGetMCPClientsQuery } from "@/lib/store";
 import { useEffect } from "react";
+import MCPClientsTable from "./views/mcpClientsTable";
 
 export default function MCPServersPage() {
 	const { data: mcpClients, error, isLoading, refetch } = useGetMCPClientsQuery();

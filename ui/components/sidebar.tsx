@@ -18,6 +18,7 @@ import {
 	KeyRound,
 	Landmark,
 	Layers,
+	LayoutGrid,
 	LogOut,
 	Logs,
 	PanelLeftClose,
@@ -26,6 +27,7 @@ import {
 	Settings,
 	Settings2Icon,
 	Shield,
+	ShieldUser,
 	Shuffle,
 	Telescope,
 	User,
@@ -416,10 +418,26 @@ export default function AppSidebar() {
 		},
 		{
 			title: "MCP Gateway",
-			url: "/workspace/mcp-gateway",
 			icon: MCPIcon,
 			description: "MCP configuration",
+			url: "/workspace/mcp-gateway",
 			hasAccess: hasMCPGatewayAccess,
+			subItems: [
+				{
+					title: "MCP Registry",
+					url: "/workspace/mcp-registry",
+					icon: LayoutGrid,
+					description: "MCP registry",
+					hasAccess: hasMCPGatewayAccess,
+				},
+				{
+					title: "Auth Config",
+					url: "/workspace/mcp-auth-config",
+					icon: ShieldUser,
+					description: "MCP auth config",
+					hasAccess: hasMCPGatewayAccess,
+				},
+			],
 		},
 		{
 			title: "Plugins",
