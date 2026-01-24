@@ -104,20 +104,16 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 
-	for i := range openrouterResponse.Data {
-		openrouterResponse.Data[i].ID = string(schemas.OpenRouter) + "/" + openrouterResponse.Data[i].ID
-	}
+	prefix := string(schemas.OpenRouter) + "/"
+	filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
 
-	if len(key.Models) > 0 {
-		filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
-		for _, model := range openrouterResponse.Data {
-			modelID := strings.TrimPrefix(model.ID, string(schemas.OpenRouter)+"/")
-			if slices.Contains(key.Models, modelID) {
-				filteredData = append(filteredData, model)
-			}
+	for i := range openrouterResponse.Data {
+		if len(key.Models) == 0 || slices.Contains(key.Models, openrouterResponse.Data[i].ID) {
+			openrouterResponse.Data[i].ID = prefix + openrouterResponse.Data[i].ID
+			filteredData = append(filteredData, openrouterResponse.Data[i])
 		}
-		openrouterResponse.Data = filteredData
 	}
+	openrouterResponse.Data = filteredData
 
 	openrouterResponse.ExtraFields.Latency = latency.Milliseconds()
 
