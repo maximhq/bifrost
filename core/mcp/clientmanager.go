@@ -186,10 +186,13 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 		return fmt.Errorf("client %s not found", id)
 	}
 
-	logger.Info(fmt.Sprintf("%s Disconnecting MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name))
+	logger.Info("%s Disconnecting MCP server '%s'", MCPLogPrefix, client.ExecutionConfig.Name)
 
 	// Stop health monitoring for this client
 	m.healthMonitorManager.StopMonitoring(id)
+
+	// Stop tool syncing for this client
+	m.toolSyncManager.StopSyncing(id)
 
 	// Cancel SSE context if present (required for proper SSE cleanup)
 	if client.CancelFunc != nil {
@@ -387,8 +390,8 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 		return fmt.Errorf("tool '%s' is already registered", name)
 	}
 
-	logger.Debug(fmt.Sprintf("%s Registering typed tool: %s -> prefixed as %s (client: %s)", MCPLogPrefix, name, prefixedToolName, BifrostMCPClientKey))
-	logger.Info(fmt.Sprintf("%s Registering typed tool: %s", MCPLogPrefix, name))
+	logger.Debug("%s Registering typed tool: %s -> prefixed as %s (client: %s)", MCPLogPrefix, name, prefixedToolName, BifrostMCPClientKey)
+	logger.Info("%s Registering typed tool: %s", MCPLogPrefix, name)
 
 	// Create MCP handler wrapper that converts between typed and MCP interfaces
 	mcpHandler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -456,7 +459,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	var err error
 
 	// Create appropriate transport based on connection type
-	logger.Debug(fmt.Sprintf("%s [%s] Creating %s connection...", MCPLogPrefix, config.Name, config.ConnectionType))
+	logger.Debug("%s [%s] Creating %s connection...", MCPLogPrefix, config.Name, config.ConnectionType)
 	switch config.ConnectionType {
 	case schemas.MCPConnectionTypeHTTP:
 		externalClient, connectionInfo, err = m.createHTTPConnection(m.ctx, config)
@@ -473,7 +476,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to create connection: %w", err)
 	}
-	logger.Debug(fmt.Sprintf("%s [%s] Connection created successfully", MCPLogPrefix, config.Name))
+	logger.Debug("%s [%s] Connection created successfully", MCPLogPrefix, config.Name)
 
 	// Initialize the external client with timeout
 	// For SSE and STDIO connections, we need a long-lived context for the connection
@@ -498,14 +501,14 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 
 	// Start the transport first (required for STDIO and SSE clients)
-	logger.Debug(fmt.Sprintf("%s [%s] Starting transport...", MCPLogPrefix, config.Name))
+	logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
 	if err := externalClient.Start(ctx); err != nil {
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
 			cancel() // Cancel long-lived context on error
 		}
 		return fmt.Errorf("failed to start MCP client transport %s: %v", config.Name, err)
 	}
-	logger.Debug(fmt.Sprintf("%s [%s] Transport started successfully", MCPLogPrefix, config.Name))
+	logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
 
 	// Create proper initialize request for external client
 	extInitRequest := mcp.InitializeRequest{
@@ -528,7 +531,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		// Create timeout context for initialization phase only
 		initCtx, initCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
 		defer initCancel()
-		logger.Debug(fmt.Sprintf("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout))
+		logger.Debug("%s [%s] Initializing client with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
 	} else {
 		// HTTP already has timeout
 		initCtx = ctx
@@ -541,10 +544,10 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		}
 		return fmt.Errorf("failed to initialize MCP client %s: %v", config.Name, err)
 	}
-	logger.Debug(fmt.Sprintf("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name))
+	logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 
 	// Retrieve tools from the external server (this also requires network I/O)
-	logger.Debug(fmt.Sprintf("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name))
+	logger.Debug("%s [%s] Retrieving tools...", MCPLogPrefix, config.Name)
 	tools, toolNameMapping, err := retrieveExternalTools(ctx, externalClient, config.Name)
 	if err != nil {
 		logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
@@ -552,7 +555,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		tools = make(map[string]schemas.ChatTool)
 		toolNameMapping = make(map[string]string)
 	}
-	logger.Debug(fmt.Sprintf("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools)))
+	logger.Debug("%s [%s] Retrieved %d tools", MCPLogPrefix, config.Name, len(tools))
 
 	// Second lock: Update client with final connection details and tools
 	m.mu.Lock()
@@ -578,8 +581,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		// Store tool name mapping for execution (sanitized_name -> original_mcp_name)
 		client.ToolNameMapping = toolNameMapping
 
-		logger.Debug(fmt.Sprintf("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient))
-		logger.Info(fmt.Sprintf("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name))
+		logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient)
+		logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name)
 	} else {
 		// Clean up resources before returning error: client was removed during connection setup
 		// Cancel long-lived context if it was created
@@ -611,6 +614,15 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	// Start health monitoring for the client
 	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, config.IsPingAvailable)
 	m.healthMonitorManager.StartMonitoring(monitor)
+
+	// Start tool syncing for the client (skip for internal bifrost client)
+	if config.ID != BifrostMCPClientKey {
+		syncInterval := ResolveToolSyncInterval(config, m.toolSyncManager.GetGlobalInterval())
+		if syncInterval > 0 {
+			syncer := NewClientToolSyncer(m, config.ID, config.Name, syncInterval)
+			m.toolSyncManager.StartSyncing(syncer)
+		}
+	}
 
 	return nil
 }
@@ -644,7 +656,7 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config schemas.MC
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.
-func (m *MCPManager) createSTDIOConnection(ctx context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createSTDIOConnection(_ context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
 	if config.StdioConfig == nil {
 		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("stdio config is required")
 	}
@@ -709,7 +721,7 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config schemas.MCP
 // createInProcessConnection creates an in-process MCP client connection without holding locks.
 // This allows direct connection to an MCP server running in the same process, providing
 // the lowest latency and highest performance for tool execution.
-func (m *MCPManager) createInProcessConnection(ctx context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createInProcessConnection(_ context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
 	if config.InProcessServer == nil {
 		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("InProcess connection requires a server instance")
 	}

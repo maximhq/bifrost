@@ -13,7 +13,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
-	mcpcore "github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1461,17 +1461,22 @@ func setupBifrost(t *testing.T) *bifrost.Bifrost {
 }
 
 // setupMCPManager creates an MCP manager for testing
-func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mcpcore.MCPManager {
+func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
 	t.Helper()
+
+	logger := &testLogger{t: t}
 
 	// Create MCP config
 	mcpConfig := &schemas.MCPConfig{
 		ClientConfigs: clientConfigs,
 	}
 
-	// Create MCP manager
-	logger := &testLogger{t: t}
-	manager := mcpcore.NewMCPManager(context.Background(), *mcpConfig, nil, logger)
+	// Create Starlark CodeMode
+	starlark.SetLogger(logger)
+	codeMode := starlark.NewStarlarkCodeMode(nil)
+
+	// Create MCP manager - dependencies are injected automatically
+	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
 
 	// Cleanup
 	t.Cleanup(func() {

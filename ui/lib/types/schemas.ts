@@ -660,6 +660,7 @@ export const mcpClientUpdateSchema = z.object({
 			{ message: "Duplicate tool names are not allowed" },
 		),
 	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
 });
 
 // Global proxy type schema

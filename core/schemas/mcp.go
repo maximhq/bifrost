@@ -6,6 +6,7 @@ package schemas
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -27,6 +28,7 @@ var (
 type MCPConfig struct {
 	ClientConfigs     []MCPClientConfig     `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
+	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
@@ -98,8 +100,9 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable bool   `json:"is_ping_available"` // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
-	ConfigHash      string `json:"-"`                 // Config hash for reconciliation (not serialized)
+	IsPingAvailable  bool          `json:"is_ping_available"`            // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
+	ToolSyncInterval time.Duration `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ConfigHash       string        `json:"-"`                            // Config hash for reconciliation (not serialized)
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
@@ -130,6 +133,14 @@ func (c *MCPClientConfig) HttpHeaders(ctx context.Context, oauth2Provider OAuth2
 		accessToken, err := oauth2Provider.GetAccessToken(ctx, *c.OauthConfigID)
 		if err != nil {
 			return nil, err
+		}
+		// Validate token format - trim whitespace and check for invalid characters
+		accessToken = strings.TrimSpace(accessToken)
+		if accessToken == "" {
+			return nil, errors.New("access token is empty")
+		}
+		if strings.ContainsAny(accessToken, "\n\r\t") {
+			return nil, errors.New("access token contains invalid characters")
 		}
 		headers["Authorization"] = "Bearer " + accessToken
 	case MCPAuthTypeHeaders:

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -82,7 +81,7 @@ func (chm *ClientHealthMonitor) Start() {
 	chm.ticker = time.NewTicker(chm.interval)
 
 	go chm.monitorLoop()
-	logger.Debug("%s Health monitor started for client %s", MCPLogPrefix, clientState.ExecutionConfig.Name)
+	logger.Debug("%s Health monitor started for client %s (interval: %v)", MCPLogPrefix, chm.clientID, chm.interval)
 }
 
 // Stop stops monitoring the client's health
@@ -113,13 +112,7 @@ func (chm *ClientHealthMonitor) Stop() {
 	if chm.cancel != nil {
 		chm.cancel()
 	}
-
-	if !exists {
-		logger.Error("%s Health monitor failed to stop for client %s, client not found in manager", MCPLogPrefix, displayName)
-		return
-	}
-
-	logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, displayName)
+	logger.Debug("%s Health monitor stopped for client %s", MCPLogPrefix, chm.clientID)
 }
 
 // monitorLoop runs the health check loop
@@ -205,7 +198,7 @@ func (chm *ClientHealthMonitor) updateClientState(state schemas.MCPConnectionSta
 
 	// Log after releasing the lock
 	if stateChanged {
-		logger.Info(fmt.Sprintf("%s Client %s connection state changed to: %s", MCPLogPrefix, clientState.ExecutionConfig.Name, state))
+		logger.Info("%s Client %s connection state changed to: %s", MCPLogPrefix, chm.clientID, state)
 	}
 }
 

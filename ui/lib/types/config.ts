@@ -377,6 +377,7 @@ export interface CoreConfig {
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
+	mcp_tool_sync_interval: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -397,6 +398,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
+	mcp_tool_sync_interval: 10,
 	allowed_headers: [],
 };
 

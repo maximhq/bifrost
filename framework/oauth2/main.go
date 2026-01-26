@@ -95,8 +95,12 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 		}
 	}
 
-	// Return access token directly (no encryption needed for internal use)
-	return token.AccessToken, nil
+	// Sanitize and return access token (trim whitespace/newlines that may cause header formatting issues)
+	accessToken := strings.TrimSpace(token.AccessToken)
+	if accessToken == "" {
+		return "", fmt.Errorf("access token is empty after sanitization")
+	}
+	return accessToken, nil
 }
 
 // RefreshAccessToken refreshes the access token for a given oauth_config_id
@@ -131,11 +135,11 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
 
-	// Update token in database
+	// Update token in database (sanitize tokens to prevent header formatting issues)
 	now := time.Now()
-	token.AccessToken = newTokenResponse.AccessToken
+	token.AccessToken = strings.TrimSpace(newTokenResponse.AccessToken)
 	if newTokenResponse.RefreshToken != "" {
-		token.RefreshToken = newTokenResponse.RefreshToken
+		token.RefreshToken = strings.TrimSpace(newTokenResponse.RefreshToken)
 	}
 	token.ExpiresAt = now.Add(time.Duration(newTokenResponse.ExpiresIn) * time.Second)
 	token.LastRefreshedAt = &now
@@ -479,12 +483,12 @@ func (p *OAuth2Provider) CompleteOAuthFlow(ctx context.Context, state, code stri
 	}
 	scopesJSON, _ := json.Marshal(scopes)
 
-	// Create oauth_token record
+	// Create oauth_token record (sanitize tokens to prevent header formatting issues)
 	tokenID := uuid.New().String()
 	tokenRecord := &tables.TableOauthToken{
 		ID:           tokenID,
-		AccessToken:  tokenResponse.AccessToken,
-		RefreshToken: tokenResponse.RefreshToken,
+		AccessToken:  strings.TrimSpace(tokenResponse.AccessToken),
+		RefreshToken: strings.TrimSpace(tokenResponse.RefreshToken),
 		TokenType:    tokenResponse.TokenType,
 		ExpiresAt:    time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
 		Scopes:       string(scopesJSON),
@@ -591,8 +595,30 @@ func (p *OAuth2Provider) callTokenEndpoint(tokenURL string, data url.Values) (*s
 	}
 
 	var tokenResponse schemas.OAuth2TokenExchangeResponse
+
+	// Try to parse as JSON first
 	if err := json.Unmarshal(body, &tokenResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
+		// If JSON parsing fails, try to parse as URL-encoded form data
+		// (GitHub's OAuth endpoint may return application/x-www-form-urlencoded)
+		formValues, parseErr := url.ParseQuery(string(body))
+		if parseErr != nil {
+			return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+		}
+
+		tokenResponse.AccessToken = formValues.Get("access_token")
+		tokenResponse.RefreshToken = formValues.Get("refresh_token")
+		tokenResponse.TokenType = formValues.Get("token_type")
+		tokenResponse.Scope = formValues.Get("scope")
+
+		// Parse expires_in if present
+		if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
+			fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+		}
+	}
+
+	// Validate that we got an access token
+	if tokenResponse.AccessToken == "" {
+		return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
 	}
 
 	return &tokenResponse, nil

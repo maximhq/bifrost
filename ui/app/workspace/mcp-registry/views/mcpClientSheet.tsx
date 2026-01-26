@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
-import { getErrorMessage, useUpdateMCPClientMutation } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useUpdateMCPClientMutation } from "@/lib/store";
 import { MCPClient } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -32,6 +32,8 @@ interface MCPClientSheetProps {
 export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: MCPClientSheetProps) {
 	const hasUpdateMCPClientAccess = useRbac(RbacResource.MCPGateway, RbacOperation.Update);
 	const [updateMCPClient, { isLoading: isUpdating }] = useUpdateMCPClientMutation();
+	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const globalToolSyncInterval = bifrostConfig?.client_config?.mcp_tool_sync_interval ?? 10;
 	const { toast } = useToast();
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
 
@@ -58,6 +60,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
+			tool_sync_interval: mcpClient.config.tool_sync_interval,
 		},
 	});
 
@@ -71,6 +74,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
+			tool_sync_interval: mcpClient.config.tool_sync_interval,
 		});
 	}, [form, mcpClient]);
 
@@ -86,6 +90,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
+					tool_sync_interval: data.tool_sync_interval,
 				},
 			}).unwrap();
 
@@ -235,7 +240,23 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 									name="name"
 									render={({ field }) => (
 										<FormItem className="flex flex-col gap-3">
-											<FormLabel>Name</FormLabel>
+											<div className="flex items-center gap-2">
+												<FormLabel>Name</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																Use a descriptive, meaningful name that clearly identifies the server. For example, use "google_drive"
+																instead of "gdrive", or "hacker_news" instead of "hn". This name is used as the Python module name in code
+																mode.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
 											<div>
 												<FormControl>
 													<Input placeholder="Client name" {...field} value={field.value || ""} />
@@ -283,6 +304,51 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											</FormControl>
 										</FormItem>
 									)}
+								/>
+								<FormField
+									control={form.control}
+									name="tool_sync_interval"
+									render={({ field }) => {
+										const isUsingGlobal = field.value === undefined || field.value === null || field.value === 0;
+										return (
+											<FormItem className="flex items-center justify-between rounded-lg border px-4 py-2">
+												<div className="flex flex-col items-start gap-0.5">
+													<div className="flex items-start gap-2">
+														<div>
+															<FormLabel>Tool Sync Interval (minutes)</FormLabel>
+														</div>
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger asChild>
+																	<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+																</TooltipTrigger>
+																<TooltipContent className="max-w-xs">
+																	<p>
+																		Override the global tool sync interval for this server. Leave empty to use global setting. Set to -1 to
+																		disable sync for this server.
+																	</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+													</div>
+													<div>{isUsingGlobal && <p className="text-muted-foreground text-xs">Using global setting</p>}</div>
+												</div>
+												<FormControl>
+													<Input
+														type="number"
+														className={`w-24 ${isUsingGlobal ? "text-muted-foreground" : ""}`}
+														placeholder={String(globalToolSyncInterval)}
+														value={field.value === 0 ? "" : (field.value ?? "")}
+														onChange={(e) => {
+															const val = e.target.value === "" ? undefined : parseInt(e.target.value);
+															field.onChange(val);
+														}}
+														min="-1"
+													/>
+												</FormControl>
+											</FormItem>
+										);
+									}}
 								/>
 								<FormField
 									control={form.control}

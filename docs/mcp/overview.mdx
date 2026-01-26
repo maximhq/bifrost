@@ -14,7 +14,7 @@ Bifrost provides a comprehensive MCP integration that goes beyond simple tool ex
 - **MCP Client**: Connect to any MCP-compatible server (filesystem tools, web search, databases, etc.)
 - **MCP Server**: Expose your connected tools to external MCP clients (like Claude Desktop)
 - **Agent Mode**: Autonomous tool execution with configurable auto-approval
-- **Code Mode**: Let AI write and execute TypeScript to orchestrate multiple tools
+- **Code Mode**: Let AI write and execute Python to orchestrate multiple tools
 
 ## Security-First Design
 
@@ -47,7 +47,7 @@ By default, Bifrost does NOT automatically execute tool calls. All tool executio
     Enable autonomous tool execution with configurable auto-approval
   </Card>
   <Card title="Code Mode" icon="code" href="./code-mode">
-    Let AI write TypeScript to orchestrate multiple tools in one request
+    Let AI write Python to orchestrate multiple tools in one request
   </Card>
   <Card title="MCP Gateway URL" icon="server" href="./gateway-url">
     Expose Bifrost as an MCP server for Claude Desktop and other clients
@@ -111,7 +111,7 @@ This pattern ensures:
 
 If you're planning to use **3+ MCP servers**, read the [Code Mode](./code-mode) documentation carefully.
 
-Code Mode reduces token usage by **50%+ and execution latency by 40-50%** compared to classic MCP by having the AI write TypeScript code to orchestrate tools in a sandbox, rather than exposing 100+ tool definitions directly to the LLM.
+Code Mode reduces token usage by **50%+ and execution latency by 40-50%** compared to classic MCP by having the AI write Python code to orchestrate tools in a sandbox, rather than exposing 100+ tool definitions directly to the LLM.
 
 ---
 

@@ -830,7 +830,7 @@ func loadMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 			for _, clientConfig := range config.MCPConfig.ClientConfigs {
 				schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
 					ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
-				})
+				}, config.ClientConfig.MCPToolSyncInterval)
 				if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
 					if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
 						logger.Warn("failed to create MCP client config: %v", err)
@@ -873,7 +873,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 		for _, clientConfig := range clientConfigsToAdd {
 			schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
 				ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
-			})
+			}, config.ClientConfig.MCPToolSyncInterval)
 			if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
 				if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
 					logger.Warn("failed to create MCP client config: %v", err)
@@ -1862,7 +1862,7 @@ func loadDefaultMCPConfig(ctx context.Context, config *Config) error {
 			for _, clientConfig := range config.MCPConfig.ClientConfigs {
 				schemasClientConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
 					ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
-				})
+				}, config.ClientConfig.MCPToolSyncInterval)
 				if schemasClientConfig != nil && len(schemasClientConfig.ClientConfigs) > 0 {
 					if err := config.ConfigStore.CreateMCPClientConfig(ctx, schemasClientConfig.ClientConfigs[0]); err != nil {
 						logger.Warn("failed to create MCP client config: %v", err)
@@ -2778,7 +2778,7 @@ func (c *Config) GetMCPClient(id string) (*schemas.MCPClientConfig, error) {
 		if clientConfig.ClientID == id {
 			schemasConfig := configstore.ConvertTableMCPConfigToSchemas(&configstoreTables.MCPConfig{
 				ClientConfigs: []configstoreTables.TableMCPClient{clientConfig},
-			})
+			}, c.ClientConfig.MCPToolSyncInterval)
 			if schemasConfig != nil && len(schemasConfig.ClientConfigs) > 0 {
 				return &schemasConfig.ClientConfigs[0], nil
 			}

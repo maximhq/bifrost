@@ -1,47 +1,47 @@
-package mcp
+//go:build !tinygo && !wasm
+
+package starlark
 
 import (
 	"context"
 	"fmt"
 	"strings"
 
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // createListToolFilesTool creates the listToolFiles tool definition for code mode.
-// This tool allows listing all available virtual .d.ts declaration files for connected MCP servers.
+// This tool allows listing all available virtual .pyi stub files for connected MCP servers.
 // The description is dynamically generated based on the configured CodeModeBindingLevel.
-//
-// Returns:
-//   - schemas.ChatTool: The tool definition for listing tool files
-func (m *ToolsManager) createListToolFilesTool() schemas.ChatTool {
-	bindingLevel := m.GetCodeModeBindingLevel()
+func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
+	bindingLevel := s.GetBindingLevel()
 	var description string
 
 	if bindingLevel == schemas.CodeModeBindingLevelServer {
-		description = "Returns a tree structure listing all virtual .d.ts declaration files available for connected MCP servers. " +
-			"Each server has a corresponding file (e.g., servers/<serverName>.d.ts) that contains definitions for all tools in that server. " +
-			"Use readToolFile to read a specific server file and see all available tools. " +
-			"In code, access tools via: await serverName.toolName({ args }). " +
+		description = "Returns a tree structure listing all virtual .pyi stub files available for connected MCP servers. " +
+			"Each server has a corresponding file (e.g., servers/<serverName>.pyi) that contains compact Python signatures for all tools in that server. " +
+			"Use readToolFile to read a specific server file and see all available tools with their signatures. " +
+			"Use getToolDocs if you need detailed documentation for a specific tool. " +
+			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
 			"This tool is generic and works with any set of servers connected at runtime. " +
-			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools. " +
-			"If you have even the SLIGHTEST DOUBT that the current tools might not be useful for the task, check listToolFiles to discover all available tools."
+			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools."
 	} else {
-		description = "Returns a tree structure listing all virtual .d.ts declaration files available for connected MCP servers, organized by individual tool. " +
-			"Each tool has a corresponding file (e.g., servers/<serverName>/<toolName>.d.ts) that contains definitions for that specific tool. " +
-			"Use readToolFile to read a specific tool file and see its parameters and usage. " +
-			"In code, access tools via: await serverName.toolName({ args }). " +
+		description = "Returns a tree structure listing all virtual .pyi stub files available for connected MCP servers, organized by individual tool. " +
+			"Each tool has a corresponding file (e.g., servers/<serverName>/<toolName>.pyi) that contains compact Python signatures for that specific tool. " +
+			"Use readToolFile to read a specific tool file and see its signature. " +
+			"Use getToolDocs if you need detailed documentation for a specific tool. " +
+			"In code, access tools via: server_name.tool_name(param=value). " +
 			"The server names used in code correspond to the human-readable names shown in this listing. " +
 			"This tool is generic and works with any set of servers connected at runtime. " +
-			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools. " +
-			"If you have even the SLIGHTEST DOUBT that the current tools might not be useful for the task, check listToolFiles to discover all available tools."
+			"Always check this tool whenever you are unsure about what tools you have available or if you want to verify available servers and their tools."
 	}
 
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
-			Name: ToolTypeListToolFiles,
+			Name:        codemcp.ToolTypeListToolFiles,
 			Description: schemas.Ptr(description),
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
@@ -53,38 +53,27 @@ func (m *ToolsManager) createListToolFilesTool() schemas.ChatTool {
 }
 
 // handleListToolFiles handles the listToolFiles tool call.
-// It builds a tree structure listing all virtual .d.ts files available for code mode clients.
-// The structure depends on the CodeModeBindingLevel:
-// - "server": servers/<name>.d.ts (one file per server)
-// - "tool": servers/<name>/<toolName>.d.ts (one file per tool)
-//
-// Parameters:
-//   - ctx: Context for accessing client tools
-//   - toolCall: The tool call request containing no arguments
-//
-// Returns:
-//   - *schemas.ChatMessage: A tool response message containing the file tree structure
-//   - error: Any error that occurred during processing
-func (m *ToolsManager) handleListToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
+// It builds a tree structure listing all virtual .pyi files available for code mode clients.
+func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
 
 	if len(availableToolsPerClient) == 0 {
-		responseText := "No servers are currently connected. There are no virtual .d.ts files available. " +
+		responseText := "No servers are currently connected. There are no virtual .pyi files available. " +
 			"Please ensure servers are connected before using this tool."
 		return createToolResponseMessage(toolCall, responseText), nil
 	}
 
 	// Get the code mode binding level
-	bindingLevel := m.GetCodeModeBindingLevel()
+	bindingLevel := s.GetBindingLevel()
 
 	// Build file list based on binding level
 	var files []string
 	codeModeServerCount := 0
 
 	for clientName, tools := range availableToolsPerClient {
-		client := m.clientManager.GetClientByName(clientName)
+		client := s.clientManager.GetClientByName(clientName)
 		if client == nil {
-			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
+			logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
 		if !client.ExecutionConfig.IsCodeModeClient {
@@ -94,22 +83,22 @@ func (m *ToolsManager) handleListToolFiles(ctx context.Context, toolCall schemas
 
 		if bindingLevel == schemas.CodeModeBindingLevelServer {
 			// Server-level: one file per server
-			files = append(files, fmt.Sprintf("servers/%s.d.ts", clientName))
+			files = append(files, fmt.Sprintf("servers/%s.pyi", clientName))
 		} else {
 			// Tool-level: one file per tool
 			for _, tool := range tools {
 				if tool.Function != nil && tool.Function.Name != "" {
 					// Strip the client prefix from tool name (format: "client-toolname" -> "toolname")
-					// But replace - with _ for valid JavaScript identifiers
+					// But replace - with _ for valid Python identifiers
 					toolName := stripClientPrefix(tool.Function.Name, clientName)
-					// Replace any remaining hyphens with underscores for JavaScript compatibility
+					// Replace any remaining hyphens with underscores for Python compatibility
 					toolName = strings.ReplaceAll(toolName, "-", "_")
 					// Validate normalized tool name to prevent path traversal
 					if err := validateNormalizedToolName(toolName); err != nil {
-						logger.Warn(fmt.Sprintf("%s Skipping tool '%s' from client '%s': %v", MCPLogPrefix, tool.Function.Name, clientName, err))
+						logger.Warn("%s Skipping tool '%s' from client '%s': %v", codemcp.CodeModeLogPrefix, tool.Function.Name, clientName, err)
 						continue
 					}
-					toolFileName := fmt.Sprintf("servers/%s/%s.d.ts", clientName, toolName)
+					toolFileName := fmt.Sprintf("servers/%s/%s.pyi", clientName, toolName)
 					files = append(files, toolFileName)
 				}
 			}
@@ -118,7 +107,7 @@ func (m *ToolsManager) handleListToolFiles(ctx context.Context, toolCall schemas
 
 	if codeModeServerCount == 0 {
 		responseText := "Servers are connected but none are configured for code mode. " +
-			"There are no virtual .d.ts files available."
+			"There are no virtual .pyi files available."
 		return createToolResponseMessage(toolCall, responseText), nil
 	}
 
@@ -134,23 +123,6 @@ type treeNode struct {
 }
 
 // buildVFSTree creates a hierarchical tree structure from a flat list of file paths.
-// It groups files by directory and formats them with proper indentation.
-//
-// Example input:
-//   - ["servers/calculator.d.ts", "servers/youtube.d.ts"]
-//   - ["servers/calculator/add.d.ts", "servers/youtube/GET_CHANNELS.d.ts"]
-//
-// Example output for server-level:
-//   servers/
-//     calculator.d.ts
-//     youtube.d.ts
-//
-// Example output for tool-level:
-//   servers/
-//     calculator/
-//       add.d.ts
-//     youtube/
-//       GET_CHANNELS.d.ts
 func buildVFSTree(files []string) string {
 	if len(files) == 0 {
 		return ""

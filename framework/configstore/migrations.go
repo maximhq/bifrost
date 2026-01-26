@@ -167,6 +167,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddOAuthTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddToolSyncIntervalColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3057,6 +3060,48 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running oauth tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolSyncIntervalColumns adds the tool_sync_interval columns to config_client and config_mcp_clients tables
+func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_tool_sync_interval_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			// Add mcp_tool_sync_interval column to config_client table (global setting)
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
+					return err
+				}
+			}
+			// Add tool_sync_interval column to config_mcp_clients table (per-client setting)
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_sync_interval") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running tool sync interval migration: %s", err.Error())
 	}
 	return nil
 }

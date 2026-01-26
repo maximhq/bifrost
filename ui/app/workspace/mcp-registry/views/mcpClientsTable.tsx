@@ -134,7 +134,7 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Registered MCP Servers</div>
+					<h1 className="text-foreground text-lg font-semibold">MCP server catalog</h1>
 					<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess}>
 						<Plus className="h-4 w-4" /> New MCP Server
 					</Button>
@@ -213,19 +213,14 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 										)}
 									</TableCell>
 									<TableCell>
-										<Badge className={MCP_STATUS_COLORS[c.state]}>
-											{c.state}
-										</Badge>
+										<Badge className={MCP_STATUS_COLORS[c.state]}>{c.state}</Badge>
 									</TableCell>
 									<TableCell className="space-x-2 text-right" onClick={(e) => e.stopPropagation()}>
 										<Button
 											variant="ghost"
 											size="icon"
 											onClick={() => handleReconnect(c)}
-											disabled={
-												reconnectingClients.includes(c.config.client_id) ||
-												!hasUpdateMCPClientAccess
-											}
+											disabled={reconnectingClients.includes(c.config.client_id) || !hasUpdateMCPClientAccess}
 											title="Reconnect"
 										>
 											{reconnectingClients.includes(c.config.client_id) ? (

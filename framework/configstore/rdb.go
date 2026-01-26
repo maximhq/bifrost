@@ -55,6 +55,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPAgentDepth:           config.MCPAgentDepth,
 		MCPToolExecutionTimeout: config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:     config.MCPToolSyncInterval,
 		HeaderFilterConfig:      config.HeaderFilterConfig,
 		ConfigHash:              config.ConfigHash,
 	}
@@ -215,6 +216,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPAgentDepth:           dbConfig.MCPAgentDepth,
 		MCPToolExecutionTimeout: dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:     dbConfig.MCPToolSyncInterval,
 		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
 		ConfigHash:              dbConfig.ConfigHash,
 	}, nil
@@ -783,7 +785,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, e
 }
 
 // ConvertTableMCPConfigToSchemas converts tables.MCPConfig to schemas.MCPConfig
-func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig) *schemas.MCPConfig {
+func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig, globalToolSyncInterval int) *schemas.MCPConfig {
 	if tableConfig == nil {
 		return nil
 	}
@@ -802,11 +804,13 @@ func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig) *schemas.MCPC
 			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
 			Headers:            dbClient.Headers,
 			IsPingAvailable:    dbClient.IsPingAvailable,
+			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
 		}
 	}
 	return &schemas.MCPConfig{
 		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: tableConfig.ToolManagerConfig,
+		ToolSyncInterval:  time.Duration(globalToolSyncInterval) * time.Minute,
 	}
 }
 
@@ -856,6 +860,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
 			Headers:            clientConfigCopy.Headers,
 			IsPingAvailable:    clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:   int(clientConfigCopy.ToolSyncInterval.Minutes()),
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -928,6 +933,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"headers_json":               string(headersJSON),
 			"tool_pricing_json":          string(toolPricingJSON),
 			"is_ping_available":          clientConfigCopy.IsPingAvailable,
+			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"updated_at":                 time.Now(),
 		}
 

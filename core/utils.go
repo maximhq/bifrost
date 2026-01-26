@@ -447,5 +447,5 @@ func sanitizeSpanName(name string) string {
 
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
-	return toolName == mcp.ToolTypeListToolFiles || toolName == mcp.ToolTypeReadToolFile || toolName == mcp.ToolTypeExecuteToolCode
+	return mcp.IsCodeModeTool(toolName)
 }

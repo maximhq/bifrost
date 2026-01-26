@@ -39,6 +39,7 @@ export interface MCPClientConfig {
 	headers?: Record<string, EnvVar>;
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
+	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 }
 
 export interface MCPClient {
@@ -88,4 +89,5 @@ export interface UpdateMCPClientRequest {
 	tools_to_auto_execute?: string[];
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
+	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 }

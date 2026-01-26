@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,15 +21,20 @@ import (
 func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
 	t.Helper()
 
+	logger := &testLogger{t: t}
+
 	// Create MCP config with request ID function
 	mcpConfig := &schemas.MCPConfig{
 		ClientConfigs:         clientConfigs,
 		FetchNewRequestIDFunc: fetchNewRequestIDFunc,
 	}
 
-	// Create MCP manager
-	logger := &testLogger{t: t}
-	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger)
+	// Create Starlark CodeMode
+	starlark.SetLogger(logger)
+	codeMode := starlark.NewStarlarkCodeMode(nil)
+
+	// Create MCP manager - dependencies are injected automatically
+	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
 
 	// Cleanup
 	t.Cleanup(func() {

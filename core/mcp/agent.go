@@ -185,7 +185,7 @@ func executeAgent(
 				// Allow code mode list and read tool tools
 				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile {
 					autoExecutableTools = append(autoExecutableTools, toolCall)
-					logger.Debug(fmt.Sprintf("Tool %s can be auto-executed", toolName))
+					logger.Debug("Tool %s can be auto-executed", toolName)
 					continue
 				} else if toolName == ToolTypeExecuteToolCode {
 					// Build allowed auto-execution tools map for code mode validation
@@ -194,14 +194,14 @@ func executeAgent(
 					// Parse tool arguments
 					var arguments map[string]interface{}
 					if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-						logger.Debug(fmt.Sprintf("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err))
+						logger.Debug("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
 
 					code, ok := arguments["code"].(string)
 					if !ok || code == "" {
-						logger.Debug(fmt.Sprintf("%s Code parameter missing or empty", CodeModeLogPrefix))
+						logger.Debug("%s Code parameter missing or empty", CodeModeLogPrefix)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
@@ -209,59 +209,58 @@ func executeAgent(
 					// Step 1: Convert literal \n escape sequences to actual newlines for parsing
 					codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
 					if len(codeWithNewlines) != len(code) {
-						logger.Debug(fmt.Sprintf("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix))
+						logger.Debug("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix)
 					}
 
 					// Step 2: Extract tool calls from code during AST formation
 					extractedToolCalls, err := extractToolCallsFromCode(codeWithNewlines)
 					if err != nil {
-						logger.Debug(fmt.Sprintf("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err))
+						logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
 
-					logger.Debug(fmt.Sprintf("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls)))
+					logger.Debug("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls))
 
 					// Step 3: Validate all tool calls against allowedAutoExecutionTools
 					canAutoExecute := true
 					if len(extractedToolCalls) > 0 {
 						// If there are tool calls, we need allowedAutoExecutionTools to validate them
 						if len(allowedAutoExecutionTools) == 0 {
-							logger.Debug(fmt.Sprintf("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix))
+							logger.Debug("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix)
 							canAutoExecute = false
 						} else {
-							logger.Debug(fmt.Sprintf("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools)))
+							logger.Debug("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools))
 
 							// Validate each tool call
 							for _, extractedToolCall := range extractedToolCalls {
 								isAllowed := isToolCallAllowedForCodeMode(extractedToolCall.serverName, extractedToolCall.toolName, allClientNames, allowedAutoExecutionTools)
 								if !isAllowed {
-									logger.Debug(fmt.Sprintf("%s Tool call %s.%s: allowed=%v", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName, isAllowed))
-									logger.Debug(fmt.Sprintf("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName))
+									logger.Debug("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName)
 									canAutoExecute = false
 									break
 								}
 							}
 							if canAutoExecute {
-								logger.Debug(fmt.Sprintf("%s All tool calls validated successfully", CodeModeLogPrefix))
+								logger.Debug("%s All tool calls validated successfully", CodeModeLogPrefix)
 							}
 						}
 					} else {
-						logger.Debug(fmt.Sprintf("%s No tool calls found in code, skipping validation", CodeModeLogPrefix))
+						logger.Debug("%s No tool calls found in code, skipping validation", CodeModeLogPrefix)
 					}
 
 					// Add to appropriate list based on validation result
 					if canAutoExecute {
 						autoExecutableTools = append(autoExecutableTools, toolCall)
-						logger.Debug(fmt.Sprintf("Tool %s can be auto-executed (validation passed)", toolName))
+						logger.Debug("Tool %s can be auto-executed (validation passed)", toolName)
 					} else {
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed (validation failed)", toolName))
+						logger.Debug("Tool %s cannot be auto-executed (validation failed)", toolName)
 					}
 					continue
 				}
 				// Else, if client not found, treat as non-auto-executable (can be a manually passed tool)
-				logger.Debug(fmt.Sprintf("Client not found for tool %s, treating as non-auto-executable", toolName))
+				logger.Debug("Client not found for tool %s, treating as non-auto-executable", toolName)
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 				continue
 			}
@@ -269,15 +268,15 @@ func executeAgent(
 			// Check if tool can be auto-executed
 			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
-				logger.Debug(fmt.Sprintf("Tool %s can be auto-executed", toolName))
+				logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-				logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed", toolName))
+				logger.Debug("Tool %s cannot be auto-executed", toolName)
 			}
 		}
 
-		logger.Debug(fmt.Sprintf("Auto-executable tools: %d", len(autoExecutableTools)))
-		logger.Debug(fmt.Sprintf("Non-auto-executable tools: %d", len(nonAutoExecutableTools)))
+		logger.Debug("Auto-executable tools: %d", len(autoExecutableTools))
+		logger.Debug("Non-auto-executable tools: %d", len(nonAutoExecutableTools))
 
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
@@ -300,7 +299,7 @@ func executeAgent(
 
 					mcpResponse, toolErr := executeToolFunc(ctx, mcpRequest)
 					if toolErr != nil {
-						logger.Warn(fmt.Sprintf("Tool execution failed: %v", toolErr))
+						logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
 						channelToolResults <- mcpResponse.ChatMessage
@@ -332,7 +331,7 @@ func executeAgent(
 
 		// If there are non-auto-executable tools, return them immediately without continuing the loop
 		if len(nonAutoExecutableTools) > 0 {
-			logger.Debug(fmt.Sprintf("Found %d non-auto-executable tools, returning them immediately without continuing the loop", len(nonAutoExecutableTools)))
+			logger.Debug("Found %d non-auto-executable tools, returning them immediately without continuing the loop", len(nonAutoExecutableTools))
 			// Return as is if its the first iteration
 			if depth == 1 && len(allExecutedToolResults) == 0 {
 				return currentResponse, nil
@@ -361,7 +360,7 @@ func executeAgent(
 		currentResponse = response
 	}
 
-	logger.Debug(fmt.Sprintf("Agent mode completed after %d iterations", depth))
+	logger.Debug("Agent mode completed after %d iterations", depth)
 	return currentResponse, nil
 }
 

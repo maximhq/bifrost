@@ -502,7 +502,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		account := lib.NewBaseAccount(s.Config)
 		var mcpConfig *schemas.MCPConfig
 		if s.Config.MCPConfig != nil {
-			mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig)
+			mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
 		}
 		s.Client.ReloadConfig(schemas.BifrostConfig{
 			Account:            account,
@@ -569,7 +569,7 @@ func (s *BifrostHTTPServer) reloadBifrostPlugins() error {
 	account := lib.NewBaseAccount(s.Config)
 	var mcpConfig *schemas.MCPConfig
 	if s.Config.MCPConfig != nil {
-		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig)
+		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
 	}
 
 	return s.Client.ReloadConfig(schemas.BifrostConfig{
@@ -965,7 +965,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
-		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(tableMCPConfig)
+		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(tableMCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
 		if mcpConfig != nil {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()

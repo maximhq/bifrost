@@ -30,6 +30,7 @@ import {
 	ShieldUser,
 	Shuffle,
 	Telescope,
+	ToolCase,
 	User,
 	UserRoundCheck,
 	Users,
@@ -424,10 +425,17 @@ export default function AppSidebar() {
 			hasAccess: hasMCPGatewayAccess,
 			subItems: [
 				{
-					title: "MCP Registry",
+					title: "MCP Catalog",
 					url: "/workspace/mcp-registry",
 					icon: LayoutGrid,
-					description: "MCP registry",
+					description: "MCP tool catalog",
+					hasAccess: hasMCPGatewayAccess,
+				},
+				{
+					title: "Tool groups",
+					url: "/workspace/mcp-tool-groups",
+					icon: ToolCase,
+					description: "MCP tool groups",
 					hasAccess: hasMCPGatewayAccess,
 				},
 				{

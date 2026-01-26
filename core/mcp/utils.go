@@ -54,7 +54,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		includeClients = existingIncludeClients
 	}
 
-	logger.Debug(fmt.Sprintf("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients))
+	logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
 
 	tools := make(map[string][]schemas.ChatTool)
 	for _, client := range m.clientMap {
@@ -62,11 +62,11 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		clientName := client.ExecutionConfig.Name
 		clientID := client.ExecutionConfig.ID
 
-		logger.Debug(fmt.Sprintf("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID))
+		logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
 
 		// Apply client filtering logic - check both ID and Name for compatibility
 		if !shouldIncludeClient(clientName, includeClients) {
-			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName))
+			logger.Debug("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName)
 			continue
 		}
 
@@ -91,7 +91,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 			tools[clientName] = append(tools[clientName], tool)
 		}
 		if len(tools[clientName]) > 0 {
-			logger.Debug(fmt.Sprintf("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName))
+			logger.Debug("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName)
 		}
 	}
 	return tools
@@ -107,18 +107,18 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	logger.Debug(fmt.Sprintf("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap)))
+	logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap))
 	for _, client := range m.clientMap {
-		logger.Debug(fmt.Sprintf("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID))
+		logger.Debug("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID)
 		if client.ExecutionConfig.Name == clientName {
 			// Return a copy to prevent TOCTOU race conditions
 			// The caller receives a snapshot of the client state at this point in time
-			logger.Debug(fmt.Sprintf("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient))
+			logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient)
 			clientCopy := *client
 			return &clientCopy
 		}
 	}
-	logger.Debug(fmt.Sprintf("%s Client '%s' not found", MCPLogPrefix, clientName))
+	logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
 	return nil
 }
 
@@ -148,18 +148,18 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
-		originalMCPName := mcpTool.Name                           // Original name from MCP server (e.g., "notion-search")
-		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_") // For code mode and internal use (e.g., "notion_search")
-
-		if err := validateNormalizedToolName(sanitizedToolName); err != nil {
-			logger.Warn(fmt.Sprintf("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err))
+		// Validate the original tool name (with hyphens replaced by underscores for validation only)
+		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
+		if err := validateNormalizedToolName(validationName); err != nil {
+			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
 			continue
 		}
 
 		// Convert MCP tool schema to Bifrost format
 		bifrostTool := convertMCPToolToBifrostSchema(&mcpTool)
 		// Prefix tool name with client name to make it permanent (using '-' as separator)
-		prefixedToolName := fmt.Sprintf("%s-%s", clientName, sanitizedToolName)
+		// Keep the original tool name (don't sanitize) so we can call the MCP server correctly
+		prefixedToolName := fmt.Sprintf("%s-%s", clientName, mcpTool.Name)
 		// Update the tool's function name to match the prefixed name
 		if bifrostTool.Function != nil {
 			bifrostTool.Function.Name = prefixedToolName
@@ -167,7 +167,8 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		// Store the tool with the prefixed name
 		tools[prefixedToolName] = bifrostTool
 		// Store the mapping from sanitized name to original MCP name for later lookup during execution
-		toolNameMapping[sanitizedToolName] = originalMCPName
+		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_")
+		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
 	return tools, toolNameMapping, nil
@@ -179,24 +180,24 @@ func shouldIncludeClient(clientName string, includeClients []string) bool {
 	if includeClients != nil {
 		// Handle empty array [] - means no clients are included
 		if len(includeClients) == 0 {
-			logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - BLOCKED (empty include list)", MCPLogPrefix, clientName))
+			logger.Debug("%s shouldIncludeClient: %s - BLOCKED (empty include list)", MCPLogPrefix, clientName)
 			return false // No clients allowed
 		}
 
 		// Handle wildcard "*" - if present, all clients are included
 		if slices.Contains(includeClients, "*") {
-			logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - ALLOWED (wildcard filter)", MCPLogPrefix, clientName))
+			logger.Debug("%s shouldIncludeClient: %s - ALLOWED (wildcard filter)", MCPLogPrefix, clientName)
 			return true // All clients allowed
 		}
 
 		// Check if specific client is in the list
 		included := slices.Contains(includeClients, clientName)
-		logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients))
+		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
 		return included
 	}
 
 	// Default: include all clients when no filtering specified (nil case)
-	logger.Debug(fmt.Sprintf("%s shouldIncludeClient: %s - ALLOWED (no filter)", MCPLogPrefix, clientName))
+	logger.Debug("%s shouldIncludeClient: %s - ALLOWED (no filter)", MCPLogPrefix, clientName)
 	return true
 }
 
@@ -506,8 +507,8 @@ func validateNormalizedToolName(normalizedName string) error {
 	return nil
 }
 
-// extractToolCallsFromCode extracts tool calls from TypeScript code
-// Tool calls are in the format: serverName.toolName(...) or await serverName.toolName(...)
+// extractToolCallsFromCode extracts tool calls from Python/Starlark code
+// Tool calls are in the format: server_name.tool_name(...)
 func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
 	toolCalls := []toolCallInfo{}
 
@@ -540,7 +541,7 @@ func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
 func isToolCallAllowedForCodeMode(serverName, toolName string, allClientNames []string, allowedAutoExecutionTools map[string][]string) bool {
 	// Check if the server name is in the list of all client names
 	if !slices.Contains(allClientNames, serverName) {
-		// It can be a built-in JavaScript/TypeScript object, if not then downstream execution will fail with a runtime error.
+		// It can be a built-in Python/Starlark object, if not then downstream execution will fail with a runtime error.
 		return true
 	}
 
@@ -676,15 +677,16 @@ func FixArraySchemas(properties map[string]interface{}) {
 				if _, hasItems := schemaMap["items"]; !hasItems {
 					// Add a default 'items' schema (unconstrained)
 					schemaMap["items"] = map[string]interface{}{}
-					logger.Debug(fmt.Sprintf("%s Fixed array schema for property '%s': added missing 'items' field", MCPLogPrefix, key))
+					logger.Debug("%s Fixed array schema for property '%s': added missing 'items' field", MCPLogPrefix, key)
 				}
 				// Recurse into items regardless of type (object or array)
 				if itemsMap, ok := schemaMap["items"].(map[string]interface{}); ok {
 					itemsType, _ := itemsMap["type"].(string)
-					if itemsType == "array" {
+					switch itemsType {
+					case "array":
 						// Handle nested arrays (array-of-array)
 						FixArraySchemas(map[string]interface{}{"": itemsMap})
-					} else if itemsType == "object" {
+					case "object":
 						// Recurse into object properties
 						if itemsProps, ok := itemsMap["properties"].(map[string]interface{}); ok {
 							FixArraySchemas(itemsProps)
@@ -708,15 +710,16 @@ func FixArraySchemas(properties map[string]interface{}) {
 							if unionType, ok := unionMap["type"].(string); ok && unionType == "array" {
 								if _, hasItems := unionMap["items"]; !hasItems {
 									unionMap["items"] = map[string]interface{}{}
-									logger.Debug(fmt.Sprintf("%s Fixed array schema in %s for property '%s': added missing 'items' field", MCPLogPrefix, unionKey, key))
+									logger.Debug("%s Fixed array schema in %s for property '%s': added missing 'items' field", MCPLogPrefix, unionKey, key)
 								}
 								// Recurse into items regardless of type
 								if itemsMap, ok := unionMap["items"].(map[string]interface{}); ok {
 									itemsType, _ := itemsMap["type"].(string)
-									if itemsType == "array" {
+									switch itemsType {
+									case "array":
 										// Handle nested arrays
 										FixArraySchemas(map[string]interface{}{"": itemsMap})
-									} else if itemsType == "object" {
+									case "object":
 										if itemsProps, ok := itemsMap["properties"].(map[string]interface{}); ok {
 											FixArraySchemas(itemsProps)
 										}

@@ -46,6 +46,7 @@ type MCPManager struct {
 	mu                   sync.RWMutex                       // Read-write mutex for thread-safe operations
 	serverRunning        bool                               // Track whether local MCP server is running
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
+	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -59,13 +60,17 @@ type MCPToolFunction[T any] func(args T) (string, error)
 // NewMCPManager creates and initializes a new MCP manager instance.
 //
 // Parameters:
+//   - ctx: Context for the MCP manager
 //   - config: MCP configuration including server port and client configs
+//   - oauth2Provider: OAuth2 provider for authentication
 //   - logger: Logger instance for structured logging (uses default if nil)
+//   - codeMode: Optional CodeMode implementation for code execution (e.g., Starlark).
+//     Pass nil if code mode is not needed. The CodeMode's dependencies will be
+//     injected automatically via SetDependencies after the manager is created.
 //
 // Returns:
 //   - *MCPManager: Initialized manager instance
-//   - error: Any initialization error
-func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider schemas.OAuth2Provider, logger schemas.Logger) *MCPManager {
+func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider schemas.OAuth2Provider, logger schemas.Logger, codeMode CodeMode) *MCPManager {
 	SetLogger(logger)
 	// Set default values
 	if config.ToolManagerConfig == nil {
@@ -79,6 +84,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 		ctx:                  ctx,
 		clientMap:            make(map[string]*schemas.MCPClientState),
 		healthMonitorManager: NewHealthMonitorManager(),
+		toolSyncManager:      NewToolSyncManager(config.ToolSyncInterval),
 		oauth2Provider:       oauth2Provider,
 	}
 	// Convert plugin pipeline provider functions to the interface expected by ToolsManager
@@ -100,6 +106,13 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 	}
 
 	manager.toolsManager = NewToolsManager(config.ToolManagerConfig, manager, config.FetchNewRequestIDFunc, pluginPipelineProvider, releasePluginPipeline)
+
+	// Set up CodeMode if provided - inject dependencies after manager is created
+	if codeMode != nil {
+		deps := manager.toolsManager.GetCodeModeDependencies()
+		codeMode.SetDependencies(deps)
+		manager.toolsManager.SetCodeMode(codeMode)
+	}
 
 	// Process client configs: create client map entries and establish connections
 	if len(config.ClientConfigs) > 0 {
@@ -272,6 +285,9 @@ func (m *MCPManager) CheckAndExecuteAgentForResponsesRequest(
 func (m *MCPManager) Cleanup() error {
 	// Stop all health monitors first
 	m.healthMonitorManager.StopAll()
+
+	// Stop all tool syncers
+	m.toolSyncManager.StopAll()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

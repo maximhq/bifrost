@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
@@ -269,7 +270,17 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					bifrost.releasePluginPipeline(pp)
 				}
 			}
-			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.oauth2Provider, bifrost.logger)
+			// Create Starlark CodeMode for code execution
+			starlark.SetLogger(bifrost.logger)
+			var codeModeConfig *mcp.CodeModeConfig
+			if mcpConfig.ToolManagerConfig != nil {
+				codeModeConfig = &mcp.CodeModeConfig{
+					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
+					ToolExecutionTimeout: mcpConfig.ToolManagerConfig.ToolExecutionTimeout,
+				}
+			}
+			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig)
+			bifrost.mcpManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -2742,7 +2753,10 @@ func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
 					bifrost.releasePluginPipeline(pp)
 				}
 			}
-			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger)
+			// Create Starlark CodeMode for code execution (with default config)
+			starlark.SetLogger(bifrost.logger)
+			codeMode := starlark.NewStarlarkCodeMode(nil)
+			bifrost.mcpManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
 		})
 	}
 

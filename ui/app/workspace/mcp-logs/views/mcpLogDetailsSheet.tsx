@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -19,10 +19,10 @@ import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Status, StatusColors, Statuses } from "@/lib/constants/logs";
 import type { MCPToolLogEntry } from "@/lib/types/logs";
-import { FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
+import type { ReactNode } from "react";
 import { toast } from "sonner";
-import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 
 interface MCPLogDetailSheetProps {
 	log: MCPToolLogEntry | null;
@@ -62,7 +62,7 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8" expandable>
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
