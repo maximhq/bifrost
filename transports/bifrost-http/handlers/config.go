@@ -136,7 +136,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		// Fetching governance config
 		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
 		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to get auth config from store: %v", err))
+			logger.Warn("failed to get auth config from store: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
 			return
 		}
@@ -170,7 +170,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 	if h.store.ConfigStore != nil {
 		proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
 		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to get proxy config from store: %v", err))
+			logger.Warn("failed to get proxy config from store: %v", err)
 		} else if proxyConfig != nil {
 			// Redact password if present
 			if proxyConfig.Password != "" {
@@ -181,7 +181,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		// Fetching restart required config
 		restartConfig, err := h.store.ConfigStore.GetRestartRequiredConfig(ctx)
 		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to get restart required config from store: %v", err))
+			logger.Warn("failed to get restart required config from store: %v", err)
 		} else if restartConfig != nil {
 			mapConfig["restart_required"] = restartConfig
 		}
@@ -214,13 +214,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			logger.Warn(fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
 			return
 		}
@@ -342,7 +342,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// Remove the litellmcompat plugin
 			disabledCtx := context.WithValue(ctx, "isDisabled", true)
 			if err := h.configManager.RemovePlugin(disabledCtx, "litellmcompat"); err != nil {
-				logger.Warn(fmt.Sprintf("failed to remove litellmcompat plugin: %v", err))
+				logger.Warn("failed to remove litellmcompat plugin: %v", err)
 			}
 		}
 	}
@@ -358,13 +358,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
 		// Validate that no security headers are in the allowlist or denylist
 		if err := validateHeaderFilterConfig(payload.ClientConfig.HeaderFilterConfig); err != nil {
-			logger.Warn(fmt.Sprintf("invalid header filter config: %v", err))
+			logger.Warn("invalid header filter config: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
 		updatedConfig.HeaderFilterConfig = payload.ClientConfig.HeaderFilterConfig
 		if err := h.configManager.ReloadHeaderFilterConfig(ctx, payload.ClientConfig.HeaderFilterConfig); err != nil {
-			logger.Warn(fmt.Sprintf("failed to reload header filter config: %v", err))
+			logger.Warn("failed to reload header filter config: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload header filter config: %v", err))
 			return
 		}
@@ -382,20 +382,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	h.store.ClientConfig = updatedConfig
 
 	if err := h.store.ConfigStore.UpdateClientConfig(ctx, &updatedConfig); err != nil {
-		logger.Warn(fmt.Sprintf("failed to save configuration: %v", err))
+		logger.Warn("failed to save configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save configuration: %v", err))
 		return
 	}
 	// Reloading client config from config store
 	if err := h.configManager.ReloadClientConfigFromConfigStore(ctx); err != nil {
-		logger.Warn(fmt.Sprintf("failed to reload client config from config store: %v", err))
+		logger.Warn("failed to reload client config from config store: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload client config from config store: %v", err))
 		return
 	}
 	// Fetching existing framework config
 	frameworkConfig, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("failed to get framework config from store: %v", err))
+		logger.Warn("failed to get framework config from store: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
 		return
 	}
@@ -420,13 +420,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		// Checking the accessibility of the pricing URL
 		resp, err := http.Get(*payload.FrameworkConfig.PricingURL)
 		if err != nil {
-			logger.Warn(fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			logger.Warn(fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
+			logger.Warn("failed to check the accessibility of the pricing URL: %v", resp.StatusCode)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", resp.StatusCode))
 			return
 		}
@@ -456,7 +456,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 		// Saving framework config
 		if err := h.store.ConfigStore.UpdateFrameworkConfig(ctx, frameworkConfig); err != nil {
-			logger.Warn(fmt.Sprintf("failed to save framework configuration: %v", err))
+			logger.Warn("failed to save framework configuration: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save framework configuration: %v", err))
 			return
 		}
@@ -469,7 +469,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		authConfig, err := h.store.ConfigStore.GetAuthConfig(ctx)
 		if err != nil {
 			if !errors.Is(err, configstore.ErrNotFound) {
-				logger.Warn(fmt.Sprintf("failed to get auth config from store: %v", err))
+				logger.Warn("failed to get auth config from store: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get auth config from store: %v", err))
 				return
 			}
@@ -510,7 +510,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 					// We will hash the password
 					hashedPassword, err := encrypt.Hash(payload.AuthConfig.AdminPassword)
 					if err != nil {
-						logger.Warn(fmt.Sprintf("failed to hash password: %v", err))
+						logger.Warn("failed to hash password: %v", err)
 						SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to hash password: %v", err))
 						return
 					}
@@ -520,7 +520,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			// Save auth config - this handles both first-time creation and updates
 			err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
 			if err != nil {
-				logger.Warn(fmt.Sprintf("failed to update auth config: %v", err))
+				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
@@ -534,7 +534,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 			err = h.configManager.UpdateAuthConfig(ctx, payload.AuthConfig)
 			if err != nil {
-				logger.Warn(fmt.Sprintf("failed to update auth config: %v", err))
+				logger.Warn("failed to update auth config: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
@@ -543,7 +543,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		// Flush all existing sessions if auth details have been changed
 		if authChanged {
 			if err := h.store.ConfigStore.FlushSessions(ctx); err != nil {
-				logger.Warn(fmt.Sprintf("updated auth config but failed to flush existing sessions, please restart the server: %v", err))
+				logger.Warn("updated auth config but failed to flush existing sessions, please restart the server: %v", err)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("updated auth config but failed to flush existing sessions, please restart the server: %v", err))
 				return
 			}
@@ -558,7 +558,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			Required: true,
 			Reason:   reason,
 		}); err != nil {
-			logger.Warn(fmt.Sprintf("failed to set restart required config: %v", err))
+			logger.Warn("failed to set restart required config: %v", err)
 		}
 	}
 
@@ -577,7 +577,7 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.configManager.ForceReloadPricing(ctx); err != nil {
-		logger.Warn(fmt.Sprintf("failed to force pricing sync: %v", err))
+		logger.Warn("failed to force pricing sync: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
 		return
 	}
@@ -681,7 +681,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	// Save proxy config
 	if err := h.store.ConfigStore.UpdateProxyConfig(ctx, &payload); err != nil {
-		logger.Warn(fmt.Sprintf("failed to save proxy configuration: %v", err))
+		logger.Warn("failed to save proxy configuration: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save proxy configuration: %v", err))
 		return
 	}
@@ -689,7 +689,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 	// Pulling the proxy config from the config store
 	newProxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("failed to get proxy config from store: %v", err))
+		logger.Warn("failed to get proxy config from store: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get proxy config from store: %v", err))
 		return
 	}
@@ -708,7 +708,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 
 	// Reload proxy config in the server
 	if err := h.configManager.ReloadProxyConfig(ctx, newProxyConfig); err != nil {
-		logger.Warn(fmt.Sprintf("failed to reload proxy config: %v", err))
+		logger.Warn("failed to reload proxy config: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to reload proxy config: %v", err))
 		return
 	}
@@ -718,7 +718,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		Required: true,
 		Reason:   "Proxy configuration has been updated. A restart is required for all changes to take full effect.",
 	}); err != nil {
-		logger.Warn(fmt.Sprintf("failed to set restart required config: %v", err))
+		logger.Warn("failed to set restart required config: %v", err)
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusOK)

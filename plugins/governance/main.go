@@ -343,6 +343,11 @@ func (p *GovernancePlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // loadBalanceProvider loads balances the provider for the request
 // Parameters:
 //   - req: The HTTP request

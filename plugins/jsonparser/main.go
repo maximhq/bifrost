@@ -93,6 +93,11 @@ func (p *JsonParserPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *JsonParserPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook is not used for this plugin as we only process responses
 // Parameters:
 //   - ctx: The Bifrost context

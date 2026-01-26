@@ -67,7 +67,8 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	ConfigHash string `json:"-"` // Config hash for reconciliation (not serialized)
+	IsPingAvailable bool   `json:"is_ping_available"` // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
+	ConfigHash      string `json:"-"`                 // Config hash for reconciliation (not serialized)
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.

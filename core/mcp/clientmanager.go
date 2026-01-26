@@ -189,6 +189,9 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
+	// Check if is_ping_available changed
+	isPingAvailableChanged := client.ExecutionConfig.IsPingAvailable != updatedConfig.IsPingAvailable
+
 	// Update the client's execution config with new tool filters
 	config := client.ExecutionConfig
 	config.Name = updatedConfig.Name
@@ -196,9 +199,19 @@ func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig
 	config.Headers = updatedConfig.Headers
 	config.ToolsToExecute = updatedConfig.ToolsToExecute
 	config.ToolsToAutoExecute = updatedConfig.ToolsToAutoExecute
+	config.IsPingAvailable = updatedConfig.IsPingAvailable
 
 	// Store the updated config
 	client.ExecutionConfig = config
+
+	// If is_ping_available changed, update the health monitor
+	if isPingAvailableChanged {
+		// Stop and restart the health monitor with the new is_ping_available setting
+		m.healthMonitorManager.StopMonitoring(id)
+		monitor := NewClientHealthMonitor(m, id, DefaultHealthCheckInterval, config.IsPingAvailable)
+		m.healthMonitorManager.StartMonitoring(monitor)
+	}
+
 	return nil
 }
 
@@ -389,7 +402,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	// Retrieve tools from the external server (this also requires network I/O)
 	tools, err := retrieveExternalTools(ctx, externalClient, config.Name)
 	if err != nil {
-		logger.Warn(fmt.Sprintf("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err))
+		logger.Warn("%s Failed to retrieve tools from %s: %v", MCPLogPrefix, config.Name, err)
 		// Continue with connection even if tool retrieval fails
 		tools = make(map[string]schemas.ChatTool)
 	}
@@ -425,7 +438,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		// Close external client connection to prevent transport/goroutine leaks
 		if externalClient != nil {
 			if err := externalClient.Close(); err != nil {
-				logger.Warn(fmt.Sprintf("%s Failed to close external client during cleanup: %v", MCPLogPrefix, err))
+				logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, err)
 			}
 		}
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
@@ -434,7 +447,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
-			logger.Warn(fmt.Sprintf("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err))
+			logger.Warn("%s SSE connection lost for MCP server '%s': %v", MCPLogPrefix, config.Name, err)
 			// Update state to disconnected
 			m.mu.Lock()
 			if client, exists := m.clientMap[config.ID]; exists {
@@ -445,7 +458,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 
 	// Start health monitoring for the client
-	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval)
+	monitor := NewClientHealthMonitor(m, config.ID, DefaultHealthCheckInterval, config.IsPingAvailable)
 	m.healthMonitorManager.StartMonitoring(monitor)
 
 	return nil

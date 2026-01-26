@@ -31,7 +31,7 @@ import {
 	User,
 	UserRoundCheck,
 	Users,
-	Zap
+	Zap,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -64,10 +64,14 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
 import { PromoCardStack } from "./ui/promoCardStack";
+
+// Cookie name for dismissing production setup card
+const PRODUCTION_SETUP_DISMISSED_COOKIE = "bifrost_production_setup_dismissed";
 
 // Custom MCP Icon Component
 const MCPIcon = ({ className }: { className?: string }) => (
@@ -222,12 +226,13 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
 				tooltip={item.title}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isActive || isAnySubItemActive
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+					isActive || isAnySubItemActive
 						? "bg-sidebar-accent text-primary border-primary/20"
 						: isAllowed && item.hasAccess
 							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
 							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-					} `}
+				} `}
 				onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
 			>
 				<div className="flex w-full items-center justify-between">
@@ -264,12 +269,13 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemActive
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
+										isSubItemActive
 											? "bg-sidebar-accent text-primary font-medium"
 											: subItem.hasAccess === false
 												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-										}`}
+									}`}
 									onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem))}
 								>
 									<div className="flex items-center gap-2">
@@ -333,6 +339,8 @@ export default function AppSidebar() {
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
 	const [userPopoverOpen, setUserPopoverOpen] = useState(false);
+	const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
+	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
 		skip: !mounted, // Only fetch after component is mounted
 	});
@@ -428,13 +436,6 @@ export default function AppSidebar() {
 					icon: KeyRound,
 					description: "Manage virtual keys & access",
 					hasAccess: hasVirtualKeysAccess,
-				},
-				{
-					title: "Model Limits",
-					url: "/workspace/model-limits",
-					icon: Gauge,
-					description: "Model-level budgets & rate limits",
-					hasAccess: hasGovernanceAccess,
 				},
 				{
 					title: "Users & Groups",
@@ -576,14 +577,14 @@ export default function AppSidebar() {
 				},
 				...(IS_ENTERPRISE
 					? [
-						{
-							title: "Proxy",
-							url: "/workspace/config/proxy",
-							icon: Globe,
-							description: "Proxy configuration",
-							hasAccess: hasSettingsAccess,
-						},
-					]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 					: []),
 				{
 					title: "API Keys",
@@ -708,11 +709,12 @@ export default function AppSidebar() {
 				dismissible: true,
 			});
 		}
-		if (!IS_ENTERPRISE) {
+		// Only show after mounted to ensure cookie is properly hydrated and avoid flash
+		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
 			cards.push(productionSetupHelpCard);
 		}
 		return cards;
-	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage]);
+	}, [coreConfig?.restart_required, showNewReleaseBanner, latestRelease, newReleaseImage, isProductionSetupDismissed, mounted]);
 
 	// Reset areCardsEmpty when promoCards changes
 	useEffect(() => {
@@ -729,6 +731,20 @@ export default function AppSidebar() {
 	const handleCardsEmpty = () => {
 		setAreCardsEmpty(true);
 	};
+
+	const handlePromoDismiss = useCallback(
+		(cardId: string) => {
+			if (cardId === "production-setup") {
+				const expiryDate = new Date();
+				expiryDate.setDate(expiryDate.getDate() + 7);
+				setCookie(PRODUCTION_SETUP_DISMISSED_COOKIE, "true", {
+					path: "/",
+					expires: expiryDate,
+				});
+			}
+		},
+		[setCookie],
+	);
 
 	const handleLogout = async () => {
 		try {
@@ -768,7 +784,10 @@ export default function AppSidebar() {
 					</button>
 				</div>
 				{/* Collapsed state: vertical layout */}
-				<div className="hidden w-full flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex cursor-pointer" onClick={toggleSidebar}>
+				<div
+					className="hidden w-full cursor-pointer flex-col items-center gap-2 py-2 group-data-[collapsible=icon]:flex"
+					onClick={toggleSidebar}
+				>
 					<Image className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
 				</div>
 			</SidebarHeader>
@@ -801,7 +820,7 @@ export default function AppSidebar() {
 				</SidebarGroup>
 				<div className="flex flex-col gap-4 px-3 group-data-[collapsible=icon]:px-1">
 					<div className="mx-1 group-data-[collapsible=icon]:hidden">
-						<PromoCardStack cards={promoCards} onCardsEmpty={handleCardsEmpty} />
+						<PromoCardStack cards={promoCards} onCardsEmpty={handleCardsEmpty} onDismiss={handlePromoDismiss} />
 					</div>
 					<div className="flex flex-row">
 						<div className="mx-auto flex flex-row gap-4 group-data-[collapsible=icon]:flex-col group-data-[collapsible=icon]:gap-2">

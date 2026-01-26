@@ -58,8 +58,6 @@ type ServerCallbacks interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) []schemas.PluginStatus
-	RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
-	DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
@@ -77,8 +75,8 @@ type ServerCallbacks interface {
 	RemoveVirtualKey(ctx context.Context, id string) error
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
-	ReloadProvider(ctx context.Context, name string) (*tables.TableProvider, error)
-	RemoveProvider(ctx context.Context, name string) error
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
+	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetGovernanceData() *governance.GovernanceData
 	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -100,24 +98,25 @@ type BifrostHTTPServer struct {
 
 	LogLevel       string
 	LogOutputStyle string
+	LogsCleaner    *logstore.LogsCleaner
 
 	PluginsMutex      sync.RWMutex
 	Plugins           []schemas.Plugin
 	pluginStatusMutex sync.RWMutex
 	pluginStatus      []schemas.PluginStatus
 
-	tracingMiddleware *handlers.TracingMiddleware
-
 	Client *bifrost.Bifrost
 	Config *lib.Config
 
-	Server           *fasthttp.Server
-	Router           *router.Router
+	Server *fasthttp.Server
+	Router *router.Router
+
 	WebSocketHandler *handlers.WebSocketHandler
-	LogsCleaner      *logstore.LogsCleaner
 	MCPServerHandler *handlers.MCPServerHandler
 	devPprofHandler  *handlers.DevPprofHandler
-	AuthMiddleware   *handlers.AuthMiddleware
+
+	AuthMiddleware    *handlers.AuthMiddleware
+	TracingMiddleware *handlers.TracingMiddleware
 }
 
 var logger schemas.Logger
@@ -767,8 +766,9 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 
 // ReloadProvider reloads a provider from the database into in-memory store
 // If usage was modified (e.g., reset due to config change), syncs it back to DB
-func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, name string) (*tables.TableProvider, error) {
-	preloadedProvider, err := s.Config.ConfigStore.GetProviderByName(ctx, name)
+func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+	// Sync model level budgets in governance plugin
+	providerInfo, err := s.Config.ConfigStore.GetProvider(ctx, provider)
 	if err != nil {
 		logger.Error("failed to load provider: %v", err)
 		return nil, err
@@ -778,39 +778,70 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, name string) (*t
 		return nil, err
 	}
 	// Update in memory and get back the potentially modified provider
-	updatedProvider := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(preloadedProvider)
+	updatedProvider := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(providerInfo)
 	if updatedProvider == nil {
-		return preloadedProvider, nil
+		return providerInfo, nil
 	}
-
 	// Sync updated usage values back to database if they changed
-	if updatedProvider.Budget != nil && preloadedProvider.Budget != nil {
-		if updatedProvider.Budget.CurrentUsage != preloadedProvider.Budget.CurrentUsage {
+	if updatedProvider.Budget != nil && providerInfo.Budget != nil {
+		if updatedProvider.Budget.CurrentUsage != providerInfo.Budget.CurrentUsage {
 			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
 				logger.Error("failed to sync budget usage to database: %v", err)
 			}
 		}
 	}
-	if updatedProvider.RateLimit != nil && preloadedProvider.RateLimit != nil {
-		tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != preloadedProvider.RateLimit.TokenCurrentUsage
-		requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != preloadedProvider.RateLimit.RequestCurrentUsage
+	if updatedProvider.RateLimit != nil && providerInfo.RateLimit != nil {
+		tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != providerInfo.RateLimit.TokenCurrentUsage
+		requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != providerInfo.RateLimit.RequestCurrentUsage
 		if tokenUsageChanged || requestUsageChanged {
 			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
 				logger.Error("failed to sync rate limit usage to database: %v", err)
 			}
 		}
 	}
-
+	// Syncing models
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return nil, fmt.Errorf("pricing manager not found")
+	}
+	if s.Client == nil {
+		return nil, fmt.Errorf("bifrost client not found")
+	}
+	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	defer bfCtx.Cancel()
+	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+		Provider: provider,
+	})
+	if bifrostErr != nil {
+		return nil, fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(bifrostErr))
+	}
+	s.Config.PricingManager.DeleteModelDataForProvider(provider)
+	s.Config.PricingManager.AddModelDataToPool(allModels)
 	return updatedProvider, nil
 }
 
 // RemoveProvider removes a provider from the in-memory store
-func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, name string) error {
+func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	err := s.Config.RemoveProvider(ctx, provider)
+	// For not found, we continue to remove the provider from the client
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+		logger.Error("failed to remove provider from config: %v", err)
+		return err
+	}
+	err = s.Client.RemoveProvider(provider)
+	if err != nil {
+		logger.Error("failed to remove provider: %v", err)
+		return err
+	}
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
 		return err
 	}
-	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(name)
+	governancePlugin.GetGovernanceStore().DeleteProviderInMemory(string(provider))
+	if s.Config == nil || s.Config.PricingManager == nil {
+		return fmt.Errorf("pricing manager not found")
+	}
+	s.Config.PricingManager.DeleteModelDataForProvider(provider)
+
 	return nil
 }
 
@@ -849,7 +880,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		s.Client.ReloadConfig(schemas.BifrostConfig{
 			Account:            account,
 			InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
-			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,			
+			DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
 			Plugins:            s.Config.GetLoadedPlugins(),
 			MCPConfig:          s.Config.MCPConfig,
 			Logger:             logger,
@@ -1027,7 +1058,7 @@ func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path 
 			}
 		}
 		if len(observabilityPlugins) > 0 {
-			s.tracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
+			s.TracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
 		}
 	}
 	return nil
@@ -1080,42 +1111,11 @@ func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config
 	return nil
 }
 
-// RefetchModelsForProvider deletes existing models for a provider and re-fetches them from the provider
-func (s *BifrostHTTPServer) RefetchModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
-		return fmt.Errorf("pricing manager not found")
-	}
-	if s.Client == nil {
-		return fmt.Errorf("bifrost client not found")
-	}
-	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	defer bfCtx.Cancel()
-	allModels, err := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-		Provider: provider,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(err))
-	}
-	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-	s.Config.PricingManager.AddModelDataToPool(allModels)
-	return nil
-}
-
-// DeleteModelsForProvider deletes all models for a specific provider from the model catalog
-func (s *BifrostHTTPServer) DeleteModelsForProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	if s.Config == nil || s.Config.PricingManager == nil {
-		return fmt.Errorf("pricing manager not found")
-	}
-	s.Config.PricingManager.DeleteModelDataForProvider(provider)
-	return nil
-}
-
 // GetModelsForProvider returns all models for a specific provider from the model catalog
 func (s *BifrostHTTPServer) GetModelsForProvider(provider schemas.ModelProvider) []string {
 	if s.Config == nil || s.Config.PricingManager == nil {
 		return []string{}
 	}
-
 	return s.Config.PricingManager.GetModelsForProvider(provider)
 }
 
@@ -1169,7 +1169,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, name string) error
 				observabilityPlugins = append(observabilityPlugins, observabilityPlugin)
 			}
 		}
-		s.tracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
+		s.TracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
 	}
 	return nil
 }
@@ -1229,7 +1229,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	// Chaining all middlewares
 	// lib.ChainMiddlewares chains multiple middlewares together
 	healthHandler := handlers.NewHealthHandler(s.Config)
-	providerHandler := handlers.NewProviderHandler(callbacks, s.Config, s.Client)
+	providerHandler := handlers.NewProviderHandler(callbacks, s.Config.ConfigStore, s.Config, s.Client)
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
@@ -1477,8 +1477,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Client.SetTracer(tracer)
 	// Always add tracing middleware when tracer is enabled - it creates traces and sets traceID in context
 	// The observability plugins are optional (can be empty if only logging is enabled)
-	s.tracingMiddleware = handlers.NewTracingMiddleware(tracer, observabilityPlugins)
-	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.tracingMiddleware.Middleware()}, inferenceMiddlewares...)
+	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer, observabilityPlugins)
+	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
@@ -1489,7 +1489,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.CorsMiddleware(s.Config)(s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
-		ReadBufferSize:     1024 * 16, // 16kb
+		ReadBufferSize:     1024 * 64, // 64kb
 	}
 	return nil
 }

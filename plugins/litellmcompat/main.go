@@ -73,6 +73,11 @@ func (p *LiteLLMCompatPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext,
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *LiteLLMCompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook intercepts requests and applies LiteLLM-compatible transformations.
 // For text completion requests on models that don't support text completion,
 // it converts them to chat completion requests.

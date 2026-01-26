@@ -21,6 +21,7 @@ type TableMCPClient struct {
 	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"` // JSON serialized []string
 	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"` // JSON serialized []string
 	HeadersJSON            string          `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	IsPingAvailable        bool            `gorm:"default:true" json:"is_ping_available"`           // Whether the MCP server supports ping for health checks
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash

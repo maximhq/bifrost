@@ -397,8 +397,8 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 
 // TextCompletionStream performs a streaming text completion request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -540,7 +540,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Azure-specific URL construction with deployments and supports both api-key and Bearer token authentication.
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -728,7 +728,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 }
 
 // ResponsesStream performs a streaming responses request to Azure's API.
-func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -920,7 +920,7 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 
 // SpeechStream handles streaming for speech synthesis with Azure.
 // Azure sends raw binary audio bytes in SSE format, unlike OpenAI which sends JSON.
-func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
 	}
@@ -1018,7 +1018,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1221,7 +1221,7 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 }
 
 // TranscriptionStream is not supported by the Azure provider.
-func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -1274,13 +1274,13 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 
 // ImageGenerationStream performs a streaming image generation request to Azure's API.
 // It formats the request, sends it to Azure, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *AzureProvider) ImageGenerationStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 
 	// Validate api key configs
 	if err := provider.validateKeyConfig(key); err != nil {

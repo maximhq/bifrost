@@ -488,6 +488,11 @@ func (p *MockerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *MockerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook intercepts requests and applies mocking rules based on configuration
 // This is called before the actual provider request and can short-circuit the flow
 func (p *MockerPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {

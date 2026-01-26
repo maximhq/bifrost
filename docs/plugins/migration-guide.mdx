@@ -390,6 +390,72 @@ if val := ctx.Value(schemas.BifrostContextKey("my-key")); val != nil {
 }
 ```
 
+## Streaming Chunk Hook (v1.4.x)
+
+Bifrost v1.4.x introduces a new hook for intercepting streaming response chunks:
+
+### HTTPTransportStreamChunkHook
+
+This hook is called for each chunk during streaming responses, allowing plugins to modify or filter chunks before they're sent to the client.
+
+```go
+// HTTPTransportStreamChunkHook intercepts streaming chunks BEFORE they're written to the client.
+// Modify chunk data or return nil to skip the chunk entirely.
+// Only called for streaming responses when using HTTP transport (bifrost-http).
+func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+    // chunk is a typed struct containing one of:
+    // - BifrostTextCompletionResponse (text completion streaming)
+    // - BifrostChatResponse (chat completion streaming)
+    // - BifrostResponsesStreamResponse (responses API streaming)
+    // - BifrostSpeechStreamResponse (speech synthesis streaming)
+    // - BifrostTranscriptionStreamResponse (transcription streaming)
+    // - BifrostImageGenerationStreamResponse (image generation streaming)
+    // - BifrostError (error during streaming)
+
+    // Return chunk unchanged to pass through
+    return chunk, nil
+
+    // Return nil to skip/filter this chunk
+    // return nil, nil
+
+    // Return modified chunk
+    // modifiedChunk := &schemas.BifrostStreamChunk{BifrostChatResponse: ...}
+    // return modifiedChunk, nil
+}
+```
+
+**Key differences from `HTTPTransportPostHook`:**
+
+| Aspect | HTTPTransportPostHook | HTTPTransportStreamChunkHook |
+|--------|----------------------|------------------------------|
+| When called | After complete response | Per-chunk during streaming |
+| Input | Full HTTPResponse | `*BifrostStreamChunk` (typed struct) |
+| Can modify | Full response | Individual chunk struct |
+| Can skip | N/A | Return nil to skip chunk |
+
+<Note>
+`HTTPTransportPostHook` is **not called** for streaming responses. Use `HTTPTransportStreamChunkHook` instead to intercept streaming data.
+</Note>
+
+### Migration for Existing Plugins
+
+If your plugin implements `HTTPTransportPostHook` and you want to also handle streaming responses, add the new hook:
+
+```go
+// Existing hook for non-streaming responses
+func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+    // Handle complete responses
+    return nil
+}
+
+// NEW: Add this for streaming responses
+func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+    // Handle streaming chunks (typed struct, not raw bytes)
+    // Return chunk unchanged if no modification needed
+    return chunk, nil
+}
+```
+
 ## Need Help?
 
 - **Discord Community**: [Join our Discord](https://getmax.im/bifrost-discord)

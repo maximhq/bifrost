@@ -35,7 +35,7 @@ type ConfigStore interface {
 	GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]ProviderConfig, error)
 	GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*ProviderConfig, error)
 	GetProviders(ctx context.Context) ([]tables.TableProvider, error)
-	GetProviderByName(ctx context.Context, name string) (*tables.TableProvider, error)
+	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)

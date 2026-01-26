@@ -31,6 +31,10 @@ func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
 	return m.availableProviders
 }
 
+func (m *mockHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
+	return nil
+}
+
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 

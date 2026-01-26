@@ -310,8 +310,8 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 
 // TextCompletionStream performs a streaming text completion request to Anthropic's API.
 // It formats the request, sends it to Anthropic, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *AnthropicProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *AnthropicProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -323,7 +323,7 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte	
+	var jsonData []byte
 	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
 		jsonData = request.GetRawRequestBody()
 	} else {
@@ -381,8 +381,8 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 
 // ChatCompletionStream performs a streaming chat completion request to the Anthropic API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
-// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
+func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -460,7 +460,7 @@ func HandleAnthropicChatCompletionStreaming(
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 	meta *providerUtils.RequestMetadata,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true // Initialize for streaming
@@ -504,7 +504,7 @@ func HandleAnthropicChatCompletionStreaming(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -842,7 +842,7 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 }
 
 // ResponsesStream performs a streaming responses request to the Anthropic API.
-func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
@@ -901,7 +901,7 @@ func HandleAnthropicResponsesStream(
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
 	meta *providerUtils.RequestMetadata,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
@@ -947,7 +947,7 @@ func HandleAnthropicResponsesStream(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1681,7 +1681,7 @@ func (provider *AnthropicProvider) Speech(ctx *schemas.BifrostContext, key schem
 }
 
 // SpeechStream is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -1691,7 +1691,7 @@ func (provider *AnthropicProvider) Transcription(ctx *schemas.BifrostContext, ke
 }
 
 // TranscriptionStream is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -1701,7 +1701,7 @@ func (provider *AnthropicProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 }
 
 // ImageGenerationStream is not supported by the Anthropic provider.
-func (provider *AnthropicProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *AnthropicProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

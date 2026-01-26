@@ -100,7 +100,7 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Fetching status
-	pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
+	pluginStatuses := h.pluginsLoader.GetPluginStatus(ctx)
 	// Creating ephemeral struct for the plugins
 	finalPlugins := []struct {
 		Name     string               `json:"name"`
@@ -111,16 +111,20 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 		Status   schemas.PluginStatus `json:"status"`
 	}{}
 	// Iterating over plugin status to get the plugin info
-	for _, pluginStatus := range pluginStatus {
-		var pluginInfo *configstoreTables.TablePlugin
-		for _, plugin := range plugins {
-			if plugin.Name == pluginStatus.Name {
-				pluginInfo = plugin
+	for _, plugin := range plugins {
+		pluginStatus := schemas.PluginStatus{
+			Name: plugin.Name,
+			Status: schemas.PluginStatusUninitialized,
+			Logs: []string{},
+		}
+		if !plugin.Enabled {
+			pluginStatus.Status = schemas.PluginStatusDisabled
+		}
+		for _, status := range pluginStatuses {
+			if plugin.Name == status.Name {
+				pluginStatus = status
 				break
 			}
-		}
-		if pluginInfo == nil {
-			continue
 		}
 		finalPlugins = append(finalPlugins, struct {
 			Name     string               `json:"name"`
@@ -130,14 +134,14 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 			Path     *string              `json:"path"`
 			Status   schemas.PluginStatus `json:"status"`
 		}{
-			Name:     pluginInfo.Name,
-			Enabled:  pluginInfo.Enabled,
-			Config:   pluginInfo.Config,
-			IsCustom: pluginInfo.IsCustom,
-			Path:     pluginInfo.Path,
+			Name:     plugin.Name,
+			Enabled:  plugin.Enabled,
+			Config:   plugin.Config,
+			IsCustom: plugin.IsCustom,
+			Path:     plugin.Path,
 			Status:   pluginStatus,
 		})
-	}
+	}	
 	// Creating ephemeral struct
 	SendJSON(ctx, map[string]any{
 		"plugins": finalPlugins,
@@ -334,7 +338,6 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid request body")
 		return
 	}
-
 	// Updating the plugin
 	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:     name,
@@ -347,7 +350,6 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to update plugin")
 		return
 	}
-
 	plugin, err = h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {

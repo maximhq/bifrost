@@ -345,6 +345,11 @@ func (plugin *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sc
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.
@@ -639,11 +644,11 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 
 		if bifrost.IsStreamRequestType(requestType) {
 			if err := plugin.addStreamingResponse(cacheCtx, requestID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
-				plugin.logger.Warn(fmt.Sprintf("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err))
+				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
 			}
 		} else {
 			if err := plugin.addSingleResponse(cacheCtx, requestID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
-				plugin.logger.Warn(fmt.Sprintf("%s Failed to cache single response: %v", PluginLoggerPrefix, err))
+				plugin.logger.Warn("%s Failed to cache single response: %v", PluginLoggerPrefix, err)
 			}
 		}
 	}()
@@ -699,10 +704,10 @@ func (plugin *Plugin) Cleanup() error {
 
 	for _, result := range results {
 		if result.Status == vectorstore.DeleteStatusError {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entry: %s", PluginLoggerPrefix, result.Error))
+			plugin.logger.Warn("%s Failed to delete cache entry: %s", PluginLoggerPrefix, result.Error)
 		}
 	}
-	plugin.logger.Info(fmt.Sprintf("%s Cleanup completed - deleted all cache entries", PluginLoggerPrefix))
+	plugin.logger.Info("%s Cleanup completed - deleted all cache entries", PluginLoggerPrefix)
 
 	if err := plugin.store.DeleteNamespace(ctx, plugin.config.VectorStoreNamespace); err != nil {
 		return fmt.Errorf("failed to delete namespace: %w", err)
@@ -740,13 +745,13 @@ func (plugin *Plugin) ClearCacheForKey(cacheKey string) error {
 	defer cancel()
 	results, err := plugin.store.DeleteAll(ctx, plugin.config.VectorStoreNamespace, queries)
 	if err != nil {
-		plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entries for key '%s': %v", PluginLoggerPrefix, cacheKey, err))
+		plugin.logger.Warn("%s Failed to delete cache entries for key '%s': %v", PluginLoggerPrefix, cacheKey, err)
 		return err
 	}
 
 	for _, result := range results {
 		if result.Status == vectorstore.DeleteStatusError {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entry for key %s: %s", PluginLoggerPrefix, result.ID, result.Error))
+			plugin.logger.Warn("%s Failed to delete cache entry for key %s: %s", PluginLoggerPrefix, result.ID, result.Error)
 		}
 	}
 
@@ -768,7 +773,7 @@ func (plugin *Plugin) ClearCacheForRequestID(requestID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), CacheSetTimeout)
 	defer cancel()
 	if err := plugin.store.Delete(ctx, plugin.config.VectorStoreNamespace, requestID); err != nil {
-		plugin.logger.Warn(fmt.Sprintf("%s Failed to delete cache entry: %v", PluginLoggerPrefix, err))
+		plugin.logger.Warn("%s Failed to delete cache entry: %v", PluginLoggerPrefix, err)
 		return err
 	}
 

@@ -259,7 +259,7 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			},
 		}
 
-		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.ChatCompletionStreamRequest(bfCtx, request)
 		})
@@ -387,11 +387,11 @@ func RunToolCallsStreamingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 
 		// Use validation retry wrapper that validates tool calls and retries on validation failures
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				accumulator := NewStreamingToolCallAccumulator()
 				var responseCount int
 

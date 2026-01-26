@@ -35,6 +35,7 @@ const emptyEnvVar: EnvVar = { value: "", env_var: "", from_env: false };
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
 	is_code_mode_client: false,
+	is_ping_available: true,
 	connection_type: "http",
 	connection_string: emptyEnvVar,
 	stdio_config: emptyStdioConfig,
@@ -227,6 +228,29 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						/>
 					</div>
 
+					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+						<div className="flex items-center gap-2">
+							<Label htmlFor="ping-available">Ping Available for Health Check</Label>
+							<TooltipProvider>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs">
+										<p>
+											Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping - will use listTools instead.
+										</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
+						<Switch
+							id="ping-available"
+							checked={form.is_ping_available === true}
+							onCheckedChange={(checked) => handleChange("is_ping_available", checked)}
+						/>
+					</div>
+
 					{(form.connection_type === "http" || form.connection_type === "sse") && (
 						<>
 							<div className="space-y-2">
@@ -271,6 +295,17 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 					{form.connection_type === "stdio" && (
 						<>
+							<div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+								<div className="flex items-start gap-2">
+									<Info className="text-amber-700 mt-0.5 h-4 w-4 flex-shrink-0" />
+									<div className="flex-1">
+										<p className="text-xs font-medium text-amber-900">Docker Notice</p>
+										<p className="text-xs text-amber-800 mt-0.5">
+											If not using the official Bifrost Docker image, STDIO connections may not work if required commands (npx, python, etc.) aren't installed. You can safely ignore this if running locally or using a custom image with the necessary dependencies.
+										</p>
+									</div>
+								</div>
+							</div>
 							<div className="space-y-2">
 								<Label>Command</Label>
 								<Input

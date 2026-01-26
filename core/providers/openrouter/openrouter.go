@@ -153,8 +153,8 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 
 // TextCompletionStream performs a streaming text completion request to OpenRouter's API.
 // It formats the request, sends it to OpenRouter, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -197,8 +197,8 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // ChatCompletionStream performs a streaming chat completion request to the OpenRouter API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses OpenRouter's OpenAI-compatible streaming format.
-// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
+func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -242,7 +242,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 }
 
 // ResponsesStream performs a streaming responses request to the OpenRouter API.
-func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -277,7 +277,7 @@ func (provider *OpenRouterProvider) Speech(ctx *schemas.BifrostContext, key sche
 }
 
 // SpeechStream is not supported by the OpenRouter provider.
-func (provider *OpenRouterProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -287,7 +287,7 @@ func (provider *OpenRouterProvider) Transcription(ctx *schemas.BifrostContext, k
 }
 
 // TranscriptionStream is not supported by the OpenRouter provider.
-func (provider *OpenRouterProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -297,7 +297,7 @@ func (provider *OpenRouterProvider) ImageGeneration(ctx *schemas.BifrostContext,
 }
 
 // ImageGenerationStream is not supported by the OpenRouter provider.
-func (provider *OpenRouterProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenRouterProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

@@ -170,7 +170,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					},
 				}
 
-				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.TranscriptionStreamRequest(bfCtx, streamRequest)
 				})
@@ -184,7 +184,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				defer cancel()
 
 				fullTranscriptionText := ""
-				lastResponse := &schemas.BifrostStream{}
+				lastResponse := &schemas.BifrostStreamChunk{}
 				streamErrors := []string{}
 				lastTokenLatency := int64(0)
 
@@ -249,7 +249,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 							t.Logf("⚠️ Unexpected model in stream: %s", response.BifrostTranscriptionStreamResponse.ExtraFields.ModelRequested)
 						}
 
-						lastResponse = DeepCopyBifrostStream(response)
+						lastResponse = DeepCopyBifrostStreamChunk(response)
 
 					case <-streamCtx.Done():
 						streamErrors = append(streamErrors, "Stream reading timed out")
@@ -388,7 +388,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				},
 			}
 
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.TranscriptionStreamRequest(bfCtx, request)
 			})
@@ -489,7 +489,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 						},
 					}
 
-					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+					responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 						bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 						return client.TranscriptionStreamRequest(bfCtx, request)
 					})
@@ -584,7 +584,7 @@ func RunTranscriptionStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost, c
 				},
 			}
 
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.TranscriptionStreamRequest(bfCtx, request)
 			})

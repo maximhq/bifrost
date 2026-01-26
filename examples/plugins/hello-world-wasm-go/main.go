@@ -142,6 +142,40 @@ func post_hook(inputPtr, inputLen uint32) uint64 {
 	return writeBytes(data)
 }
 
+//export http_stream_chunk_hook
+func http_stream_chunk_hook(inputPtr, inputLen uint32) uint64 {
+	println("WASM Plugin: http_stream_chunk_hook called")
+
+	inputData := readInput(inputPtr, inputLen)
+	if inputData == nil {
+		return writeStreamChunkError("no input data")
+	}
+
+	// Parse input
+	var input HTTPStreamChunkHookInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		println("WASM Plugin: parse error:", err.Error())
+		return writeStreamChunkError("parse error: " + err.Error())
+	}
+
+	println("WASM Plugin: Stream chunk received")
+
+	// Add context value
+	input.Context["from-stream-chunk"] = "wasm-plugin"
+
+	// Pass through chunk unchanged
+	output := HTTPStreamChunkHookOutput{
+		Context:  input.Context,
+		Chunk:    input.Chunk,
+		HasChunk: true,
+		Skip:     false,
+		Error:    "",
+	}
+
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
 //export cleanup
 func cleanup() int32 {
 	println("WASM Plugin: Cleanup called")
@@ -172,6 +206,18 @@ func writePostHookError(msg string) uint64 {
 		Response:  nil,
 		HasError:  false,
 		HookError: msg,
+	}
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+func writeStreamChunkError(msg string) uint64 {
+	output := HTTPStreamChunkHookOutput{
+		Context:  map[string]interface{}{},
+		Chunk:    nil,
+		HasChunk: false,
+		Skip:     false,
+		Error:    msg,
 	}
 	data, _ := json.Marshal(output)
 	return writeBytes(data)

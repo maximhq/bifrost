@@ -12,6 +12,44 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// chunkTiming tracks the arrival time of each streaming chunk
+type chunkTiming struct {
+	index         int
+	arrivalTime   time.Time
+	timeSincePrev time.Duration
+}
+
+// detectBatchedStream checks if chunks arrived in a batched manner rather than streaming individually
+// Returns true if streaming appears batched, with an error message
+func detectBatchedStream(chunkTimings []chunkTiming, minChunks int) (bool, string) {
+	if len(chunkTimings) < minChunks {
+		return false, "" // Not enough data to determine
+	}
+
+	var nearInstantCount int
+	threshold := 1 * time.Millisecond
+
+	// Start from index 1 (skip first chunk - no previous reference)
+	for i := 1; i < len(chunkTimings); i++ {
+		if chunkTimings[i].timeSincePrev < threshold {
+			nearInstantCount++
+		}
+	}
+
+	totalIntervals := len(chunkTimings) - 1
+	ratio := float64(nearInstantCount) / float64(totalIntervals)
+
+	// Threshold: >80% of chunks arriving near-instantly indicates batching
+	if ratio > 0.8 {
+		return true, fmt.Sprintf(
+			"chunks appear batched: %d/%d (%.0f%%) arrived within %v of each other",
+			nearInstantCount, totalIntervals, ratio*100, threshold,
+		)
+	}
+
+	return false, ""
+}
+
 // RunChatCompletionStreamTest executes the chat completion stream test scenario
 func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.CompletionStream {
@@ -54,7 +92,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		// Use proper streaming retry wrapper for the stream request
-		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.ChatCompletionStreamRequest(bfCtx, request)
 		})
@@ -67,7 +105,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		var fullContent strings.Builder
 		var responseCount int
-		var lastResponse *schemas.BifrostStream
+		var lastResponse *schemas.BifrostStreamChunk
+
+		// Chunk timing tracking for batch detection
+		var chunkTimings []chunkTiming
+		var lastChunkTime time.Time
 
 		// Create a timeout context for the stream reading
 		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -88,7 +130,21 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				if response == nil {
 					t.Fatal("Streaming response should not be nil")
 				}
-				lastResponse = DeepCopyBifrostStream(response)
+
+				// Record chunk timing
+				now := time.Now()
+				var timeSincePrev time.Duration
+				if responseCount > 0 {
+					timeSincePrev = now.Sub(lastChunkTime)
+				}
+				chunkTimings = append(chunkTimings, chunkTiming{
+					index:         responseCount,
+					arrivalTime:   now,
+					timeSincePrev: timeSincePrev,
+				})
+				lastChunkTime = now
+
+				lastResponse = DeepCopyBifrostStreamChunk(response)
 
 				// Basic validation of streaming response structure
 				if response.BifrostChatResponse != nil {
@@ -146,6 +202,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 	streamComplete:
+		// Check for batched streaming
+		if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+			t.Fatalf("❌ Streaming validation failed: %s", batchMsg)
+		}
+
 		// Validate final streaming response
 		finalContent := strings.TrimSpace(fullContent.String())
 
@@ -259,14 +320,18 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				t,
 				retryConfig,
 				retryContext,
-				func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.ChatCompletionStreamRequest(bfCtx, request)
 				},
-				func(responseChannel chan *schemas.BifrostStream) ChatStreamValidationResult {
+				func(responseChannel chan *schemas.BifrostStreamChunk) ChatStreamValidationResult {
 					var toolCallDetected bool
 					var responseCount int
 					var streamErrors []string
+
+					// Chunk timing tracking for batch detection
+					var chunkTimings []chunkTiming
+					var lastChunkTime time.Time
 
 					streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 					defer cancel()
@@ -284,6 +349,20 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								streamErrors = append(streamErrors, "❌ Streaming response should not be nil")
 								continue
 							}
+
+							// Record chunk timing
+							now := time.Now()
+							var timeSincePrev time.Duration
+							if responseCount > 0 {
+								timeSincePrev = now.Sub(lastChunkTime)
+							}
+							chunkTimings = append(chunkTimings, chunkTiming{
+								index:         responseCount,
+								arrivalTime:   now,
+								timeSincePrev: timeSincePrev,
+							})
+							lastChunkTime = now
+
 							responseCount++
 
 							if response.BifrostChatResponse.Choices != nil {
@@ -326,6 +405,10 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					}
 					if !toolCallDetected {
 						errors = append(errors, fmt.Sprintf("❌ Should detect tool calls in streaming response (received %d chunks but no tool calls)", responseCount))
+					}
+					// Check for batched streaming
+					if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+						errors = append(errors, fmt.Sprintf("❌ Streaming validation failed: %s", batchMsg))
 					}
 					if len(streamErrors) > 0 {
 						errors = append(errors, streamErrors...)
@@ -402,7 +485,7 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			}
 
 			// Use proper streaming retry wrapper for the stream request
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ChatCompletionStreamRequest(bfCtx, request)
 			})
@@ -416,6 +499,10 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			var reasoningDetailsDetected bool
 			var reasoningTokensDetected bool
 			var responseCount int
+
+			// Chunk timing tracking for batch detection
+			var chunkTimings []chunkTiming
+			var lastChunkTime time.Time
 
 			streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
 			defer cancel()
@@ -432,6 +519,20 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					if response == nil {
 						t.Fatal("Streaming response should not be nil")
 					}
+
+					// Record chunk timing
+					now := time.Now()
+					var timeSincePrev time.Duration
+					if responseCount > 0 {
+						timeSincePrev = now.Sub(lastChunkTime)
+					}
+					chunkTimings = append(chunkTimings, chunkTiming{
+						index:         responseCount,
+						arrivalTime:   now,
+						timeSincePrev: timeSincePrev,
+					})
+					lastChunkTime = now
+
 					responseCount++
 
 					if response.BifrostChatResponse != nil {
@@ -500,6 +601,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 			}
 
 		reasoningStreamComplete:
+			// Check for batched streaming
+			if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+				t.Fatalf("❌ Streaming validation failed: %s", batchMsg)
+			}
+
 			if responseCount == 0 {
 				t.Fatal("Should receive at least one streaming response")
 			}
@@ -580,17 +686,21 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				t,
 				retryConfig,
 				retryContext,
-				func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.ChatCompletionStreamRequest(bfCtx, request)
 				},
-				func(responseChannel chan *schemas.BifrostStream) ChatStreamValidationResult {
+				func(responseChannel chan *schemas.BifrostStreamChunk) ChatStreamValidationResult {
 					var reasoningDetected bool
 					var reasoningDetailsDetected bool
 					var reasoningTokensDetected bool
 					var responseCount int
 					var streamErrors []string
 					var fullContent strings.Builder
+
+					// Chunk timing tracking for batch detection
+					var chunkTimings []chunkTiming
+					var lastChunkTime time.Time
 
 					streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
 					defer cancel()
@@ -608,6 +718,20 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 								streamErrors = append(streamErrors, "❌ Streaming response should not be nil")
 								continue
 							}
+
+							// Record chunk timing
+							now := time.Now()
+							var timeSincePrev time.Duration
+							if responseCount > 0 {
+								timeSincePrev = now.Sub(lastChunkTime)
+							}
+							chunkTimings = append(chunkTimings, chunkTiming{
+								index:         responseCount,
+								arrivalTime:   now,
+								timeSincePrev: timeSincePrev,
+							})
+							lastChunkTime = now
+
 							responseCount++
 
 							if response.BifrostChatResponse != nil {
@@ -663,6 +787,11 @@ func RunChatCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					var errors []string
 					if responseCount == 0 {
 						errors = append(errors, "❌ Should receive at least one streaming response")
+					}
+
+					// Check for batched streaming
+					if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+						errors = append(errors, fmt.Sprintf("❌ Streaming validation failed: %s", batchMsg))
 					}
 
 					// Check if at least one reasoning indicator is present

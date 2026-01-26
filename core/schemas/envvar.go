@@ -36,11 +36,22 @@ func NewEnvVar(value string) *EnvVar {
 			type envVarAlias EnvVar
 			var envVar envVarAlias
 			if err := sonic.Unmarshal([]byte(value), &envVar); err == nil {
-				return &EnvVar{
+				e := &EnvVar{
 					Val:     envVar.Val,
 					FromEnv: envVar.FromEnv,
 					EnvVar:  envVar.EnvVar,
 				}
+				// Here we will check if the Val starts with env and is same as the EnvVar
+				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
+					e.Val = ""
+					// Load the environment variable value
+					envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env."))
+					if ok {
+						e.Val = envValue
+					}
+					e.FromEnv = true
+				}
+				return e
 			}
 		}
 	}
@@ -156,6 +167,16 @@ func (e *EnvVar) UnmarshalJSON(data []byte) error {
 				e.Val = envVar.Val
 				e.FromEnv = envVar.FromEnv
 				e.EnvVar = envVar.EnvVar
+				// Here we will check if the Val starts with env and is same as the EnvVar
+				if strings.HasPrefix(e.Val, "env.") && e.Val == e.EnvVar {
+					e.Val = ""
+					// Load the environment variable value
+					envValue, ok := os.LookupEnv(strings.TrimPrefix(e.EnvVar, "env."))
+					if ok {
+						e.Val = envValue
+					}
+					e.FromEnv = true
+				}
 				return nil
 			}
 			// Else the value is JSON, so we will treat this as a normal value

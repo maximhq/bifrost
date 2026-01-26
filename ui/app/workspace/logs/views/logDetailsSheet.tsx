@@ -243,7 +243,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="space-y-4 rounded-sm border px-6 py-4 -mt-4">
+				<div className="-mt-4 space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" icon={<Timer className="h-5 w-5 text-gray-600" />} />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">

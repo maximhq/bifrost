@@ -93,7 +93,7 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 	for clientName, clientTools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
-			logger.Warn(fmt.Sprintf("%s Client %s not found, skipping", MCPLogPrefix, clientName))
+			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
 		if client.ExecutionConfig.IsCodeModeClient {

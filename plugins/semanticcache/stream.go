@@ -133,7 +133,7 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 		if chunk.Response != nil {
 			chunkData, err := json.Marshal(chunk.Response)
 			if err != nil {
-				plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal stream chunk %d: %v", PluginLoggerPrefix, i, err))
+				plugin.logger.Warn("%s Failed to marshal stream chunk %d: %v", PluginLoggerPrefix, i, err)
 				continue
 			}
 			streamResponses = append(streamResponses, string(chunkData))
@@ -142,7 +142,7 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 
 	// STEP 3: Validate we have valid chunks to cache
 	if len(streamResponses) == 0 {
-		plugin.logger.Warn(fmt.Sprintf("%s Stream for request %s has no valid response chunks, skipping cache storage", PluginLoggerPrefix, requestID))
+		plugin.logger.Warn("%s Stream for request %s has no valid response chunks, skipping cache storage", PluginLoggerPrefix, requestID)
 		return nil
 	}
 

@@ -59,7 +59,9 @@ export default function Providers() {
 		// We also try to fetch the latest version
 		getProvider(provider)
 			.unwrap()
-			.then(() => {})
+			.then((providerInfo) => {
+				dispatch(setSelectedProvider(providerInfo));
+			})
 			.catch((err) => {
 				if (err.status === 404) {
 					// Initializing provider config with default values
@@ -165,7 +167,7 @@ export default function Providers() {
 										</Tooltip>
 									);
 								})}
-								{customProviders.length > 0 && <div className="text-muted-foreground mb-2 mt-3 text-xs font-medium">Custom Providers</div>}
+								{customProviders.length > 0 && <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom Providers</div>}
 								{customProviders.map((p) => (
 									<Tooltip key={p.name}>
 										<TooltipTrigger

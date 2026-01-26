@@ -148,11 +148,11 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 				let rateLimitPayload:
 					| {
-							token_max_limit?: number | null;
-							token_reset_duration?: string | null;
-							request_max_limit?: number | null;
-							request_reset_duration?: string | null;
-					  }
+						token_max_limit?: number | null;
+						token_reset_duration?: string | null;
+						request_max_limit?: number | null;
+						request_reset_duration?: string | null;
+					}
 					| undefined;
 				if (hasRateLimit) {
 					rateLimitPayload = {
@@ -181,18 +181,18 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 					provider,
 					budget: budgetMaxLimit
 						? {
-								max_limit: budgetMaxLimit,
-								reset_duration: data.budgetResetDuration || "1M",
-							}
+							max_limit: budgetMaxLimit,
+							reset_duration: data.budgetResetDuration || "1M",
+						}
 						: undefined,
 					rate_limit:
 						tokenMaxLimit || requestMaxLimit
 							? {
-									token_max_limit: tokenMaxLimit,
-									token_reset_duration: data.tokenResetDuration || "1h",
-									request_max_limit: requestMaxLimit,
-									request_reset_duration: data.requestResetDuration || "1h",
-								}
+								token_max_limit: tokenMaxLimit,
+								token_reset_duration: data.tokenResetDuration || "1h",
+								request_max_limit: requestMaxLimit,
+								request_reset_duration: data.requestResetDuration || "1h",
+							}
 							: undefined,
 				}).unwrap();
 				toast.success("Model limit created successfully");

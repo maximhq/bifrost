@@ -637,7 +637,7 @@ export default function LogsPage() {
 			) : showEmptyState ? (
 				<EmptyState isSocketConnected={isSocketConnected} error={error} />
 			) : (
-				<div className="mx-auto flex h-full max-w-7xl flex-col">
+				<div className="mx-auto flex h-full w-full flex-col">
 					<div className="flex flex-1 flex-col gap-2 overflow-hidden">
 						{/* Quick Stats */}
 						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">

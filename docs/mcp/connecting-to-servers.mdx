@@ -223,6 +223,7 @@ Configure MCP clients in your `config.json`:
       {
         "name": "filesystem",
         "connection_type": "stdio",
+        "is_ping_available": true,
         "stdio_config": {
           "command": "npx",
           "args": ["-y", "@anthropic/mcp-filesystem"],
@@ -234,12 +235,14 @@ Configure MCP clients in your `config.json`:
         "name": "web_search",
         "connection_type": "http",
         "connection_string": "env.WEB_SEARCH_MCP_URL",
+        "is_ping_available": false,
         "tools_to_execute": ["search", "fetch_url"]
       },
       {
         "name": "database",
         "connection_type": "sse",
         "connection_string": "https://db-mcp.example.com/sse",
+        "is_ping_available": true,
         "tools_to_execute": []
       }
     ]
@@ -273,8 +276,9 @@ func main() {
     mcpConfig := &schemas.MCPConfig{
         ClientConfigs: []schemas.MCPClientConfig{
             {
-                Name:           "filesystem",
-                ConnectionType: schemas.MCPConnectionTypeSTDIO,
+                Name:             "filesystem",
+                ConnectionType:   schemas.MCPConnectionTypeSTDIO,
+                IsPingAvailable:  true,  // Use lightweight ping for health checks
                 StdioConfig: &schemas.MCPStdioConfig{
                     Command: "npx",
                     Args:    []string{"-y", "@anthropic/mcp-filesystem"},
@@ -286,6 +290,7 @@ func main() {
                 Name:             "web_search",
                 ConnectionType:   schemas.MCPConnectionTypeHTTP,
                 ConnectionString: bifrost.Ptr("http://localhost:3001/mcp"),
+                IsPingAvailable:  false,  // Use listTools for health checks
                 ToolsToExecute:   []string{"search", "fetch_url"},
             },
         },
@@ -451,16 +456,82 @@ err = client.EditMCPClientTools("filesystem", []string{"read_file", "list_direct
 
 ## Health Monitoring
 
-Bifrost automatically monitors MCP client health:
+Bifrost automatically monitors MCP client health with periodic checks every 10 seconds by default.
 
-- **Periodic Pings**: Every 10 seconds by default
-- **Auto-Detection**: Disconnections are detected automatically
-- **State Updates**: Client state changes are reflected in API responses
+### Health Check Methods
+
+By default, Bifrost uses the lightweight **ping method** for health checks. However, you can configure the health check method based on your MCP server's capabilities:
+
+| Method | When to Use | Overhead | Fallback |
+|--------|------------|----------|----------|
+| **Ping** (default) | Server supports MCP ping protocol | Minimal | Best for most servers |
+| **ListTools** | Server doesn't support ping, or you need heavier checks | Higher | More resource-intensive |
+
+### Configuring Health Check Method
+
+You can toggle the `is_ping_available` setting for each client:
+
+#### Via Web UI
+
+1. Navigate to **MCP Gateway** and select a server
+2. In the configuration panel, toggle **"Ping Available for Health Check"**
+3. Enable: Uses lightweight ping for health checks
+4. Disable: Uses listTools method for health checks instead
+
+<Frame>
+  <img src="/media/ui-mcp-ping-available.png" alt="Ping Available Toggle" />
+</Frame>
+
+#### Via API
+
+```bash
+curl -X PUT http://localhost:8080/api/mcp/client/{id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my_server",
+    "is_ping_available": false
+  }'
+```
+
+#### Via config.json
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "is_ping_available": true,
+        "stdio_config": {
+          "command": "npx",
+          "args": ["-y", "@anthropic/mcp-filesystem"]
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Via Go SDK
+
+```go
+err := client.EditMCPClient(context.Background(), schemas.MCPClientConfig{
+    ID:               "filesystem",
+    Name:             "filesystem",
+    IsPingAvailable:  false,  // Use listTools instead of ping
+    ToolsToExecute:   []string{"*"},
+})
+```
+
+### Health Check Behavior
 
 When a client disconnects:
 1. State changes to `disconnected`
 2. Tools from that client become unavailable
 3. You can reconnect via API or UI
+
+**Note:** Changing `is_ping_available` takes effect immediately without requiring a client reconnection.
 
 ---
 

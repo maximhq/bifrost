@@ -223,7 +223,7 @@ func (plugin *Plugin) buildResponseFromResult(ctx *schemas.BifrostContext, req *
 					defer cancel()
 					err := plugin.store.Delete(deleteCtx, plugin.config.VectorStoreNamespace, result.ID)
 					if err != nil {
-						plugin.logger.Warn(fmt.Sprintf("%s Failed to delete expired entry %s: %v", PluginLoggerPrefix, result.ID, err))
+						plugin.logger.Warn("%s Failed to delete expired entry %s: %v", PluginLoggerPrefix, result.ID, err)
 					}
 				}()
 				// Return nil to indicate cache miss
@@ -324,7 +324,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 	ctx.SetValue(cacheHitTypeKey, cacheType)
 
 	// Create stream channel
-	streamChan := make(chan *schemas.BifrostStream)
+	streamChan := make(chan *schemas.BifrostStreamChunk)
 
 	go func() {
 		defer close(streamChan)
@@ -337,14 +337,14 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 		for i, chunkData := range streamArray {
 			chunkStr, ok := chunkData.(string)
 			if !ok {
-				plugin.logger.Warn(fmt.Sprintf("%s Stream chunk %d is not a string, skipping", PluginLoggerPrefix, i))
+				plugin.logger.Warn("%s Stream chunk %d is not a string, skipping", PluginLoggerPrefix, i)
 				continue
 			}
 
 			// Unmarshal the chunk as BifrostResponse
 			var cachedResponse schemas.BifrostResponse
 			if err := json.Unmarshal([]byte(chunkStr), &cachedResponse); err != nil {
-				plugin.logger.Warn(fmt.Sprintf("%s Failed to unmarshal stream chunk %d, skipping: %v", PluginLoggerPrefix, i, err))
+				plugin.logger.Warn("%s Failed to unmarshal stream chunk %d, skipping: %v", PluginLoggerPrefix, i, err)
 				continue
 			}
 
@@ -378,7 +378,7 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			extraFields.Provider = provider
 
 			// Send chunk to stream
-			streamChan <- &schemas.BifrostStream{
+			streamChan <- &schemas.BifrostStreamChunk{
 				BifrostTextCompletionResponse:        cachedResponse.TextCompletionResponse,
 				BifrostChatResponse:                  cachedResponse.ChatResponse,
 				BifrostResponsesStreamResponse:       cachedResponse.ResponsesStreamResponse,

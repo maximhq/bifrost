@@ -660,6 +660,42 @@ pub struct PostHookOutput {
 }
 
 // =============================================================================
+// HTTP Stream Chunk Hook Input/Output Structures
+// =============================================================================
+
+/// HTTPStreamChunkHookInput is the input for http_stream_chunk_hook.
+/// Called for each chunk during streaming responses.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HTTPStreamChunkHookInput {
+    #[serde(default)]
+    pub context: BifrostContext,
+
+    #[serde(default)]
+    pub request: serde_json::Value,
+
+    #[serde(default)]
+    pub chunk: serde_json::Value, // BifrostStreamChunk as JSON
+}
+
+/// HTTPStreamChunkHookOutput is the output for http_stream_chunk_hook.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HTTPStreamChunkHookOutput {
+    pub context: BifrostContext,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk: Option<serde_json::Value>, // BifrostStreamChunk as JSON, None to skip
+
+    #[serde(default)]
+    pub has_chunk: bool,
+
+    #[serde(default)]
+    pub skip: bool,
+
+    #[serde(default)]
+    pub error: String,
+}
+
+// =============================================================================
 // Plugin Configuration
 // =============================================================================
 

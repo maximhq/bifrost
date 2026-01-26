@@ -118,8 +118,8 @@ func (provider *PerplexityProvider) TextCompletion(ctx *schemas.BifrostContext, 
 
 // TextCompletionStream performs a streaming text completion request to Perplexity's API.
 // It formats the request, sends it to Perplexity, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *PerplexityProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *PerplexityProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -170,8 +170,8 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // ChatCompletionStream performs a streaming chat completion request to the Perplexity API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Perplexity's OpenAI-compatible streaming format.
-// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
+func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -217,7 +217,7 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
-func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
@@ -238,7 +238,7 @@ func (provider *PerplexityProvider) Speech(ctx *schemas.BifrostContext, key sche
 }
 
 // SpeechStream is not supported by the Perplexity provider.
-func (provider *PerplexityProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *PerplexityProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -248,7 +248,7 @@ func (provider *PerplexityProvider) Transcription(ctx *schemas.BifrostContext, k
 }
 
 // TranscriptionStream is not supported by the Perplexity provider.
-func (provider *PerplexityProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *PerplexityProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -258,7 +258,7 @@ func (provider *PerplexityProvider) ImageGeneration(ctx *schemas.BifrostContext,
 }
 
 // ImageGenerationStream is not supported by the Perplexity provider.
-func (provider *PerplexityProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *PerplexityProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

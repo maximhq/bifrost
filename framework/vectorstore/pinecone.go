@@ -169,7 +169,7 @@ func (s *PineconeStore) GetAll(ctx context.Context, namespace string, queries []
 	if len(queries) > 0 {
 		filter, filterErr := buildPineconeFilter(queries)
 		if filterErr != nil {
-			s.logger.Warn(fmt.Sprintf("failed to build pinecone filter, queries may not be applied: %v", filterErr))
+			s.logger.Warn("failed to build pinecone filter, queries may not be applied: %v", filterErr)
 		}
 		if filter != nil {
 			queryReq.MetadataFilter = filter

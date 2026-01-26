@@ -63,7 +63,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		// Use proper streaming retry wrapper for the stream request
-		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.TextCompletionStreamRequest(bfCtx, request)
 		})
@@ -76,7 +76,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		var fullContent strings.Builder
 		var responseCount int
-		var lastResponse *schemas.BifrostStream
+		var lastResponse *schemas.BifrostStreamChunk
 
 		// Create a timeout context for the stream reading
 		streamCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -97,7 +97,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 				if response == nil {
 					t.Fatal("Streaming response should not be nil")
 				}
-				lastResponse = DeepCopyBifrostStream(response)
+				lastResponse = DeepCopyBifrostStreamChunk(response)
 
 				// Basic validation of streaming response structure
 				if response.BifrostTextCompletionResponse != nil {
@@ -263,7 +263,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					},
 				}
 
-				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.TextCompletionStreamRequest(bfCtx, request)
 				})
@@ -406,7 +406,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 					},
 				}
 
-				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 					return client.TextCompletionStreamRequest(bfCtx, request)
 				})
@@ -454,7 +454,7 @@ func RunTextCompletionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 }
 
 // createConsolidatedTextCompletionResponse creates a consolidated response for validation
-func createConsolidatedTextCompletionResponse(finalContent string, lastResponse *schemas.BifrostStream, provider schemas.ModelProvider) *schemas.BifrostTextCompletionResponse {
+func createConsolidatedTextCompletionResponse(finalContent string, lastResponse *schemas.BifrostStreamChunk, provider schemas.ModelProvider) *schemas.BifrostTextCompletionResponse {
 	consolidatedResponse := &schemas.BifrostTextCompletionResponse{
 		Object: "text_completion",
 		Choices: []schemas.BifrostResponseChoice{

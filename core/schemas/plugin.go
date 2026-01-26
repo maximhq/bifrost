@@ -164,7 +164,8 @@ func ReleaseHTTPResponse(resp *HTTPResponse) {
 // 2. PreHook (executed in registration order)
 // 3. Provider call
 // 4. PostHook (executed in reverse order of PreHooks)
-// 5. HTTPTransportPostHook (HTTP transport only, executed in reverse order)
+// 5. HTTPTransportPostHook (HTTP transport only, executed in reverse order) - for non-streaming responses
+// 5a. HTTPTransportStreamChunkHook (for streaming responses, called per-chunk in reverse order)
 //
 // Common use cases: rate limiting, caching, logging, monitoring, request transformation, governance.
 //
@@ -205,6 +206,7 @@ type Plugin interface {
 	// It receives a serializable HTTPRequest and HTTPResponse and allows plugins to modify it in-place.
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
+	// NOTE: This hook is NOT called for streaming responses. Use HTTPTransportStreamChunkHook instead.
 	//
 	// Return values:
 	// - nil: Continue to next plugin/handler, response modifications are applied
@@ -212,6 +214,23 @@ type Plugin interface {
 	//
 	// Return nil if the plugin doesn't need HTTP transport interception.
 	HTTPTransportPostHook(ctx *BifrostContext, req *HTTPRequest, resp *HTTPResponse) error
+
+	// HTTPTransportStreamChunkHook is called for each chunk during streaming responses.
+	// It receives the BifrostStreamChunk BEFORE they are written to the client.
+	// Only invoked for streaming responses when using HTTP transport (bifrost-http).
+	// Works with both native .so plugins and WASM plugins due to serializable types.
+	//
+	// Plugins can modify the chunk by returning a different BifrostStreamChunk.
+	// Return the original chunk unchanged if no modification is needed.
+	//
+	// Return values:
+	// - (*BifrostStreamChunk, nil): Continue with the (potentially modified) BifrostStreamChunk
+	// - (nil, nil): Skip this BifrostStreamChunk entirely (don't send to client)
+	// - (*BifrostStreamChunk, error): Log warning and continue with the BifrostStreamChunk
+	// - (nil, error): Send back error to the client and stop the streaming
+	//
+	// Return (*BifrostStreamChunk, nil) unchanged if the plugin doesn't need streaming chunk interception.
+	HTTPTransportStreamChunkHook(ctx *BifrostContext, req *HTTPRequest, chunk *BifrostStreamChunk) (*BifrostStreamChunk, error)
 
 	// PreHook is called before a request is processed by a provider.
 	// It allows plugins to modify the request before it is sent to the provider.

@@ -2,7 +2,7 @@ import AdaptiveRoutingView from "@enterprise/components/adaptive-routing/adaptiv
 
 export default function AdaptiveRoutingPage() {
 	return (
-		<div className="mx-auto w-full max-w-7xl">
+		<div className="mx-auto w-full">
 			<AdaptiveRoutingView />
 		</div>
 	);

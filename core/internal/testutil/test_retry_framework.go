@@ -36,14 +36,14 @@ import (
 //
 // =============================================================================
 
-// DeepCopyBifrostStream creates a deep copy of a BifrostStream object to avoid pooling issues
-func DeepCopyBifrostStream(original *schemas.BifrostStream) *schemas.BifrostStream {
+// DeepCopyBifrostStreamChunk creates a deep copy of a BifrostStreamChunk object to avoid pooling issues
+func DeepCopyBifrostStreamChunk(original *schemas.BifrostStreamChunk) *schemas.BifrostStreamChunk {
 	if original == nil {
 		return nil
 	}
 
 	// Use reflection to create a deep copy
-	return deepCopyReflect(original).(*schemas.BifrostStream)
+	return deepCopyReflect(original).(*schemas.BifrostStreamChunk)
 }
 
 // deepCopyReflect performs a deep copy using reflection
@@ -773,9 +773,9 @@ func WithStreamRetry(
 	t *testing.T,
 	config TestRetryConfig,
 	context TestRetryContext,
-	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
-	var lastChannel chan *schemas.BifrostStream
+	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	var lastChannel chan *schemas.BifrostStreamChunk
 	var lastError *schemas.BifrostError
 
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
@@ -3557,8 +3557,8 @@ func WithSpeechStreamValidationRetry(
 	t *testing.T,
 	config TestRetryConfig,
 	context TestRetryContext,
-	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
-	validateStream func(chan *schemas.BifrostStream) SpeechStreamValidationResult,
+	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
+	validateStream func(chan *schemas.BifrostStreamChunk) SpeechStreamValidationResult,
 ) SpeechStreamValidationResult {
 	var lastResult SpeechStreamValidationResult
 
@@ -3708,8 +3708,8 @@ func WithResponsesStreamValidationRetry(
 	t *testing.T,
 	config TestRetryConfig,
 	context TestRetryContext,
-	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
-	validateStream func(chan *schemas.BifrostStream) ResponsesStreamValidationResult,
+	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
+	validateStream func(chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult,
 ) ResponsesStreamValidationResult {
 	var lastResult ResponsesStreamValidationResult
 
@@ -3928,8 +3928,8 @@ func WithChatStreamValidationRetry(
 	t *testing.T,
 	config TestRetryConfig,
 	context TestRetryContext,
-	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
-	validateStream func(chan *schemas.BifrostStream) ChatStreamValidationResult,
+	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
+	validateStream func(chan *schemas.BifrostStreamChunk) ChatStreamValidationResult,
 ) ChatStreamValidationResult {
 	var lastResult ChatStreamValidationResult
 
@@ -4086,8 +4086,8 @@ func WithImageGenerationStreamRetry(
 	t *testing.T,
 	config TestRetryConfig,
 	context TestRetryContext,
-	operation func() (chan *schemas.BifrostStream, *schemas.BifrostError),
-	validateStream func(chan *schemas.BifrostStream) ImageGenerationStreamValidationResult) ImageGenerationStreamValidationResult {
+	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
+	validateStream func(chan *schemas.BifrostStreamChunk) ImageGenerationStreamValidationResult) ImageGenerationStreamValidationResult {
 
 	var lastResult ImageGenerationStreamValidationResult
 

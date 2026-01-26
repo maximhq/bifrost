@@ -70,12 +70,16 @@ Bifrost supports different authentication methods depending on the type of reque
 
 ### API Calls
 
-When authentication is enabled, API calls can use:
+When authentication is enabled, API calls can be made using
 
-- **Basic Authentication**: For inference calls, you can use HTTP Basic Auth with your username and password
-- **Bearer Token**: For admin API calls, use the Bearer token obtained from the login session
+- **Basic Authentication**: Username and password encoded as base64 via HTTP Basic auth
+- **Bearer Token**: Session token issued after login (Bearer token from session)
 
-### Example: Using Basic Auth for API Calls
+When authentication is enabled for inference calls (i.e., the "Disable authentication on inference calls" toggle is OFF), inference calls can be made using:
+
+- **Basic Authentication**: Username and Password in Basic auth
+- **Bearer Token**: base64 string of username:password as bearer token
+### Example: Using Basic Auth for Inference Calls
 
 ```bash
 # Using curl with Basic Auth

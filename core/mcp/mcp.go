@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -85,7 +84,7 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, logger schemas
 	if len(config.ClientConfigs) > 0 {
 		for _, clientConfig := range config.ClientConfigs {
 			if err := manager.AddClient(clientConfig); err != nil {
-				logger.Warn(fmt.Sprintf("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err))
+				logger.Warn("%s Failed to add MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
 			}
 		}
 	}

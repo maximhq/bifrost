@@ -277,7 +277,7 @@ func RunStructuredOutputChatStreamTest(t *testing.T, client *bifrost.Bifrost, ct
 			},
 		}
 
-		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			return client.ChatCompletionStreamRequest(reqCtx, request)
 		})
 
@@ -613,10 +613,10 @@ func RunStructuredOutputResponsesStreamTest(t *testing.T, client *bifrost.Bifros
 
 		// Use validation retry wrapper
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				return client.ResponsesStreamRequest(reqCtx, request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				var fullContent strings.Builder
 				var responseCount int
 				var functionCallEventCount int // Track function call events for Bedrock assertion

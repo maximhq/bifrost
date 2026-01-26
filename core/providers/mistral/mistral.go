@@ -147,8 +147,8 @@ func (provider *MistralProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 // TextCompletionStream performs a streaming text completion request to Mistral's API.
 // It formats the request, sends it to Mistral, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *MistralProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *MistralProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -172,8 +172,8 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 // ChatCompletionStream performs a streaming chat completion request to the Mistral API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Uses Mistral's OpenAI-compatible streaming format.
-// Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
+func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	var authHeader map[string]string
 	if key.Value.GetValue() != "" {
 		authHeader = map[string]string{"Authorization": "Bearer " + key.Value.GetValue()}
@@ -214,7 +214,7 @@ func (provider *MistralProvider) Responses(ctx *schemas.BifrostContext, key sche
 }
 
 // ResponsesStream performs a streaming responses request to the Mistral API.
-func (provider *MistralProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *MistralProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 	return provider.ChatCompletionStream(
 		ctx,
@@ -248,7 +248,7 @@ func (provider *MistralProvider) Speech(ctx *schemas.BifrostContext, key schemas
 }
 
 // SpeechStream is not supported by the Mistral provider.
-func (provider *MistralProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *MistralProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -359,7 +359,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 // TranscriptionStream performs a streaming transcription request to Mistral's API.
 // It creates a multipart form with the audio file and streams transcription events.
 // Returns a channel of BifrostStream objects containing transcription deltas.
-func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
 	// Convert Bifrost request to Mistral format
@@ -433,7 +433,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -530,7 +530,7 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 	chunkIndex int,
 	startTime time.Time,
 	lastChunkTime *time.Time,
-	responseChan chan *schemas.BifrostStream,
+	responseChan chan *schemas.BifrostStreamChunk,
 ) {
 	// Skip empty data
 	if strings.TrimSpace(jsonData) == "" {
@@ -657,7 +657,7 @@ func (provider *MistralProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 }
 
 // ImageGenerationStream is not supported by the Mistral provider.
-func (provider *MistralProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *MistralProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

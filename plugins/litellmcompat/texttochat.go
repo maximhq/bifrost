@@ -118,7 +118,7 @@ func transformTextToChatError(_ *schemas.BifrostContext, err *schemas.BifrostErr
 
 // TransformTextToChatStreamResponse transforms a streaming chat response back to text completion format.
 // This is exported for use by streaming handlers.
-func TransformTextToChatStreamResponse(ctx *schemas.BifrostContext, stream *schemas.BifrostStream, tc *TransformContext) *schemas.BifrostStream {
+func TransformTextToChatStreamResponse(ctx *schemas.BifrostContext, stream *schemas.BifrostStreamChunk, tc *TransformContext) *schemas.BifrostStreamChunk {
 	if tc == nil {
 		return stream
 	}
@@ -145,7 +145,7 @@ func TransformTextToChatStreamResponse(ctx *schemas.BifrostContext, stream *sche
 	textCompletionResponse.ExtraFields.LiteLLMCompat = true
 
 	// Return a new stream with the text completion response
-	return &schemas.BifrostStream{
+	return &schemas.BifrostStreamChunk{
 		BifrostTextCompletionResponse: textCompletionResponse,
 	}
 }

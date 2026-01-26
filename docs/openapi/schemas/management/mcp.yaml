@@ -38,6 +38,13 @@ MCPClientConfig:
       type: string
     is_code_mode_client:
       type: boolean
+    is_ping_available:
+      type: boolean
+      default: true
+      description: |
+        Whether the MCP server supports ping for health checks.
+        If true, uses lightweight ping method for health checks.
+        If false, uses listTools method for health checks instead.
     connection_type:
       $ref: '#/MCPConnectionType'
     connection_string:

@@ -1,3 +1,4 @@
+- feat: add is_ping_available configuration for MCP health checks
 - fix: allow flat $defs and propertyOrdering in jsonschema and forward it to Gemini
 - feat: adds beta feature for Anthropic
   - deferLoading
@@ -6,6 +7,5 @@
   - inputExamples
   - add IsError to tool_result content
   - add "none" option to ToolChoice.Type
-  
 - fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
 - fix: duplicate error when adding first MCP server

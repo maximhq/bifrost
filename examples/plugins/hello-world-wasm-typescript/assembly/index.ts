@@ -14,7 +14,9 @@ import {
   PreHookInput,
   PreHookOutput,
   PostHookInput,
-  PostHookOutput
+  PostHookOutput,
+  HTTPStreamChunkHookInput,
+  HTTPStreamChunkHookOutput
 } from './types'
 
 // =============================================================================
@@ -94,6 +96,25 @@ export function post_hook(inputPtr: u32, inputLen: u32): u64 {
   output.response = input.response
   output.error = input.error
   output.has_error = input.has_error
+
+  return writeString(JSON.stringify(output))
+}
+
+/**
+ * HTTP stream chunk hook
+ * Called for each chunk during streaming responses.
+ * Pass through the chunk with added context value.
+ */
+export function http_stream_chunk_hook(inputPtr: u32, inputLen: u32): u64 {
+  const inputJson = readString(inputPtr, inputLen)
+  const input = JSON.parse<HTTPStreamChunkHookInput>(inputJson)
+
+  const output = new HTTPStreamChunkHookOutput()
+  output.context = input.context
+  output.context.set<string>('from-stream-chunk', 'wasm-plugin')
+  output.chunk = input.chunk
+  output.has_chunk = true
+  output.skip = false
 
   return writeString(JSON.stringify(output))
 }

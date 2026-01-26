@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/envutils"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
@@ -32,6 +33,15 @@ import (
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"gorm.io/gorm"
 )
+
+// StreamChunkInterceptor intercepts streaming chunks before they're sent to clients.
+// Implementations can modify, filter, or observe chunks in real-time.
+// This interface enables proper dependency injection for streaming handlers.
+type StreamChunkInterceptor interface {
+	// InterceptChunk processes a chunk before it's written to the client.
+	// Returns the (potentially modified) chunk, or nil to skip the chunk entirely.
+	InterceptChunk(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)
+}
 
 // HandlerStore provides access to runtime configuration values for handlers.
 // This interface allows handlers to access only the configuration they need
@@ -43,6 +53,9 @@ type HandlerStore interface {
 	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
 	// GetAvailableProviders returns the list of available providers
 	GetAvailableProviders() []schemas.ModelProvider
+	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
+	// Returns nil if no plugins are loaded or streaming interception is not needed.
+	GetStreamChunkInterceptor() StreamChunkInterceptor
 }
 
 // Retry backoff constants for validation
@@ -1069,12 +1082,27 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				if existingVirtualKey.ConfigHash != fileVKHash {
 					logger.Debug("config hash mismatch for virtual key %s, syncing from config file", newVirtualKey.ID)
 					configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
-					if configData.Governance.VirtualKeys[i].Value != "" {
-						// We print the warning and generate our own virtual key value
-						// This used to work till v1.3.x - but we don't want to break existing configs
-						logger.Warn("virtual key %s has a value in the config file, but it is not used in the UI. Please remove the value from the config file.", newVirtualKey.ID)
+					// This is added for backward compatibility with existing configs
+					if configData.Governance.VirtualKeys[i].Value == "" && existingVirtualKey.Value != "" {
+						configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
 					}
-					configData.Governance.VirtualKeys[i].Value = existingVirtualKey.Value
+					// Process environment variable for virtual key value
+					if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
+						// Resolving the environment variable value
+						envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
+						if err != nil {
+							logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
+							continue
+						}
+						configData.Governance.VirtualKeys[i].Value = envValue
+					}
+					// If the virtual key value is not a valid virtual key, we will generate a new one
+					if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
+						if configData.Governance.VirtualKeys[i].Value != "" {
+							logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+						}
+						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -1087,12 +1115,21 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
 			// if the virtual key value is env.VIRTUAL_KEY_VALUE, then we will need to resolve the environment variable
 			// Process environment variable for virtual key value
-			if configData.Governance.VirtualKeys[i].Value != "" {
-				// We print the warning and generate our own virtual key value
-				// This used to work till v1.3.x - but we don't want to break existing configs
-				logger.Warn("virtual key %s has a value in the config file, but it is not used in the UI. Please remove the value from the config file.", newVirtualKey.ID)
+			if strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, "env.") {
+				// Resolving the environment variable value
+				envValue, err := envutils.ProcessEnvValue(configData.Governance.VirtualKeys[i].Value)
+				if err != nil {
+					logger.Warn("failed to process environment variable for virtual key %s: %v", newVirtualKey.ID, err)
+					continue
+				}
+				configData.Governance.VirtualKeys[i].Value = envValue
 			}
-			configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+			if !strings.HasPrefix(configData.Governance.VirtualKeys[i].Value, governance.VirtualKeyPrefix) {
+				if configData.Governance.VirtualKeys[i].Value != "" {
+					logger.Warn("virtual key %s has a value in the config file that does not have %s prefix. We are generating a new one for you.", newVirtualKey.ID, governance.VirtualKeyPrefix)
+				}
+				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
+			}
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])
 		}
 	}
@@ -2031,6 +2068,37 @@ func (c *Config) GetLoadedPlugins() []schemas.Plugin {
 	return nil
 }
 
+// pluginChunkInterceptor implements StreamChunkInterceptor by calling plugin hooks
+type pluginChunkInterceptor struct {
+	plugins []schemas.Plugin
+}
+
+// InterceptChunk processes a chunk through all plugin HTTPTransportStreamChunkHook methods.
+// Plugins are called in reverse order (same as PostHook) so modifications chain correctly.
+func (i *pluginChunkInterceptor) InterceptChunk(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, stream *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	for j := len(i.plugins) - 1; j >= 0; j-- {
+		modified, err := i.plugins[j].HTTPTransportStreamChunkHook(ctx, req, stream)
+		if err != nil {
+			return modified, fmt.Errorf("failed to intercept chunk with plugin %s: %w", i.plugins[j].GetName(), err)
+		}
+		if modified == nil {
+			return nil, nil // Plugin wants to skip this chunk
+		}
+		stream = modified
+	}
+	return stream, nil
+}
+
+// GetStreamChunkInterceptor returns the chunk interceptor for streaming responses.
+// Returns nil if no plugins are loaded.
+func (c *Config) GetStreamChunkInterceptor() StreamChunkInterceptor {
+	plugins := c.GetLoadedPlugins()
+	if len(plugins) == 0 {
+		return nil
+	}
+	return &pluginChunkInterceptor{plugins: plugins}
+}
+
 // AddLoadedPlugin adds a plugin to the loaded plugins list.
 // This method is lock-free and safe for concurrent access from hot paths.
 // It iterates through the plugin slice (typically 5-10 plugins, ~50ns overhead).
@@ -2097,99 +2165,7 @@ func (c *Config) GetProviderConfigRedacted(provider schemas.ModelProvider) (*con
 		return nil, ErrNotFound
 	}
 
-	// Create redacted config with same structure but redacted values
-	redactedConfig := configstore.ProviderConfig{
-		NetworkConfig:            config.NetworkConfig,
-		ConcurrencyAndBufferSize: config.ConcurrencyAndBufferSize,
-		ProxyConfig:              config.ProxyConfig,
-		SendBackRawRequest:       config.SendBackRawRequest,
-		SendBackRawResponse:      config.SendBackRawResponse,
-		CustomProviderConfig:     config.CustomProviderConfig,
-		ConfigHash:               config.ConfigHash,
-	}
-
-	// Create redacted keys
-	redactedConfig.Keys = make([]schemas.Key, len(config.Keys))
-	for i, key := range config.Keys {
-		models := key.Models
-		if models == nil {
-			models = []string{} // Ensure models is never nil in JSON response
-		}
-		redactedConfig.Keys[i] = schemas.Key{
-			ID:         key.ID,
-			Name:       key.Name,
-			Models:     models,
-			Weight:     key.Weight,
-			ConfigHash: key.ConfigHash,
-		}
-		if key.Enabled != nil {
-			enabled := *key.Enabled
-			redactedConfig.Keys[i].Enabled = &enabled
-		}
-		redactedConfig.Keys[i].Value = *key.Value.Redacted()
-		// Add back use for batch api
-		if key.UseForBatchAPI != nil {
-			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
-		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
-		}
-
-		// Redact Azure key config if present
-		if key.AzureKeyConfig != nil {
-			azureConfig := &schemas.AzureKeyConfig{
-				Deployments: key.AzureKeyConfig.Deployments,
-			}
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
-			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
-			if key.AzureKeyConfig.ClientID != nil {
-				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
-			}
-			if key.AzureKeyConfig.ClientSecret != nil {
-				azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
-			}
-			if key.AzureKeyConfig.TenantID != nil {
-				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
-			}
-			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
-		}
-
-		// Redact Vertex key config if present
-		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{
-				Deployments: key.VertexKeyConfig.Deployments,
-			}
-			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
-			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
-			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
-			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
-		}
-
-		// Redact Bedrock key config if present
-		if key.BedrockKeyConfig != nil {
-			bedrockConfig := &schemas.BedrockKeyConfig{
-				Deployments: key.BedrockKeyConfig.Deployments,
-			}
-			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
-			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
-			if key.BedrockKeyConfig.SessionToken != nil {
-				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
-			}
-			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.Redacted()
-			}
-			if key.BedrockKeyConfig.ARN != nil {
-				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
-			}
-			// Add back s3 config
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
-			}
-			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
-		}
-	}
-
-	return &redactedConfig, nil
+	return config.Redacted(), nil
 }
 
 // GetAllProviders returns all configured provider names.
@@ -2224,14 +2200,19 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 	if err := ValidateCustomProvider(config, provider); err != nil {
 		return err
 	}
-	// Process environment variables in keys (including key-level configs)
 	for i, key := range config.Keys {
 		if key.ID == "" {
 			config.Keys[i].ID = uuid.NewString()
 		}
 	}
 	// First add the provider to the store
-	if c.ConfigStore != nil {
+	skipDBUpdate := false
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
+		}
+	}
+	if c.ConfigStore != nil && !skipDBUpdate {
 		if err := c.ConfigStore.AddProvider(ctx, provider, config); err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				return ErrNotFound
@@ -2276,20 +2257,21 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 	// and must be retained so that on server restart, the hash comparison works correctly
 	// and user's key value changes are preserved (not overwritten by config.json)
 	config.ConfigHash = existingConfig.ConfigHash
-	// Process environment variables in keys (including key-level configs)
+	// Update in-memory configuration first (so client can read updated config)
+	c.Providers[provider] = config
 	for i, key := range config.Keys {
 		if key.ID == "" {
 			config.Keys[i].ID = uuid.NewString()
 		}
 	}
-	// Update in-memory configuration first (so client can read updated config)
-	c.Providers[provider] = config
+	skipDBUpdate := false
 	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
-		if skipDBUpdate, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok && skipDBUpdate {
-			goto updateClientProvider
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
 		}
 	}
-	if c.ConfigStore != nil {
+	if c.ConfigStore != nil && !skipDBUpdate {
+		// Process environment variables in keys (including key-level configs)
 		// Update provider in database within a transaction
 		dbErr := c.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 			if err := c.ConfigStore.UpdateProvider(ctx, provider, config, tx); err != nil {
@@ -2306,7 +2288,6 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 			return dbErr
 		}
 	}
-updateClientProvider:
 	// Release lock before calling client.UpdateProvider to avoid deadlock
 	// client.UpdateProvider will call GetConfigForProvider which needs RLock
 	c.Mu.Unlock()
@@ -2339,12 +2320,17 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		return ErrNotFound
 	}
 	delete(c.Providers, provider)
-	if c.ConfigStore != nil {
+	skipDBUpdate := false
+	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
+		if skip, ok := ctx.Value(schemas.BifrostContextKeySkipDBUpdate).(bool); ok {
+			skipDBUpdate = skip
+		}
+	}
+	if c.ConfigStore != nil && !skipDBUpdate {
 		if err := c.ConfigStore.DeleteProvider(ctx, provider); err != nil {
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
 	}
-
 	logger.Info("Removed provider: %s", provider)
 	return nil
 }
@@ -2529,6 +2515,7 @@ func (c *Config) EditMCPClient(ctx context.Context, id string, updatedConfig sch
 	// Update the in-memory config with the processed values
 	c.MCPConfig.ClientConfigs[configIndex].Name = processedConfig.Name
 	c.MCPConfig.ClientConfigs[configIndex].IsCodeModeClient = processedConfig.IsCodeModeClient
+	c.MCPConfig.ClientConfigs[configIndex].IsPingAvailable = processedConfig.IsPingAvailable
 	c.MCPConfig.ClientConfigs[configIndex].Headers = processedConfig.Headers
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToExecute = processedConfig.ToolsToExecute
 	c.MCPConfig.ClientConfigs[configIndex].ToolsToAutoExecute = processedConfig.ToolsToAutoExecute
@@ -2564,6 +2551,7 @@ func (c *Config) RedactMCPClientConfig(config schemas.MCPClientConfig) schemas.M
 		ID:                 config.ID,
 		Name:               config.Name,
 		IsCodeModeClient:   config.IsCodeModeClient,
+		IsPingAvailable:    config.IsPingAvailable,
 		ConnectionType:     config.ConnectionType,
 		ConnectionString:   config.ConnectionString,
 		StdioConfig:        config.StdioConfig,

@@ -62,20 +62,24 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Use validation retry wrapper that validates stream content and retries on validation failures
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				var fullContent strings.Builder
 				var responseCount int
-				var lastResponse *schemas.BifrostStream
+				var lastResponse *schemas.BifrostStreamChunk
 
 				// Track streaming events for validation
 				eventTypes := make(map[schemas.ResponsesStreamResponseType]int)
 				var sequenceNumbers []int
 				var hasResponseCreated, hasResponseCompleted bool
 				var hasOutputItems, hasContentParts bool
+
+				// Chunk timing tracking for batch detection
+				var chunkTimings []chunkTiming
+				var lastChunkTime time.Time
 
 				// Create a timeout context for the stream reading
 				streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
@@ -107,7 +111,21 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 								Errors: []string{"❌ Streaming response should not be nil"},
 							}
 						}
-						lastResponse = DeepCopyBifrostStream(response)
+
+						// Record chunk timing
+						now := time.Now()
+						var timeSincePrev time.Duration
+						if responseCount > 0 {
+							timeSincePrev = now.Sub(lastChunkTime)
+						}
+						chunkTimings = append(chunkTimings, chunkTiming{
+							index:         responseCount,
+							arrivalTime:   now,
+							timeSincePrev: timeSincePrev,
+						})
+						lastChunkTime = now
+
+						lastResponse = DeepCopyBifrostStreamChunk(response)
 
 						// Basic validation of streaming response structure
 						if response.BifrostResponsesStreamResponse != nil {
@@ -222,6 +240,15 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				}
 
 			streamComplete:
+				// Check for batched streaming
+				if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{fmt.Sprintf("❌ Streaming validation failed: %s", batchMsg)},
+						ReceivedData: responseCount > 0,
+					}
+				}
+
 				// Validate streaming events and structure
 				structureErrors := validateResponsesStreamingStructure(t, eventTypes, sequenceNumbers, hasResponseCreated, hasResponseCompleted, hasOutputItems, hasContentParts)
 
@@ -332,7 +359,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			}
 
 			// Use proper streaming retry wrapper for the stream request
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			})
@@ -345,6 +372,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			var toolCallDetected bool
 			var functionCallArgsDetected bool
 			var responseCount int
+
+			// Chunk timing tracking for batch detection
+			var chunkTimings []chunkTiming
+			var lastChunkTime time.Time
 
 			streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
 			defer cancel()
@@ -361,6 +392,20 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					if response == nil {
 						t.Fatal("Streaming response should not be nil")
 					}
+
+					// Record chunk timing
+					now := time.Now()
+					var timeSincePrev time.Duration
+					if responseCount > 0 {
+						timeSincePrev = now.Sub(lastChunkTime)
+					}
+					chunkTimings = append(chunkTimings, chunkTiming{
+						index:         responseCount,
+						arrivalTime:   now,
+						timeSincePrev: timeSincePrev,
+					})
+					lastChunkTime = now
+
 					responseCount++
 
 					if response.BifrostResponsesStreamResponse != nil {
@@ -403,6 +448,11 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			}
 
 		toolStreamComplete:
+			// Check for batched streaming
+			if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+				t.Fatalf("❌ Streaming validation failed: %s", batchMsg)
+			}
+
 			if responseCount == 0 {
 				t.Fatal("Should receive at least one streaming response")
 			}
@@ -466,7 +516,7 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			}
 
 			// Use proper streaming retry wrapper for the stream request
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			})
@@ -479,6 +529,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			var reasoningDetected bool
 			var reasoningSummaryDetected bool
 			var responseCount int
+
+			// Chunk timing tracking for batch detection
+			var chunkTimings []chunkTiming
+			var lastChunkTime time.Time
 
 			streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
 			defer cancel()
@@ -495,6 +549,20 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					if response == nil {
 						t.Fatal("Streaming response should not be nil")
 					}
+
+					// Record chunk timing
+					now := time.Now()
+					var timeSincePrev time.Duration
+					if responseCount > 0 {
+						timeSincePrev = now.Sub(lastChunkTime)
+					}
+					chunkTimings = append(chunkTimings, chunkTiming{
+						index:         responseCount,
+						arrivalTime:   now,
+						timeSincePrev: timeSincePrev,
+					})
+					lastChunkTime = now
+
 					responseCount++
 
 					if response.BifrostResponsesStreamResponse != nil {
@@ -537,6 +605,11 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			}
 
 		reasoningStreamComplete:
+			// Check for batched streaming
+			if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+				t.Fatalf("❌ Streaming validation failed: %s", batchMsg)
+			}
+
 			if responseCount == 0 {
 				t.Fatal("Should receive at least one streaming response")
 			}
@@ -591,11 +664,11 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 
 		// Use validation retry wrapper that validates lifecycle events and retries on validation failures
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				// Track lifecycle events
 				var hasResponseCreated, hasResponseInProgress, hasResponseCompleted bool
 				var hasOutputItemAdded bool
@@ -606,6 +679,10 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				var outputItemAddedSeq, contentPartAddedSeq, firstTextDeltaSeq int
 				var outputTextDoneSeq, contentPartDoneSeq, outputItemDoneSeq int
 				var textDeltaCount int
+
+				// Chunk timing tracking for batch detection
+				var chunkTimings []chunkTiming
+				var lastChunkTime time.Time
 
 				streamCtx, cancel := context.WithTimeout(ctx, 200*time.Second)
 				defer cancel()
@@ -627,6 +704,20 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 								Errors: []string{"❌ Streaming response should not be nil"},
 							}
 						}
+
+						// Record chunk timing
+						now := time.Now()
+						var timeSincePrev time.Duration
+						if responseCount > 0 {
+							timeSincePrev = now.Sub(lastChunkTime)
+						}
+						chunkTimings = append(chunkTimings, chunkTiming{
+							index:         responseCount,
+							arrivalTime:   now,
+							timeSincePrev: timeSincePrev,
+						})
+						lastChunkTime = now
+
 						responseCount++
 
 						if response.BifrostResponsesStreamResponse != nil {
@@ -713,6 +804,15 @@ func RunResponsesStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 						Passed:       false,
 						Errors:       []string{"❌ Stream closed without receiving any data"},
 						ReceivedData: false,
+					}
+				}
+
+				// Check for batched streaming
+				if isBatched, batchMsg := detectBatchedStream(chunkTimings, 5); isBatched {
+					return ResponsesStreamValidationResult{
+						Passed:       false,
+						Errors:       []string{fmt.Sprintf("❌ Streaming validation failed: %s", batchMsg)},
+						ReceivedData: responseCount > 0,
 					}
 				}
 
@@ -879,7 +979,7 @@ type StreamingValidationResult struct {
 }
 
 // validateResponsesStreamingResponse validates streaming-specific aspects of responses API
-func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.ResponsesStreamResponseType]int, sequenceNumbers []int, finalContent string, lastResponse *schemas.BifrostStream, testConfig ComprehensiveTestConfig) StreamingValidationResult {
+func validateResponsesStreamingResponse(t *testing.T, eventTypes map[schemas.ResponsesStreamResponseType]int, sequenceNumbers []int, finalContent string, lastResponse *schemas.BifrostStreamChunk, testConfig ComprehensiveTestConfig) StreamingValidationResult {
 	var errors []string
 
 	// Basic content validation

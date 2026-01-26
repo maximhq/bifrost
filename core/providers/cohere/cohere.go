@@ -271,8 +271,8 @@ func (provider *CohereProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 
 // TextCompletionStream performs a streaming text completion request to Cohere's API.
 // It formats the request, sends it to Cohere, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *CohereProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *CohereProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -337,7 +337,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 // ChatCompletionStream performs a streaming chat completion request to the Cohere API.
 // It supports real-time streaming of responses using Server-Sent Events (SSE).
 // Returns a channel containing BifrostResponse objects representing the stream or an error if the request fails.
-func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed
 	if err := providerUtils.CheckOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
@@ -415,7 +415,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -591,7 +591,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 }
 
 // ResponsesStream performs a streaming responses request to the Cohere API.
-func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if responses stream is allowed
 	if err := providerUtils.CheckOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
@@ -670,7 +670,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -870,7 +870,7 @@ func (provider *CohereProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 }
 
 // SpeechStream is not supported by the Cohere provider.
-func (provider *CohereProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -880,7 +880,7 @@ func (provider *CohereProvider) Transcription(ctx *schemas.BifrostContext, key s
 }
 
 // TranscriptionStream is not supported by the Cohere provider.
-func (provider *CohereProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -890,7 +890,7 @@ func (provider *CohereProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 }
 
 // ImageGenerationStream is not supported by the Cohere provider.
-func (provider *CohereProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *CohereProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 

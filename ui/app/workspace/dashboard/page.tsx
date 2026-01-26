@@ -207,7 +207,7 @@ export default function DashboardPage() {
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
 
 	return (
-		<div className="mx-auto flex h-full max-w-7xl flex-col gap-4">
+		<div className="mx-auto flex h-full w-full flex-col gap-4">
 			{/* Header with time filter */}
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2">

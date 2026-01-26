@@ -8,6 +8,7 @@ import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TriStateCheckbox } from "@/components/ui/tristateCheckbox";
 import { useToast } from "@/hooks/use-toast";
 import { MCP_STATUS_COLORS } from "@/lib/constants/config";
@@ -16,6 +17,7 @@ import { MCPClient } from "@/lib/types/mcp";
 import { mcpClientUpdateSchema, type MCPClientUpdateSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Info } from "lucide-react";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 
@@ -36,6 +38,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		defaultValues: {
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -47,6 +50,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 		form.reset({
 			name: mcpClient.config.name,
 			is_code_mode_client: mcpClient.config.is_code_mode_client || false,
+			is_ping_available: mcpClient.config.is_ping_available === true || mcpClient.config.is_ping_available === undefined,
 			headers: mcpClient.config.headers,
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
@@ -60,6 +64,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				data: {
 					name: data.name,
 					is_code_mode_client: data.is_code_mode_client,
+					is_ping_available: data.is_ping_available,
 					headers: data.headers,
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
@@ -230,6 +235,32 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 											<FormLabel>Code Mode Client</FormLabel>
 											<FormControl>
 												<Switch checked={field.value || false} onCheckedChange={field.onChange} />
+											</FormControl>
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="is_ping_available"
+									render={({ field }) => (
+										<FormItem className="flex items-center justify-between rounded-lg border p-4">
+											<div className="flex items-center gap-2">
+												<FormLabel>Ping Available for Health Check</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																Enable to use lightweight ping method for health checks. Disable if your MCP server doesn't support ping - will use listTools instead.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Switch checked={field.value === true} onCheckedChange={field.onChange} />
 											</FormControl>
 										</FormItem>
 									)}

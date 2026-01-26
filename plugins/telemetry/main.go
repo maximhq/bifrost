@@ -291,6 +291,11 @@ func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, re
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook records the start time of the request in the context.
 // This time is used later in PostHook to calculate request duration.
 func (p *PrometheusPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {

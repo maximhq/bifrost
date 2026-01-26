@@ -224,11 +224,11 @@ func RunWebSearchToolStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 		}
 
 		validationResult := WithResponsesStreamValidationRetry(t, retryConfig, retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 				return client.ResponsesStreamRequest(bfCtx, request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ResponsesStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ResponsesStreamValidationResult {
 				var hasWebSearchCall, hasMessageContent bool
 				var webSearchQuery string
 				var searchSources []schemas.ResponsesWebSearchToolCallActionSearchSource

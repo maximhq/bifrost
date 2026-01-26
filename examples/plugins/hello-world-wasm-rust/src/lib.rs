@@ -256,6 +256,41 @@ pub extern "C" fn post_hook(input_ptr: u32, input_len: u32) -> u64 {
     write_string(&serde_json::to_string(&output).unwrap_or_default())
 }
 
+/// HTTP stream chunk hook
+/// Called for each chunk during streaming responses.
+/// Can modify, skip, or stop streaming based on return values.
+#[no_mangle]
+pub extern "C" fn http_stream_chunk_hook(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    // Parse input
+    let input: HTTPStreamChunkHookInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = HTTPStreamChunkHookOutput {
+                error: format!("Failed to parse input: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap_or_default());
+        }
+    };
+    
+    // Add context value like Go plugin does
+    let mut context = input.context.clone();
+    context.set_value("from-stream-chunk", serde_json::json!("rust-wasm"));
+    
+    // Pass through chunk unchanged
+    let output = HTTPStreamChunkHookOutput {
+        context,
+        chunk: Some(input.chunk),
+        has_chunk: true,
+        skip: false,
+        error: String::new(),
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap_or_default())
+}
+
 /// Cleanup resources
 /// Called when plugin is being unloaded.
 /// Returns 0 on success, non-zero on error

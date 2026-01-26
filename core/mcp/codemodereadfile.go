@@ -111,7 +111,7 @@ func (m *ToolsManager) handleReadToolFile(ctx context.Context, toolCall schemas.
 	for clientName, tools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
-			logger.Warn(fmt.Sprintf("%s Client %s not found, skipping", MCPLogPrefix, clientName))
+			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
 		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {

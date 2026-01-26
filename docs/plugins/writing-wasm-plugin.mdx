@@ -30,7 +30,8 @@ All WASM plugins must export these functions:
 | `get_name` | `() -> u64` | Returns packed ptr+len of plugin name |
 | `init` | `(config_ptr, config_len: u32) -> i32` | Initialize with config (0 = success) |
 | `http_pre_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP transport pre-hook (request interception) |
-| `http_post_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP transport post-hook (response interception) |
+| `http_post_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP transport post-hook (non-streaming response interception) |
+| `http_stream_chunk_hook` | `(input_ptr, input_len: u32) -> u64` | HTTP streaming chunk hook (per-chunk interception for streaming responses) |
 | `pre_hook` | `(input_ptr, input_len: u32) -> u64` | Pre-request hook |
 | `post_hook` | `(input_ptr, input_len: u32) -> u64` | Post-response hook |
 | `cleanup` | `() -> i32` | Cleanup resources (0 = success) |
@@ -159,6 +160,53 @@ export function http_post_hook(inputPtr: u32, inputLen: u32): u64 {
   const output = '{"context":{},"error":""}'
   
   return writeString(output)
+}
+
+// Input structure for http_stream_chunk_hook
+@json
+class StreamChunkInput {
+  context: JSON.Obj = new JSON.Obj()
+  request: JSON.Raw = new JSON.Raw('null')
+  chunk: JSON.Raw = new JSON.Raw('null') // BifrostStreamChunk as JSON (see below)
+}
+
+// Output structure for http_stream_chunk_hook
+@json
+class StreamChunkOutput {
+  context: JSON.Obj = new JSON.Obj()
+  chunk: JSON.Raw = new JSON.Raw('null') // BifrostStreamChunk as JSON, or null to skip
+  has_chunk: bool = false
+  skip: bool = false
+  error: string = ''
+}
+
+// BifrostStreamChunk is one of: BifrostChatResponse, BifrostTextCompletionResponse,
+// BifrostResponsesStreamResponse, BifrostSpeechStreamResponse, BifrostTranscriptionStreamResponse,
+// BifrostImageGenerationStreamResponse, or BifrostError.
+// For chat completions, the chunk JSON looks like:
+// {
+//   "id": "chatcmpl-xxx",
+//   "object": "chat.completion.chunk",
+//   "created": 1234567890,
+//   "model": "gpt-4",
+//   "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": null}],
+//   ...
+// }
+
+export function http_stream_chunk_hook(inputPtr: u32, inputLen: u32): u64 {
+  const inputJson = readString(inputPtr, inputLen)
+  const input = JSON.parse<StreamChunkInput>(inputJson)
+
+  // For pass-through, return chunk unchanged with skip: false
+  // To skip a chunk, set skip: true and chunk: null
+  const output = new StreamChunkOutput()
+  output.context = input.context
+  output.chunk = input.chunk
+  output.has_chunk = true
+  output.skip = false
+  output.error = ''
+
+  return writeString(JSON.stringify(output))
 }
 
 export function pre_hook(inputPtr: u32, inputLen: u32): u64 {
@@ -386,6 +434,45 @@ func http_post_hook(inputPtr, inputLen uint32) uint64 {
 		Context: input.Context,
 	}
 	
+	data, _ := json.Marshal(output)
+	return writeBytes(data)
+}
+
+// HTTPStreamChunkHookInput represents the input to http_stream_chunk_hook
+type HTTPStreamChunkHookInput struct {
+	Context map[string]interface{} `json:"context"`
+	Request json.RawMessage        `json:"request"`
+	Chunk   json.RawMessage        `json:"chunk"` // BifrostStreamChunk JSON
+}
+
+// HTTPStreamChunkHookOutput represents the output from http_stream_chunk_hook
+type HTTPStreamChunkHookOutput struct {
+	Context  map[string]interface{} `json:"context"`
+	Chunk    json.RawMessage        `json:"chunk,omitempty"` // BifrostStreamChunk JSON, nil to skip
+	HasChunk bool                   `json:"has_chunk"`
+	Skip     bool                   `json:"skip"`
+	Error    string                 `json:"error"`
+}
+
+//export http_stream_chunk_hook
+func http_stream_chunk_hook(inputPtr, inputLen uint32) uint64 {
+	inputData := readInput(inputPtr, inputLen)
+
+	var input HTTPStreamChunkHookInput
+	if err := json.Unmarshal(inputData, &input); err != nil {
+		output := HTTPStreamChunkHookOutput{Error: err.Error()}
+		data, _ := json.Marshal(output)
+		return writeBytes(data)
+	}
+
+	// Pass through chunk unchanged
+	output := HTTPStreamChunkHookOutput{
+		Context:  input.Context,
+		Chunk:    input.Chunk,
+		HasChunk: true,
+		Skip:     false,
+	}
+
 	data, _ := json.Marshal(output)
 	return writeBytes(data)
 }
@@ -716,6 +803,50 @@ pub extern "C" fn http_post_hook(input_ptr: u32, input_len: u32) -> u64 {
 }
 
 #[derive(Deserialize)]
+struct HTTPStreamChunkHookInput {
+    context: HashMap<String, serde_json::Value>,
+    request: serde_json::Value,
+    chunk: String, // base64-encoded chunk
+}
+
+#[derive(Serialize, Default)]
+struct HTTPStreamChunkHookOutput {
+    context: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk: Option<String>, // base64-encoded chunk, None to skip
+    has_chunk: bool,
+    skip: bool,
+    error: String,
+}
+
+#[no_mangle]
+pub extern "C" fn http_stream_chunk_hook(input_ptr: u32, input_len: u32) -> u64 {
+    let input_str = read_string(input_ptr, input_len);
+    
+    let input: HTTPStreamChunkHookInput = match serde_json::from_str(&input_str) {
+        Ok(i) => i,
+        Err(e) => {
+            let output = HTTPStreamChunkHookOutput {
+                error: format!("Parse error: {}", e),
+                ..Default::default()
+            };
+            return write_string(&serde_json::to_string(&output).unwrap());
+        }
+    };
+    
+    // Pass through chunk unchanged
+    let output = HTTPStreamChunkHookOutput {
+        context: input.context,
+        chunk: Some(input.chunk),
+        has_chunk: true,
+        skip: false,
+        error: String::new(),
+    };
+    
+    write_string(&serde_json::to_string(&output).unwrap())
+}
+
+#[derive(Deserialize)]
 struct PreHookInput {
     context: HashMap<String, serde_json::Value>,
     request: serde_json::Value,
@@ -921,6 +1052,100 @@ Called after the response is received from the LLM provider. Receives both the o
 
 <Note>
 The `http_post_hook` is called in **reverse order** of `http_pre_hook`. Context values set in `http_pre_hook` are available in `http_post_hook`.
+</Note>
+
+<Warning>
+`http_post_hook` is **NOT called** for streaming responses. Use `http_stream_chunk_hook` instead.
+</Warning>
+
+### http_stream_chunk_hook
+
+Called for each chunk during streaming responses, BEFORE the chunk is written to the client. This hook allows plugins to modify or filter streaming chunks in real-time.
+
+**Input:**
+```json
+{
+  "context": {
+    "request_id": "abc-123",
+    "custom_key": "value"
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "headers": { "content-type": "application/json" },
+    "query": {},
+    "body": "<base64-encoded>"
+  },
+  "chunk": {
+    "id": "chatcmpl-xxx",
+    "object": "chat.completion.chunk",
+    "created": 1234567890,
+    "model": "gpt-4",
+    "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": null}]
+  }
+}
+```
+
+The `chunk` field contains a `BifrostStreamChunk` struct serialized as JSON. It will contain the data from whichever response type is active:
+- Chat completion streaming: `{"id":"...","object":"chat.completion.chunk","choices":[...],"model":"..."}`
+- Text completion streaming: `{"id":"...","choices":[...]}`
+- Responses API streaming: `{"type":"...","item":...}`
+- Speech/Transcription/Image streaming: respective response fields
+- Error: `{"error":{"type":"...","message":"..."}}`
+
+It does NOT include SSE framing (no `data: ` prefix or `\n\n` suffix).
+
+<Note>
+**Go Native vs WASM Plugins**: In Go native plugins (`.so`), you work directly with `*schemas.BifrostStreamChunk` typed structs. In WASM plugins, this struct is serialized to JSON for crossing the WASM boundary. The underlying data structure is the same.
+</Note>
+
+**Output (pass through unchanged):**
+```json
+{
+  "context": { "request_id": "abc-123", "custom_key": "value" },
+  "chunk": {
+    "id": "chatcmpl-xxx",
+    "object": "chat.completion.chunk",
+    "created": 1234567890,
+    "model": "gpt-4",
+    "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": null}]
+  },
+  "has_chunk": true,
+  "skip": false,
+  "error": ""
+}
+```
+
+**Output (skip/filter chunk):**
+```json
+{
+  "context": { "request_id": "abc-123" },
+  "chunk": null,
+  "has_chunk": false,
+  "skip": true,
+  "error": ""
+}
+```
+
+**Output (modify chunk):**
+```json
+{
+  "context": { "request_id": "abc-123" },
+  "chunk": {
+    "id": "chatcmpl-xxx",
+    "object": "chat.completion.chunk",
+    "created": 1234567890,
+    "model": "gpt-4",
+    "choices": [{"index": 0, "delta": {"content": "Modified!"}, "finish_reason": null}]
+  },
+  "has_chunk": true,
+  "skip": false,
+  "error": ""
+}
+```
+
+<Note>
+The `http_stream_chunk_hook` is called in **reverse order** of `http_pre_hook`, same as other post-hooks.
 </Note>
 
 ### pre_hook

@@ -531,11 +531,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	}
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
-		// Generate key hash
-		keyHash, err := GenerateKeyHash(key)
-		if err != nil {
-			return fmt.Errorf("failed to generate key hash: %w", err)
-		}
 		dbKey := tables.TableKey{
 			Provider:         dbProvider.Name,
 			ProviderID:       dbProvider.ID,
@@ -549,7 +544,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			AzureKeyConfig:   key.AzureKeyConfig,
 			VertexKeyConfig:  key.VertexKeyConfig,
 			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       keyHash,
+			ConfigHash:       key.ConfigHash,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -727,6 +722,18 @@ func (s *RDBConfigStore) GetProviders(ctx context.Context) ([]tables.TableProvid
 	return providers, nil
 }
 
+// GetProvider retrieves a provider by name from the database with governance relationships.
+func (s *RDBConfigStore) GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+	var providerInfo tables.TableProvider
+	if err := s.db.WithContext(ctx).Preload("Budget").Preload("RateLimit").Where("name = ?", string(provider)).First(&providerInfo).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &providerInfo, nil
+}
+
 // GetProviderByName retrieves a provider by name from the database with governance relationships.
 func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*tables.TableProvider, error) {
 	var provider tables.TableProvider
@@ -760,6 +767,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			ToolsToExecute:     dbClient.ToolsToExecute,
 			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
 			Headers:            dbClient.Headers,
+			IsPingAvailable:    dbClient.IsPingAvailable,
 		}
 	}
 	var clientConfig tables.TableClientConfig
@@ -819,6 +827,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
 			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
 			Headers:            clientConfigCopy.Headers,
+			IsPingAvailable:    clientConfigCopy.IsPingAvailable,
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -851,11 +860,12 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
 		existingClient.ToolsToAutoExecute = clientConfigCopy.ToolsToAutoExecute
 		existingClient.Headers = clientConfigCopy.Headers
+		existingClient.IsPingAvailable = clientConfigCopy.IsPingAvailable
 
 		// Use Select to explicitly include IsCodeModeClient even when it's false (zero value)
 		// GORM's Updates() skips zero values by default, so we need to explicitly select fields
 		// Using struct field names - GORM will convert them to column names automatically
-		if err := tx.WithContext(ctx).Select("name", "is_code_mode_client", "tools_to_execute_json", "tools_to_auto_execute_json", "headers_json", "updated_at").Updates(&existingClient).Error; err != nil {
+		if err := tx.WithContext(ctx).Select("name", "is_code_mode_client", "is_ping_available", "tools_to_execute_json", "tools_to_auto_execute_json", "headers_json", "updated_at").Updates(&existingClient).Error; err != nil {
 			return s.parseGormError(err)
 		}
 		return nil

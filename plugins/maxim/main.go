@@ -166,6 +166,11 @@ func (plugin *Plugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sc
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // getEffectiveLogRepoID determines which single log repo ID to use based on priority:
 // 1. Header log repo ID (if provided)
 // 2. Default log repo ID from config (if configured)

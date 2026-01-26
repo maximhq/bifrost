@@ -48,7 +48,7 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 // 1. Response ExtraFields if any response is available
 // 2. BifrostError ExtraFields if error is available and not nil
 // 3. Falls back to "unknown" if no source is available
-func safeGetRequestType(chunk *schemas.BifrostStream) string {
+func safeGetRequestType(chunk *schemas.BifrostStreamChunk) string {
 	if chunk == nil {
 		return "unknown"
 	}

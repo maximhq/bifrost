@@ -101,7 +101,7 @@ var (
 		TableName:                 "migrations",
 		IDColumnName:              "id",
 		IDColumnSize:              255,
-		UseTransaction:            false,
+		UseTransaction:            true,
 		ValidateUnknownMigrations: false,
 	}
 

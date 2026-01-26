@@ -635,8 +635,8 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 
 // TextCompletionStream performs a streaming text completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -662,7 +662,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -737,7 +737,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 					return
 				}
 
-				// Create BifrostStream response containing the raw model-specific JSON chunk
+				// Create BifrostStreamChunk response containing the raw model-specific JSON chunk
 				textResponse := &schemas.BifrostTextCompletionResponse{
 					ExtraFields: schemas.BifrostResponseExtraFields{
 						RequestType:     schemas.TextCompletionStreamRequest,
@@ -841,8 +841,8 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 
 // ChatCompletionStream performs a streaming chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the streaming response.
-// Returns a channel for streaming BifrostResponse objects or an error if the request fails.
-func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel for streaming BifrostStreamChunk objects or an error if the request fails.
+func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -864,7 +864,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1171,7 +1171,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 // ResponsesStream performs a streaming chat completion request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and processes the streaming response.
 // Returns a channel for streaming BifrostResponse objects or an error if the request fails.
-func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
 	}
@@ -1193,7 +1193,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1522,7 +1522,7 @@ func (provider *BedrockProvider) Speech(ctx *schemas.BifrostContext, key schemas
 }
 
 // SpeechStream is not supported by the Bedrock provider.
-func (provider *BedrockProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, schemas.Bedrock)
 }
 
@@ -1532,7 +1532,7 @@ func (provider *BedrockProvider) Transcription(ctx *schemas.BifrostContext, key 
 }
 
 // TranscriptionStream is not supported by the Bedrock provider.
-func (provider *BedrockProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, schemas.Bedrock)
 }
 
@@ -1615,7 +1615,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 }
 
 // ImageGenerationStream is not supported by the Bedrock provider.
-func (provider *BedrockProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *BedrockProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, schemas.Bedrock)
 }
 

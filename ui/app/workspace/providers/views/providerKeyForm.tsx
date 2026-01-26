@@ -42,6 +42,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 				name: "",
 				models: [],
 				weight: 1.0,
+				enabled: true,
 			},
 		},
 	});

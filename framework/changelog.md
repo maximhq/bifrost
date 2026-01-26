@@ -1,1 +1,2 @@
+- feat: add is_ping_available column to MCP clients table
 - feat: adds Pinecone vector db support

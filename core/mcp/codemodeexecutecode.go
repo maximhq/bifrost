@@ -338,7 +338,7 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 		for clientName := range availableToolsPerClient {
 			client := m.clientManager.GetClientByName(clientName)
 			if client == nil {
-				logger.Warn(fmt.Sprintf("%s Client %s not found, skipping", MCPLogPrefix, clientName))
+				logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 				continue
 			}
 			if !client.ExecutionConfig.IsCodeModeClient {
@@ -382,7 +382,7 @@ func (m *ToolsManager) executeCode(ctx context.Context, code string) ExecutionRe
 	for clientName, tools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
-			logger.Warn(fmt.Sprintf("%s Client %s not found, skipping", MCPLogPrefix, clientName))
+			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
 		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {

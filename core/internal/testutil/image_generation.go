@@ -197,10 +197,10 @@ func RunImageGenerationStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 			t,
 			retryConfig,
 			retryContext,
-			func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				return client.ImageGenerationStreamRequest(schemas.NewBifrostContext(streamCtx, schemas.NoDeadline), request)
 			},
-			func(responseChannel chan *schemas.BifrostStream) ImageGenerationStreamValidationResult {
+			func(responseChannel chan *schemas.BifrostStreamChunk) ImageGenerationStreamValidationResult {
 				// Validate stream content
 				var receivedData bool
 				var streamErrors []string

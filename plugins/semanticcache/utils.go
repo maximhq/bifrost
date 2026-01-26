@@ -443,7 +443,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, responseID strin
 	// Note: processAccumulatedStream will check for errors and skip caching if any errors occurred
 	if isFinalChunk && !alreadyComplete {
 		if processErr := plugin.processAccumulatedStream(ctx, responseID); processErr != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, responseID, processErr))
+			plugin.logger.Warn("%s Failed to process accumulated stream for request %s: %v", PluginLoggerPrefix, responseID, processErr)
 		}
 	}
 
@@ -720,7 +720,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	}
 	if len(params.Tools) > 0 {
 		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
+			plugin.logger.Warn("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err)
 		} else {
 			toolHash := xxhash.Sum64(toolsJSON)
 			metadata["tools_hash"] = fmt.Sprintf("%x", toolHash)
@@ -809,7 +809,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	}
 	if len(params.Tools) > 0 {
 		if toolsJSON, err := json.Marshal(params.Tools); err != nil {
-			plugin.logger.Warn(fmt.Sprintf("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err))
+			plugin.logger.Warn("%s Failed to marshal tools for metadata: %v", PluginLoggerPrefix, err)
 		} else {
 			toolHash := xxhash.Sum64(toolsJSON)
 			metadata["tools_hash"] = fmt.Sprintf("%x", toolHash)

@@ -108,7 +108,7 @@ func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest)
 
 // HTTPTransportPostHook intercepts responses AFTER they exit Bifrost core
 // Modify resp in-place. Called in reverse order of pre-hooks.
-// Only called when using HTTP transport (bifrost-http)
+// Only called for NON-STREAMING responses when using HTTP transport (bifrost-http)
 func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
 	fmt.Println("HTTPTransportPostHook called")
 
@@ -122,6 +122,32 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 
 	// Return nil to continue, or return error to short-circuit
 	return nil
+}
+
+// HTTPTransportStreamChunkHook intercepts streaming chunks BEFORE they're sent to the client
+// Modify chunk or return nil to skip. Called in reverse order of pre-hooks.
+// Only called for STREAMING responses when using HTTP transport (bifrost-http)
+func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	fmt.Println("HTTPTransportStreamChunkHook called")
+
+	// chunk is a typed struct containing one of:
+	// - BifrostTextCompletionResponse (text completion streaming)
+	// - BifrostChatResponse (chat completion streaming)
+	// - BifrostResponsesStreamResponse (responses API streaming)
+	// - BifrostSpeechStreamResponse (speech synthesis streaming)
+	// - BifrostTranscriptionStreamResponse (transcription streaming)
+	// - BifrostImageGenerationStreamResponse (image generation streaming)
+	// - BifrostError (error during streaming)
+
+	// Return chunk unchanged to pass through
+	return chunk, nil
+
+	// Or return nil to skip/filter this chunk:
+	// return nil, nil
+
+	// Or return modified chunk:
+	// modifiedChunk := &schemas.BifrostStreamChunk{BifrostChatResponse: ...}
+	// return modifiedChunk, nil
 }
 
 // PreHook is called before the request is sent to the provider
@@ -263,6 +289,27 @@ Key points:
 - Modify `resp.Headers`, `resp.Body`, `resp.StatusCode` directly
 - Return `nil` to continue to next plugin/handler
 - Return `error` to short-circuit with error and skip remaining post-hooks
+- **NOT called for streaming responses** - use `HTTPTransportStreamChunkHook` instead
+
+#### `HTTPTransportStreamChunkHook(ctx, req, chunk)`
+
+**HTTP transport only.** Intercepts streaming response chunks BEFORE they're written to the client. Use this to:
+- Modify streaming chunks in real-time
+- Filter/skip specific chunks
+- Log or monitor streaming data
+- Called in **reverse order** of pre-hooks
+
+Key points:
+- Receives a `*schemas.BifrostStreamChunk` typed struct (not raw bytes)
+- The struct contains one non-nil field based on the response type (chat, text completion, responses, speech, transcription, image generation, or error)
+- Return `(chunk, nil)` to pass through unchanged
+- Return `(nil, nil)` to skip/filter the chunk entirely
+- Return `(modifiedChunk, nil)` to return a modified chunk
+- Return `(nil, error)` to send error to client and stop streaming
+
+<Warning>
+`HTTPTransportPostHook` is **NOT called** for streaming responses. Use `HTTPTransportStreamChunkHook` to intercept streaming data.
+</Warning>
 
 <Note>
 **Header and Query Parameter Lookups**: Use the case-insensitive helper methods for reading headers and query parameters:
@@ -488,12 +535,20 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 Check the logs for plugin hook calls:
 
 <Tabs>
-  <Tab title="v1.4.x+">
+  <Tab title="v1.4.x+ (non-streaming)">
 ```
 HTTPTransportPreHook called
 PreHook called
 PostHook called
 HTTPTransportPostHook called
+```
+  </Tab>
+  <Tab title="v1.4.x+ (streaming)">
+```
+HTTPTransportPreHook called
+PreHook called
+PostHook called
+HTTPTransportStreamChunkHook called (per chunk)
 ```
   </Tab>
   <Tab title="v1.3.x">

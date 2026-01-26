@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -227,6 +228,105 @@ type ProviderConfig struct {
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 }
 
+// Redacted returns a redacted copy of the provider configuration.
+func (p *ProviderConfig) Redacted() *ProviderConfig {
+	// Create redacted config with same structure but redacted values
+	redactedConfig := ProviderConfig{
+		NetworkConfig:            p.NetworkConfig,
+		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
+		SendBackRawRequest:       p.SendBackRawRequest,
+		SendBackRawResponse:      p.SendBackRawResponse,
+		CustomProviderConfig:     p.CustomProviderConfig,
+		ConfigHash:               p.ConfigHash,
+	}
+
+	if p.ProxyConfig != nil {
+		redactedConfig.ProxyConfig = p.ProxyConfig.Redacted()
+	}
+
+	// Create redacted keys
+	redactedConfig.Keys = make([]schemas.Key, len(p.Keys))
+	for i, key := range p.Keys {
+		models := key.Models
+		if models == nil {
+			models = []string{} // Ensure models is never nil in JSON response
+		}
+		redactedConfig.Keys[i] = schemas.Key{
+			ID:         key.ID,
+			Name:       key.Name,
+			Models:     models,
+			Weight:     key.Weight,
+			ConfigHash: key.ConfigHash,
+		}
+		if key.Enabled != nil {
+			enabled := *key.Enabled
+			redactedConfig.Keys[i].Enabled = &enabled
+		}
+		redactedConfig.Keys[i].Value = *key.Value.Redacted()
+		// Add back use for batch api
+		if key.UseForBatchAPI != nil {
+			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
+		} else {
+			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
+		}
+
+		// Redact Azure key config if present
+		if key.AzureKeyConfig != nil {
+			azureConfig := &schemas.AzureKeyConfig{
+				Deployments: key.AzureKeyConfig.Deployments,
+			}
+			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.Redacted()
+			azureConfig.APIVersion = key.AzureKeyConfig.APIVersion
+			if key.AzureKeyConfig.ClientID != nil {
+				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
+			}
+			if key.AzureKeyConfig.ClientSecret != nil {
+				azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
+			}
+			if key.AzureKeyConfig.TenantID != nil {
+				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
+			}
+			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
+		}
+
+		// Redact Vertex key config if present
+		if key.VertexKeyConfig != nil {
+			vertexConfig := &schemas.VertexKeyConfig{
+				Deployments: key.VertexKeyConfig.Deployments,
+			}
+			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
+			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
+			vertexConfig.Region = *key.VertexKeyConfig.Region.Redacted()
+			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
+			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
+		}
+
+		// Redact Bedrock key config if present
+		if key.BedrockKeyConfig != nil {
+			bedrockConfig := &schemas.BedrockKeyConfig{
+				Deployments: key.BedrockKeyConfig.Deployments,
+			}
+			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
+			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
+			if key.BedrockKeyConfig.SessionToken != nil {
+				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
+			}
+			if key.BedrockKeyConfig.Region != nil {
+				bedrockConfig.Region = key.BedrockKeyConfig.Region.Redacted()
+			}
+			if key.BedrockKeyConfig.ARN != nil {
+				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
+			}
+			// Add back s3 config
+			if key.BedrockKeyConfig.BatchS3Config != nil {
+				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
+			}
+			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
+		}
+	}
+	return &redactedConfig
+}
+
 // GenerateConfigHash generates a SHA256 hash of the provider configuration.
 // This is used to detect changes between config.json and database config.
 // Keys are excluded as they are hashed separately.
@@ -396,7 +496,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
-	// Note: Value is intentionally NOT hashed - it's a generated secret that shouldn't affect config sync
+	hash.Write([]byte(vk.Value))
 	// Hash IsActive
 	if vk.IsActive {
 		hash.Write([]byte("isActive:true"))

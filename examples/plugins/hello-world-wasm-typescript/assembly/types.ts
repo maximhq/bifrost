@@ -128,3 +128,30 @@ export class PostHookOutput {
   has_error: bool = false
   hook_error: string = ''
 }
+
+// =============================================================================
+// HTTP Stream Chunk Hook Input/Output Types
+// =============================================================================
+
+/**
+ * HTTPStreamChunkHookInput is the input for http_stream_chunk_hook.
+ * Called for each chunk during streaming responses.
+ */
+@json
+export class HTTPStreamChunkHookInput {
+  context: JSON.Obj = new JSON.Obj()
+  request: JSON.Raw = new JSON.Raw('null')
+  chunk: JSON.Raw = new JSON.Raw('null') // BifrostStreamChunk as JSON
+}
+
+/**
+ * HTTPStreamChunkHookOutput is the output for http_stream_chunk_hook.
+ */
+@json
+export class HTTPStreamChunkHookOutput {
+  context: JSON.Obj = new JSON.Obj()
+  chunk: JSON.Raw = new JSON.Raw('null') // BifrostStreamChunk as JSON, or null to skip
+  has_chunk: bool = false
+  skip: bool = false
+  error: string = ''
+}

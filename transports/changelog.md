@@ -1,2 +1,6 @@
+- feat: pinecone vector db support
+- feat: configurable MCP health check method (ping or listTools)
+- feat: adds new streaming callback for plugins
+- fix: fixes streaming chunks coming in batches. adds test cases for detecting the same.
 - fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
 - fix: duplicate error when adding first MCP server

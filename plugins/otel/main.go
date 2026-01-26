@@ -155,6 +155,11 @@ func (p *OtelPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *sch
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // ValidateConfig function for the OTEL plugin
 func (p *OtelPlugin) ValidateConfig(config any) (*Config, error) {
 	var otelConfig Config

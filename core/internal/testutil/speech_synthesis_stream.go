@@ -117,7 +117,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 				
 
-				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+				responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 					requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 					return client.SpeechStreamRequest(requestCtx, request)
 				})
@@ -132,7 +132,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 				var totalBytes int
 				var chunkCount int
-				var lastResponse *schemas.BifrostStream
+				var lastResponse *schemas.BifrostStreamChunk
 				var streamErrors []string
 				var lastTokenLatency int64
 				var audioBuffer bytes.Buffer // Accumulate audio chunks for validation
@@ -189,7 +189,7 @@ func RunSpeechSynthesisStreamTest(t *testing.T, client *bifrost.Bifrost, ctx con
 						}
 					}
 
-					lastResponse = DeepCopyBifrostStream(response)
+					lastResponse = DeepCopyBifrostStreamChunk(response)
 				}
 
 				// Enhanced validation of streaming results
@@ -308,7 +308,7 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 			}
 
 			
-			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+			responseChannel, err := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				return client.SpeechStreamRequest(requestCtx, request)
 			})
@@ -460,12 +460,12 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 						t,
 						retryConfig,
 						retryContext,
-						func() (chan *schemas.BifrostStream, *schemas.BifrostError) {							
+						func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {							
 							accumulatedAudio.Reset() // Reset buffer on retry
 							requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 							return client.SpeechStreamRequest(requestCtx, request)
 						},
-						func(responseChannel chan *schemas.BifrostStream) SpeechStreamValidationResult {
+						func(responseChannel chan *schemas.BifrostStreamChunk) SpeechStreamValidationResult {
 							// Validate stream content
 							var receivedData bool
 							var streamErrors []string

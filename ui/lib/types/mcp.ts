@@ -23,6 +23,7 @@ export interface MCPClientConfig {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
+	is_ping_available?: boolean;
 }
 
 export interface MCPClient {
@@ -40,6 +41,7 @@ export interface CreateMCPClientRequest {
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
 	headers?: Record<string, EnvVar>;
+	is_ping_available?: boolean;
 }
 
 export interface UpdateMCPClientRequest {
@@ -48,4 +50,5 @@ export interface UpdateMCPClientRequest {
 	headers?: Record<string, EnvVar>;
 	tools_to_execute?: string[];
 	tools_to_auto_execute?: string[];
+	is_ping_available?: boolean;
 }

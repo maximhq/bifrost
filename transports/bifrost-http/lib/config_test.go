@@ -407,7 +407,7 @@ func (m *MockConfigStore) GetClientConfig(ctx context.Context) (*configstore.Cli
 }
 
 // Provider config
-func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig) error {
+func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers = providers
 	m.providersConfigUpdated = true
 	return nil
@@ -743,6 +743,119 @@ func (m *MockConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables
 }
 
 func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error {
+	return nil
+}
+
+// Provider methods
+func (m *MockConfigStore) GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetProviders(ctx context.Context) ([]tables.TableProvider, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetProviderConfig(ctx context.Context, provider schemas.ModelProvider) (*configstore.ProviderConfig, error) {
+	return nil, nil
+}
+
+// Proxy config
+func (m *MockConfigStore) GetProxyConfig(ctx context.Context) (*tables.GlobalProxyConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpdateProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error {
+	return nil
+}
+
+// Restart required config
+func (m *MockConfigStore) GetRestartRequiredConfig(ctx context.Context) (*tables.RestartRequiredConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) SetRestartRequiredConfig(ctx context.Context, config *tables.RestartRequiredConfig) error {
+	return nil
+}
+
+func (m *MockConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
+	return nil
+}
+
+// Model config
+func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateModelConfigs(ctx context.Context, modelConfigs []*tables.TableModelConfig, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteModelConfig(ctx context.Context, id string) error {
+	return nil
+}
+
+// Budget/Rate limit usage
+func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error {
+	return nil
+}
+
+// Distributed locks
+func (m *MockConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	return true, nil
+}
+
+func (m *MockConfigStore) GetLock(ctx context.Context, lockKey string) (*tables.TableDistributedLock, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	return nil
+}
+
+func (m *MockConfigStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
+	return true, nil
+}
+
+func (m *MockConfigStore) CleanupExpiredLocks(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (m *MockConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey string) (bool, error) {
+	return false, nil
+}
+
+// Key management
+func (m *MockConfigStore) GetKeysByProvider(ctx context.Context, provider string) ([]tables.TableKey, error) {
+	return nil, nil
+}
+
+// Sessions
+func (m *MockConfigStore) FlushSessions(ctx context.Context) error {
+	return nil
+}
+
+// Plugins
+func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error {
 	return nil
 }
 

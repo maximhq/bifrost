@@ -25,6 +25,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		}
 		dp.Path = tempPath
 	}
+	// For allowing reloads, we replace
 	plugin, err := plugin.Open(dp.Path)
 	if err != nil {
 		return nil, err
@@ -55,7 +56,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.getName, ok = getNameSym.(func() string); !ok {
-		return nil, fmt.Errorf("failed to cast GetName to func() string")
+		return nil, fmt.Errorf("failed to cast GetName to func() string\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	// Looking up for HTTPTransportPreHook method
 	httpTransportPreHookSym, err := plugin.Lookup("HTTPTransportPreHook")
@@ -63,7 +64,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.httpTransportPreHook, ok = httpTransportPreHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportPreHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)")
+		return nil, fmt.Errorf("failed to cast HTTPTransportPreHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	// Looking up for HTTPTransportPostHook method
 	httpTransportPostHookSym, err := plugin.Lookup("HTTPTransportPostHook")
@@ -71,7 +72,15 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.httpTransportPostHook, ok = httpTransportPostHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error")
+		return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
+	}
+	// Looking up for HTTPTransportStreamChunkHook method
+	httpTransportStreamChunkHookSym, err := plugin.Lookup("HTTPTransportStreamChunkHook")
+	if err != nil {
+		return nil, err
+	}
+	if dp.httpTransportStreamChunkHook, ok = httpTransportStreamChunkHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)); !ok {
+		return nil, fmt.Errorf("failed to cast HTTPTransportStreamChunkHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error).\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	// Looking up for PreHook method
 	preHookSym, err := plugin.Lookup("PreHook")
@@ -79,7 +88,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.preHook, ok = preHookSym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)")
+		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	// Looking up for PostHook method
 	postHookSym, err := plugin.Lookup("PostHook")
@@ -87,7 +96,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.postHook, ok = postHookSym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PostHook to func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)")
+		return nil, fmt.Errorf("failed to cast PostHook to func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	// Looking up for Cleanup method
 	cleanupSym, err := plugin.Lookup("Cleanup")
@@ -95,7 +104,7 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		return nil, err
 	}
 	if dp.cleanup, ok = cleanupSym.(func() error); !ok {
-		return nil, fmt.Errorf("failed to cast Cleanup to func() error")
+		return nil, fmt.Errorf("failed to cast Cleanup to func() error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
 	dp.plugin = plugin
 	return dp, nil

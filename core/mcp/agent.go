@@ -294,7 +294,7 @@ func executeAgent(
 					defer wg.Done()
 					toolResult, toolErr := executeToolFunc(ctx, toolCall)
 					if toolErr != nil {
-						logger.Warn(fmt.Sprintf("Tool execution failed: %v", toolErr))
+						logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
 					} else {
 						channelToolResults <- toolResult

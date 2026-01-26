@@ -401,3 +401,41 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 	}
 	return bifrostCtx, cancel
 }
+
+// BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.
+// The returned request should be released with schemas.ReleaseHTTPRequest when done.
+// Note: Body is not copied for streaming (body was already consumed for the request).
+func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest {
+	req := schemas.AcquireHTTPRequest()
+	req.Method = string(ctx.Method())
+	req.Path = string(ctx.Path())
+
+	// Copy headers
+	for key, value := range ctx.Request.Header.All() {
+		req.Headers[string(key)] = string(value)
+	}
+
+	// Copy query params
+	for key, value := range ctx.Request.URI().QueryArgs().All() {
+		req.Query[string(key)] = string(value)
+	}
+
+	// Copy path parameters from user values
+	ctx.VisitUserValuesAll(func(key, value any) {
+		keyStr, keyIsString := key.(string)
+		valueStr, valueIsString := value.(string)
+		if !keyIsString || !valueIsString {
+			return
+		}
+		if strings.HasPrefix(keyStr, "bifrost-") ||
+			keyStr == "BifrostContextKeyRequestID" ||
+			keyStr == "trace_id" ||
+			keyStr == "span_id" {
+			return
+		}
+		req.PathParams[keyStr] = valueStr
+	})
+
+	// Note: Body not copied - for streaming, body was already consumed
+	return req
+}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -29,6 +30,7 @@ type ClientHealthMonitor struct {
 	cancel                 context.CancelFunc
 	isMonitoring           bool
 	consecutiveFailures    int
+	isPingAvailable        bool // Whether the MCP server supports ping for health checks
 }
 
 // NewClientHealthMonitor creates a new health monitor for an MCP client
@@ -36,6 +38,7 @@ func NewClientHealthMonitor(
 	manager *MCPManager,
 	clientID string,
 	interval time.Duration,
+	isPingAvailable bool,
 ) *ClientHealthMonitor {
 	if interval == 0 {
 		interval = DefaultHealthCheckInterval
@@ -49,6 +52,7 @@ func NewClientHealthMonitor(
 		maxConsecutiveFailures: MaxConsecutiveFailures,
 		isMonitoring:           false,
 		consecutiveFailures:    0,
+		isPingAvailable:        isPingAvailable,
 	}
 }
 
@@ -119,11 +123,26 @@ func (chm *ClientHealthMonitor) performHealthCheck() {
 		return
 	}
 
-	// Perform ping with timeout
+	// Perform health check with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), chm.timeout)
 	defer cancel()
 
-	err := clientState.Conn.Ping(ctx)
+	var err error
+	if chm.isPingAvailable {
+		// Use lightweight ping for health check
+		err = clientState.Conn.Ping(ctx)
+	} else {
+		// Fall back to listTools for servers that don't support ping
+		listRequest := mcp.ListToolsRequest{
+			PaginatedRequest: mcp.PaginatedRequest{
+				Request: mcp.Request{
+					Method: string(mcp.MethodToolsList),
+				},
+			},
+		}
+		_, err = clientState.Conn.ListTools(ctx, listRequest)
+	}
+
 	if err != nil {
 		chm.incrementFailures()
 

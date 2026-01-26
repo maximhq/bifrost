@@ -320,8 +320,8 @@ func HandleOpenAITextCompletionRequest(
 
 // TextCompletionStream performs a streaming text completion request to OpenAI's API.
 // It formats the request, sends it to OpenAI, and processes the response.
-// Returns a channel of BifrostStream objects or an error if the request fails.
-func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+// Returns a channel of BifrostStreamChunk objects or an error if the request fails.
+func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -362,7 +362,7 @@ func HandleOpenAITextCompletionStreaming(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	headers := map[string]string{
 		"Content-Type":  "application/json",
 		"Accept":        "text/event-stream",
@@ -442,7 +442,7 @@ func HandleOpenAITextCompletionStreaming(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -749,7 +749,7 @@ func HandleOpenAIChatCompletionRequest(
 // ChatCompletionStream handles streaming for OpenAI chat completions.
 // It formats messages, prepares request body, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
@@ -796,7 +796,7 @@ func HandleOpenAIChatCompletionStreaming(
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if the request is a redirect from ResponsesStream to ChatCompletionStream
 	isResponsesToChatCompletionsFallback := false
 	var responsesStreamState *schemas.ChatToResponsesStreamState
@@ -894,7 +894,7 @@ func HandleOpenAIChatCompletionStreaming(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Determine request type for cleanup
 	streamRequestType := schemas.ChatCompletionStreamRequest
@@ -1271,7 +1271,7 @@ func HandleOpenAIResponsesRequest(
 }
 
 // ResponsesStream performs a streaming responses request to the OpenAI API.
-func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
@@ -1316,7 +1316,7 @@ func HandleOpenAIResponsesStreaming(
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Prepare SGL headers (SGL typically doesn't require authorization, but we include it if provided)
 	headers := map[string]string{
 		"Content-Type":  "application/json",
@@ -1397,7 +1397,7 @@ func HandleOpenAIResponsesStreaming(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -1752,7 +1752,7 @@ func HandleOpenAISpeechRequest(
 // SpeechStream handles streaming for speech synthesis.
 // It formats the request body, creates HTTP request, and uses shared streaming logic.
 // Returns a channel for streaming responses and any error that occurred.
-func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
@@ -1801,7 +1801,7 @@ func HandleOpenAISpeechStreamRequest(
 	postRequestConverter func(*OpenAISpeechRequest) *OpenAISpeechRequest,
 	postResponseConverter func(*schemas.BifrostSpeechStreamResponse) *schemas.BifrostSpeechStreamResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -1879,7 +1879,7 @@ func HandleOpenAISpeechStreamRequest(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -2143,7 +2143,7 @@ func HandleOpenAITranscriptionRequest(
 }
 
 // TranscriptionStream performs a streaming transcription request to the OpenAI API.
-func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
 	}
@@ -2184,7 +2184,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	postRequestConverter func(*OpenAITranscriptionRequest) *OpenAITranscriptionRequest,
 	postResponseConverter func(*schemas.BifrostTranscriptionStreamResponse) *schemas.BifrostTranscriptionStreamResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Use centralized converter
 	reqBody := ToOpenAITranscriptionRequest(request)
 	if reqBody == nil {
@@ -2261,7 +2261,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -2504,7 +2504,7 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	postHookRunner schemas.PostHookRunner,
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil, provider.GetProviderKey())
@@ -2552,7 +2552,7 @@ func HandleOpenAIImageGenerationStreaming(
 	postRequestConverter func(*OpenAIImageGenerationRequest) *OpenAIImageGenerationRequest,
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
-) (chan *schemas.BifrostStream, *schemas.BifrostError) {
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 
 	// Set headers
 	headers := map[string]string{
@@ -2638,7 +2638,7 @@ func HandleOpenAIImageGenerationStreaming(
 	}
 
 	// Create response channel
-	responseChan := make(chan *schemas.BifrostStream, schemas.DefaultStreamBufferSize)
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
 	// Start streaming in a goroutine
 	go func() {
@@ -2714,7 +2714,7 @@ func HandleOpenAIImageGenerationStreaming(
 			// Parse minimally to extract usage and check for errors
 			var response OpenAIImageStreamResponse
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn(fmt.Sprintf("Failed to parse stream response: %v", err))
+				logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
 
@@ -2794,7 +2794,7 @@ func HandleOpenAIImageGenerationStreaming(
 						imageIndex = minIndex
 						// Mark this image as completed
 						delete(incompleteImages, imageIndex)
-						logger.Warn(fmt.Sprintf("Completed event missing PartialImageIndex, using oldest incomplete image index %d", imageIndex))
+						logger.Warn("Completed event missing PartialImageIndex, using oldest incomplete image index %d", imageIndex)
 					}
 				} else {
 					// For partial chunks without PartialImageIndex, allocate a new unique index
@@ -2894,7 +2894,7 @@ func HandleOpenAIImageGenerationStreaming(
 		}
 
 		if err := scanner.Err(); err != nil {
-			logger.Warn(fmt.Sprintf("Error reading stream: %v", err))
+			logger.Warn("Error reading stream: %v", err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, logger)
 		}
 	}()

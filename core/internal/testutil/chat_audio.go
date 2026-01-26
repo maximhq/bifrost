@@ -202,7 +202,7 @@ func RunChatAudioStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			Fallbacks: testConfig.Fallbacks,
 		}
 
-		responseChannel, bifrostErr := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStream, *schemas.BifrostError) {
+		responseChannel, bifrostErr := WithStreamRetry(t, retryConfig, retryContext, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.ChatCompletionStreamRequest(bfCtx, chatReq)
 		})
@@ -216,7 +216,7 @@ func RunChatAudioStreamTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 		}
 
 		// Accumulate stream chunks
-		var chunks []*schemas.BifrostStream
+		var chunks []*schemas.BifrostStreamChunk
 		var audioData strings.Builder
 		var audioTranscript strings.Builder
 		var audioID string

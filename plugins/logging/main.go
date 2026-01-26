@@ -203,6 +203,11 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	return chunk, nil
+}
+
 // PreHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context

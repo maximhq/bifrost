@@ -32,8 +32,8 @@ type GovernanceManager interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
-	ReloadProvider(ctx context.Context, name string) (*configstoreTables.TableProvider, error)
-	RemoveProvider(ctx context.Context, name string) error
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
+	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -208,16 +208,16 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
 	// Model Config CRUD operations
-	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
-	r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
-	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
-	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
-	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
+	// r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
+	// r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
+	// r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
+	// r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
+	// r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
 
 	// Provider Governance operations
-	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
-	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
-	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+	// r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
+	// r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
+	// r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -2110,7 +2110,7 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reload provider in memory
-	updatedProvider, err := h.governanceManager.ReloadProvider(ctx, providerName)
+	updatedProvider, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(providerName))
 	if err != nil {
 		logger.Error("failed to reload provider in memory: %v", err)
 		// Use the local provider object if reload fails
@@ -2186,7 +2186,7 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reload provider in memory (to clear the budget/rate limit)
-	if _, err := h.governanceManager.ReloadProvider(ctx, providerName); err != nil {
+	if _, err := h.governanceManager.ReloadProvider(ctx, schemas.ModelProvider(providerName)); err != nil {
 		logger.Error("failed to reload provider in memory: %v", err)
 		// Continue anyway, the governance is deleted from DB
 	}

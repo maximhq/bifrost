@@ -154,13 +154,16 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddDisableDBPingsInHealthColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddIsPingAvailableColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
 // migrationInit is the first migration
 func migrationInit(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "init",
+		ID: "init",		
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -315,7 +318,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			}
 			return nil
 		},
-	}})
+	}})	
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
@@ -1746,7 +1749,6 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 				}
 				for _, key := range keys {
 					if key.ConfigHash == "" {
-
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
 							Name:             key.Name,
@@ -2438,9 +2440,18 @@ func migrationAddAllowedHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
-
 			if !migrator.HasColumn(&tables.TableClientConfig{}, "allowed_headers_json") {
 				if err := migrator.AddColumn(&tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableClientConfig{}, "allowed_headers_json") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "allowed_headers_json"); err != nil {
 					return err
 				}
 			}
@@ -2468,10 +2479,56 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB) 
 			}
 			return nil
 		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "disable_db_pings_in_health"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}})
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddIsPingAvailableColumn adds the is_ping_available column to the config_mcp_clients table
+func migrationAddIsPingAvailableColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_is_ping_available_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "is_ping_available") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "is_ping_available"); err != nil {
+					return err
+				}
+				// Set default value for existing rows
+				if err := tx.Model(&tables.TableMCPClient{}).Where("is_ping_available IS NULL").Update("is_ping_available", true).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "is_ping_available") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "is_ping_available"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running is_ping_available migration: %s", err.Error())
 	}
 	return nil
 }
