@@ -1,13 +1,15 @@
 ---
 title: "Ollama"
-description: "Ollama API conversion guide - local inference, OpenAI-compatible format, streaming, tool calling, and embeddings"
+description: "Ollama API conversion guide - local and cloud inference, OpenAI-compatible format, streaming, tool calling, and embeddings"
 icon: "o"
 ---
 
 ## Overview
 
-Ollama is a **local-first, OpenAI-compatible inference engine** for running large language models on personal computers or servers. Bifrost delegates to the OpenAI implementation while supporting Ollama's unique configuration requirements. Key characteristics:
+Ollama is a **local-first, OpenAI-compatible inference engine** for running large language models on personal computers or servers. It also supports cloud models via ollama.com.
+Bifrost delegates to the OpenAI implementation while supporting Ollama's unique configuration requirements. Key characteristics:
 - **Local-first deployment** - Run models locally or on private infrastructure
+- **Cloud support** - Access models hosted remotely
 - **OpenAI API compatibility** - Identical request/response format
 - **Full feature support** - Chat, text, embeddings, and streaming
 - **Tool calling** - Complete function definition and execution
@@ -31,7 +33,8 @@ Ollama is a **local-first, OpenAI-compatible inference engine** for running larg
 <Note>
 **Unsupported Operations** (❌): Speech, Transcriptions, Files, and Batch are not supported by the upstream Ollama API. These return `UnsupportedOperationError`.
 
-Ollama is self-hosted. Ensure you have an Ollama instance running and configured with the correct BaseURL (e.g., `http://localhost:11434`).
+For self-hosted models, ensure you have an Ollama instance running and configured with the correct BaseURL (e.g., `http://localhost:11434`).
+To access cloud-based models, set BaseURL to your cloud endpoint (e.g., `https://ollama.com`) and provide an API key (see [Authentication](https://docs.ollama.com/api/authentication)).
 </Note>
 
 ---
