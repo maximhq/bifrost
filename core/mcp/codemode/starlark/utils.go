@@ -201,6 +201,15 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 				hints = append(hints, "Access tools using: server_name.tool_name(param=\"value\")")
 			}
 		}
+	} else if strings.Contains(errorMessage, "not within a function") {
+		hints = append(hints, "Starlark requires for/if/while statements to be inside functions at the top level.")
+		hints = append(hints, "Wrap your code in a function, then call it:")
+		hints = append(hints, "  def fetch_all():")
+		hints = append(hints, "    results = []")
+		hints = append(hints, "    for id in ids:")
+		hints = append(hints, "      results.append(server.get(id=id))")
+		hints = append(hints, "    return results")
+		hints = append(hints, "  result = fetch_all()")
 	} else if strings.Contains(errorMessage, "syntax error") {
 		hints = append(hints, "Python syntax error detected.")
 		hints = append(hints, "Check for proper indentation (use spaces, not tabs).")

@@ -91,3 +91,15 @@ export interface UpdateMCPClientRequest {
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
 }
+
+// Types for MCP Tool Selector component
+export interface SelectedTool {
+	mcpClientId: string;
+	toolName: string;
+}
+
+// MCP Tool Spec for tool groups (matches backend schema)
+export interface MCPToolSpec {
+	mcp_client_id: string;
+	tool_names: string[];
+}

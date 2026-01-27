@@ -57,7 +57,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 	executeToolCodeProps := schemas.OrderedMap{
 		"code": map[string]interface{}{
 			"type":        "string",
-			"description": "Python code to execute. The code runs in a Starlark interpreter (Python subset). Tool calls are synchronous - no async/await needed. For simple use cases, directly return results. Use print() for logging. ALWAYS retry if code fails. Example: result = server.tool_name(param=\"value\"); return result",
+			"description": "Python code to execute. The code runs in a Starlark interpreter (Python subset). Tool calls are synchronous - no async/await needed. For loops/conditionals, wrap in a function. Use print() for logging. ALWAYS retry if code fails. Example: def main():\n  items = server.list_items()\n  for item in items:\n    print(item)\nresult = main()",
 		},
 	}
 	return schemas.ChatTool{
@@ -82,6 +82,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"• Use print() for logging (not console.log) " +
 					"• List comprehensions work: [x for x in items if x[\"active\"]] " +
 					"• To return a value, assign to 'result' variable: result = computed_value " +
+					"• CRITICAL: for/if/while at top level MUST be inside a function - def main(): ... then result = main() " +
 
 					"RETRY POLICY: ALWAYS retry if a code block fails. Analyze the error, adjust your code, and retry. " +
 

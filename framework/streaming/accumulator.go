@@ -35,6 +35,7 @@ type Accumulator struct {
 
 	stopCleanup   chan struct{}
 	cleanupWg     sync.WaitGroup
+	cleanupOnce   sync.Once
 	ttl           time.Duration
 	cleanupTicker *time.Ticker
 }
@@ -515,7 +516,9 @@ func (a *Accumulator) Cleanup() {
 		a.streamAccumulators.Delete(key)
 		return true
 	})
-	close(a.stopCleanup)
+	a.cleanupOnce.Do(func() {
+		close(a.stopCleanup)
+	})
 	a.cleanupTicker.Stop()
 	a.cleanupWg.Wait()
 }
