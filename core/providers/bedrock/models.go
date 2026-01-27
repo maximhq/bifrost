@@ -103,31 +103,32 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	// Check if any deployment value matches the modelID (with or without prefix)
 	for aliasKey, deploymentValue := range deployments {
 		// Exact match
-		if deploymentValue == modelID {
+		if deploymentValue == modelID || aliasKey == modelID {
 			return deploymentValue, aliasKey
 		}
 
 		// Check prefix variations
 		deploymentPrefix := extractPrefix(deploymentValue)
 		modelIDPrefix := extractPrefix(modelID)
+		aliasKeyPrefix := extractPrefix(aliasKey)
 
-		// Case 1: deploymentValue has prefix, modelID doesn't
-		if deploymentPrefix != "" && modelIDPrefix == "" {
-			if removePrefix(deploymentValue) == modelID {
+		// Case 1: deploymentValue or aliasKey has prefix, modelID doesn't
+		if (deploymentPrefix != "" && modelIDPrefix == "") || (aliasKeyPrefix != "" && modelIDPrefix == "") {
+			if removePrefix(deploymentValue) == modelID || removePrefix(aliasKey) == modelID {
 				return deploymentValue, aliasKey
 			}
 		}
 
-		// Case 2: modelID has prefix, deploymentValue doesn't
-		if modelIDPrefix != "" && deploymentPrefix == "" {
-			if removePrefix(modelID) == deploymentValue {
+		// Case 2: modelID or aliasKey has prefix, deploymentValue doesn't
+		if (modelIDPrefix != "" && deploymentPrefix == "") || (aliasKeyPrefix != "" && deploymentPrefix == "") {
+			if removePrefix(modelID) == deploymentValue || removePrefix(modelID) == aliasKey {
 				return deploymentValue, aliasKey
 			}
 		}
 
 		// Case 3: Both have prefixes but different prefixes
-		if deploymentPrefix != "" && modelIDPrefix != "" && deploymentPrefix != modelIDPrefix {
-			if removePrefix(deploymentValue) == removePrefix(modelID) {
+		if (deploymentPrefix != "" && modelIDPrefix != "" && deploymentPrefix != modelIDPrefix) || (aliasKeyPrefix != "" && modelIDPrefix != "" && aliasKeyPrefix != modelIDPrefix) {
+			if removePrefix(deploymentValue) == removePrefix(modelID) || removePrefix(aliasKey) == removePrefix(modelID) {
 				return deploymentValue, aliasKey
 			}
 		}
