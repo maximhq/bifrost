@@ -251,6 +251,41 @@ bifrost:
 | Semantic Cache | `bifrost.plugins.semanticCache.enabled` | Enable semantic caching |
 | OTEL | `bifrost.plugins.otel.enabled` | Enable OpenTelemetry integration |
 | Maxim | `bifrost.plugins.maxim.enabled` | Enable Maxim observability |
+| Datadog | `bifrost.plugins.datadog.enabled` | Enable Datadog APM integration |
+| Custom | `bifrost.plugins.custom` | Array of custom/dynamic plugins |
+
+#### Custom Plugins
+
+You can add custom/dynamic plugins using the `bifrost.plugins.custom` array:
+
+```yaml
+bifrost:
+  plugins:
+    custom:
+      - name: "my-custom-plugin"
+        enabled: true
+        path: "/plugins/my-plugin.so"
+        version: 1
+        config:
+          key: value
+```
+
+### Client Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.client.disableDbPingsInHealth` | Disable DB pings in health check | `false` |
+| `bifrost.client.headerFilterConfig.allowlist` | Headers allowed to forward to LLM providers | `[]` |
+| `bifrost.client.headerFilterConfig.denylist` | Headers blocked from forwarding | `[]` |
+
+### MCP Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.mcp.enabled` | Enable MCP (Model Context Protocol) | `false` |
+| `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
+| `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
 
 ### Ingress Configuration
 

@@ -155,6 +155,7 @@ bifrost:
       - "*"
     enableLogging: true
     disableContentLogging: false
+    disableDbPingsInHealth: false
     logRetentionDays: 365
     enableGovernance: true
     enforceGovernanceHeader: false
@@ -162,6 +163,10 @@ bifrost:
     maxRequestBodySizeMb: 100
     enableLitellmFallbacks: false
     prometheusLabels: []
+    # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
+    headerFilterConfig:
+      allowlist: []
+      denylist: []
 
   # Framework configuration
   framework:
@@ -209,6 +214,10 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+    # Tool manager configuration
+    toolManagerConfig:
+      toolExecutionTimeout: 30
+      maxAgentDepth: 10
 
   # Plugins configuration
   plugins:
@@ -267,6 +276,15 @@ bifrost:
         custom_tags: {}
         enable_traces: true
 
+    # Custom/dynamic plugins
+    custom: []
+      # - name: "my-custom-plugin"
+      #   enabled: true
+      #   path: "/plugins/my-plugin.so"
+      #   version: 1
+      #   config:
+      #     key: value
+
   # Governance configuration for budgets, rate limits, customers, teams, and virtual keys
   governance:
     budgets: []
@@ -291,6 +309,7 @@ bifrost:
     virtualKeys: []
       # - id: "vk-1"
       #   name: "Virtual Key 1"
+      #   description: "Virtual key description"
       #   value: "vk-..."
       #   is_active: true
       #   team_id: "team-1"

@@ -224,6 +224,21 @@ false
 {{- if .Values.bifrost.client.logRetentionDays }}
 {{- $_ := set $client "log_retention_days" .Values.bifrost.client.logRetentionDays }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "disableDbPingsInHealth" }}
+{{- $_ := set $client "disable_db_pings_in_health" .Values.bifrost.client.disableDbPingsInHealth }}
+{{- end }}
+{{- if .Values.bifrost.client.headerFilterConfig }}
+{{- $headerFilter := dict }}
+{{- if .Values.bifrost.client.headerFilterConfig.allowlist }}
+{{- $_ := set $headerFilter "allowlist" .Values.bifrost.client.headerFilterConfig.allowlist }}
+{{- end }}
+{{- if .Values.bifrost.client.headerFilterConfig.denylist }}
+{{- $_ := set $headerFilter "denylist" .Values.bifrost.client.headerFilterConfig.denylist }}
+{{- end }}
+{{- if or $headerFilter.allowlist $headerFilter.denylist }}
+{{- $_ := set $client "header_filter_config" $headerFilter }}
+{{- end }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Framework */ -}}
@@ -276,6 +291,7 @@ false
 {{- $vks := list }}
 {{- range .Values.bifrost.governance.virtualKeys }}
 {{- $vk := dict "id" .id "name" .name "value" .value }}
+{{- if .description }}{{- $_ := set $vk "description" .description }}{{- end }}
 {{- if hasKey . "is_active" }}{{- $_ := set $vk "is_active" .is_active }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
@@ -516,7 +532,20 @@ false
 {{- end }}
 {{- /* MCP */ -}}
 {{- if .Values.bifrost.mcp.enabled }}
-{{- $_ := set $config "mcp" (dict "client_configs" .Values.bifrost.mcp.clientConfigs) }}
+{{- $mcpConfig := dict "client_configs" .Values.bifrost.mcp.clientConfigs }}
+{{- if .Values.bifrost.mcp.toolManagerConfig }}
+{{- $tmConfig := dict }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
+{{- $_ := set $tmConfig "tool_execution_timeout" .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
+{{- $_ := set $tmConfig "max_agent_depth" .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
+{{- end }}
+{{- if $tmConfig }}
+{{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
+{{- end }}
+{{- end }}
+{{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
 {{- /* Plugins - as array per schema */ -}}
 {{- $plugins := list }}
@@ -625,6 +654,18 @@ false
 {{- $_ := set $datadogConfig "enable_traces" $inputConfig.enable_traces }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "datadog" "config" $datadogConfig) }}
+{{- end }}
+{{- /* Custom plugins */ -}}
+{{- if .Values.bifrost.plugins.custom }}
+{{- range .Values.bifrost.plugins.custom }}
+{{- if .enabled }}
+{{- $customPlugin := dict "enabled" true "name" .name }}
+{{- if .path }}{{- $_ := set $customPlugin "path" .path }}{{- end }}
+{{- if .version }}{{- $_ := set $customPlugin "version" .version }}{{- end }}
+{{- if .config }}{{- $_ := set $customPlugin "config" .config }}{{- end }}
+{{- $plugins = append $plugins $customPlugin }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- if $plugins }}
 {{- $_ := set $config "plugins" $plugins }}
