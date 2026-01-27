@@ -27,7 +27,9 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 			"The function performs case-insensitive matching and removes the .pyi extension. " +
 			"Each tool can be accessed in code via: serverName.tool_name(param=value). " +
 			"If the compact signature is not enough to understand a tool, use getToolDocs for detailed documentation. " +
-			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode."
+			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
+			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
+			"do NOT call this tool again with startLine/endLine - you already have the complete file."
 	} else {
 		fileNameDescription = "The virtual filename from listToolFiles in format: servers/<serverName>/<toolName>.pyi (e.g., 'calculator/add.pyi')"
 		toolDescription = "Reads a virtual .pyi stub file for a specific tool, returning its compact Python function signature. " +
@@ -35,7 +37,9 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 			"The function performs case-insensitive matching and removes the .pyi extension. " +
 			"The tool can be accessed in code via: serverName.tool_name(param=value). " +
 			"If the compact signature is not enough to understand the tool, use getToolDocs for detailed documentation. " +
-			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode."
+			"Workflow: listToolFiles -> readToolFile -> (optional) getToolDocs -> executeToolCode. " +
+			"IMPORTANT: If the response header shows 'Total lines: X (this is the complete file)', " +
+			"do NOT call this tool again with startLine/endLine - you already have the complete file."
 	}
 
 	readToolFileProps := schemas.OrderedMap{
@@ -45,11 +49,11 @@ func (s *StarlarkCodeMode) createReadToolFileTool() schemas.ChatTool {
 		},
 		"startLine": map[string]interface{}{
 			"type":        "number",
-			"description": "Optional 1-based starting line number for partial file read (inclusive). Note: Line numbers start at 1, not 0. The first line is line 1.",
+			"description": "Optional 1-based starting line number for partial file read. Usually not needed - omit to read the entire file. Files are typically small (under 50 lines).",
 		},
 		"endLine": map[string]interface{}{
 			"type":        "number",
-			"description": "Optional 1-based ending line number for partial file read (inclusive)",
+			"description": "Optional 1-based ending line number for partial file read. Usually not needed - omit to read the entire file. Will be clamped to actual file size if too large.",
 		},
 	}
 	return schemas.ChatTool{
@@ -197,6 +201,12 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
+	// Prepend total lines info so LLM knows the file size upfront
+	fileContent = fmt.Sprintf("# Total lines: %d (this is the complete file, no need to paginate)\n%s", totalLines+1, fileContent)
+	// Recalculate lines after prepending
+	lines = strings.Split(fileContent, "\n")
+	totalLines = len(lines)
+
 	// Handle line slicing if provided
 	var startLine, endLine *int
 	if sl, ok := arguments["startLine"].(float64); ok {
@@ -218,21 +228,23 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			end = *endLine
 		}
 
-		// Validate line numbers
-		if start < 1 || start > totalLines {
-			errorMsg := fmt.Sprintf("Invalid startLine: %d. Must be between 1 and %d (total lines in file). Provided: startLine=%d, endLine=%v, totalLines=%d",
-				start, totalLines, start, endLine, totalLines)
-			return createToolResponseMessage(toolCall, errorMsg), nil
+		// Clamp values to valid range instead of erroring
+		// This handles cases where LLM requests more lines than exist
+		if start < 1 {
+			start = 1
 		}
-		if end < 1 || end > totalLines {
-			errorMsg := fmt.Sprintf("Invalid endLine: %d. Must be between 1 and %d (total lines in file). Provided: startLine=%d, endLine=%d, totalLines=%d",
-				end, totalLines, start, end, totalLines)
-			return createToolResponseMessage(toolCall, errorMsg), nil
+		if start > totalLines {
+			start = totalLines
+		}
+		if end < 1 {
+			end = 1
+		}
+		if end > totalLines {
+			end = totalLines
 		}
 		if start > end {
-			errorMsg := fmt.Sprintf("Invalid line range: startLine (%d) must be less than or equal to endLine (%d). Total lines in file: %d",
-				start, end, totalLines)
-			return createToolResponseMessage(toolCall, errorMsg), nil
+			// If start > end after clamping, just return the start line
+			end = start
 		}
 
 		// Slice lines (convert to 0-based indexing)
@@ -289,7 +301,8 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 		sb.WriteString(fmt.Sprintf("# %s server tools\n", clientName))
 	}
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
-	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n\n", clientName))
+	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
+	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n\n")
 
 	for _, tool := range tools {
 		if tool.Function == nil || tool.Function.Name == "" {
