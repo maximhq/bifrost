@@ -182,8 +182,8 @@ func executeAgent(
 			toolName := *toolCall.Function.Name
 			client := clientManager.GetClientForTool(toolName)
 			if client == nil {
-				// Allow code mode list and read tool tools
-				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile {
+				// Allow code mode list, read, and docs tools (all read-only operations)
+				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
 					autoExecutableTools = append(autoExecutableTools, toolCall)
 					logger.Debug("Tool %s can be auto-executed", toolName)
 					continue
