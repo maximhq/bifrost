@@ -108,7 +108,7 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 	})
 }
 
-// RunListModelsPaginationTest executes pagination test for list models
+// // RunListModelsPaginationTest executes pagination test for list models
 func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ListModels {
 		t.Logf("List models not supported for provider %s", testConfig.Provider)

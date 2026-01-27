@@ -49,6 +49,7 @@ export const ModelPlaceholders = {
 	vertex: "e.g. gemini-1.5-pro, text-bison, chat-bison",
 	nebius: "e.g. openai/gpt-oss-120b, google/gemma-2-9b-it-fast, Qwen/Qwen2.5-VL-72B-Instruct",
 	xai: "e.g. grok-4-0709, grok-3-mini, grok-3, grok-2-vision-1212",
+	replicate: "e.g. meta/llama3-1-8b-instruct, black-forest-labs/flux-dev",
 };
 
 export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
@@ -71,6 +72,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	perplexity: true,
 	nebius: true,
 	xai: true,
+	replicate: true,
 };
 
 export const DefaultNetworkConfig = {

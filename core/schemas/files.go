@@ -55,9 +55,10 @@ type BifrostFileUploadRequest struct {
 	Model    *string       `json:"model"`
 
 	// File content
-	File     []byte      `json:"-"`        // Raw file content (not serialized)
-	Filename string      `json:"filename"` // Original filename
-	Purpose  FilePurpose `json:"purpose"`  // Purpose of the file (e.g., "batch")
+	File        []byte      `json:"-"`                      // Raw file content (not serialized)
+	Filename    string      `json:"filename"`               // Original filename
+	Purpose     FilePurpose `json:"purpose"`                // Purpose of the file (e.g., "batch")
+	ContentType *string     `json:"content_type,omitempty"` // MIME type of the file
 
 	// Storage configuration (for S3/GCS backends)
 	StorageConfig *FileStorageConfig `json:"storage_config,omitempty"`
