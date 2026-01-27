@@ -93,14 +93,14 @@ func (s *BifrostHTTPServer) registerPluginWithStatus(ctx context.Context, name s
 		return nil
 	}
 
-	s.Config.RegisterPlugin(plugin)
+	s.Config.ReloadPlugin(plugin)
 	s.Config.UpdatePluginOverallStatus(name, name, schemas.PluginStatusActive,
-		[]string{fmt.Sprintf("%s plugin initialized successfully", name)}, getPluginTypes(plugin))
+		[]string{fmt.Sprintf("%s plugin initialized successfully", name)}, InferPluginTypes(plugin))
 	return nil
 }
 
-// collectObservabilityPlugins gathers all loaded plugins that implement ObservabilityPlugin interface
-func (s *BifrostHTTPServer) collectObservabilityPlugins() []schemas.ObservabilityPlugin {
+// CollectObservabilityPlugins gathers all loaded plugins that implement ObservabilityPlugin interface
+func (s *BifrostHTTPServer) CollectObservabilityPlugins() []schemas.ObservabilityPlugin {
 	var observabilityPlugins []schemas.ObservabilityPlugin
 
 	// Check LLM plugins

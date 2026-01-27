@@ -57,8 +57,8 @@ export const mcpApi = baseApi.injectEndpoints({
 
 		// Complete OAuth flow for MCP client
 		completeOAuthFlow: builder.mutation<{ status: string; message: string }, string>({
-			query: (mcpClientId) => ({
-				url: `/mcp/client/${mcpClientId}/complete-oauth`,
+			query: (oauthConfigId) => ({
+				url: `/mcp/client/${oauthConfigId}/complete-oauth`,
 				method: "POST",
 			}),
 			invalidatesTags: ["MCPClients"],

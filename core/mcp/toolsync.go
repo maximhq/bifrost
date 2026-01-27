@@ -222,7 +222,7 @@ func (tsm *ToolSyncManager) StopAll() {
 //   - Positive value: use this interval
 //
 // Returns 0 if sync is disabled for this client.
-func ResolveToolSyncInterval(clientConfig schemas.MCPClientConfig, globalInterval time.Duration) time.Duration {
+func ResolveToolSyncInterval(clientConfig *schemas.MCPClientConfig, globalInterval time.Duration) time.Duration {
 	// Per-client explicitly disabled (negative value)
 	if clientConfig.ToolSyncInterval < 0 {
 		return 0 // Disabled for this client

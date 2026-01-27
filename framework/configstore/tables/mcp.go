@@ -9,14 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-type MCPConfig struct {
-	ClientConfigs          []TableMCPClient                         `json:"client_configs,omitempty"`      // Per-client execution configurations
-	ToolManagerConfig      *schemas.MCPToolManagerConfig            `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
-	FetchNewRequestIDFunc  func(ctx *schemas.BifrostContext) string `json:"-"`
-	PluginPipelineProvider func() interface{}                       `json:"-"`
-	ReleasePluginPipeline  func(pipeline interface{})               `json:"-"`
-}
-
 // TableMCPClient represents an MCP client configuration in the database
 type TableMCPClient struct {
 	ID                     uint            `gorm:"primaryKey;autoIncrement" json:"id"` // ID is used as the internal primary key and is also accessed by public methods, so it must be present.

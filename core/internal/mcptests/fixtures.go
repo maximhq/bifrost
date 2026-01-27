@@ -1466,9 +1466,15 @@ func setupMCPManager(t *testing.T, clientConfigs ...schemas.MCPClientConfig) *mc
 
 	logger := &testLogger{t: t}
 
+	// Convert to pointer slice for MCPConfig
+	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
+	for i := range clientConfigs {
+		clientConfigPtrs[i] = &clientConfigs[i]
+	}
+
 	// Create MCP config
 	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs: clientConfigs,
+		ClientConfigs: clientConfigPtrs,
 	}
 
 	// Create Starlark CodeMode

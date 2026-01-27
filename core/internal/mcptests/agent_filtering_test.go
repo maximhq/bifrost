@@ -531,7 +531,7 @@ func TestAgent_FilteringWithMultipleClients(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto-executed
 
-	err = manager.AddClient(tempConfig)
+	err = manager.AddClient(&tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return
@@ -620,7 +620,7 @@ func TestAgent_ToolConflictInAgentMode(t *testing.T) {
 	tempConfig := GetTemperatureMCPClientConfig("")
 	tempConfig.ToolsToAutoExecute = []string{} // Not auto
 
-	err = manager.AddClient(tempConfig)
+	err = manager.AddClient(&tempConfig)
 	if err != nil {
 		t.Skipf("Skipping test - temperature server not available: %v", err)
 		return

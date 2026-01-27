@@ -22,9 +22,10 @@ type TableOauthConfig struct {
 	CodeChallenge   string    `gorm:"type:varchar(255)" json:"code_challenge"`          // PKCE code challenge (sent to provider)
 	Status          string    `gorm:"type:varchar(50);not null;index" json:"status"`    // "pending", "authorized", "failed", "expired", "revoked"
 	TokenID         *string   `gorm:"type:varchar(255);index" json:"token_id"`          // Foreign key to oauth_tokens.ID (set after callback)
-	ServerURL       string    `gorm:"type:text" json:"server_url"`                      // MCP server URL for OAuth discovery
-	UseDiscovery    bool      `gorm:"default:false" json:"use_discovery"`               // Flag to enable OAuth discovery
-	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
+	ServerURL            string  `gorm:"type:text" json:"server_url"`                      // MCP server URL for OAuth discovery
+	UseDiscovery         bool    `gorm:"default:false" json:"use_discovery"`               // Flag to enable OAuth discovery
+	MCPClientConfigJSON  *string `gorm:"type:text" json:"-"`                               // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
+	CreatedAt            time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
 	ExpiresAt       time.Time `gorm:"index;not null" json:"expires_at"`                 // State expiry (15 min)
 }

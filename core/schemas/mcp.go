@@ -26,7 +26,7 @@ var (
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 type MCPConfig struct {
-	ClientConfigs     []MCPClientConfig     `json:"client_configs,omitempty"`      // Per-client execution configurations
+	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 
@@ -76,7 +76,7 @@ const (
 
 // MCPClientConfig defines tool filtering for an MCP client.
 type MCPClientConfig struct {
-	ID               string            `json:"id"`                          // Client ID
+	ID               string            `json:"client_id"`                          // Client ID
 	Name             string            `json:"name"`                        // Client name
 	IsCodeModeClient bool              `json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType   MCPConnectionType `json:"connection_type"`             // How to connect (HTTP, STDIO, SSE, or InProcess)
@@ -100,9 +100,10 @@ type MCPClientConfig struct {
 	// - nil/omitted => treated as [] (no tools)
 	// - ["tool1", "tool2"] => auto-execute only the specified tools
 	// Note: If a tool is in ToolsToAutoExecute but not in ToolsToExecute, it will be skipped.
-	IsPingAvailable  bool          `json:"is_ping_available"`            // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
-	ToolSyncInterval time.Duration `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
-	ConfigHash       string        `json:"-"`                            // Config hash for reconciliation (not serialized)
+	IsPingAvailable  bool               `json:"is_ping_available"`            // Whether the MCP server supports ping for health checks (default: true). If false, uses listTools for health checks.
+	ToolSyncInterval time.Duration      `json:"tool_sync_interval,omitempty"` // Per-client override for tool sync interval (0 = use global, negative = disabled)
+	ToolPricing      map[string]float64 `json:"tool_pricing,omitempty"`       // Tool pricing for each tool (cost per execution)
+	ConfigHash       string             `json:"-"`                            // Config hash for reconciliation (not serialized)
 }
 
 // NewMCPClientConfigFromMap creates a new MCP client config from a map[string]any.
@@ -187,14 +188,14 @@ const (
 // MCPClientState represents a connected MCP client with its configuration and tools.
 // It is used internally by the MCP manager to track the state of a connected MCP client.
 type MCPClientState struct {
-	Name               string                  // Unique name for this client
-	Conn               *client.Client          // Active MCP client connection
-	ExecutionConfig    MCPClientConfig         // Tool filtering settings
-	ToolMap            map[string]ChatTool     // Available tools mapped by name
-	ToolNameMapping    map[string]string       // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
-	ConnectionInfo     MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc         context.CancelFunc      `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State              MCPConnectionState      // Connection state (connected, disconnected, error)
+	Name            string                   // Unique name for this client
+	Conn            *client.Client           // Active MCP client connection
+	ExecutionConfig *MCPClientConfig         // Tool filtering settings
+	ToolMap         map[string]ChatTool      // Available tools mapped by name
+	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
+	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
+	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
+	State           MCPConnectionState       // Connection state (connected, disconnected, error)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -208,7 +209,7 @@ type MCPClientConnectionInfo struct {
 // and connection information, after it has been initialized.
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
-	Config MCPClientConfig    `json:"config"` // Tool filtering settings
+	Config *MCPClientConfig   `json:"config"` // Tool filtering settings
 	Tools  []ChatToolFunction `json:"tools"`  // Available tools
 	State  MCPConnectionState `json:"state"`  // Connection state
 }

@@ -749,7 +749,7 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 }
 
 // GetMCPConfig retrieves the MCP configuration from the database.
-func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error) {
+func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
 	// Get all MCP clients
 	if err := s.db.WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
@@ -763,8 +763,27 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, e
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return MCP config with default ToolManagerConfig if no client config exists
 			// This will never happen, but just in case.
-			return &tables.MCPConfig{
-				ClientConfigs: dbMCPClients,
+			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
+			for i, dbClient := range dbMCPClients {
+				clientConfigs[i] = &schemas.MCPClientConfig{
+					ID:                 dbClient.ClientID,
+					Name:               dbClient.Name,
+					IsCodeModeClient:   dbClient.IsCodeModeClient,
+					ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+					ConnectionString:   dbClient.ConnectionString,
+					StdioConfig:        dbClient.StdioConfig,
+					AuthType:           schemas.MCPAuthType(dbClient.AuthType),
+					OauthConfigID:      dbClient.OauthConfigID,
+					ToolsToExecute:     dbClient.ToolsToExecute,
+					ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+					Headers:            dbClient.Headers,
+					IsPingAvailable:    dbClient.IsPingAvailable,
+					ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolPricing:        dbClient.ToolPricing,
+				}
+			}
+			return &schemas.MCPConfig{
+				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
 					ToolExecutionTimeout: 30 * time.Second, // default from TableClientConfig
 					MaxAgentDepth:        10,               // default from TableClientConfig
@@ -778,20 +797,9 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, e
 		MaxAgentDepth:        clientConfig.MCPAgentDepth,
 		CodeModeBindingLevel: schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 	}
-	return &tables.MCPConfig{
-		ClientConfigs:     dbMCPClients,
-		ToolManagerConfig: &toolManagerConfig,
-	}, nil
-}
-
-// ConvertTableMCPConfigToSchemas converts tables.MCPConfig to schemas.MCPConfig
-func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig, globalToolSyncInterval int) *schemas.MCPConfig {
-	if tableConfig == nil {
-		return nil
-	}
-	clientConfigs := make([]schemas.MCPClientConfig, len(tableConfig.ClientConfigs))
-	for i, dbClient := range tableConfig.ClientConfigs {
-		clientConfigs[i] = schemas.MCPClientConfig{
+	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
+	for i, dbClient := range dbMCPClients {
+		clientConfigs[i] = &schemas.MCPClientConfig{
 			ID:                 dbClient.ClientID,
 			Name:               dbClient.Name,
 			IsCodeModeClient:   dbClient.IsCodeModeClient,
@@ -805,14 +813,15 @@ func ConvertTableMCPConfigToSchemas(tableConfig *tables.MCPConfig, globalToolSyn
 			Headers:            dbClient.Headers,
 			IsPingAvailable:    dbClient.IsPingAvailable,
 			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolPricing:        dbClient.ToolPricing,
 		}
 	}
 	return &schemas.MCPConfig{
 		ClientConfigs:     clientConfigs,
-		ToolManagerConfig: tableConfig.ToolManagerConfig,
-		ToolSyncInterval:  time.Duration(globalToolSyncInterval) * time.Minute,
-	}
+		ToolManagerConfig: &toolManagerConfig,
+	}, nil
 }
+
 
 // GetMCPClientByID retrieves an MCP client by ID from the database.
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
@@ -839,10 +848,10 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 }
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
-func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
+func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// Create a deep copy to avoid modifying the original
-		clientConfigCopy, err := deepCopy(clientConfig)
+		clientConfigCopy, err := deepCopy(*clientConfig)
 		if err != nil {
 			return err
 		}
@@ -870,7 +879,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
-func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig tables.TableMCPClient) error {
+func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient

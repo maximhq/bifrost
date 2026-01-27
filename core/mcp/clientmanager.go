@@ -72,8 +72,8 @@ func (m *MCPManager) ReconnectClient(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during client addition or connection
-func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
-	if err := validateMCPClientConfig(&config); err != nil {
+func (m *MCPManager) AddClient(config *schemas.MCPClientConfig) error {
+	if err := validateMCPClientConfig(config); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
@@ -89,10 +89,13 @@ func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
 
 	// Create placeholder entry
 	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name:               config.Name,
-		ExecutionConfig:    config,
-		ToolMap:            make(map[string]schemas.ChatTool),
-		ToolNameMapping:    make(map[string]string),
+		Name:            config.Name,
+		ExecutionConfig: config,
+		ToolMap:         make(map[string]schemas.ChatTool),
+		ToolNameMapping: make(map[string]string),
+		ConnectionInfo: &schemas.MCPClientConnectionInfo{
+			Type: config.ConnectionType,
+		},
 	}
 
 	// Temporarily unlock for the connection attempt
@@ -119,8 +122,8 @@ func (m *MCPManager) AddClient(config schemas.MCPClientConfig) error {
 //
 // Returns:
 //   - error: Any error that occurred during client addition or connection
-func (m *MCPManager) AddClientInMemory(config schemas.MCPClientConfig) error {
-	if err := validateMCPClientConfig(&config); err != nil {
+func (m *MCPManager) AddClientInMemory(config *schemas.MCPClientConfig) error {
+	if err := validateMCPClientConfig(config); err != nil {
 		return fmt.Errorf("invalid MCP client configuration: %w", err)
 	}
 
@@ -136,10 +139,13 @@ func (m *MCPManager) AddClientInMemory(config schemas.MCPClientConfig) error {
 
 	// Create placeholder entry
 	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name:               config.Name,
-		ExecutionConfig:    config,
-		ToolMap:            make(map[string]schemas.ChatTool),
-		ToolNameMapping:    make(map[string]string),
+		Name:            config.Name,
+		ExecutionConfig: config,
+		ToolMap:         make(map[string]schemas.ChatTool),
+		ToolNameMapping: make(map[string]string),
+		ConnectionInfo: &schemas.MCPClientConnectionInfo{
+			Type: config.ConnectionType,
+		},
 	}
 
 	// Temporarily unlock for the connection attempt
@@ -228,7 +234,7 @@ func (m *MCPManager) removeClientUnsafe(id string) error {
 //
 // Returns:
 //   - error: Any error that occurred during client update or tool retrieval
-func (m *MCPManager) EditClient(id string, updatedConfig schemas.MCPClientConfig) error {
+func (m *MCPManager) EditClient(id string, updatedConfig *schemas.MCPClientConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -424,7 +430,7 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 
 // connectToMCPClient establishes a connection to an external MCP server and
 // registers its available tools with the manager.
-func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
+func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	// First lock: Initialize or validate client entry
 	m.mu.Lock()
 
@@ -443,11 +449,11 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 	}
 	// Create new client entry with configuration
 	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name:               config.Name,
-		ExecutionConfig:    config,
-		ToolMap:            make(map[string]schemas.ChatTool),
-		ToolNameMapping:    make(map[string]string),
-		ConnectionInfo: schemas.MCPClientConnectionInfo{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		ToolMap:         make(map[string]schemas.ChatTool),
+		ToolNameMapping: make(map[string]string),
+		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: config.ConnectionType,
 		},
 	}
@@ -455,7 +461,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 	// Heavy operations performed outside lock
 	var externalClient *client.Client
-	var connectionInfo schemas.MCPClientConnectionInfo
+	var connectionInfo *schemas.MCPClientConnectionInfo
 	var err error
 
 	// Create appropriate transport based on connection type
@@ -559,7 +565,6 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 	// Second lock: Update client with final connection details and tools
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Verify client still exists (could have been cleaned up during heavy operations)
 	if client, exists := m.clientMap[config.ID]; exists {
@@ -584,6 +589,8 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		logger.Debug("%s [%s] Registering %d tools. Client config - ID: %s, Name: %s, IsCodeModeClient: %v", MCPLogPrefix, config.Name, len(tools), config.ID, config.Name, config.IsCodeModeClient)
 		logger.Info("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name)
 	} else {
+		// Release lock before cleanup and return
+		m.mu.Unlock()
 		// Clean up resources before returning error: client was removed during connection setup
 		// Cancel long-lived context if it was created
 		if (config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO) && cancel != nil {
@@ -597,6 +604,10 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		}
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}
+
+	// Release lock BEFORE starting monitors to prevent deadlock
+	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
+	m.mu.Unlock()
 
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
@@ -628,37 +639,32 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 }
 
 // createHTTPConnection creates an HTTP-based MCP client connection without holding locks.
-func (m *MCPManager) createHTTPConnection(ctx context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.ConnectionString == nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("HTTP connection string is required")
+		return nil, nil, fmt.Errorf("HTTP connection string is required")
 	}
-
 	// Prepare connection info
-	connectionInfo := schemas.MCPClientConnectionInfo{
+	connectionInfo := &schemas.MCPClientConnectionInfo{
 		Type:          config.ConnectionType,
 		ConnectionURL: config.ConnectionString.GetValuePtr(),
 	}
-
 	headers, err := config.HttpHeaders(ctx, m.oauth2Provider)
 	if err != nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to get HTTP headers: %w", err)
+		return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 	}
-
 	// Create StreamableHTTP transport
 	httpTransport, err := transport.NewStreamableHTTP(config.ConnectionString.GetValue(), transport.WithHTTPHeaders(headers))
 	if err != nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to create HTTP transport: %w", err)
+		return nil, nil, fmt.Errorf("failed to create HTTP transport: %w", err)
 	}
-
 	client := client.NewClient(httpTransport)
-
 	return client, connectionInfo, nil
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.
-func (m *MCPManager) createSTDIOConnection(_ context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.StdioConfig == nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("stdio config is required")
+		return nil, nil, fmt.Errorf("stdio config is required")
 	}
 
 	// Prepare STDIO command info for display
@@ -667,7 +673,7 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config schemas.MCP
 	// Check if environment variables are set
 	for _, env := range config.StdioConfig.Envs {
 		if os.Getenv(env) == "" {
-			return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("environment variable %s is not set for MCP client %s", env, config.Name)
+			return nil, nil, fmt.Errorf("environment variable %s is not set for MCP client %s", env, config.Name)
 		}
 	}
 
@@ -679,7 +685,7 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config schemas.MCP
 	)
 
 	// Prepare connection info
-	connectionInfo := schemas.MCPClientConnectionInfo{
+	connectionInfo := &schemas.MCPClientConnectionInfo{
 		Type:               config.ConnectionType,
 		StdioCommandString: &cmdString,
 	}
@@ -691,26 +697,26 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config schemas.MCP
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.
-func (m *MCPManager) createSSEConnection(ctx context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createSSEConnection(ctx context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.ConnectionString == nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("SSE connection string is required")
+		return nil, nil, fmt.Errorf("SSE connection string is required")
 	}
 
 	// Prepare connection info
-	connectionInfo := schemas.MCPClientConnectionInfo{
+	connectionInfo := &schemas.MCPClientConnectionInfo{
 		Type:          config.ConnectionType,
 		ConnectionURL: config.ConnectionString.GetValuePtr(), // Reuse HTTPConnectionURL field for SSE URL display
 	}
 
 	headers, err := config.HttpHeaders(ctx, m.oauth2Provider)
 	if err != nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to get HTTP headers: %w", err)
+		return nil, nil, fmt.Errorf("failed to get HTTP headers: %w", err)
 	}
 
 	// Create SSE transport
 	sseTransport, err := transport.NewSSE(config.ConnectionString.GetValue(), transport.WithHeaders(headers))
 	if err != nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to create SSE transport: %w", err)
+		return nil, nil, fmt.Errorf("failed to create SSE transport: %w", err)
 	}
 
 	client := client.NewClient(sseTransport)
@@ -721,19 +727,19 @@ func (m *MCPManager) createSSEConnection(ctx context.Context, config schemas.MCP
 // createInProcessConnection creates an in-process MCP client connection without holding locks.
 // This allows direct connection to an MCP server running in the same process, providing
 // the lowest latency and highest performance for tool execution.
-func (m *MCPManager) createInProcessConnection(_ context.Context, config schemas.MCPClientConfig) (*client.Client, schemas.MCPClientConnectionInfo, error) {
+func (m *MCPManager) createInProcessConnection(_ context.Context, config *schemas.MCPClientConfig) (*client.Client, *schemas.MCPClientConnectionInfo, error) {
 	if config.InProcessServer == nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("InProcess connection requires a server instance")
+		return nil, nil, fmt.Errorf("InProcess connection requires a server instance")
 	}
 
 	// Create in-process client directly connected to the provided server
 	inProcessClient, err := client.NewInProcessClient(config.InProcessServer)
 	if err != nil {
-		return nil, schemas.MCPClientConnectionInfo{}, fmt.Errorf("failed to create in-process client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create in-process client: %w", err)
 	}
 
 	// Prepare connection info
-	connectionInfo := schemas.MCPClientConnectionInfo{
+	connectionInfo := &schemas.MCPClientConnectionInfo{
 		Type: config.ConnectionType,
 	}
 
@@ -816,14 +822,14 @@ func (m *MCPManager) createLocalMCPClient() (*schemas.MCPClientState, error) {
 	// Don't create the actual client connection here - it will be created
 	// after the server is ready using NewInProcessClient
 	return &schemas.MCPClientState{
-		ExecutionConfig: schemas.MCPClientConfig{
+		ExecutionConfig: &schemas.MCPClientConfig{
 			ID:             BifrostMCPClientKey,
 			Name:           BifrostMCPClientKey, // Use same value as ID for consistent prefixing
 			ToolsToExecute: []string{"*"},       // Allow all tools for internal client
 		},
 		ToolMap:         make(map[string]schemas.ChatTool),
 		ToolNameMapping: make(map[string]string),
-		ConnectionInfo: schemas.MCPClientConnectionInfo{
+		ConnectionInfo: &schemas.MCPClientConnectionInfo{
 			Type: schemas.MCPConnectionTypeInProcess, // Accurate: in-process (in-memory) transport
 		},
 	}, nil

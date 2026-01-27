@@ -23,9 +23,15 @@ func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(c
 
 	logger := &testLogger{t: t}
 
+	// Convert to pointer slice for MCPConfig
+	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
+	for i := range clientConfigs {
+		clientConfigPtrs[i] = &clientConfigs[i]
+	}
+
 	// Create MCP config with request ID function
 	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs:         clientConfigs,
+		ClientConfigs:         clientConfigPtrs,
 		FetchNewRequestIDFunc: fetchNewRequestIDFunc,
 	}
 

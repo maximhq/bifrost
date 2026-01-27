@@ -51,8 +51,9 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		}
 
 		// Call complete-oauth endpoint using RTK Query mutation
+		// Use oauthConfigId instead of mcpClientId for multi-instance support
 		try {
-			await completeOAuth(mcpClientId).unwrap()
+			await completeOAuth(oauthConfigId).unwrap()
 			setStatus("success")
 			onSuccess()
 			setTimeout(() => {
@@ -64,7 +65,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			setErrorMessage(errMsg)
 			onError(errMsg)
 		}
-	}, [mcpClientId, completeOAuth, onSuccess, onClose, onError])
+	}, [oauthConfigId, completeOAuth, onSuccess, onClose, onError])
 
 	// Handle OAuth failure
 	const handleOAuthFailed = useCallback((reason: string) => {

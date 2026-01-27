@@ -25,11 +25,11 @@ func TestAddClientDuplicate(t *testing.T) {
 
 	// Add client
 	clientConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
-	err := manager.AddClient(clientConfig)
+	err := manager.AddClient(&clientConfig)
 	require.NoError(t, err, "should add client first time")
 
 	// Try to add same client again
-	err = manager.AddClient(clientConfig)
+	err = manager.AddClient(&clientConfig)
 	// Should either return error or be idempotent
 	if err == nil {
 		clients := manager.GetClients()
@@ -183,7 +183,7 @@ func TestEditClient(t *testing.T) {
 	updatedConfig.Name = "UpdatedName"
 	updatedConfig.ToolsToExecute = []string{"calculator", "echo"}
 
-	err := manager.EditClient(clientID, updatedConfig)
+	err := manager.EditClient(clientID, &updatedConfig)
 	require.NoError(t, err, "should edit client")
 
 	// Verify changes
@@ -199,7 +199,7 @@ func TestEditClientInvalidID(t *testing.T) {
 
 	// Try to edit non-existent client
 	clientConfig := GetSampleHTTPClientConfig("http://example.com")
-	err := manager.EditClient("non-existent-id", clientConfig)
+	err := manager.EditClient("non-existent-id", &clientConfig)
 	assert.Error(t, err, "should error when editing non-existent client")
 }
 
@@ -225,7 +225,7 @@ func TestEditClientInvalidConfig(t *testing.T) {
 		// Missing ConnectionString
 	}
 
-	err := manager.EditClient(clientID, invalidConfig)
+	err := manager.EditClient(clientID, &invalidConfig)
 	// Should return error or leave client unchanged
 	if err == nil {
 		clients = manager.GetClients()
@@ -257,7 +257,7 @@ func TestEditClientChangeConnectionType(t *testing.T) {
 	updatedConfig := clientConfig
 	updatedConfig.ConnectionType = schemas.MCPConnectionTypeSSE
 
-	err := manager.EditClient(clientID, updatedConfig)
+	err := manager.EditClient(clientID, &updatedConfig)
 	assert.Error(t, err, "should not allow connection type change")
 	clients = manager.GetClients()
 	if len(clients) > 0 {
@@ -428,7 +428,7 @@ func TestConcurrentClientOperations(t *testing.T) {
 			clientConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
 			clientConfig.ID = string(rune('a'+id)) + "-concurrent-client"
 
-			err := manager.AddClient(clientConfig)
+			err := manager.AddClient(&clientConfig)
 			if err != nil {
 				errors <- err
 			}

@@ -50,7 +50,7 @@ func TestHealthCheckSTDIOServerDropAndRecoverIn20Seconds(t *testing.T) {
 	t.Logf("✅ Health monitor detected server drop")
 
 	// 5. Restart STDIO process (re-add client)
-	err = manager.AddClient(clientConfig)
+	err = manager.AddClient(&clientConfig)
 	require.NoError(t, err, "should re-add client to simulate server recovery")
 	t.Logf("🔄 Simulated STDIO server recovery by re-adding client")
 
@@ -181,7 +181,7 @@ func TestHealthCheckStateTransitions(t *testing.T) {
 	assert.Len(t, clients, 0, "client should be removed")
 
 	// Re-add client (simulates reconnection)
-	err = manager.AddClient(clientConfig)
+	err = manager.AddClient(&clientConfig)
 	require.NoError(t, err, "should re-add client")
 
 	// Verify client is connected again
@@ -392,7 +392,7 @@ func TestHealthCheckReconnectAfterFailure(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Re-add client (manual reconnection)
-	err = manager.AddClient(clientConfig)
+	err = manager.AddClient(&clientConfig)
 	require.NoError(t, err, "should re-add client")
 
 	// Wait for health monitoring to stabilize

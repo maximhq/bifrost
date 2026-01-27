@@ -350,7 +350,7 @@ import (
 type MockConfigStore struct {
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
-	mcpConfig        *tables.MCPConfig
+	mcpConfig        *schemas.MCPConfig
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
@@ -361,7 +361,7 @@ type MockConfigStore struct {
 	// Track update calls for verification
 	clientConfigUpdated    bool
 	providersConfigUpdated bool
-	mcpConfigsCreated      []schemas.MCPClientConfig
+	mcpConfigsCreated      []*schemas.MCPClientConfig
 	mcpClientConfigUpdates []struct {
 		ID     string
 		Config tables.TableMCPClient
@@ -438,7 +438,7 @@ func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.M
 }
 
 // MCP config
-func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*tables.MCPConfig, error) {
+func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	return m.mcpConfig, nil
 }
 
@@ -446,25 +446,8 @@ func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
-	if m.mcpConfig == nil {
-		m.mcpConfig = &tables.MCPConfig{
-			ClientConfigs: []tables.TableMCPClient{},
-		}
-	}
-	// Convert schemas.MCPClientConfig to tables.TableMCPClient
-	tableClient := tables.TableMCPClient{
-		ClientID:           clientConfig.ID,
-		Name:               clientConfig.Name,
-		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     string(clientConfig.ConnectionType),
-		ConnectionString:   clientConfig.ConnectionString,
-		StdioConfig:        clientConfig.StdioConfig,
-		ToolsToExecute:     clientConfig.ToolsToExecute,
-		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
-		Headers:            clientConfig.Headers,
-	}
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, tableClient)
+func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
+	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)
 	return nil
 }
@@ -480,20 +463,20 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 
 	// Initialize m.mcpConfig if nil (same pattern as CreateMCPClientConfig)
 	if m.mcpConfig == nil {
-		m.mcpConfig = &tables.MCPConfig{
-			ClientConfigs: []tables.TableMCPClient{},
+		m.mcpConfig = &schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{},
 		}
 	}
 
 	// Update the in-memory state to ensure GetMCPConfig returns updated data
 	for i := range m.mcpConfig.ClientConfigs {
-		if m.mcpConfig.ClientConfigs[i].ClientID == id {
+		if m.mcpConfig.ClientConfigs[i].ID == id {
 			// Found the entry, update it with the new config
-			m.mcpConfig.ClientConfigs[i] = tables.TableMCPClient{
-				ClientID:           clientConfig.ClientID,
+			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
+				ID:                 clientConfig.ClientID,
 				Name:               clientConfig.Name,
 				IsCodeModeClient:   clientConfig.IsCodeModeClient,
-				ConnectionType:     clientConfig.ConnectionType,
+				ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
 				ConnectionString:   clientConfig.ConnectionString,
 				StdioConfig:        clientConfig.StdioConfig,
 				Headers:            clientConfig.Headers,
@@ -504,11 +487,11 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, tables.TableMCPClient{
-		ClientID:           clientConfig.ClientID,
+	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
+		ID:                 clientConfig.ClientID,
 		Name:               clientConfig.Name,
 		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     clientConfig.ConnectionType,
+		ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
 		ConnectionString:   clientConfig.ConnectionString,
 		StdioConfig:        clientConfig.StdioConfig,
 		Headers:            clientConfig.Headers,
@@ -1431,7 +1414,7 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 func TestLoadConfig_MCP_Merge(t *testing.T) {
 	// Setup DB MCP config
 	dbMCPConfig := &schemas.MCPConfig{
-		ClientConfigs: []schemas.MCPClientConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1",
 				Name:           "db-client-1",
@@ -1447,7 +1430,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 
 	// Setup file MCP config with some overlapping and some new
 	fileMCPConfig := &schemas.MCPConfig{
-		ClientConfigs: []schemas.MCPClientConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1", // Same ID - should be skipped
 				Name:           "different-name",
@@ -1467,7 +1450,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 
 	// Simulate merge logic
-	clientConfigsToAdd := make([]schemas.MCPClientConfig, 0)
+	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
 	for _, newClientConfig := range fileMCPConfig.ClientConfigs {
 		found := false
 		for _, existingClientConfig := range dbMCPConfig.ClientConfigs {
@@ -9001,7 +8984,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 		Name:           "test-mcp-client",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client: %v", err)
 	}
@@ -9090,7 +9073,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		Name:           "mcp-client-1",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig1)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig1)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 1: %v", err)
 	}
@@ -9100,7 +9083,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		Name:           "mcp-client-2",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig2)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig2)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 2: %v", err)
 	}
@@ -9412,7 +9395,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 		Name:           "mcp-client-1",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClient1Config)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClient1Config)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 1: %v", err)
 	}
@@ -9422,7 +9405,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 		Name:           "mcp-client-2",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClient2Config)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClient2Config)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 2: %v", err)
 	}
@@ -9577,8 +9560,8 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 
 	// Create MCP clients
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-1", Name: "mcp-1", ConnectionType: schemas.MCPConnectionTypeHTTP})
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-2", Name: "mcp-2", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-1", Name: "mcp-1", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-2", Name: "mcp-2", ConnectionType: schemas.MCPConnectionTypeHTTP})
 
 	mcpClient1, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-1")
 	mcpClient2, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-2")
@@ -9699,7 +9682,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	}
 
 	// Create MCP client
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
 	// Create VK with MCP config
@@ -9793,7 +9776,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	}
 
 	// Create MCP client
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
 	config1.ConfigStore.Close(ctx)

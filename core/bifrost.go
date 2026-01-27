@@ -186,6 +186,12 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		logger:         config.Logger,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
+	if config.LLMPlugins == nil {
+		config.LLMPlugins = make([]schemas.LLMPlugin, 0)
+	}
+	if config.MCPPlugins == nil {
+		config.MCPPlugins = make([]schemas.MCPPlugin, 0)
+	}
 	bifrost.llmPlugins.Store(&config.LLMPlugins)
 	bifrost.mcpPlugins.Store(&config.MCPPlugins)
 
@@ -338,21 +344,6 @@ func (bifrost *Bifrost) getTracer() schemas.Tracer {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
-
-	// Update LLM plugins atomically
-	if config.LLMPlugins != nil {
-		llmPluginsCopy := make([]schemas.LLMPlugin, len(config.LLMPlugins))
-		copy(llmPluginsCopy, config.LLMPlugins)
-		bifrost.llmPlugins.Store(&llmPluginsCopy)
-	}
-
-	// Update MCP plugins atomically
-	if config.MCPPlugins != nil {
-		mcpPluginsCopy := make([]schemas.MCPPlugin, len(config.MCPPlugins))
-		copy(mcpPluginsCopy, config.MCPPlugins)
-		bifrost.mcpPlugins.Store(&mcpPluginsCopy)
-	}
-
 	return nil
 }
 
@@ -2116,14 +2107,22 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 }
 
 // RemovePlugin removes a plugin from the server.
-func (bifrost *Bifrost) RemovePlugin(name string, pluginType schemas.PluginType) error {
-	switch pluginType {
-	case schemas.PluginTypeLLM:
-		return bifrost.removeLLMPlugin(name)
-	case schemas.PluginTypeMCP:
-		return bifrost.removeMCPPlugin(name)
+func (bifrost *Bifrost) RemovePlugin(name string, pluginTypes []schemas.PluginType) error {
+	for _, pluginType := range pluginTypes {
+		switch pluginType {
+		case schemas.PluginTypeLLM:
+			err := bifrost.removeLLMPlugin(name)
+			if err != nil {
+				return err
+			}
+		case schemas.PluginTypeMCP:
+			err := bifrost.removeMCPPlugin(name)
+			if err != nil {
+				return err
+			}
+		}
 	}
-	return fmt.Errorf("unsupported plugin type: %v", pluginType)
+	return nil
 }
 
 // removeLLMPlugin removes an LLM plugin from the server.
@@ -2200,22 +2199,30 @@ func (bifrost *Bifrost) removeMCPPlugin(name string) error {
 
 // ReloadPlugin reloads a plugin with new instance
 // During the reload - it's stop the world phase where we take a global lock on the plugin mutex
-func (bifrost *Bifrost) ReloadPlugin(plugin schemas.BasePlugin, pluginType schemas.PluginType) error {
-	switch pluginType {
-	case schemas.PluginTypeLLM:
-		llmPlugin, ok := plugin.(schemas.LLMPlugin)
-		if !ok {
-			return fmt.Errorf("plugin %s is not an LLMPlugin", plugin.GetName())
+func (bifrost *Bifrost) ReloadPlugin(plugin schemas.BasePlugin, pluginTypes []schemas.PluginType) error {
+	for _, pluginType := range pluginTypes {
+		switch pluginType {
+		case schemas.PluginTypeLLM:
+			llmPlugin, ok := plugin.(schemas.LLMPlugin)
+			if !ok {
+				return fmt.Errorf("plugin %s is not an LLMPlugin", plugin.GetName())
+			}
+			err := bifrost.reloadLLMPlugin(llmPlugin)
+			if err != nil {
+				return err
+			}
+		case schemas.PluginTypeMCP:
+			mcpPlugin, ok := plugin.(schemas.MCPPlugin)
+			if !ok {
+				return fmt.Errorf("plugin %s is not an MCPPlugin", plugin.GetName())
+			}
+			err := bifrost.reloadMCPPlugin(mcpPlugin)
+			if err != nil {
+				return err
+			}
 		}
-		return bifrost.reloadLLMPlugin(llmPlugin)
-	case schemas.PluginTypeMCP:
-		mcpPlugin, ok := plugin.(schemas.MCPPlugin)
-		if !ok {
-			return fmt.Errorf("plugin %s is not an MCPPlugin", plugin.GetName())
-		}
-		return bifrost.reloadMCPPlugin(mcpPlugin)
 	}
-	return fmt.Errorf("unsupported plugin type: %v", pluginType)
+	return nil
 }
 
 // reloadLLMPlugin reloads an LLM plugin with new instance
@@ -2736,13 +2743,13 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx context.Context) []schemas.Chat
 //	    ConnectionType: schemas.MCPConnectionTypeHTTP,
 //	    ConnectionString: &url,
 //	})
-func (bifrost *Bifrost) AddMCPClient(config schemas.MCPClientConfig) error {
+func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 	if bifrost.mcpManager == nil {
 		// Use sync.Once to ensure thread-safe initialization
 		bifrost.mcpInitOnce.Do(func() {
 			// Initialize with empty config - client will be added via AddClient below
 			mcpConfig := schemas.MCPConfig{
-				ClientConfigs: []schemas.MCPClientConfig{},
+				ClientConfigs: []*schemas.MCPClientConfig{},
 			}
 			// Set up plugin pipeline provider functions for executeCode tool hooks
 			mcpConfig.PluginPipelineProvider = func() interface{} {
@@ -2800,7 +2807,7 @@ func (bifrost *Bifrost) SetMCPManager(manager *mcp.MCPManager) {
 	bifrost.mcpManager = manager
 }
 
-// EditMCPClient edits the tools of an MCP client.
+// UpdateMCPClient updates the MCP client.
 // This allows for dynamic MCP client tool management at runtime.
 //
 // Parameters:
@@ -2812,11 +2819,11 @@ func (bifrost *Bifrost) SetMCPManager(manager *mcp.MCPManager) {
 //
 // Example:
 //
-//	err := bifrost.EditMCPClient("my-mcp-client-id", schemas.MCPClientConfig{
+//	err := bifrost.UpdateMCPClient("my-mcp-client-id", schemas.MCPClientConfig{
 //	    Name:           "my-mcp-client-name",
 //	    ToolsToExecute: []string{"tool1", "tool2"},
 //	})
-func (bifrost *Bifrost) EditMCPClient(id string, updatedConfig schemas.MCPClientConfig) error {
+func (bifrost *Bifrost) EditMCPClient(id string, updatedConfig *schemas.MCPClientConfig) error {
 	if bifrost.mcpManager == nil {
 		return fmt.Errorf("MCP is not configured in this Bifrost instance")
 	}

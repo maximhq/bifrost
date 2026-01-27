@@ -223,17 +223,23 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)
 }
 
-// StorePendingMCPClient stores an MCP client config in OAuth provider memory while waiting for OAuth completion
-func (h *OAuthHandler) StorePendingMCPClient(mcpClientID string, mcpClientConfig schemas.MCPClientConfig) {
-	h.oauthProvider.StorePendingMCPClient(mcpClientID, mcpClientConfig)
+// StorePendingMCPClient stores an MCP client config in the database while waiting for OAuth completion
+// This supports multi-instance deployments where OAuth callback may hit a different server instance
+func (h *OAuthHandler) StorePendingMCPClient(oauthConfigID string, mcpClientConfig schemas.MCPClientConfig) error {
+	return h.oauthProvider.StorePendingMCPClient(oauthConfigID, mcpClientConfig)
 }
 
-// GetPendingMCPClient retrieves a pending MCP client config by mcp_client_id
-func (h *OAuthHandler) GetPendingMCPClient(mcpClientID string) *schemas.MCPClientConfig {
-	return h.oauthProvider.GetPendingMCPClient(mcpClientID)
+// GetPendingMCPClient retrieves a pending MCP client config by oauth_config_id
+func (h *OAuthHandler) GetPendingMCPClient(oauthConfigID string) (*schemas.MCPClientConfig, error) {
+	return h.oauthProvider.GetPendingMCPClient(oauthConfigID)
+}
+
+// GetPendingMCPClientByState retrieves a pending MCP client config by OAuth state token
+func (h *OAuthHandler) GetPendingMCPClientByState(state string) (*schemas.MCPClientConfig, string, error) {
+	return h.oauthProvider.GetPendingMCPClientByState(state)
 }
 
 // RemovePendingMCPClient removes a pending MCP client after OAuth completion
-func (h *OAuthHandler) RemovePendingMCPClient(mcpClientID string) {
-	h.oauthProvider.RemovePendingMCPClient(mcpClientID)
+func (h *OAuthHandler) RemovePendingMCPClient(oauthConfigID string) error {
+	return h.oauthProvider.RemovePendingMCPClient(oauthConfigID)
 }

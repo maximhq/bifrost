@@ -47,33 +47,43 @@ var enterprisePlugins = []string{
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
+	// Plugins callbacks
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
-	GetModelsForProvider(provider schemas.ModelProvider) []string
+	// Auth related callbacks
 	UpdateAuthConfig(ctx context.Context, authConfig *configstore.AuthConfig) error
 	ReloadClientConfigFromConfigStore(ctx context.Context) error
+	// Pricing related callbacks
 	ReloadPricingManager(ctx context.Context) error
 	ForceReloadPricing(ctx context.Context) error
+	// Proxy related callbacks
 	ReloadProxyConfig(ctx context.Context, config *tables.GlobalProxyConfig) error
+	// Client config related callbacks
 	ReloadHeaderFilterConfig(ctx context.Context, config *tables.GlobalHeaderFilterConfig) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
-	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
+	// Governance related callbacks
+	GetGovernanceData() *governance.GovernanceData
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
 	RemoveCustomer(ctx context.Context, id string) error
+	// Virtual key related callbacks
 	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	RemoveVirtualKey(ctx context.Context, id string) error
+	// Provider related callbacks
+	GetModelsForProvider(provider schemas.ModelProvider) []string
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
-	GetGovernanceData() *governance.GovernanceData
-	ReconnectMCPClient(ctx context.Context, id string) error
-	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
+	// MCP related callbacks
+	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
-	EditMCPClient(ctx context.Context, id string, updatedConfig tables.TableMCPClient) error
+	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
+	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
+	ReconnectMCPClient(ctx context.Context, id string) error
+	// Logging related callbacks
 	NewLogEntryAdded(ctx context.Context, logEntry *logstore.Log) error
 }
 
@@ -139,7 +149,7 @@ func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProv
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
-func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
+func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	if err := s.Config.AddMCPClient(ctx, clientConfig); err != nil {
 		return err
 	}
@@ -149,9 +159,36 @@ func (s *BifrostHTTPServer) AddMCPClient(ctx context.Context, clientConfig schem
 	return nil
 }
 
-// EditMCPClient edits an MCP client in the in-memory store
-func (s *BifrostHTTPServer) EditMCPClient(ctx context.Context, id string, updatedConfig tables.TableMCPClient) error {
-	if err := s.Config.EditMCPClient(ctx, id, updatedConfig); err != nil {
+// ReconnectMCPClient reconnects an MCP client to the in-memory store
+func (s *BifrostHTTPServer) ReconnectMCPClient(ctx context.Context, id string) error {
+	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
+	if clients, err := s.Client.GetMCPClients(); err == nil && len(clients) > 0 {
+		for _, client := range clients {
+			if client.Config.ID == id {
+				if err := s.Client.ReconnectMCPClient(id); err != nil {
+					return err
+				}
+				return nil
+			}
+		}
+	}
+	// Config exists in store, but not in Bifrost (can happen if client initialization failed)
+	clientConfig, err := s.Config.GetMCPClient(id)
+	if err != nil {
+		return err
+	}
+	if err := s.Client.AddMCPClient(clientConfig); err != nil {
+		return err
+	}
+	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
+		logger.Warn("failed to sync MCP servers after adding client: %v", err)
+	}
+	return nil
+}
+
+// UpdateMCPClient updates an MCP client in the in-memory store
+func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error {
+	if err := s.Config.UpdateMCPClient(ctx, id, updatedConfig); err != nil {
 		return err
 	}
 	if err := s.MCPServerHandler.SyncAllMCPServers(ctx); err != nil {
@@ -502,7 +539,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 		account := lib.NewBaseAccount(s.Config)
 		var mcpConfig *schemas.MCPConfig
 		if s.Config.MCPConfig != nil {
-			mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
+			mcpConfig = s.Config.MCPConfig
 		}
 		s.Client.ReloadConfig(schemas.BifrostConfig{
 			Account:            account,
@@ -564,28 +601,9 @@ func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxA
 	return s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel)
 }
 
-// reloadBifrostPlugins syncs Config plugins to Bifrost client
-func (s *BifrostHTTPServer) reloadBifrostPlugins() error {
-	account := lib.NewBaseAccount(s.Config)
-	var mcpConfig *schemas.MCPConfig
-	if s.Config.MCPConfig != nil {
-		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(s.Config.MCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
-	}
-
-	return s.Client.ReloadConfig(schemas.BifrostConfig{
-		Account:            account,
-		InitialPoolSize:    s.Config.ClientConfig.InitialPoolSize,
-		DropExcessRequests: s.Config.ClientConfig.DropExcessRequests,
-		LLMPlugins:         s.Config.GetLoadedLLMPlugins(),
-		MCPPlugins:         s.Config.GetLoadedMCPPlugins(),
-		MCPConfig:          mcpConfig,
-		Logger:             logger,
-	})
-}
-
 // reloadObservabilityPlugins reloads all observability plugins in the tracing middleware
 func (s *BifrostHTTPServer) reloadObservabilityPlugins() {
-	observabilityPlugins := s.collectObservabilityPlugins()
+	observabilityPlugins := s.CollectObservabilityPlugins()
 	// Always update the tracing middleware, even with empty slice, to clear stale plugins
 	s.TracingMiddleware.SetObservabilityPlugins(observabilityPlugins)
 }
@@ -651,48 +669,48 @@ func (s *BifrostHTTPServer) GetPluginStatus(ctx context.Context) map[string]sche
 	return s.Config.GetPluginStatus()
 }
 
+// Helper to update error status
+func (s *BifrostHTTPServer) updatePluginErrorStatus(name, step string, err error) error {
+	if err := s.Config.UpdatePluginStatus(name, schemas.PluginStatusError); err != nil {
+		return err
+	}
+	if err := s.Config.AppendPluginStateLogs(name, []string{fmt.Sprintf("error %s plugin %s: %v", step, name, err)}); err != nil {
+		return err
+	}
+	return err
+}
+
+// SyncLoadedPlugin syncs a loaded plugin to the Bifrost client and updates the plugin status
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin) error {
+	// 2. Register (replaces old version atomically)
+	if err := s.Config.ReloadPlugin(plugin); err != nil {
+		return s.updatePluginErrorStatus(plugin.GetName(), "registering", err)
+	}
+	// 3. Update Bifrost client
+	if err := s.Client.ReloadPlugin(plugin, InferPluginTypes(plugin)); err != nil {
+		return s.updatePluginErrorStatus(plugin.GetName(), "reloading bifrost config for", err)
+	}
+	// 4. Special handling for observability plugins
+	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
+		s.reloadObservabilityPlugins()
+	}
+	// 5. Update plugin status
+	s.Config.UpdatePluginOverallStatus(plugin.GetName(), name, schemas.PluginStatusActive,
+		[]string{fmt.Sprintf("plugin %s reloaded successfully", name)}, InferPluginTypes(plugin))
+	return nil
+}
+
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // The plugin is checked for LLM and MCP interfaces independently and registered
 // to the appropriate arrays based on which interfaces it implements.
 func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
 	logger.Debug("reloading plugin %s", name)
-
-	// Helper to update error status
-	updateError := func(step string, err error) error {
-		if err := s.Config.UpdatePluginStatus(name, schemas.PluginStatusError); err != nil {
-			return err
-		}
-		if err := s.Config.AppendPluginStateLogs(name, []string{fmt.Sprintf("error %s plugin %s: %v", step, name, err)}); err != nil {
-			return err
-		}
-		return err
-	}
-
 	// 1. Instantiate new version
 	plugin, err := InstantiatePlugin(ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
-		return updateError("loading", err)
+		return s.updatePluginErrorStatus(name, "loading", err)
 	}
-
-	// 2. Register (replaces old version atomically)
-	if err := s.Config.RegisterPlugin(plugin); err != nil {
-		return updateError("registering", err)
-	}
-
-	// 3. Update Bifrost client
-	if err := s.reloadBifrostPlugins(); err != nil {
-		return updateError("reloading bifrost config for", err)
-	}
-
-	// 4. Special handling for observability plugins
-	if _, ok := plugin.(schemas.ObservabilityPlugin); ok {
-		s.reloadObservabilityPlugins()
-	}
-
-	// 5. Update plugin status
-	s.Config.UpdatePluginOverallStatus(plugin.GetName(), name, schemas.PluginStatusActive,
-		[]string{fmt.Sprintf("plugin %s reloaded successfully", name)}, getPluginTypes(plugin))
-	return nil
+	return s.SyncLoadedPlugin(ctx, name, plugin)
 }
 
 // RemovePlugin removes a plugin from the server.
@@ -706,7 +724,9 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 
 	// Check if plugin implements ObservabilityPlugin before removal
 	var isObservability bool
-	if plugin, err := s.Config.FindPluginByName(name); err == nil {
+	var err error
+	var plugin schemas.BasePlugin
+	if plugin, err = s.Config.FindPluginByName(name); err == nil {
 		_, isObservability = plugin.(schemas.ObservabilityPlugin)
 	}
 
@@ -716,7 +736,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	}
 
 	// 2. Update Bifrost client
-	if err := s.reloadBifrostPlugins(); err != nil {
+	if err := s.Client.RemovePlugin(name, InferPluginTypes(plugin)); err != nil {
 		logger.Warn("failed to reload bifrost config after plugin removal: %v", err)
 	}
 
@@ -958,14 +978,14 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 	// Load all plugins
-	if err := s.InstantiatePlugins(ctx); err != nil {
+	if err := s.LoadPlugins(ctx); err != nil {
 		return fmt.Errorf("failed to instantiate plugins: %v", err)
 	}
 
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
-		mcpConfig = configstore.ConvertTableMCPConfigToSchemas(tableMCPConfig, s.Config.ClientConfig.MCPToolSyncInterval)
+		mcpConfig = s.Config.MCPConfig
 		if mcpConfig != nil {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()
@@ -1033,7 +1053,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Registering inference middlewares
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
 	// Curating observability plugins
-	observabilityPlugins := s.collectObservabilityPlugins()
+	observabilityPlugins := s.CollectObservabilityPlugins()
 	// This enables the central streaming accumulator for both use cases
 	// Initializing tracer with embedded streaming accumulator
 	traceStore := tracing.NewTraceStore(60*time.Minute, logger)

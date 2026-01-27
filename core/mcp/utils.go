@@ -202,7 +202,10 @@ func shouldIncludeClient(clientName string, includeClients []string) bool {
 }
 
 // shouldSkipToolForConfig checks if a tool should be skipped based on client configuration (without accessing clientMap).
-func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bool {
+func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) bool {
+	if config == nil {
+		return true // No tools allowed
+	}
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
@@ -229,7 +232,7 @@ func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bo
 
 // canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
 // Returns true if the tool can be auto-executed, false otherwise.
-func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
+func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// First check if tool is in ToolsToExecute (must be executable first)
 	if shouldSkipToolForConfig(toolName, config) {
 		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed

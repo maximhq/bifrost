@@ -163,7 +163,7 @@ func TestConcurrent_AddRemoveClients(t *testing.T) {
 				ToolsToAutoExecute: []string{},
 			}
 
-			err := manager.AddClient(clientConfig)
+			err := manager.AddClient(&clientConfig)
 			if err != nil {
 				// InProcess connections without a server instance will fail
 				// This is expected - we're just testing that the operations are concurrent and don't deadlock

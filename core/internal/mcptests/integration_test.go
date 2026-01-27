@@ -34,7 +34,7 @@ func TestIntegration_FullChatWorkflow(t *testing.T) {
 		httpConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
 		httpConfig.ID = "http-integration-test"
 		applyTestConfigHeaders(t, &httpConfig)
-		err := manager.AddClient(httpConfig)
+		err := manager.AddClient(&httpConfig)
 		if err != nil {
 			t.Logf("Could not add HTTP client: %v", err)
 		}
@@ -341,7 +341,7 @@ func TestIntegration_ReconnectDuringExecution(t *testing.T) {
 	httpConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
 	httpConfig.ID = "reconnect-test-client"
 	applyTestConfigHeaders(t, &httpConfig)
-	err := manager.AddClient(httpConfig)
+	err := manager.AddClient(&httpConfig)
 	require.NoError(t, err, "should add HTTP client")
 
 	// Wait for client to connect

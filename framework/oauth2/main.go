@@ -20,19 +20,11 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// PendingMCPClient represents an MCP client waiting for OAuth completion
-type PendingMCPClient struct {
-	MCPClientConfig schemas.MCPClientConfig
-	OauthConfigID   string
-	CreatedAt       time.Time
-}
-
 // OAuth2Provider implements the schemas.OAuth2Provider interface
 // It provides OAuth 2.0 authentication functionality with database persistence
 type OAuth2Provider struct {
-	configStore       configstore.ConfigStore
-	mu                sync.RWMutex
-	pendingMCPClients map[string]*PendingMCPClient // Key: mcp_client_id
+	configStore configstore.ConfigStore
+	mu          sync.RWMutex
 }
 
 // NewOAuth2Provider creates a new OAuth provider instance
@@ -41,15 +33,9 @@ func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logge
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
 	SetLogger(logger)
-	p := &OAuth2Provider{
-		configStore:       configStore,
-		pendingMCPClients: make(map[string]*PendingMCPClient),
+	return &OAuth2Provider{
+		configStore: configStore,
 	}
-
-	// Start background cleanup goroutine for expired pending clients
-	go p.cleanupExpiredPendingClients()
-
-	return p
 }
 
 // GetAccessToken retrieves the access token for a given oauth_config_id
@@ -213,53 +199,115 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 }
 
 // StorePendingMCPClient stores an MCP client config that's waiting for OAuth completion
-func (p *OAuth2Provider) StorePendingMCPClient(mcpClientID string, mcpClientConfig schemas.MCPClientConfig) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	oauthConfigID := ""
-	if mcpClientConfig.OauthConfigID != nil {
-		oauthConfigID = *mcpClientConfig.OauthConfigID
-	}
-	p.pendingMCPClients[mcpClientID] = &PendingMCPClient{
-		MCPClientConfig: mcpClientConfig,
-		OauthConfigID:   oauthConfigID,
-		CreatedAt:       time.Now(),
-	}
-}
+// The config is persisted in the database (oauth_configs.mcp_client_config_json) to support
+// multi-instance deployments where OAuth callback may hit a different server instance.
+func (p *OAuth2Provider) StorePendingMCPClient(oauthConfigID string, mcpClientConfig schemas.MCPClientConfig) error {
+	ctx := context.Background()
 
-// GetPendingMCPClient retrieves an MCP client config by mcp_client_id
-func (p *OAuth2Provider) GetPendingMCPClient(mcpClientID string) *schemas.MCPClientConfig {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if pending, exists := p.pendingMCPClients[mcpClientID]; exists {
-		return &pending.MCPClientConfig
+	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return fmt.Errorf("failed to get oauth config: %w", err)
 	}
+	if oauthConfig == nil {
+		return fmt.Errorf("oauth config not found: %s", oauthConfigID)
+	}
+
+	configJSON, err := json.Marshal(mcpClientConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal MCP client config: %w", err)
+	}
+	configStr := string(configJSON)
+	oauthConfig.MCPClientConfigJSON = &configStr
+
+	if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
+		return fmt.Errorf("failed to update oauth config with MCP client config: %w", err)
+	}
+
+	logger.Debug("Stored pending MCP client config", "oauth_config_id", oauthConfigID)
 	return nil
 }
 
-// RemovePendingMCPClient removes a pending MCP client after OAuth completion
-func (p *OAuth2Provider) RemovePendingMCPClient(mcpClientID string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.pendingMCPClients, mcpClientID)
+// GetPendingMCPClient retrieves an MCP client config by oauth_config_id
+// Returns nil if no pending config is found or if the oauth config has expired
+func (p *OAuth2Provider) GetPendingMCPClient(oauthConfigID string) (*schemas.MCPClientConfig, error) {
+	ctx := context.Background()
+
+	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		return nil, nil
+	}
+
+	// Check if expired
+	if time.Now().After(oauthConfig.ExpiresAt) {
+		return nil, nil
+	}
+
+	if oauthConfig.MCPClientConfigJSON == nil || *oauthConfig.MCPClientConfigJSON == "" {
+		return nil, nil
+	}
+
+	var config schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(*oauthConfig.MCPClientConfigJSON), &config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal MCP client config: %w", err)
+	}
+
+	return &config, nil
 }
 
-// cleanupExpiredPendingClients removes pending MCP clients older than 5 minutes
-func (p *OAuth2Provider) cleanupExpiredPendingClients() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+// GetPendingMCPClientByState retrieves an MCP client config by OAuth state token
+// This is useful when the callback only has the state parameter
+func (p *OAuth2Provider) GetPendingMCPClientByState(state string) (*schemas.MCPClientConfig, string, error) {
+	ctx := context.Background()
 
-	for range ticker.C {
-		p.mu.Lock()
-		now := time.Now()
-		for mcpClientID, pending := range p.pendingMCPClients {
-			if now.Sub(pending.CreatedAt) > 5*time.Minute {
-				delete(p.pendingMCPClients, mcpClientID)
-				logger.Debug("Cleaned up expired pending MCP client", "mcp_client_id", mcpClientID)
-			}
-		}
-		p.mu.Unlock()
+	oauthConfig, err := p.configStore.GetOauthConfigByState(ctx, state)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get oauth config by state: %w", err)
 	}
+	if oauthConfig == nil {
+		return nil, "", nil
+	}
+
+	// Check if expired
+	if time.Now().After(oauthConfig.ExpiresAt) {
+		return nil, "", nil
+	}
+
+	if oauthConfig.MCPClientConfigJSON == nil || *oauthConfig.MCPClientConfigJSON == "" {
+		return nil, oauthConfig.ID, nil
+	}
+
+	var config schemas.MCPClientConfig
+	if err := json.Unmarshal([]byte(*oauthConfig.MCPClientConfigJSON), &config); err != nil {
+		return nil, oauthConfig.ID, fmt.Errorf("failed to unmarshal MCP client config: %w", err)
+	}
+
+	return &config, oauthConfig.ID, nil
+}
+
+// RemovePendingMCPClient clears the pending MCP client config from the oauth config
+// This is called after OAuth completion to clean up
+func (p *OAuth2Provider) RemovePendingMCPClient(oauthConfigID string) error {
+	ctx := context.Background()
+
+	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return fmt.Errorf("failed to get oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		return nil // Already removed or doesn't exist
+	}
+
+	oauthConfig.MCPClientConfigJSON = nil
+
+	if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
+		return fmt.Errorf("failed to clear pending MCP client config: %w", err)
+	}
+
+	logger.Debug("Removed pending MCP client config", "oauth_config_id", oauthConfigID)
+	return nil
 }
 
 // InitiateOAuthFlow creates an OAuth config and returns the authorization URL

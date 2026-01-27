@@ -437,7 +437,7 @@ func TestConcurrent_EditClientDuringExecution(t *testing.T) {
 		// Edit client - update name (must not contain spaces)
 		updatedConfig := clientConfig
 		updatedConfig.Name = "UpdatedClientName"
-		err := manager.EditClient(clientConfig.ID, updatedConfig)
+		err := manager.EditClient(clientConfig.ID, &updatedConfig)
 		if err != nil {
 			errors <- fmt.Errorf("failed to edit client: %v", err)
 		} else {

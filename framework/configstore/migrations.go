@@ -170,6 +170,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddToolSyncIntervalColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPClientConfigToOAuthConfig(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3102,6 +3105,40 @@ func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running tool sync interval migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientConfigToOAuthConfig adds the mcp_client_config_json column to oauth_configs table
+// This enables multi-instance support by storing pending MCP client config in the database
+// instead of in-memory, so OAuth callbacks can be handled by any server instance
+func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_config_to_oauth_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				if err := migrator.AddColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				if err := migrator.DropColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running mcp client config oauth migration: %s", err.Error())
 	}
 	return nil
 }

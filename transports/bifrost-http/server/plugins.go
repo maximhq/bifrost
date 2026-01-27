@@ -17,10 +17,9 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 )
 
-// getPluginTypes determines which interface types a plugin implements
-func getPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
+// InferPluginTypes determines which interface types a plugin implements
+func InferPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	var types []schemas.PluginType
-
 	if _, ok := plugin.(schemas.LLMPlugin); ok {
 		types = append(types, schemas.PluginTypeLLM)
 	}
@@ -30,7 +29,6 @@ func getPluginTypes(plugin schemas.BasePlugin) []schemas.PluginType {
 	if _, ok := plugin.(schemas.HTTPTransportPlugin); ok {
 		types = append(types, schemas.PluginTypeHTTP)
 	}
-
 	return types
 }
 
@@ -122,17 +120,16 @@ func loadCustomPlugin(ctx context.Context, path *string, pluginConfig any, bifro
 
 // InstantiatePlugins loads all plugins from configuration
 // This is called once during Bootstrap
-func (s *BifrostHTTPServer) InstantiatePlugins(ctx context.Context) error {
+
+func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	// Load built-in plugins first (order matters)
 	if err := s.loadBuiltinPlugins(ctx); err != nil {
 		return err
 	}
-
 	// Load custom plugins from config
 	if err := s.loadCustomPlugins(ctx); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -173,7 +170,6 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 		if isBuiltinPlugin(cfg.Name) {
 			continue
 		}
-
 		// Handle disabled plugins
 		if !cfg.Enabled {
 			// For custom plugins with a path, verify to get the real plugin name
@@ -218,9 +214,9 @@ func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 		}
 
 		// Register enabled plugin and mark as active
-		s.Config.RegisterPlugin(plugin)
+		s.Config.ReloadPlugin(plugin)
 		s.Config.UpdatePluginOverallStatus(plugin.GetName(), cfg.Name, schemas.PluginStatusActive,
-			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, getPluginTypes(plugin))
+			[]string{fmt.Sprintf("plugin %s initialized successfully", cfg.Name)}, InferPluginTypes(plugin))
 	}
 	return nil
 }
