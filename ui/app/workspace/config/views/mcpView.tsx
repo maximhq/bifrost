@@ -20,10 +20,12 @@ export default function MCPView() {
 		mcp_agent_depth: string;
 		mcp_tool_execution_timeout: string;
 		mcp_code_mode_binding_level: string;
+		mcp_tool_sync_interval: string;
 	}>({
 		mcp_agent_depth: "10",
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
+		mcp_tool_sync_interval: "10",
 	});
 
 	useEffect(() => {
@@ -33,6 +35,7 @@ export default function MCPView() {
 				mcp_agent_depth: config?.mcp_agent_depth?.toString() || "10",
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
 				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
+				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
 			});
 		}
 	}, [config, bifrostConfig]);
@@ -42,7 +45,8 @@ export default function MCPView() {
 		return (
 			localConfig.mcp_agent_depth !== config.mcp_agent_depth ||
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
-			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server")
+			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
+			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10)
 		);
 	}, [config, localConfig]);
 
@@ -66,6 +70,14 @@ export default function MCPView() {
 		setLocalValues((prev) => ({ ...prev, mcp_code_mode_binding_level: value }));
 		if (value === "server" || value === "tool") {
 			setLocalConfig((prev) => ({ ...prev, mcp_code_mode_binding_level: value }));
+		}
+	}, []);
+
+	const handleToolSyncIntervalChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_tool_sync_interval: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_tool_sync_interval: numValue }));
 		}
 	}, []);
 
@@ -140,6 +152,26 @@ export default function MCPView() {
 						value={localValues.mcp_tool_execution_timeout}
 						onChange={(e) => handleToolExecutionTimeoutChange(e.target.value)}
 						min="1"
+					/>
+				</div>
+
+				{/* Tool Sync Interval */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-tool-sync-interval" className="text-sm font-medium">
+							Tool Sync Interval (minutes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							How often to refresh tool lists from MCP servers. Set to 0 to disable.
+						</p>
+					</div>
+					<Input
+						id="mcp-tool-sync-interval"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_tool_sync_interval}
+						onChange={(e) => handleToolSyncIntervalChange(e.target.value)}
+						min="0"
 					/>
 				</div>
 

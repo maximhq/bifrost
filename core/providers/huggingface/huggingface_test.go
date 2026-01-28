@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -15,13 +15,13 @@ func TestHuggingface(t *testing.T) {
 		t.Skip("Skipping HuggingFace tests because HUGGING_FACE_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.HuggingFace,
 		ChatModel:            "sambanova/meta-llama/Llama-3.1-8B-Instruct",
 		VisionModel:          "cohere/CohereLabs/aya-vision-32b",
@@ -33,7 +33,7 @@ func TestHuggingface(t *testing.T) {
 		},
 		ReasoningModel:       "groq/openai/gpt-oss-120b",
 		ImageGenerationModel: "fal-ai/fal-ai/flux/dev",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
 			SimpleChat:            true,
@@ -72,7 +72,7 @@ func TestHuggingface(t *testing.T) {
 	}
 
 	t.Run("HuggingFaceTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

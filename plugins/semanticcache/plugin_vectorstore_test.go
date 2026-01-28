@@ -100,7 +100,7 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 			t.Logf("[%s] Testing first request (cache miss)...", tc.Name)
 
 			// First request - should be a cache miss
-			modifiedReq, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+			modifiedReq, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 			if err != nil {
 				t.Fatalf("[%s] PreHook failed: %v", tc.Name, err)
 			}
@@ -141,7 +141,7 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 
 			// Cache the response
 			t.Logf("[%s] Caching response...", tc.Name)
-			_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+			_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 			if err != nil {
 				t.Fatalf("[%s] PostHook failed: %v", tc.Name, err)
 			}
@@ -156,7 +156,7 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 			ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx2.SetValue(CacheKey, "test-"+strings.ToLower(tc.Name)+"-basic")
 
-			_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request)
+			_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 			if err != nil {
 				t.Fatalf("[%s] Second PreHook failed: %v", tc.Name, err)
 			}
@@ -306,7 +306,7 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 
 			t.Logf("[%s] Testing first request with temperature=0.7...", tc.Name)
 
-			_, shortCircuit1, err := setup.Plugin.PreHook(ctx, request1)
+			_, shortCircuit1, err := setup.Plugin.PreLLMHook(ctx, request1)
 			if err != nil {
 				t.Fatalf("[%s] First PreHook failed: %v", tc.Name, err)
 			}
@@ -338,7 +338,7 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 				},
 			}
 
-			_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+			_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 			if err != nil {
 				t.Fatalf("[%s] PostHook failed: %v", tc.Name, err)
 			}
@@ -372,7 +372,7 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 				},
 			}
 
-			_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request2)
+			_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request2)
 			if err != nil {
 				t.Fatalf("[%s] Second PreHook failed: %v", tc.Name, err)
 			}

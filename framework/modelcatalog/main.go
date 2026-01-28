@@ -82,7 +82,7 @@ type PricingEntry struct {
 	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
 	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
 	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`	
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced
@@ -91,7 +91,7 @@ type PricingEntry struct {
 // syncPricing function will be called if this function returns true
 type ShouldSyncPricingFunc func(ctx context.Context) bool
 
-// Init initializes the pricing manager
+// Init initializes the model catalog
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, shouldSyncPricingFunc ShouldSyncPricingFunc, logger schemas.Logger) (*ModelCatalog, error) {
 	// Initialize pricing URL and sync interval
 	pricingURL := DefaultPricingURL
@@ -115,7 +115,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
 
-	logger.Info("initializing pricing manager...")
+	logger.Info("initializing model catalog...")
 	if configStore != nil {
 		if mc.distributedLockManager == nil {
 			if err := mc.loadPricingFromDatabase(ctx); err != nil {
@@ -160,7 +160,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	return mc, nil
 }
 
-// ReloadPricing reloads the pricing manager from config
+// ReloadPricing reloads the model catalog from config
 func (mc *ModelCatalog) ReloadPricing(ctx context.Context, config *Config) error {
 	// Acquire pricing mutex to update configuration atomically
 	mc.pricingMu.Lock()

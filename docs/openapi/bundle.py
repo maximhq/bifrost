@@ -410,6 +410,11 @@ def main():
         default=2,
         help="Indentation level for output (default: 2)",
     )
+    parser.add_argument(
+        "--inline",
+        action="store_true",
+        help="Replace the input file with resolved specification (for Mintlify compatibility)",
+    )
 
     args = parser.parse_args()
 
@@ -427,12 +432,11 @@ def main():
             if not validate_spec(spec):
                 sys.exit(1)
 
-        # Write output
-        output_path = base_path / args.output
-        with open(output_path, "w", encoding="utf-8") as f:
-            if args.format == "json":
-                json.dump(spec, f, indent=args.indent, ensure_ascii=False)
-            else:
+        # Handle inline replacement for Mintlify compatibility
+        if args.inline:
+            input_path = base_path / args.input
+            # When inlining, update the original YAML file
+            with open(input_path, "w", encoding="utf-8") as f:
                 yaml.dump(
                     spec,
                     f,
@@ -440,8 +444,29 @@ def main():
                     allow_unicode=True,
                     sort_keys=False,
                 )
+            print(f"✓ Updated original file with resolved references: {input_path}")
 
-        print(f"✓ Bundled specification written to: {output_path}")
+            # Also create the JSON output for reference
+            output_path = base_path / args.output
+            with open(output_path, "w", encoding="utf-8") as f:
+                json.dump(spec, f, indent=args.indent, ensure_ascii=False)
+            print(f"✓ JSON bundled specification written to: {output_path}")
+        else:
+            # Write output
+            output_path = base_path / args.output
+            with open(output_path, "w", encoding="utf-8") as f:
+                if args.format == "json":
+                    json.dump(spec, f, indent=args.indent, ensure_ascii=False)
+                else:
+                    yaml.dump(
+                        spec,
+                        f,
+                        default_flow_style=False,
+                        allow_unicode=True,
+                        sort_keys=False,
+                    )
+
+            print(f"✓ Bundled specification written to: {output_path}")
 
         # Print some stats
         paths_count = len(spec.get("paths", {}))

@@ -567,13 +567,13 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Add pricing data to the response
-	if len(resp.Data) > 0 && h.config.PricingManager != nil {
+	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
+			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
 			if pricingEntry == nil && modelEntry.Deployment != nil {
 				// Retry with deployment
-				pricingEntry = h.config.PricingManager.GetPricingEntryForModel(*modelEntry.Deployment, provider)
+				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Deployment, provider)
 			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
 				pricing := &schemas.Pricing{

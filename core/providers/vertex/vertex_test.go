@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,13 +16,13 @@ func TestVertex(t *testing.T) {
 		t.Skip("Skipping Vertex tests because VERTEX_API_KEY is not set and VERTEX_PROJECT_ID or VERTEX_CREDENTIALS is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Vertex,
 		ChatModel:            "google/gemini-2.0-flash-001",
 		VisionModel:          "claude-sonnet-4-5",
@@ -30,7 +30,7 @@ func TestVertex(t *testing.T) {
 		EmbeddingModel:       "text-multilingual-embedding-002",
 		ReasoningModel:       "claude-4.5-haiku",
 		ImageGenerationModel: "gemini-2.5-flash-image",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -56,7 +56,7 @@ func TestVertex(t *testing.T) {
 	}
 
 	t.Run("VertexTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

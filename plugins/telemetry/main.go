@@ -25,7 +25,7 @@ const (
 	startTimeKey schemas.BifrostContextKey = "bf-prom-start-time"
 )
 
-// PrometheusPlugin implements the schemas.Plugin interface for Prometheus metrics.
+// PrometheusPlugin implements the schemas.LLMPlugin interface for Prometheus metrics.
 // It tracks metrics for upstream provider requests, including:
 //   - Total number of requests
 //   - Request latency
@@ -296,23 +296,23 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
-// PreHook records the start time of the request in the context.
-// This time is used later in PostHook to calculate request duration.
-func (p *PrometheusPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+// PreLLMHook records the start time of the request in the context.
+// This time is used later in PostLLMHook to calculate request duration.
+func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	return req, nil, nil
 }
 
-// PostHook calculates duration and records upstream metrics for successful requests.
+// PostLLMHook calculates duration and records upstream metrics for successful requests.
 // It records:
 //   - Request latency
 //   - Total request count
-func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
 	if !ok {
-		p.logger.Warn("Warning: startTime not found in context for Prometheus PostHook")
+		p.logger.Warn("Warning: startTime not found in context for Prometheus PostLLMHook")
 		return result, bifrostErr, nil
 	}
 

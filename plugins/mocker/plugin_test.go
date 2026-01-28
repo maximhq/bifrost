@@ -63,9 +63,9 @@ func TestMockerPlugin_Disabled(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -106,9 +106,9 @@ func TestMockerPlugin_DefaultMockRule(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -182,9 +182,9 @@ func TestMockerPlugin_CustomSuccessRule(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -261,9 +261,9 @@ func TestMockerPlugin_ErrorResponse(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -324,9 +324,9 @@ func TestMockerPlugin_MessageTemplate(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)
@@ -394,9 +394,9 @@ func TestMockerPlugin_Statistics(t *testing.T) {
 
 	account := BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: &account,
-		Plugins: []schemas.Plugin{plugin},
-		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		Account:    &account,
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost: %v", err)

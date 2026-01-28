@@ -622,7 +622,7 @@ export const mcpClientUpdateSchema = z.object({
 		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
 		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
 		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
-	headers: z.record(z.string(), envVarSchema).optional(),
+	headers: z.record(z.string(), envVarSchema).optional().nullable(),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -659,6 +659,8 @@ export const mcpClientUpdateSchema = z.object({
 			},
 			{ message: "Duplicate tool names are not allowed" },
 		),
+	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
 });
 
 // Global proxy type schema

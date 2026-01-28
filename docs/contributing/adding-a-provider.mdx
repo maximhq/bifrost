@@ -2084,7 +2084,7 @@ import (
     "os"
     "testing"
 
-    "github.com/maximhq/bifrost/core/internal/testutil"
+    "github.com/maximhq/bifrost/core/internal/llmtests"
     "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2097,20 +2097,20 @@ func TestProviderName(t *testing.T) {
     }
 
     // Initialize test client
-    client, ctx, cancel, err := testutil.SetupTest()
+    client, ctx, cancel, err := llmtests.SetupTest()
     if err != nil {
         t.Fatalf("Error initializing test setup: %v", err)
     }
     defer cancel()
 
     // Configure test scenarios
-    testConfig := testutil.ComprehensiveTestConfig{
+    testConfig := llmtests.ComprehensiveTestConfig{
         Provider:  schemas.ProviderName,
         ChatModel: "model-name",
         Fallbacks: []schemas.Fallback{
             {Provider: schemas.ProviderName, Model: "fallback-model"},
         },
-        Scenarios: testutil.TestScenarios{
+        Scenarios: llmtests.TestScenarios{
             SimpleChat:            true,
             CompletionStream:      true,
             ToolCalls:             true,
@@ -2123,7 +2123,7 @@ func TestProviderName(t *testing.T) {
 
     // Run all tests
     t.Run("ProviderNameTests", func(t *testing.T) {
-        testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+        llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
     })
     
     client.Shutdown()
@@ -2154,7 +2154,7 @@ export HUGGING_FACE_API_KEY="your-hf-token-here"
 
 ### Test Scenarios Configuration
 
-The `testutil.TestScenarios` struct defines which tests to run. Set each field based on provider capabilities:
+The `llmtests.TestScenarios` struct defines which tests to run. Set each field based on provider capabilities:
 
 #### Core Test Scenarios
 
@@ -2171,7 +2171,7 @@ The `testutil.TestScenarios` struct defines which tests to run. Set each field b
 | `ImageURL` | Provider accepts image URLs in messages |
 | `ImageBase64` | Provider accepts base64-encoded images |
 
-<Tip>For a complete list of all available test scenarios and their descriptions, check the `testutil.TestScenarios` struct in `core/internal/testutil/`.</Tip>
+<Tip>For a complete list of all available test scenarios and their descriptions, check the `llmtests.TestScenarios` struct in `core/internal/llmtests/`.</Tip>
 
 ---
 

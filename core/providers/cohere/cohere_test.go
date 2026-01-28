@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,20 +16,20 @@ func TestCohere(t *testing.T) {
 		t.Skip("Skipping Cohere tests because COHERE_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Cohere,
 		ChatModel:      "command-a-03-2025",
 		VisionModel:    "command-a-vision-07-2025", // Cohere's latest vision model
 		TextModel:      "",                         // Cohere focuses on chat
 		EmbeddingModel: "embed-v4.0",
 		ReasoningModel: "command-a-reasoning-08-2025",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not typical for Cohere
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -53,7 +53,7 @@ func TestCohere(t *testing.T) {
 	}
 
 	t.Run("CohereTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

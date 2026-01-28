@@ -241,7 +241,11 @@ export default function SecurityView() {
 								Enforce Virtual Keys
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
+								Enforce the use of a virtual key for all requests. If enabled, requests without the virtual key header will be rejected. See{" "}
+								<Link href="https://docs.getbifrost.ai/features/governance/virtual-keys" target="_blank" rel="noopener noreferrer" className="text-primary underline">
+									documentation
+								</Link>{" "}
+								for header details.
 							</p>
 						</div>
 						<Switch

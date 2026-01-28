@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,13 +16,13 @@ func TestCerebras(t *testing.T) {
 		t.Skip("Skipping Cerebras tests because CEREBRAS_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Cerebras,
 		ChatModel: "llama-3.3-70b",
 		Fallbacks: []schemas.Fallback{
@@ -32,7 +32,7 @@ func TestCerebras(t *testing.T) {
 		TextModel:      "llama3.1-8b",
 		EmbeddingModel: "", // Cerebras doesn't support embedding
 		ReasoningModel: "gpt-oss-120b",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
 			SimpleChat:            true,
@@ -54,7 +54,7 @@ func TestCerebras(t *testing.T) {
 	}
 
 	t.Run("CerebrasTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

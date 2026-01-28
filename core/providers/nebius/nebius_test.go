@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -15,13 +15,13 @@ func TestNebius(t *testing.T) {
 		t.Skip("Skipping Nebius tests because NEBIUS_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Nebius,
 		ChatModel: "openai/gpt-oss-120b",
 		TextModel: "openai/gpt-oss-120b",
@@ -30,7 +30,7 @@ func TestNebius(t *testing.T) {
 		},
 		EmbeddingModel:       "BAAI/bge-en-icl",
 		ImageGenerationModel: "black-forest-labs/flux-schnell",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
 			SimpleChat:            true,
@@ -53,7 +53,7 @@ func TestNebius(t *testing.T) {
 	}
 
 	t.Run("NebiusTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

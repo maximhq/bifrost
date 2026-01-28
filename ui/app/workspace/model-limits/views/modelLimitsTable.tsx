@@ -85,6 +85,7 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
+						<h1 className="text-lg font-semibold">Model Limits</h1>
 						<p className="text-muted-foreground text-sm">
 							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
 						</p>

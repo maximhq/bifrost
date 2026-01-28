@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 sidebarTitle: "Code Mode"
-description: "AI writes TypeScript to orchestrate tools. Reduces token usage by 50%+ when using multiple MCP servers."
+description: "AI writes Python to orchestrate tools. Reduces token usage by 50%+ when using multiple MCP servers."
 icon: "code"
 ---
 
@@ -15,7 +15,7 @@ This feature is only available on `v1.4.0-prerelease1` and above.
 
 > **The Problem:** When you connect 8-10 MCP servers (150+ tools), every single request includes all tool definitions in the context. The LLM spends most of its budget reading tool catalogs instead of doing actual work.
 
-**The Solution:** Instead of exposing 150 tools directly, Code Mode exposes just **three generic tools**. The LLM uses those three tools to write TypeScript code that orchestrates everything else in a sandbox.
+**The Solution:** Instead of exposing 150 tools directly, Code Mode exposes just **four generic tools**. The LLM uses those tools to write Python code (Starlark) that orchestrates everything else in a sandbox.
 
 ### The Impact
 
@@ -28,15 +28,16 @@ Compare a workflow across 5 MCP servers with ~100 tools:
 
 **Code Mode Flow:**
 - 3-4 LLM turns
-- Only 3 tools + definitions on-demand
+- Only 4 tools + definitions on-demand
 - Intermediate results processed in sandbox
 
 **Result: ~50% cost reduction + 30-40% faster execution**
 
-Code Mode provides three meta-tools to the AI:
+Code Mode provides four meta-tools to the AI:
 1. **`listToolFiles`** - Discover available MCP servers
-2. **`readToolFile`** - Load TypeScript definitions on-demand
-3. **`executeToolCode`** - Execute TypeScript code with full tool bindings
+2. **`readToolFile`** - Load Python stub signatures on-demand
+3. **`getToolDocs`** - Get detailed documentation for a specific tool
+4. **`executeToolCode`** - Execute Python code with full tool bindings
 
 ## When to Use Code Mode
 
@@ -57,31 +58,35 @@ Code Mode provides three meta-tools to the AI:
 
 ## How Code Mode Works
 
-### The Three Tools
+### The Four Tools
 
-Instead of seeing 150+ tool definitions, the model sees three generic tools:
+Instead of seeing 150+ tool definitions, the model sees four generic tools:
 
 ```mermaid
 graph LR
     LLM["<b>LLM Context</b><br/><i>Compact & Efficient</i>"]
 
     List["<b>listToolFiles</b><br/>Discover servers"]
-    Read["<b>readToolFile</b><br/>Load definitions"]
+    Read["<b>readToolFile</b><br/>Load signatures"]
+    Docs["<b>getToolDocs</b><br/>Get detailed docs"]
     Execute["<b>executeToolCode</b><br/>Run code with bindings"]
 
-    Hidden["<i>All other MCP servers<br/>hidden behind these 3 tools</i>"]
+    Hidden["<i>All other MCP servers<br/>hidden behind these 4 tools</i>"]
 
     LLM --> List
     LLM --> Read
+    LLM --> Docs
     LLM --> Execute
 
     List -.-> Hidden
     Read -.-> Hidden
+    Docs -.-> Hidden
     Execute -.-> Hidden
 
     style LLM fill:#E3F2FD,stroke:#0D47A1,stroke-width:2.5px,color:#1A1A1A
     style List fill:#E8F5E9,stroke:#1B5E20,stroke-width:2.5px,color:#1A1A1A
     style Read fill:#FFF3E0,stroke:#BF360C,stroke-width:2.5px,color:#1A1A1A
+    style Docs fill:#E1F5FE,stroke:#0288D1,stroke-width:2.5px,color:#1A1A1A
     style Execute fill:#F3E5F5,stroke:#4A148C,stroke-width:2.5px,color:#1A1A1A
     style Hidden fill:#EEEEEE,stroke:#424242,stroke-width:1.5px,stroke-dasharray: 5 5,color:#1A1A1A
 ```
@@ -96,7 +101,7 @@ graph LR
 
     GetDefs["<b>3. Load Definitions</b><br/>readToolFile()"]
 
-    Write["<b>4. Write Code</b><br/>TypeScript<br/>in sandbox"]
+    Write["<b>4. Write Code</b><br/>Python<br/>in sandbox"]
 
     Execute["<b>5. Execute</b><br/>Real MCP calls<br/>contained in VM"]
 
@@ -142,11 +147,11 @@ Total: 6 LLM calls, ~600+ tokens in tool definitions alone
 ### Code Mode with same 5 servers:
 
 ```
-Turn 1: Prompt + 3 tools (listToolFiles, readToolFile, executeToolCode)
-Turn 2: Prompt + server list + 3 tools
-Turn 3: Prompt + selected definitions + 3 tools + [EXECUTES CODE]
+Turn 1: Prompt + 4 tools (listToolFiles, readToolFile, getToolDocs, executeToolCode)
+Turn 2: Prompt + server list + 4 tools
+Turn 3: Prompt + selected definitions + 4 tools + [EXECUTES CODE]
         [YouTube search, channel list, videos, summaries, doc creation all happen in sandbox]
-Turn 4: Prompt + final result + 3 tools
+Turn 4: Prompt + final result + 4 tools
 
 Total: 3-4 LLM calls, ~50 tokens in tool definitions
 Result: 50% cost reduction, 3-4x fewer LLM round trips
@@ -156,7 +161,7 @@ Result: 50% cost reduction, 3-4x fewer LLM round trips
 
 ## Enabling Code Mode
 
-Code Mode must be enabled **per MCP client**. Once enabled, that client's tools are accessed through the three meta-tools rather than exposed directly.
+Code Mode must be enabled **per MCP client**. Once enabled, that client's tools are accessed through the four meta-tools rather than exposed directly.
 
 **Best practice:** Enable Code Mode for 3+ servers or any "heavy" server (web search, documents, databases).
 
@@ -267,80 +272,123 @@ mcpConfig := &schemas.MCPConfig{
 
 ---
 
-## The Three Code Mode Tools
+## The Four Code Mode Tools
 
-When Code Mode clients are connected, Bifrost automatically adds three meta-tools to every request:
+When Code Mode clients are connected, Bifrost automatically adds four meta-tools to every request:
 
 ### 1. listToolFiles
 
-Lists all available virtual `.d.ts` declaration files for connected code mode servers.
+Lists all available virtual `.pyi` stub files for connected code mode servers.
 
 **Example output (Server-level binding):**
 ```
 servers/
-  youtube.d.ts
-  filesystem.d.ts
+  youtube.pyi
+  filesystem.pyi
 ```
 
 **Example output (Tool-level binding):**
 ```
 servers/
   youtube/
-    search.d.ts
-    get_video.d.ts
+    search.pyi
+    get_video.pyi
   filesystem/
-    read_file.d.ts
-    write_file.d.ts
+    read_file.pyi
+    write_file.pyi
 ```
 
 ### 2. readToolFile
 
-Reads a virtual `.d.ts` file to get TypeScript type definitions for tools.
+Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 
 **Parameters:**
-- `fileName` (required): Path like `servers/youtube.d.ts` or `servers/youtube/search.d.ts`
+- `fileName` (required): Path like `servers/youtube.pyi` or `servers/youtube/search.pyi`
 - `startLine` (optional): 1-based starting line for partial reads
 - `endLine` (optional): 1-based ending line for partial reads
 
 **Example output:**
-```typescript
-// Type definitions for youtube MCP server
-// Usage: const result = await youtube.search({ query: "..." });
+```python
+# youtube server tools
+# Usage: youtube.tool_name(param=value)
+# For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
 
-interface SearchInput {
-  query: string;  // Search query (required)
-  maxResults?: number;  // Max results to return (optional)
-}
-
-interface SearchResponse {
-  [key: string]: any;
-}
-
-export async function search(input: SearchInput): Promise<SearchResponse>;
+def search(query: str, maxResults: int = None) -> dict:  # Search for videos
+def get_video(id: str) -> dict:  # Get video details
 ```
 
-### 3. executeToolCode
+### 3. getToolDocs
 
-Executes TypeScript code in a sandboxed VM with access to all code mode server tools.
+Get detailed documentation for a specific tool when the compact signature from `readToolFile` is not sufficient.
 
 **Parameters:**
-- `code` (required): TypeScript code to execute
+- `server` (required): The server name (e.g., `"youtube"`)
+- `tool` (required): The tool name (e.g., `"search"`)
+
+**Example output:**
+```python
+# ============================================================================
+# Documentation for youtube.search tool
+# ============================================================================
+#
+# USAGE INSTRUCTIONS:
+# Call tools using: result = youtube.tool_name(param=value)
+# No async/await needed - calls are synchronous.
+#
+# CRITICAL - HANDLING RESPONSES:
+# Tool responses are dicts. To avoid runtime errors:
+# 1. Use print(result) to inspect the response structure first
+# 2. Access dict values with brackets: result["key"] NOT result.key
+# 3. Use .get() for safe access: result.get("key", default)
+# ============================================================================
+
+def search(query: str, maxResults: int = None) -> dict:
+    """
+    Search for videos on YouTube.
+
+    Args:
+        query (str): Search query (required)
+        maxResults (int): Max results to return (optional)
+
+    Returns:
+        dict: Response from the tool. Structure varies by tool.
+              Use print(result) to inspect the actual structure.
+
+    Example:
+        result = youtube.search(query="...")
+        print(result)  # Always inspect response first!
+        value = result.get("key", default)  # Safe access
+    """
+    ...
+```
+
+### 4. executeToolCode
+
+Executes Python code in a sandboxed Starlark interpreter with access to all code mode server tools.
+
+**Parameters:**
+- `code` (required): Python code to execute
 
 **Execution Environment:**
-- TypeScript is transpiled to ES5-compatible JavaScript
+- Python code runs in a Starlark interpreter (Python subset)
 - All code mode servers are exposed as global objects (e.g., `youtube`, `filesystem`)
-- Each server has async functions for its tools (e.g., `youtube.search()`)
-- Console output (`log`, `error`, `warn`, `info`) is captured
-- Use `return` to return a value from the code
+- Tool calls are **synchronous** - no async/await needed
+- Use `print()` for logging (output captured in logs)
+- Assign to `result` variable to return a value
 - Tool execution timeout applies (default 30s)
 
+**Syntax notes:**
+- Use keyword arguments: `server.tool(param="value")` NOT `server.tool({"param": "value"})`
+- Access dict values with brackets: `result["key"]` NOT `result.key`
+- List comprehensions work: `[x for x in items if x["active"]]`
+
 **Example code:**
-```typescript
-// Search YouTube and return formatted results
-const results = await youtube.search({ query: "AI news", maxResults: 5 });
-const titles = results.items.map(item => item.snippet.title);
-console.log("Found", titles.length, "videos");
-return { titles, count: titles.length };
+```python
+# Search YouTube and return formatted results
+results = youtube.search(query="AI news", maxResults=5)
+titles = [item["snippet"]["title"] for item in results["items"]]
+print("Found", len(titles), "videos")
+result = {"titles": titles, "count": len(titles)}
 ```
 
 ---
@@ -351,12 +399,12 @@ Code Mode supports two binding levels that control how tools are organized in th
 
 ### Server-Level Binding (Default)
 
-All tools from a server are grouped into a single `.d.ts` file.
+All tools from a server are grouped into a single `.pyi` file.
 
 ```
 servers/
-  youtube.d.ts        ← Contains all youtube tools
-  filesystem.d.ts     ← Contains all filesystem tools
+  youtube.pyi        ← Contains all youtube tools
+  filesystem.pyi     ← Contains all filesystem tools
 ```
 
 **Best for:**
@@ -366,18 +414,18 @@ servers/
 
 ### Tool-Level Binding
 
-Each tool gets its own `.d.ts` file.
+Each tool gets its own `.pyi` file.
 
 ```
 servers/
   youtube/
-    search.d.ts
-    get_video.d.ts
-    get_channel.d.ts
+    search.pyi
+    get_video.pyi
+    get_channel.pyi
   filesystem/
-    read_file.d.ts
-    write_file.d.ts
-    list_directory.d.ts
+    read_file.pyi
+    write_file.pyi
+    list_directory.pyi
 ```
 
 **Best for:**
@@ -398,15 +446,15 @@ Binding level can be viewed in the MCP configuration overview:
   <img src="/media/ui-mcp-config.png" alt="MCP Gateway Configuration" />
 </Frame>
 
-- **Server-level (default)**: One `.d.ts` file per MCP server
+- **Server-level (default)**: One `.pyi` file per MCP server
   - Use when: 5-20 tools per server, want simple discovery
-  - Example: `servers/youtube.d.ts` contains all YouTube tools
+  - Example: `servers/youtube.pyi` contains all YouTube tools
 
-- **Tool-level**: One `.d.ts` file per individual tool
+- **Tool-level**: One `.pyi` file per individual tool
   - Use when: 30+ tools per server, want minimal context bloat
-  - Example: `servers/youtube/search.d.ts`, `servers/youtube/list_channels.d.ts`
+  - Example: `servers/youtube/search.pyi`, `servers/youtube/list_channels.pyi`
 
-Both modes use the same three-tool interface (`listToolFiles`, `readToolFile`, `executeToolCode`). The choice is purely about **context efficiency per read operation**.
+Both modes use the same four-tool interface (`listToolFiles`, `readToolFile`, `getToolDocs`, `executeToolCode`). The choice is purely about **context efficiency per read operation**.
 
 </Tab>
 <Tab title="config.json">
@@ -453,7 +501,7 @@ Code Mode tools can be auto-executed in [Agent Mode](./agent-mode), but with **a
 
 When `executeToolCode` is called in agent mode:
 
-1. Bifrost parses the TypeScript code
+1. Bifrost parses the Python code
 2. Extracts all `serverName.toolName()` calls
 3. Checks each call against `tools_to_auto_execute` for that server
 4. If ALL calls are allowed → auto-execute
@@ -469,13 +517,13 @@ When `executeToolCode` is called in agent mode:
 }
 ```
 
-```typescript
-// This code WILL auto-execute (only uses search)
-const results = await youtube.search({ query: "AI" });
-return results;
+```python
+# This code WILL auto-execute (only uses search)
+results = youtube.search(query="AI")
+result = results
 
-// This code will NOT auto-execute (uses delete_video which is not in auto-execute list)
-await youtube.delete_video({ id: "abc123" });
+# This code will NOT auto-execute (uses delete_video which is not in auto-execute list)
+youtube.delete_video(id="abc123")
 ```
 
 ---
@@ -486,45 +534,44 @@ await youtube.delete_video({ id: "abc123" });
 
 | Available | Not Available |
 |-----------|---------------|
-| `async/await` | `fetch`, `XMLHttpRequest` |
-| `Promise` | `setTimeout`, `setInterval` |
-| `console.log/error/warn/info` | `require`, `import` |
-| JSON operations | DOM APIs (`document`, `window`) |
-| String/Array/Object methods | Node.js APIs |
+| Python-like syntax | `import` statements |
+| Synchronous tool calls | Classes (use dicts) |
+| `print()` for logging | File I/O |
+| Dict/List operations | Network access |
+| List comprehensions | `random`, `time` modules |
 
 ### Runtime Environment Details
 
-**Engine:** Goja VM with ES5+ JavaScript compatibility
+**Engine:** Starlark interpreter (Python subset)
 
 **Tool Exposure:** Tools from code mode clients are exposed as global objects:
-```typescript
-// If you have a 'youtube' code mode client with a 'search' tool
-const results = await youtube.search({ query: "AI news" });
+```python
+# If you have a 'youtube' code mode client with a 'search' tool
+results = youtube.search(query="AI news")
 ```
 
 **Code Processing:**
-1. Import/export statements are stripped
-2. TypeScript is transpiled to JavaScript (ES5 compatible)
-3. Tool calls are extracted and validated
-4. Code executes in isolated VM context
-5. Return value is automatically serialized to JSON
+1. Code is validated for syntax errors
+2. Tool calls are extracted and validated
+3. Code executes in isolated Starlark context
+4. Result variable is automatically serialized to JSON
 
 **Execution Limits:**
 - Default timeout: 30 seconds per tool execution
 - Memory isolation: Each execution gets its own context
 - No access to host file system or network
-- Logs captured from console methods
+- Logs captured from print() calls
 
 ### Error Handling
 
 Bifrost provides detailed error messages with hints:
 
-```typescript
-// Error: youtube is not defined
-// Hints:
-// - Variable or identifier 'youtube' is not defined
-// - Available server keys: youtubeAPI, filesystem
-// - Use one of the available server keys as the object name
+```python
+# Error: youtube is not defined
+# Hints:
+# - Variable or identifier 'youtube' is not defined
+# - Available server keys: youtubeAPI, filesystem
+# - Use one of the available server keys as the object name
 ```
 
 ### Timeouts
@@ -566,7 +613,7 @@ Bifrost provides detailed error messages with hints:
 | Avg Total Cost | $1.20-1.80 |
 | Latency | 8-12 seconds |
 
-**Benefit:** Model writes one TypeScript script. All orchestration happens in sandbox. Only compact result returned to LLM.
+**Benefit:** Model writes one Python script. All orchestration happens in sandbox. Only compact result returned to LLM.
 
 ---
 

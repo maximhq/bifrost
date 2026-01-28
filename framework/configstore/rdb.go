@@ -55,6 +55,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPAgentDepth:           config.MCPAgentDepth,
 		MCPToolExecutionTimeout: config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:     config.MCPToolSyncInterval,
 		HeaderFilterConfig:      config.HeaderFilterConfig,
 		ConfigHash:              config.ConfigHash,
 	}
@@ -215,6 +216,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPAgentDepth:           dbConfig.MCPAgentDepth,
 		MCPToolExecutionTimeout: dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:     dbConfig.MCPToolSyncInterval,
 		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
 		ConfigHash:              dbConfig.ConfigHash,
 	}, nil
@@ -749,32 +751,37 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 // GetMCPConfig retrieves the MCP configuration from the database.
 func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	var dbMCPClients []tables.TableMCPClient
+	// Get all MCP clients
 	if err := s.db.WithContext(ctx).Find(&dbMCPClients).Error; err != nil {
 		return nil, err
 	}
 	if len(dbMCPClients) == 0 {
 		return nil, nil
 	}
-	clientConfigs := make([]schemas.MCPClientConfig, len(dbMCPClients))
-	for i, dbClient := range dbMCPClients {
-		clientConfigs[i] = schemas.MCPClientConfig{
-			ID:                 dbClient.ClientID,
-			Name:               dbClient.Name,
-			IsCodeModeClient:   dbClient.IsCodeModeClient,
-			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
-			ConnectionString:   dbClient.ConnectionString,
-			StdioConfig:        dbClient.StdioConfig,
-			ToolsToExecute:     dbClient.ToolsToExecute,
-			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
-			Headers:            dbClient.Headers,
-			IsPingAvailable:    dbClient.IsPingAvailable,
-		}
-	}
 	var clientConfig tables.TableClientConfig
 	if err := s.db.WithContext(ctx).First(&clientConfig).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return MCP config with default ToolManagerConfig if no client config exists
 			// This will never happen, but just in case.
+			clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
+			for i, dbClient := range dbMCPClients {
+				clientConfigs[i] = &schemas.MCPClientConfig{
+					ID:                 dbClient.ClientID,
+					Name:               dbClient.Name,
+					IsCodeModeClient:   dbClient.IsCodeModeClient,
+					ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+					ConnectionString:   dbClient.ConnectionString,
+					StdioConfig:        dbClient.StdioConfig,
+					AuthType:           schemas.MCPAuthType(dbClient.AuthType),
+					OauthConfigID:      dbClient.OauthConfigID,
+					ToolsToExecute:     dbClient.ToolsToExecute,
+					ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+					Headers:            dbClient.Headers,
+					IsPingAvailable:    dbClient.IsPingAvailable,
+					ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+					ToolPricing:        dbClient.ToolPricing,
+				}
+			}
 			return &schemas.MCPConfig{
 				ClientConfigs: clientConfigs,
 				ToolManagerConfig: &schemas.MCPToolManagerConfig{
@@ -790,10 +797,42 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		MaxAgentDepth:        clientConfig.MCPAgentDepth,
 		CodeModeBindingLevel: schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 	}
+	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
+	for i, dbClient := range dbMCPClients {
+		clientConfigs[i] = &schemas.MCPClientConfig{
+			ID:                 dbClient.ClientID,
+			Name:               dbClient.Name,
+			IsCodeModeClient:   dbClient.IsCodeModeClient,
+			ConnectionType:     schemas.MCPConnectionType(dbClient.ConnectionType),
+			ConnectionString:   dbClient.ConnectionString,
+			StdioConfig:        dbClient.StdioConfig,
+			AuthType:           schemas.MCPAuthType(dbClient.AuthType),
+			OauthConfigID:      dbClient.OauthConfigID,
+			ToolsToExecute:     dbClient.ToolsToExecute,
+			ToolsToAutoExecute: dbClient.ToolsToAutoExecute,
+			Headers:            dbClient.Headers,
+			IsPingAvailable:    dbClient.IsPingAvailable,
+			ToolSyncInterval:   time.Duration(dbClient.ToolSyncInterval) * time.Minute,
+			ToolPricing:        dbClient.ToolPricing,
+		}
+	}
 	return &schemas.MCPConfig{
 		ClientConfigs:     clientConfigs,
 		ToolManagerConfig: &toolManagerConfig,
 	}, nil
+}
+
+
+// GetMCPClientByID retrieves an MCP client by ID from the database.
+func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
+	var mcpClient tables.TableMCPClient
+	if err := s.db.WithContext(ctx).Where("client_id = ?", id).First(&mcpClient).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &mcpClient, nil
 }
 
 // GetMCPClientByName retrieves an MCP client by name from the database.
@@ -809,10 +848,10 @@ func (s *RDBConfigStore) GetMCPClientByName(ctx context.Context, name string) (*
 }
 
 // CreateMCPClientConfig creates a new MCP client configuration in the database.
-func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
+func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// Create a deep copy to avoid modifying the original
-		clientConfigCopy, err := deepCopy(clientConfig)
+		clientConfigCopy, err := deepCopy(*clientConfig)
 		if err != nil {
 			return err
 		}
@@ -824,10 +863,13 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			ConnectionType:     string(clientConfigCopy.ConnectionType),
 			ConnectionString:   clientConfigCopy.ConnectionString,
 			StdioConfig:        clientConfigCopy.StdioConfig,
+			AuthType:           string(clientConfigCopy.AuthType),
+			OauthConfigID:      clientConfigCopy.OauthConfigID,
 			ToolsToExecute:     clientConfigCopy.ToolsToExecute,
 			ToolsToAutoExecute: clientConfigCopy.ToolsToAutoExecute,
 			Headers:            clientConfigCopy.Headers,
 			IsPingAvailable:    clientConfigCopy.IsPingAvailable,
+			ToolSyncInterval:   int(clientConfigCopy.ToolSyncInterval.Minutes()),
 		}
 		if err := tx.WithContext(ctx).Create(&dbClient).Error; err != nil {
 			return s.parseGormError(err)
@@ -837,7 +879,7 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 }
 
 // UpdateMCPClientConfig updates an existing MCP client configuration in the database.
-func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error {
+func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// Find existing client
 		var existingClient tables.TableMCPClient
@@ -854,18 +896,57 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			return err
 		}
 
-		// Update existing client
-		existingClient.Name = clientConfigCopy.Name
-		existingClient.IsCodeModeClient = clientConfigCopy.IsCodeModeClient
-		existingClient.ToolsToExecute = clientConfigCopy.ToolsToExecute
-		existingClient.ToolsToAutoExecute = clientConfigCopy.ToolsToAutoExecute
-		existingClient.Headers = clientConfigCopy.Headers
-		existingClient.IsPingAvailable = clientConfigCopy.IsPingAvailable
+		// Serialize the virtual fields to JSON before updating
+		// This is normally done in BeforeSave hook, but we need to do it manually for map updates
+		// Normalize nil slices/maps to avoid storing JSON "null"
+		if clientConfigCopy.ToolsToExecute == nil {
+			clientConfigCopy.ToolsToExecute = []string{}
+		}
+		toolsToExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToExecute)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tools_to_execute: %w", err)
+		}
+		if clientConfigCopy.ToolsToAutoExecute == nil {
+			clientConfigCopy.ToolsToAutoExecute = []string{}
+		}
+		toolsToAutoExecuteJSON, err := json.Marshal(clientConfigCopy.ToolsToAutoExecute)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tools_to_auto_execute: %w", err)
+		}
+		if clientConfigCopy.Headers == nil {
+			clientConfigCopy.Headers = map[string]schemas.EnvVar{}
+		}
+		if clientConfigCopy.IsPingAvailable {
+			clientConfigCopy.IsPingAvailable = true
+		}
+		headersJSON, err := json.Marshal(clientConfigCopy.Headers)
+		if err != nil {
+			return fmt.Errorf("failed to marshal headers: %w", err)
+		}
 
-		// Use Select to explicitly include IsCodeModeClient even when it's false (zero value)
-		// GORM's Updates() skips zero values by default, so we need to explicitly select fields
-		// Using struct field names - GORM will convert them to column names automatically
-		if err := tx.WithContext(ctx).Select("name", "is_code_mode_client", "is_ping_available", "tools_to_execute_json", "tools_to_auto_execute_json", "headers_json", "updated_at").Updates(&existingClient).Error; err != nil {
+		if clientConfigCopy.ToolPricing == nil {
+			clientConfigCopy.ToolPricing = map[string]float64{}
+		}
+		toolPricingJSON, err := json.Marshal(clientConfigCopy.ToolPricing)
+		if err != nil {
+			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
+		}
+
+		// Update only editable fields using a map to avoid updating connection info
+		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
+		updates := map[string]interface{}{
+			"name":                       clientConfigCopy.Name,
+			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
+			"tools_to_execute_json":      string(toolsToExecuteJSON),
+			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
+			"headers_json":               string(headersJSON),
+			"tool_pricing_json":          string(toolPricingJSON),
+			"is_ping_available":          clientConfigCopy.IsPingAvailable,
+			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
+			"updated_at":                 time.Now(),
+		}
+
+		if err := tx.WithContext(ctx).Model(&existingClient).Updates(updates).Error; err != nil {
 			return s.parseGormError(err)
 		}
 		return nil
@@ -2639,4 +2720,116 @@ func (s *RDBConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey st
 	}
 
 	return result.RowsAffected > 0, nil
+}
+
+// ==================== OAuth Methods ====================
+
+// GetOauthConfigByID retrieves an OAuth config by its ID
+func (s *RDBConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config: %w", result.Error)
+	}
+	return &config, nil
+}
+
+// GetOauthConfigByState retrieves an OAuth config by its state token
+// State is unique per OAuth flow (used for CSRF protection on callback)
+func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("state = ?", state).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config by state: %w", result.Error)
+	}
+	return &config, nil
+}
+
+// GetOauthTokenByID retrieves an OAuth token by its ID
+func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
+	var token tables.TableOauthToken
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&token)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth token: %w", result.Error)
+	}
+	return &token, nil
+}
+
+// CreateOauthConfig creates a new OAuth config
+func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	result := s.db.WithContext(ctx).Create(config)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth config: %w", result.Error)
+	}
+	return nil
+}
+
+// CreateOauthToken creates a new OAuth token
+func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	result := s.db.WithContext(ctx).Create(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to create oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthConfig updates an existing OAuth config
+func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	result := s.db.WithContext(ctx).Save(config)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth config: %w", result.Error)
+	}
+	return nil
+}
+
+// UpdateOauthToken updates an existing OAuth token
+func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	result := s.db.WithContext(ctx).Save(token)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// DeleteOauthToken deletes an OAuth token by its ID
+func (s *RDBConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
+	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOauthToken{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete oauth token: %w", result.Error)
+	}
+	return nil
+}
+
+// GetExpiringOauthTokens retrieves tokens that are expiring before the given time
+func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+	var tokens []*tables.TableOauthToken
+	result := s.db.WithContext(ctx).
+		Where("expires_at < ?", before).
+		Find(&tokens)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
+	}
+	return tokens, nil
+}
+
+// GetOauthConfigByTokenID retrieves an OAuth config that references a specific token
+func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error) {
+	var config tables.TableOauthConfig
+	result := s.db.WithContext(ctx).Where("token_id = ?", tokenID).First(&config)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get oauth config by token id: %w", result.Error)
+	}
+	return &config, nil
 }

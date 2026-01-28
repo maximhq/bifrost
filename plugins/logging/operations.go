@@ -433,6 +433,41 @@ func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
 	})
 }
 
+// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
+func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair {
+	result, err := p.store.GetAvailableMCPVirtualKeys(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available virtual keys from MCP logs: %w", err)
+		return []KeyPair{}
+	}
+	return p.extractUniqueMCPKeyPairs(result, func(log *logstore.MCPToolLog) KeyPair {
+		if log.VirtualKeyID != nil && log.VirtualKeyName != nil {
+			return KeyPair{
+				ID:   *log.VirtualKeyID,
+				Name: *log.VirtualKeyName,
+			}
+		}
+		return KeyPair{}
+	})
+}
+
+// extractUniqueMCPKeyPairs extracts unique non-empty key pairs from MCP logs using the provided extractor function
+func (p *LoggerPlugin) extractUniqueMCPKeyPairs(logs []logstore.MCPToolLog, extractor func(*logstore.MCPToolLog) KeyPair) []KeyPair {
+	uniqueSet := make(map[string]KeyPair)
+	for i := range logs {
+		pair := extractor(&logs[i])
+		if pair.ID != "" && pair.Name != "" {
+			uniqueSet[pair.ID] = pair
+		}
+	}
+
+	result := make([]KeyPair, 0, len(uniqueSet))
+	for _, pair := range uniqueSet {
+		result = append(result, pair)
+	}
+	return result
+}
+
 // extractUniqueKeyPairs extracts unique non-empty key pairs from logs using the provided extractor function
 func (p *LoggerPlugin) extractUniqueKeyPairs(logs []*logstore.Log, extractor func(*logstore.Log) KeyPair) []KeyPair {
 	uniqueSet := make(map[string]KeyPair)

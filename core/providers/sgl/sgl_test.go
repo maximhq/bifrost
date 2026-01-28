@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -15,19 +15,19 @@ func TestSGL(t *testing.T) {
 		t.Skip("Skipping SGL tests because SGL_BASE_URL is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.SGL,
 		ChatModel:      "qwen/qwen2.5-0.5b-instruct",
 		VisionModel:    "Qwen/Qwen2.5-VL-7B-Instruct",
 		TextModel:      "qwen/qwen2.5-0.5b-instruct",
 		EmbeddingModel: "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -47,7 +47,7 @@ func TestSGL(t *testing.T) {
 	}
 
 	t.Run("SGLTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

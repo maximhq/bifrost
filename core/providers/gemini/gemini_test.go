@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,13 +19,13 @@ func TestGemini(t *testing.T) {
 		t.Skip("Skipping Gemini tests because GEMINI_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
 		ChatModel: "gemini-2.0-flash",
 		Fallbacks: []schemas.Fallback{
@@ -40,7 +40,7 @@ func TestGemini(t *testing.T) {
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
 		ReasoningModel: "gemini-3-pro-preview",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -83,7 +83,7 @@ func TestGemini(t *testing.T) {
 	}
 
 	t.Run("GeminiTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

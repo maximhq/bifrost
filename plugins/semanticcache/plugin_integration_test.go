@@ -43,9 +43,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	t.Log("Testing first request (cache miss)...")
 
 	// First request - should be a cache miss
-	modifiedReq, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	modifiedReq, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -94,9 +94,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 	// Cache the response
 	t.Log("Caching response...")
-	_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+	_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 	if err != nil {
-		t.Fatalf("PostHook failed: %v", err)
+		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
 	// Wait for async caching to complete
@@ -110,9 +110,9 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx2.SetValue(CacheKey, "test-cache-enabled")
 
-	modifiedReq2, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request)
+	modifiedReq2, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
-		t.Fatalf("Second PreHook failed: %v", err)
+		t.Fatalf("Second PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit2 == nil {
@@ -188,9 +188,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 	t.Log("Testing first request with temperature=0.7...")
 
 	// First request
-	_, shortCircuit1, err := setup.Plugin.PreHook(ctx, baseRequest)
+	_, shortCircuit1, err := setup.Plugin.PreLLMHook(ctx, baseRequest)
 	if err != nil {
-		t.Fatalf("First PreHook failed: %v", err)
+		t.Fatalf("First PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit1 != nil {
@@ -220,9 +220,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		},
 	}
 
-	_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+	_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 	if err != nil {
-		t.Fatalf("PostHook failed: %v", err)
+		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
 	WaitForCache()
@@ -254,9 +254,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, modifiedRequest)
+	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, modifiedRequest)
 	if err != nil {
-		t.Fatalf("Second PreHook failed: %v", err)
+		t.Fatalf("Second PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit2 != nil {
@@ -291,9 +291,9 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit3, err := setup.Plugin.PreHook(ctx3, modifiedRequest2)
+	_, shortCircuit3, err := setup.Plugin.PreLLMHook(ctx3, modifiedRequest2)
 	if err != nil {
-		t.Fatalf("Third PreHook failed: %v", err)
+		t.Fatalf("Third PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit3 != nil {
@@ -334,9 +334,9 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	t.Log("Testing streaming request (cache miss)...")
 
 	// First request - should be cache miss
-	_, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -383,9 +383,9 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 			},
 		}
 
-		_, _, err = setup.Plugin.PostHook(ctx, chunkResponse, nil)
+		_, _, err = setup.Plugin.PostLLMHook(ctx, chunkResponse, nil)
 		if err != nil {
-			t.Fatalf("PostHook failed for chunk %d: %v", i, err)
+			t.Fatalf("PostLLMHook failed for chunk %d: %v", i, err)
 		}
 	}
 
@@ -398,9 +398,9 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx2.SetValue(CacheKey, "test-cache-enabled")
 
-	_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request)
+	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
-		t.Fatalf("Second PreHook failed: %v", err)
+		t.Fatalf("Second PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit2 == nil {
@@ -458,9 +458,9 @@ func TestSemanticCache_NoCacheWhenKeyMissing(t *testing.T) {
 		},
 	}
 
-	_, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -498,9 +498,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 	}
 
 	// First request - cache miss
-	_, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -531,9 +531,9 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 		},
 	}
 
-	_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+	_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 	if err != nil {
-		t.Fatalf("PostHook failed: %v", err)
+		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
 	WaitForCache()
@@ -568,9 +568,9 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 	}
 
 	// Test that custom threshold is used (this would need semantic search to be fully testable)
-	_, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -609,9 +609,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 	}
 
 	// First request with OpenAI
-	_, shortCircuit1, err := setup.Plugin.PreHook(ctx, request1)
+	_, shortCircuit1, err := setup.Plugin.PreLLMHook(ctx, request1)
 	if err != nil {
-		t.Fatalf("PreHook failed: %v", err)
+		t.Fatalf("PreLLMHook failed: %v", err)
 	}
 
 	if shortCircuit1 != nil {
@@ -642,9 +642,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		},
 	}
 
-	_, _, err = setup.Plugin.PostHook(ctx, response, nil)
+	_, _, err = setup.Plugin.PostLLMHook(ctx, response, nil)
 	if err != nil {
-		t.Fatalf("PostHook failed: %v", err)
+		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
 	WaitForCache()
@@ -669,9 +669,9 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx2.SetValue(CacheKey, "test-cache-enabled")
 
-	_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request2)
+	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request2)
 	if err != nil {
-		t.Fatalf("Second PreHook failed: %v", err)
+		t.Fatalf("Second PreLLMHook failed: %v", err)
 	}
 
 	// With provider/model caching disabled, we might get cache hits across different providers/models
@@ -708,9 +708,9 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 	}
 
 	// Should handle invalid TTL gracefully
-	_, shortCircuit, err := setup.Plugin.PreHook(ctx, request)
+	_, shortCircuit, err := setup.Plugin.PreLLMHook(ctx, request)
 	if err != nil {
-		t.Fatalf("PreHook failed with invalid TTL: %v", err)
+		t.Fatalf("PreLLMHook failed with invalid TTL: %v", err)
 	}
 
 	if shortCircuit != nil {
@@ -723,9 +723,9 @@ func TestSemanticCache_ConfigurationEdgeCases(t *testing.T) {
 	ctx2.SetValue(CacheThresholdKey, "not-a-float") // Invalid threshold type
 
 	// Should handle invalid threshold gracefully
-	_, shortCircuit2, err := setup.Plugin.PreHook(ctx2, request)
+	_, shortCircuit2, err := setup.Plugin.PreLLMHook(ctx2, request)
 	if err != nil {
-		t.Fatalf("PreHook failed with invalid threshold: %v", err)
+		t.Fatalf("PreLLMHook failed with invalid threshold: %v", err)
 	}
 
 	if shortCircuit2 != nil {

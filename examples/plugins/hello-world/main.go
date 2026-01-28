@@ -11,15 +11,18 @@ func Init(config any) error {
 	return nil
 }
 
+// GetName returns the name of the plugin (required)
+// This is the system identifier - not editable by users
+// Users can set a custom display_name in the config for the UI
 func GetName() string {
-	return "Hello World Plugin"
+	return "hello-world"
 }
 
 func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	fmt.Println("HTTPTransportPreHook called")
 	// Modify request in-place
 	req.Headers["x-hello-world-plugin"] = "transport-pre-hook-value"
-	// Store value in context for PreHook/PostHook
+	// Store value in context for PreLLMHook/PostLLMHook
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"), "transport-pre-hook-value")
 	// Return nil to continue processing, or return &schemas.HTTPResponse{} to short-circuit
 	return nil, nil
@@ -45,16 +48,16 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 	return chunk, nil
 }
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
 	fmt.Println("value1:", value1)
 	ctx.SetValue(schemas.BifrostContextKey("hello-world-plugin-pre-hook"), "pre-hook-value")
-	fmt.Println("PreHook called")
+	fmt.Println("PreLLMHook called")
 	return req, nil, nil
 }
 
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	fmt.Println("PostHook called")
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostLLMHook called")
 	value1 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-transport-pre-hook"))
 	fmt.Println("value1:", value1)
 	value2 := ctx.Value(schemas.BifrostContextKey("hello-world-plugin-pre-hook"))

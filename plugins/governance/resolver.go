@@ -31,7 +31,6 @@ type EvaluationRequest struct {
 	VirtualKey string                `json:"virtual_key"` // Virtual key value
 	Provider   schemas.ModelProvider `json:"provider"`
 	Model      string                `json:"model"`
-	RequestID  string                `json:"request_id"`
 }
 
 // EvaluationResult contains the complete result of governance evaluation
@@ -78,12 +77,11 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 
 // EvaluateModelAndProviderRequest evaluates provider-level and model-level rate limits and budgets
 // This applies even when virtual keys are disabled or not present
-func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
+func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
 	// Create evaluation request for the checks
 	request := &EvaluationRequest{
-		Provider:  provider,
-		Model:     model,
-		RequestID: requestID,
+		Provider: provider,
+		Model:    model,
 	}
 
 	// 1. Check provider-level rate limits FIRST (before model-level checks)
@@ -130,7 +128,7 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 }
 
 // EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
-func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
+func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
 	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
 	if !exists {
@@ -164,7 +162,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 
 	// 2. Check provider filtering
-	if !r.isProviderAllowed(vk, provider) {
+	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
 			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
@@ -173,7 +171,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	}
 
 	// 3. Check model filtering
-	if !r.isModelAllowed(vk, provider, model) {
+	if requestType != schemas.MCPToolExecutionRequest && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
@@ -185,7 +183,6 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
-		RequestID:  requestID,
 	}
 
 	// 4. Check rate limits hierarchy (VK level)

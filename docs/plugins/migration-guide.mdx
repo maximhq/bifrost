@@ -9,7 +9,7 @@ icon: "arrow-up-right-dots"
 Bifrost v1.4.x introduces a new plugin interface for HTTP transport layer interception. This guide helps you migrate existing plugins from the v1.3.x `TransportInterceptor` pattern to the v1.4.x `HTTPTransportPreHook` and `HTTPTransportPostHook` pattern.
 
 <Note>
-If your plugin doesn't use `TransportInterceptor`, no migration is needed. The `PreHook`, `PostHook`, `Init`, `GetName`, and `Cleanup` functions remain unchanged.
+If your plugin doesn't use `TransportInterceptor`, no migration is needed. The `PreLLMHook`, `PostLLMHook`, `Init`, `GetName`, and `Cleanup` functions remain unchanged.
 </Note>
 
 ## What Changed?
@@ -306,8 +306,8 @@ func HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest
 4. **Verify logs show both hooks being called:**
    ```
    HTTPTransportPreHook called
-   PreHook called
-   PostHook called
+   PreLLMHook called
+   PostLLMHook called
    HTTPTransportPostHook called
    ```
 

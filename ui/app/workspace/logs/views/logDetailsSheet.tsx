@@ -46,17 +46,23 @@ interface LogDetailSheetProps {
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
-		'container_create', 'container_list', 'container_retrieve', 'container_delete',
-		'container_file_create', 'container_file_list', 'container_file_retrieve',
-		'container_file_content', 'container_file_delete'
-	]
-	return containerTypes.includes(object?.toLowerCase())
-}
+		"container_create",
+		"container_list",
+		"container_retrieve",
+		"container_delete",
+		"container_file_create",
+		"container_file_list",
+		"container_file_retrieve",
+		"container_file_content",
+		"container_file_delete",
+	];
+	return containerTypes.includes(object?.toLowerCase());
+};
 
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
 	if (!log) return null;
 
-	const isContainer = isContainerOperation(log.object)
+	const isContainer = isContainerOperation(log.object);
 
 	// Taking out tool call
 	let toolsParameter = null;
@@ -193,7 +199,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -669,7 +675,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
 								<div className="w-full rounded-sm border">
 									<div className="border-b px-6 py-2 text-sm font-medium">Error</div>
-									<div className="px-6 py-2 font-mono text-xs">{log.error_details.error.message}</div>
+									<div className="px-6 py-2 font-mono text-xs break-words">{log.error_details.error.message}</div>
 								</div>
 							</>
 						)}

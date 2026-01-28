@@ -53,6 +53,7 @@ type ClientConfig struct {
 	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
@@ -127,6 +128,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
 	} else {
 		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
+	}
+
+	if c.MCPToolSyncInterval > 0 {
+		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
+	} else {
+		hash.Write([]byte("mcpToolSyncInterval:0"))
 	}
 
 	// Hash integer fields

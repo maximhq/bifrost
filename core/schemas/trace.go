@@ -124,7 +124,7 @@ const (
 	SpanKindUnspecified SpanKind = ""
 	// SpanKindLLMCall represents a call to an LLM provider
 	SpanKindLLMCall SpanKind = "llm.call"
-	// SpanKindPlugin represents plugin execution (PreHook/PostHook)
+	// SpanKindPlugin represents plugin execution (PreLLMHook/PostLLMHook)
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
