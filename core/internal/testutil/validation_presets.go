@@ -367,6 +367,15 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 		}
 		return ImageGenerationExpectations(1, "1024x1024")
 
+	case "ImageEdit", "ImageVariation":
+		// Reuse image generation expectations since they use the same response structure
+		if minImages, ok := customParams["min_images"].(int); ok {
+			if expectedSize, ok := customParams["expected_size"].(string); ok {
+				return ImageGenerationExpectations(minImages, expectedSize)
+			}
+		}
+		return ImageGenerationExpectations(1, "1024x1024")
+
 	default:
 		// Default to basic chat expectations
 		return BasicChatExpectations()

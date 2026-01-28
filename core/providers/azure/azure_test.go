@@ -37,6 +37,7 @@ func TestAzure(t *testing.T) {
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		TranscriptionModel:   "whisper",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "gpt-image-1",
 
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -63,6 +64,9 @@ func TestAzure(t *testing.T) {
 			StructuredOutputs:     true, // Structured outputs with nullable enum support
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,
+			ImageEditStream:       true,
+			ImageVariation:        false, // Not supported by Azure
 		},
 	}
 

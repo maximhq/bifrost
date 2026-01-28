@@ -1549,74 +1549,202 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	modelType := DetermineImageGenModelType(request.Model)
 	var rawResponse []byte
 	var jsonData []byte
 	var bifrostError *schemas.BifrostError
 	var latency time.Duration
 	var path string
 	var deployment string
-	switch modelType {
 
-	case "titan-image-generator-v1", "nova-canvas-v1:0", "titan-image-generator-v2:0":
-		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (any, error) { return ToBedrockImageGenerationRequest(request) },
-			provider.GetProviderKey())
-		if bifrostError != nil {
-			return nil, bifrostError
-		}
-		path, deployment = provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
-	default:
-		return nil, providerUtils.NewConfigurationError("unsupported image generation model type", providerName)
+	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToBedrockImageGenerationRequest(request) },
+		provider.GetProviderKey())
+	if bifrostError != nil {
+		return nil, bifrostError
 	}
+	path, deployment = provider.getModelPath("invoke", request.Model, key)
+	rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostError != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	// Parse response based on model type
 	var bifrostResponse *schemas.BifrostImageGenerationResponse
-	switch modelType {
-	case "titan-image-generator-v1", "nova-canvas-v1:0", "titan-image-generator-v2:0":
-		var imageResp BedrockImageGenerationResponse
-		if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-
-		if imageResp.Error != "" {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-
-		bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
-		bifrostResponse.Model = request.Model
-		bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
-		bifrostResponse.ExtraFields.Provider = providerName
-		bifrostResponse.ExtraFields.ModelRequested = request.Model
-		bifrostResponse.ExtraFields.ModelDeployment = deployment
-		bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
-
-		// Set raw request if enabled
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
-		}
-
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			var rawResponseData interface{}
-			if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
-				bifrostResponse.ExtraFields.RawResponse = rawResponseData
-			}
-		}
-
-		return bifrostResponse, nil
+	var imageResp BedrockImageGenerationResponse
+	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image generation response", err, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
-	return nil, providerUtils.NewConfigurationError("unsupported image generation model type", providerName)
+
+	if imageResp.Error != "" {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	bifrostResponse = ToBifrostImageGenerationResponse(&imageResp)
+	bifrostResponse.Model = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponseData interface{}
+		if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponseData
+		}
+	}
+
+	return bifrostResponse, nil
 }
 
 // ImageGenerationStream is not supported by the Bedrock provider.
 func (provider *BedrockProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, schemas.Bedrock)
+}
+
+// ImageEdit performs image editing using Amazon Bedrock.
+// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
+// Supports three edit types: INPAINTING, OUTPAINTING, and BACKGROUND_REMOVAL.
+// Returns a BifrostImageGenerationResponse containing the edited images and any error that occurred.
+func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if key.BedrockKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	var jsonData []byte
+	var bifrostError *schemas.BifrostError
+
+	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToBedrockImageEditRequest(request) },
+		provider.GetProviderKey())
+	if bifrostError != nil {
+		return nil, bifrostError
+	}
+
+	// Make API request (same URL as image generation)
+	path, deployment := provider.getModelPath("invoke", request.Model, key)
+	rawResponse, latency, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	if bifrostError != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Parse response (reuse BedrockImageGenerationResponse)
+	var imageResp BedrockImageGenerationResponse
+	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image edit response", err, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if imageResp.Error != "" {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Convert response and set metadata
+	bifrostResponse := ToBifrostImageGenerationResponse(&imageResp)
+	bifrostResponse.Model = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ImageEditRequest
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request/response if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponseData interface{}
+		if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponseData
+		}
+	}
+
+	return bifrostResponse, nil
+}
+
+// ImageEditStream is not supported by the Bedrock provider.
+func (provider *BedrockProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation generates image variations using Amazon Bedrock.
+// Supports Titan Image Generator v1, Nova Canvas v1, and Titan Image Generator v2.
+// Returns a BifrostImageGenerationResponse containing the generated image variations and any error that occurred.
+func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.ImageVariationRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if key.BedrockKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	var jsonData []byte
+	var bifrostError *schemas.BifrostError
+
+	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (any, error) { return ToBedrockImageVariationRequest(request) },
+		provider.GetProviderKey())
+	if bifrostError != nil {
+		return nil, bifrostError
+	}
+
+	// Make API request (same URL as image generation)
+	path, deployment := provider.getModelPath("invoke", request.Model, key)
+	rawResponse, latency, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	if bifrostError != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Parse response (reuse BedrockImageGenerationResponse and ToBifrostImageGenerationResponse)
+	var imageResp BedrockImageGenerationResponse
+	if err := sonic.Unmarshal(rawResponse, &imageResp); err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("error parsing image variation response", err, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if imageResp.Error != "" {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(imageResp.Error, nil, providerName), jsonData, rawResponse, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Convert response and set metadata
+	bifrostResponse := ToBifrostImageGenerationResponse(&imageResp)
+	bifrostResponse.Model = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ImageVariationRequest
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request/response if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponseData interface{}
+		if err := sonic.Unmarshal(rawResponse, &rawResponseData); err == nil {
+			bifrostResponse.ExtraFields.RawResponse = rawResponseData
+		}
+	}
+
+	return bifrostResponse, nil
 }
 
 // FileUpload uploads a file to S3 for Bedrock batch processing.

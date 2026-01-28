@@ -46,6 +46,10 @@ type TestScenarios struct {
 	ListModels            bool // List available models functionality
 	ImageGeneration       bool // Image generation functionality
 	ImageGenerationStream bool // Streaming image generation functionality
+	ImageEdit             bool // Image edit functionality
+	ImageEditStream       bool // Streaming image edit functionality
+	ImageVariation        bool // Image variation functionality
+	ImageVariationStream  bool // Streaming image variation functionality (if supported)
 	BatchCreate           bool // Batch API create functionality
 	BatchList             bool // Batch API list functionality
 	BatchRetrieve         bool // Batch API retrieve functionality
@@ -93,6 +97,10 @@ type ComprehensiveTestConfig struct {
 	SkipReason               string                 // Reason to skip certain tests
 	ImageGenerationModel     string                 // Model for image generation
 	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation
+	ImageEditModel           string                 // Model for image editing
+	ImageEditFallbacks       []schemas.Fallback     // Fallbacks for image editing
+	ImageVariationModel      string                 // Model for image variation
+	ImageVariationFallbacks  []schemas.Fallback     // Fallbacks for image variation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
@@ -205,7 +213,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0"},
+				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),
@@ -231,7 +239,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models: []string{},
 				Weight: 1.0,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
+					Endpoint:   *schemas.NewEnvVar("env.AZURE_ENDPOINT"),
 					APIVersion: schemas.NewEnvVar("env.AZURE_API_VERSION"),
 					Deployments: map[string]string{
 						"gpt-4o":                 "gpt-4o",
@@ -266,7 +274,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
-				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001"},
+				Models: []string{"text-multilingual-embedding-002", "google/gemini-2.0-flash-001", "gemini-2.5-flash-image", "imagen-4.0-generate-001", "imagen-3.0-capability-001"},
 				Weight: 1.0,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
@@ -686,6 +694,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "tts-1",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "dall-e-2",
+		ImageVariationModel:  "dall-e-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
@@ -701,12 +711,16 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageBase64:           true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
-			SpeechSynthesis:       true, // OpenAI supports TTS
-			SpeechSynthesisStream: true, // OpenAI supports streaming TTS
-			Transcription:         true, // OpenAI supports STT with Whisper
-			TranscriptionStream:   true, // OpenAI supports streaming STT
-			ImageGeneration:       true, // OpenAI supports image generation with DALL-E
-			ImageGenerationStream: true, // OpenAI supports streaming image generation
+			SpeechSynthesis:       true,  // OpenAI supports TTS
+			SpeechSynthesisStream: true,  // OpenAI supports streaming TTS
+			Transcription:         true,  // OpenAI supports STT with Whisper
+			TranscriptionStream:   true,  // OpenAI supports streaming STT
+			ImageGeneration:       true,  // OpenAI supports image generation with DALL-E
+			ImageGenerationStream: true,  // OpenAI supports streaming image generation
+			ImageEdit:             true,  // OpenAI supports image editing
+			ImageEditStream:       true,  // OpenAI supports streaming image editing
+			ImageVariation:        true,  // OpenAI supports image variation
+			ImageVariationStream:  false, // OpenAI does not support streaming image variation
 			Embedding:             true,
 			Reasoning:             true, // OpenAI supports reasoning via o1 models
 			ListModels:            true,
@@ -719,17 +733,17 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			FileList:              true, // OpenAI supports file API
 			FileRetrieve:          true, // OpenAI supports file API
 			FileDelete:            true, // OpenAI supports file API
-			FileContent:           true,  // OpenAI supports file API
-			ChatAudio:             true,  // OpenAI supports chat audio
-			ContainerCreate:       true,  // OpenAI supports container API
-			ContainerList:         true,  // OpenAI supports container API
-			ContainerRetrieve:     true,  // OpenAI supports container API
-			ContainerDelete:       true,  // OpenAI supports container API
-			ContainerFileCreate:   true,  // OpenAI supports container file API
-			ContainerFileList:     true,  // OpenAI supports container file API
-			ContainerFileRetrieve: true,  // OpenAI supports container file API
-			ContainerFileContent:  true,  // OpenAI supports container file API
-			ContainerFileDelete:   true,  // OpenAI supports container file API
+			FileContent:           true, // OpenAI supports file API
+			ChatAudio:             true, // OpenAI supports chat audio
+			ContainerCreate:       true, // OpenAI supports container API
+			ContainerList:         true, // OpenAI supports container API
+			ContainerRetrieve:     true, // OpenAI supports container API
+			ContainerDelete:       true, // OpenAI supports container API
+			ContainerFileCreate:   true, // OpenAI supports container file API
+			ContainerFileList:     true, // OpenAI supports container file API
+			ContainerFileRetrieve: true, // OpenAI supports container file API
+			ContainerFileContent:  true, // OpenAI supports container file API
+			ContainerFileDelete:   true, // OpenAI supports container file API
 		},
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
@@ -760,6 +774,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             false,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // Anthropic does not support image editing
+			ImageEditStream:       false, // Anthropic does not support streaming image editing
+			ImageVariation:        false, // Anthropic does not support image variation
+			ImageVariationStream:  false, // Anthropic does not support streaming image variation
 			ListModels:            true,
 			BatchCreate:           true, // Anthropic supports batch API
 			BatchList:             true, // Anthropic supports batch API
@@ -772,9 +790,11 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		},
 	},
 	{
-		Provider:  schemas.Bedrock,
-		ChatModel: "anthropic.claude-3-sonnet-20240229-v1:0",
-		TextModel: "", // Bedrock Claude doesn't support text completion
+		Provider:            schemas.Bedrock,
+		ChatModel:           "anthropic.claude-3-sonnet-20240229-v1:0",
+		TextModel:           "", // Bedrock Claude doesn't support text completion
+		ImageEditModel:      "amazon.titan-image-generator-v1",
+		ImageVariationModel: "amazon.titan-image-generator-v1",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported for Claude
 			SimpleChat:            true,
@@ -796,6 +816,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             true,  // Bedrock supports image editing
+			ImageEditStream:       false, // Bedrock does not support streaming image editing
+			ImageVariation:        true,  // Bedrock supports image variation
+			ImageVariationStream:  false, // Bedrock does not support streaming image variation
 			ListModels:            true,
 			BatchCreate:           true, // Bedrock supports batch via Model Invocation Jobs (requires S3 config)
 			BatchList:             true, // Bedrock supports listing batch jobs
@@ -831,6 +855,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompleteEnd2End:       true,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // Cohere does not support image editing
+			ImageEditStream:       false, // Cohere does not support streaming image editing
+			ImageVariation:        false, // Cohere does not support image variation
+			ImageVariationStream:  false, // Cohere does not support streaming image variation
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -850,6 +878,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TranscriptionModel:   "whisper-1",
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "dall-e-2",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -870,6 +899,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,  // Azure supports image editing
+			ImageEditStream:       true,  // Azure supports streaming image editing
+			ImageVariation:        false, // Azure does not support image variation
+			ImageVariationStream:  false, // Azure does not support streaming image variation
 			ListModels:            true,
 			BatchCreate:           true, // Azure supports batch API
 			BatchList:             true, // Azure supports batch API
@@ -892,6 +925,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		ChatModel:            "gemini-pro",
 		TextModel:            "", // Vertex focuses on chat
 		ImageGenerationModel: "imagen-4.0-generate-001",
+		ImageEditModel:       "imagen-4.0-generate-001",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not typical
 			SimpleChat:            true,
@@ -907,6 +941,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompleteEnd2End:       true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             true,  // Vertex supports image editing
+			ImageEditStream:       false, // Vertex does not support streaming image editing
+			ImageVariation:        false, // Vertex does not support image variation
+			ImageVariationStream:  false, // Vertex does not support streaming image variation
 			SpeechSynthesis:       false, // Not supported
 			SpeechSynthesisStream: false, // Not supported
 			Transcription:         false, // Not supported
@@ -942,6 +980,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // Mistral does not support image editing
+			ImageEditStream:       false, // Mistral does not support streaming image editing
+			ImageVariation:        false, // Mistral does not support image variation
+			ImageVariationStream:  false, // Mistral does not support streaming image variation
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -972,6 +1014,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             false,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // Ollama does not support image editing
+			ImageEditStream:       false, // Ollama does not support streaming image editing
+			ImageVariation:        false, // Ollama does not support image variation
+			ImageVariationStream:  false, // Ollama does not support streaming image variation
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -1002,6 +1048,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             false,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // Groq does not support image editing
+			ImageEditStream:       false, // Groq does not support streaming image editing
+			ImageVariation:        false, // Groq does not support image variation
+			ImageVariationStream:  false, // Groq does not support streaming image variation
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -1030,6 +1080,12 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false,
+			ImageGeneration:       false, // ProviderOpenAICustom does not support image generation
+			ImageGenerationStream: false, // ProviderOpenAICustom does not support streaming image generation
+			ImageEdit:             false, // ProviderOpenAICustom does not support image editing
+			ImageEditStream:       false, // ProviderOpenAICustom does not support streaming image editing
+			ImageVariation:        false, // ProviderOpenAICustom does not support image variation
+			ImageVariationStream:  false, // ProviderOpenAICustom does not support streaming image variation
 			ListModels:            true,
 		},
 		Fallbacks: []schemas.Fallback{
@@ -1044,6 +1100,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
 		EmbeddingModel:       "text-embedding-004",
 		ImageGenerationModel: "imagen-4.0-generate-001",
+		ImageEditModel:       "imagen-4.0-generate-001",
 		Scenarios: TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -1064,6 +1121,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             true,  // Gemini supports image editing
+			ImageEditStream:       false, // Gemini does not support streaming image editing
+			ImageVariation:        false, // Gemini does not support image variation
+			ImageVariationStream:  false, // Gemini does not support streaming image variation
 			ListModels:            true,
 			BatchCreate:           true,
 			BatchList:             true,
@@ -1099,6 +1160,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			CompleteEnd2End:       true,
 			ImageGeneration:       false,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // OpenRouter does not support image editing
+			ImageEditStream:       false, // OpenRouter does not support streaming image editing
+			ImageVariation:        false, // OpenRouter does not support image variation
+			ImageVariationStream:  false, // OpenRouter does not support streaming image variation
 			SpeechSynthesis:       false,
 			SpeechSynthesisStream: false,
 			Transcription:         false,
@@ -1118,6 +1183,7 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 		TranscriptionModel:   "fal-ai/openai/whisper-large-v3",
 		SpeechSynthesisModel: "fal-ai/hexgrad/Kokoro-82M",
 		ImageGenerationModel: "fal-ai/fal-ai/flux-2",
+		ImageEditModel:       "fal-ai/fal-ai/flux-2",
 		Scenarios: TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -1136,6 +1202,10 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Embedding:             true,
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,  // HuggingFace (fal-ai) supports image editing
+			ImageEditStream:       true,  // HuggingFace (fal-ai) supports streaming image editing
+			ImageVariation:        false, // HuggingFace does not support image variation
+			ImageVariationStream:  false, // HuggingFace does not support streaming image variation
 			Transcription:         true,
 			TranscriptionStream:   false,
 			SpeechSynthesis:       true,
@@ -1170,9 +1240,13 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			Transcription:         false, // Not supported
 			TranscriptionStream:   false, // Not supported
 			Embedding:             false, // Not supported
-			ListModels:            true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             false, // XAI does not support image editing
+			ImageEditStream:       false, // XAI does not support streaming image editing
+			ImageVariation:        false, // XAI does not support image variation
+			ImageVariationStream:  false, // XAI does not support streaming image variation
+			ListModels:            true,
 		},
 	},
 }

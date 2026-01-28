@@ -162,6 +162,9 @@ export type RequestType =
 	| "transcription_stream"
 	| "image_generation"
 	| "image_generation_stream"
+	| "image_edit"
+	| "image_edit_stream"
+	| "image_variation"
 	| "count_tokens"
 	| "batch_create"
 	| "batch_list"
@@ -198,6 +201,9 @@ export interface AllowedRequests {
 	transcription_stream: boolean;
 	image_generation: boolean;
 	image_generation_stream: boolean;
+	image_edit: boolean;
+	image_edit_stream: boolean;
+	image_variation: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 }

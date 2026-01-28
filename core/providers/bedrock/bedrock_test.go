@@ -126,11 +126,13 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:     "cohere.embed-v4:0",
-		ReasoningModel:     "claude-4.5-sonnet",
-		PromptCachingModel: "claude-4.5-sonnet",
-		BatchExtraParams:   batchExtraParams,
-		FileExtraParams:    fileExtraParams,
+		EmbeddingModel:      "cohere.embed-v4:0",
+		ReasoningModel:      "claude-4.5-sonnet",
+		PromptCachingModel:  "claude-4.5-sonnet",
+		ImageEditModel:      "amazon.nova-canvas-v1:0",
+		ImageVariationModel: "amazon.nova-canvas-v1:0",
+		BatchExtraParams:    batchExtraParams,
+		FileExtraParams:     fileExtraParams,
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -163,6 +165,8 @@ func TestBedrock(t *testing.T) {
 			FileContent:           true,
 			FileBatchInput:        true,
 			CountTokens:           false, // Not supported
+			ImageEdit:             true,
+			ImageVariation:        true,
 			StructuredOutputs:     true,
 		},
 	}

@@ -23,6 +23,8 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Speech (TTS) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Image Generation | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
+| Image Edit | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
+| Image Variation | ❌ | - | Not supported |
 | Embeddings | ✅ | - | `/v1beta/models/{model}:embedContent` |
 | Files | ✅ | - | `/upload/storage/v1beta/files` |
 | Batch | ✅ | - | `/v1beta/batchJobs` |
@@ -629,7 +631,104 @@ Image generation streaming is not supported by Gemini.
 
 ---
 
-# 9. List Models
+# 9. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Gemini supports image editing through two different APIs depending on the model:
+
+1. **Standard Gemini Format**: Uses the `/v1beta/models/{model}:generateContent` endpoint (for Gemini models)
+2. **Imagen Format**: Uses the `/v1beta/models/{model}:predict` endpoint (for Imagen models, detected automatically)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (Gemini or Imagen model) |
+| `prompt` | string | ✅ | Text description of the edit |
+| `image[]` | binary | ✅ | Image file(s) to edit (supports multiple images) |
+| `mask` | binary | ❌ | Mask image file |
+| `type` | string | ❌ | Edit type: `"inpainting"`, `"outpainting"`, `"inpaint_removal"`, `"bgswap"` (Imagen only) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` |
+| `output_compression` | int | ❌ | Compression level (0-100%) |
+| `seed` | int | ❌ | Seed for reproducibility (via `ExtraParams["seed"]`) |
+| `negative_prompt` | string | ❌ | Negative prompt (via `ExtraParams["negativePrompt"]`) |
+| `guidanceScale` | int | ❌ | Guidance scale (via `ExtraParams["guidanceScale"]`, Imagen only) |
+| `baseSteps` | int | ❌ | Base steps (via `ExtraParams["baseSteps"]`, Imagen only) |
+| `maskMode` | string | ❌ | Mask mode (via `ExtraParams["maskMode"]`, Imagen only): `"MASK_MODE_USER_PROVIDED"`, `"MASK_MODE_BACKGROUND"`, `"MASK_MODE_FOREGROUND"`, `"MASK_MODE_SEMANTIC"` |
+| `dilation` | float | ❌ | Mask dilation (via `ExtraParams["dilation"]`, Imagen only): Range [0, 1] |
+| `maskClasses` | int[] | ❌ | Mask classes (via `ExtraParams["maskClasses"]`, Imagen only): For `MASK_MODE_SEMANTIC` |
+
+---
+
+**Request Conversion**
+
+### Standard Gemini Format (Non-Imagen Models)
+
+- **Model & Prompt**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Input.Prompt` → `req.Contents[0].Parts[0].Text`
+- **Images**: Each image in `bifrostReq.Input.Images` is converted to a `Part` with:
+  - MIME type detection (`image/jpeg`, `image/webp`, `image/png`) with fallback to `image/png`
+  - Base64 encoding: `image.Image` → `Part.InlineData.Data` (base64 string)
+  - MIME type: `Part.InlineData.MIMEType`
+- **Response Modality**: `GenerationConfig.ResponseModalities` is set to `[ModalityImage]` to indicate image generation
+- **Extra Parameters**: Extracted from `ExtraParams`:
+  - `safetySettings` / `safety_settings` → `SafetySettings`
+  - `cachedContent` / `cached_content` → `CachedContent`
+  - `labels` → `Labels` (map[string]string)
+
+### Imagen Format (Imagen Models)
+
+- **Reference Images**: Each image in `bifrostReq.Input.Images` is converted to `ReferenceImage` with:
+  - `ReferenceType`: `"REFERENCE_TYPE_RAW"`
+  - `ReferenceID`: Sequential IDs starting from 1
+  - `ReferenceImage.BytesBase64Encoded`: Base64-encoded image data
+- **Mask Configuration**: If `Params.Mask` is provided or `maskMode` is specified:
+  - Default `maskMode`: `"MASK_MODE_USER_PROVIDED"` when mask data is present
+  - `maskMode` can be overridden via `ExtraParams["maskMode"]`
+  - `dilation` extracted from `ExtraParams["dilation"]` (validated to range [0, 1])
+  - `maskClasses` extracted from `ExtraParams["maskClasses"]` (for `MASK_MODE_SEMANTIC`)
+  - Mask image (if provided) is base64-encoded and added as `ReferenceType: "REFERENCE_TYPE_MASK"`
+- **Edit Mode Mapping**: `Params.Type` is mapped to `EditMode`:
+  - `"inpainting"` → `"EDIT_MODE_INPAINT_INSERTION"`
+  - `"outpainting"` → `"EDIT_MODE_OUTPAINT"`
+  - `"inpaint_removal"` → `"EDIT_MODE_INPAINT_REMOVAL"`
+  - `"bgswap"` → `"EDIT_MODE_BGSWAP"`
+  - If `Type` is not set, `editMode` can be specified directly via `ExtraParams["editMode"]`
+- **Parameters**:
+  - `n` → `Parameters.SampleCount`
+  - `output_format` → `Parameters.OutputOptions.MimeType` (converted: `"png"` → `"image/png"`, etc.)
+  - `output_compression` → `Parameters.OutputOptions.CompressionQuality`
+  - `seed` (via `ExtraParams["seed"]`) → `Parameters.Seed`
+  - `negativePrompt` (via `ExtraParams["negativePrompt"]`) → `Parameters.NegativePrompt`
+  - `guidanceScale` (via `ExtraParams["guidanceScale"]`) → `Parameters.GuidanceScale`
+  - `baseSteps` (via `ExtraParams["baseSteps"]`) → `Parameters.BaseSteps`
+  - Additional Imagen-specific parameters: `addWatermark`, `includeRaiReason`, `includeSafetyAttributes`, `personGeneration`, `safetySetting`, `language`, `storageUri`
+
+**Response Conversion**
+
+- **Standard Gemini Format**: Uses the same response conversion as image generation (see Image Generation section)
+- **Imagen Format**: Uses the same response conversion as Imagen image generation (see Image Generation section)
+
+**Endpoint Selection**
+
+The provider automatically selects the endpoint based on model name:
+- **Imagen models** (detected via `schemas.IsImagenModel()`): Uses `/v1beta/models/{model}:predict` endpoint
+- **Other models**: Uses `/v1beta/models/{model}:generateContent` endpoint with image response modality
+
+**Streaming**
+
+Image edit streaming is not supported by Gemini.
+
+**Image Variation**
+
+Image variation is not supported by Gemini.
+
+---
+
+# 10. List Models
 
 **Request**: GET `/v1beta/models?pageSize={limit}&pageToken={token}` (no body)
 

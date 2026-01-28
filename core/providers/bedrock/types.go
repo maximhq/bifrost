@@ -570,6 +570,10 @@ type BedrockTitanEmbeddingResponse struct {
 }
 
 const TaskTypeTextImage = "TEXT_IMAGE"
+const TaskTypeImageVariation = "IMAGE_VARIATION"
+const TaskTypeInpainting = "INPAINTING"
+const TaskTypeOutpainting = "OUTPAINTING"
+const TaskTypeBackgroundRemoval = "BACKGROUND_REMOVAL"
 
 // BedrockImageGenerationRequest represents a Bedrock image generation request
 type BedrockImageGenerationRequest struct {
@@ -591,6 +595,52 @@ type ImageGenerationConfig struct {
 	CfgScale       *float64 `json:"cfgScale,omitempty"`
 	Quality        *string  `json:"quality,omitempty"`
 	Seed           *int     `json:"seed,omitempty"`
+}
+
+// BedrockImageVariationRequest represents a Bedrock image variation request
+type BedrockImageVariationRequest struct {
+	TaskType              *string                      `json:"taskType"`              // Should be "IMAGE_VARIATION"
+	ImageVariationParams  *BedrockImageVariationParams `json:"imageVariationParams"`  // Parameters for image variation
+	ImageGenerationConfig *ImageGenerationConfig       `json:"imageGenerationConfig"` // Image generation config (reused)
+}
+
+type BedrockImageVariationParams struct {
+	Text               *string  `json:"text,omitempty"`               // Prompt/text for variation
+	NegativeText       *string  `json:"negativeText,omitempty"`       // Negative prompt
+	Images             []string `json:"images"`                       // Base64-encoded image strings
+	SimilarityStrength *float64 `json:"similarityStrength,omitempty"` // Range: 0.2 to 1.0
+}
+
+// BedrockImageEditRequest represents a Bedrock image edit request
+type BedrockImageEditRequest struct {
+	TaskType                *string                         `json:"taskType"` // "INPAINTING", "OUTPAINTING", or "BACKGROUND_REMOVAL"
+	InPaintingParams        *BedrockInPaintingParams        `json:"inPaintingParams,omitempty"`
+	OutPaintingParams       *BedrockOutPaintingParams       `json:"outPaintingParams,omitempty"`
+	BackgroundRemovalParams *BedrockBackgroundRemovalParams `json:"backgroundRemovalParams,omitempty"`
+	ImageGenerationConfig   *ImageGenerationConfig          `json:"imageGenerationConfig,omitempty"` // Used by INPAINTING and OUTPAINTING
+}
+
+type BedrockInPaintingParams struct {
+	Image        string  `json:"image"`                  // Base64-encoded image
+	Text         string  `json:"text"`                   // Prompt for inpainting
+	NegativeText *string `json:"negativeText,omitempty"` // Negative prompt
+	MaskPrompt   *string `json:"maskPrompt,omitempty"`   // Mask prompt
+	MaskImage    *string `json:"maskImage,omitempty"`    // Base64-encoded mask image
+	ReturnMask   *bool   `json:"returnMask,omitempty"`   // Return mask (default: false)
+}
+
+type BedrockOutPaintingParams struct {
+	Text            string  `json:"text"`                      // Prompt for outpainting
+	NegativeText    *string `json:"negativeText,omitempty"`    // Negative prompt
+	Image           string  `json:"image"`                     // Base64-encoded image
+	MaskPrompt      *string `json:"maskPrompt,omitempty"`      // Mask prompt
+	MaskImage       *string `json:"maskImage,omitempty"`       // Base64-encoded mask image
+	ReturnMask      *bool   `json:"returnMask,omitempty"`      // Return mask (default: false)
+	OutPaintingMode *string `json:"outPaintingMode,omitempty"` // "DEFAULT" or "PRECISE"
+}
+
+type BedrockBackgroundRemovalParams struct {
+	Image string `json:"image"` // Base64-encoded image
 }
 
 // BedrockImageGenerationResponse represents a Bedrock image generation response

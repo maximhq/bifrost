@@ -269,6 +269,10 @@ type ImageGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *sc
 // It takes a BifrostImageGenerationStreamResponse and returns the event type and the streaming format expected by the specific integration.
 type ImageGenerationStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
 
+// ImageEditResponseConverter is a function that converts BifrostImageGenerationResponse to integration-specific format.
+// It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
+type ImageEditResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
@@ -843,6 +847,62 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageGenerationResponse)
+	case bifrostReq.ImageEditRequest != nil:
+		imageEditResponse, bifrostErr := g.client.ImageEditRequest(bifrostCtx, bifrostReq.ImageEditRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageEditResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageEditResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageEditResponse)
+	case bifrostReq.ImageVariationRequest != nil:
+		imageVariationResponse, bifrostErr := g.client.ImageVariationRequest(bifrostCtx, bifrostReq.ImageVariationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageVariationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageVariationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageVariationResponse)
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
@@ -1464,6 +1524,8 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 	} else if bifrostReq.ImageGenerationRequest != nil {
 		stream, bifrostErr = g.client.ImageGenerationStreamRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
+	} else if bifrostReq.ImageEditRequest != nil {
+		stream, bifrostErr = g.client.ImageEditStreamRequest(bifrostCtx, bifrostReq.ImageEditRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -1552,7 +1614,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
-	var httpReq *schemas.HTTPRequest	
+	var httpReq *schemas.HTTPRequest
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
@@ -1658,10 +1720,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					var err error
 					chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 					if err != nil {
-						if chunk == nil {							
+						if chunk == nil {
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
-								cancel()								
+								cancel()
 								return
 							}
 							// Return error event and stopping the streaming
@@ -1669,7 +1731,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 								cancel()
 								return
 							}
-							_ = w.Flush() 
+							_ = w.Flush()
 							cancel()
 							return
 						}

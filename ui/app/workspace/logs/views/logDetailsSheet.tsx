@@ -554,7 +554,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				)}
 
 				{(log.image_generation_input || log.image_generation_output) && (
-					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} />
+					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
 				)}
 
 				{/* Show conversation history for chat/text completions */}

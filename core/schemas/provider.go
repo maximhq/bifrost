@@ -198,6 +198,9 @@ type AllowedRequests struct {
 	TranscriptionStream   bool `json:"transcription_stream"`
 	ImageGeneration       bool `json:"image_generation"`
 	ImageGenerationStream bool `json:"image_generation_stream"`
+	ImageEdit             bool `json:"image_edit"`
+	ImageEditStream       bool `json:"image_edit_stream"`
+	ImageVariation        bool `json:"image_variation"`
 	BatchCreate           bool `json:"batch_create"`
 	BatchList             bool `json:"batch_list"`
 	BatchRetrieve         bool `json:"batch_retrieve"`
@@ -256,6 +259,12 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ImageGeneration
 	case ImageGenerationStreamRequest:
 		return ar.ImageGenerationStream
+	case ImageEditRequest:
+		return ar.ImageEdit
+	case ImageEditStreamRequest:
+		return ar.ImageEditStream
+	case ImageVariationRequest:
+		return ar.ImageVariation
 	case BatchCreateRequest:
 		return ar.BatchCreate
 	case BatchListRequest:
@@ -400,6 +409,13 @@ type Provider interface {
 	// ImageGenerationStream performs an image generation stream request
 	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// ImageEdit performs an image edit request
+	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	// ImageEditStream performs an image edit stream request
+	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// ImageVariation performs an image variation request
+	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
 	// BatchCreate creates a new batch job for asynchronous processing
 	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
 	// BatchList lists batch jobs

@@ -57,6 +57,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return &schemas.BifrostRequest{
 						ImageGenerationRequest: geminiReq.ToBifrostImageGenerationRequest(ctx),
 					}, nil
+				} else if geminiReq.IsImageEdit {
+					return &schemas.BifrostRequest{
+						ImageEditRequest: geminiReq.ToBifrostImageEditRequest(ctx),
+					}, nil
 				} else {
 					return &schemas.BifrostRequest{
 						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(ctx),
@@ -430,7 +434,8 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 		// Detect if this is an image generation request
 		// isImagenPredict takes precedence for :predict endpoints
-		r.IsImageGeneration = isImagenPredict || isImageGenerationRequest(r)
+		r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
+		r.IsImageEdit = isImageEditRequest(r)
 
 		return nil
 	}
@@ -511,6 +516,10 @@ func isAudioMimeType(mimeType string) bool {
 // 1. responseModalities containing "IMAGE"
 // 2. Model name containing "imagen"
 func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
+	if isImageEditRequest(req) {
+		return false
+	}
+
 	// Check if responseModalities contains IMAGE
 	for _, modality := range req.GenerationConfig.ResponseModalities {
 		if modality == gemini.ModalityImage {
@@ -521,6 +530,26 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Fallback: Check if model name is an Imagen model (for forward-compatibility)
 	if schemas.IsImagenModel(req.Model) {
 		return true
+	}
+
+	return false
+}
+
+// isImageEditRequest checks if the request is for image edit
+// Image edit is detected by:
+// 1. Model is an Imagen model and has reference images
+// 2. Inline image data present in the first content part and response modalities contain IMAGE
+func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
+	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
+		return true
+	}
+
+	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
+		for _, modality := range req.GenerationConfig.ResponseModalities {
+			if modality == gemini.ModalityImage {
+				return true
+			}
+		}
 	}
 
 	return false

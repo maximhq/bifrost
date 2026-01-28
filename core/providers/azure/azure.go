@@ -1337,6 +1337,112 @@ func (provider *AzureProvider) ImageGenerationStream(
 
 }
 
+// ImageEdit performs an image edit request to Azure's API.
+func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, deployment, apiVersion.GetValue())
+	response, err := openai.HandleOpenAIImageEditRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		false,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		provider.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
+
+	return response, err
+}
+
+// ImageEditStream performs a streaming image edit request to Azure's API.
+func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	postResponseConverter := func(resp *schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse {
+		if resp != nil {
+			resp.ExtraFields.ModelDeployment = deployment
+		}
+		return resp
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, deployment, apiVersion.GetValue())
+
+	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Azure is OpenAI-compatible
+	return openai.HandleOpenAIImageEditStreamRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		false,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		postResponseConverter,
+		provider.logger,
+	)
+
+}
+
+// ImageVariation is not supported by the Azure provider.
+func (provider *AzureProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
+}
+
 // validateKeyConfig validates the key configuration.
 // It checks if the key config is set, the endpoint is set, and the deployments are set.
 // Returns an error if any of the checks fail.

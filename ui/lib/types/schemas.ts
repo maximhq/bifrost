@@ -346,6 +346,9 @@ export const allowedRequestsSchema = z.object({
 	transcription_stream: z.boolean(),
 	image_generation: z.boolean(),
 	image_generation_stream: z.boolean(),
+	image_edit: z.boolean(),
+	image_edit_stream: z.boolean(),
+	image_variation: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 });

@@ -19,6 +19,8 @@ OpenAI is the **baseline schema** for Bifrost. When using OpenAI directly, param
 | Speech (TTS) | ✅ | ✅ | `/v1/audio/speech` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
 | Image Generation | ✅ | ✅ | `/v1/images/generations` |
+| Image Edit | ✅ | ✅ | `/v1/images/edits` |
+| Image Variation | ✅ | - | `/v1/images/variations` |
 | Files | ✅ | - | `/v1/files` |
 | Batch | ✅ | - | `/v1/batches` |
 | List Models | ✅ | - | `/v1/models` |
@@ -272,7 +274,113 @@ OpenAI is the baseline schema for image generation. Parameters are passed throug
 
 ---
 
-# 8. Files API
+# 8. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `prompt` | string | ✅ | Text description of the edit |
+| `image[]` | binary | ✅ | Image file(s) to edit (multipart form-data, supports multiple images) |
+| `mask` | binary | ❌ | Mask image file (multipart form-data) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `size` | string | ❌ | Image size: `"256x256"`, `"512x512"`, `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, `"auto"` |
+| `quality` | string | ❌ | Image quality: `"auto"`, `"high"`, `"medium"`, `"low"`, `"standard"` |
+| `response_format` | string | ❌ | Response format: `"url"` or `"b64_json"` |
+| `background` | string | ❌ | Background: `"transparent"`, `"opaque"`, `"auto"` |
+| `input_fidelity` | string | ❌ | Input fidelity: `"low"`, `"high"` |
+| `partial_images` | int | ❌ | Number of partial images (0-3) |
+| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` |
+| `output_compression` | int | ❌ | Compression level (0-100%) |
+| `user` | string | ❌ | User identifier |
+| `stream` | bool | ❌ | Enable streaming response |
+
+---
+
+**Request Conversion**
+
+- **Model & Input**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Input.Images` → `req.Input.Images`, `bifrostReq.Input.Prompt` → `req.Input.Prompt`
+- **Parameters**: All fields from `bifrostReq.Params` (`ImageEditParameters`) are embedded directly into the OpenAI request struct via struct embedding. No field mapping or transformation is performed.
+- **Multipart Form Data**: The request is serialized as `multipart/form-data`:
+  - **Model & Prompt**: Written as form fields (`model`, `prompt`)
+  - **Images**: Each image in `Input.Images` is written as a separate `image[]` field with proper MIME type detection (`image/jpeg`, `image/webp`, `image/png`) and Content-Type headers
+  - **Mask**: If present, written as a `mask` field with MIME type detection and appropriate filename (`mask.png`, `mask.jpg`, `mask.webp`)
+  - **Optional Parameters**: All optional parameters (`n`, `size`, `quality`, `response_format`, `background`, `input_fidelity`, `partial_images`, `output_format`, `output_compression`, `user`) are written as form fields
+  - **Integer Conversion**: Integer fields (`n`, `partial_images`, `output_compression`) are converted to strings using `strconv.Itoa`
+  - **Streaming**: When streaming is requested, `stream: "true"` is written as a form field
+
+**Response Conversion**
+
+- **Non-streaming**: OpenAI responses are unmarshaled directly into `BifrostImageGenerationResponse` since Bifrost's response schema is a superset of OpenAI's format. All fields are passed through as-is.
+- **Streaming**: OpenAI streaming responses use Server-Sent Events (SSE) format with event types:
+  - `image_edit.partial_image`: Intermediate image chunks with `b64_json` data
+  - `image_edit.completed`: Final chunk for each image with usage information
+  - `error`: Error events
+  
+  Each chunk includes:
+  - `type`: Event type (`image_edit.partial_image` or `image_edit.completed`)
+  - `sequence_number`: Sequence number of the chunk
+  - `partial_image_index`: Image index (0-N) for partial images
+  - `b64_json`: Base64-encoded image data (pointer, may be nil)
+  - `usage`: Token usage (only in completed events)
+  
+  Bifrost converts these to `BifrostImageGenerationStreamResponse` chunks with:
+  - Per-image `chunkIndex` tracking for proper ordering within each image
+  - `Index` field indicating which image (0-N) the chunk belongs to
+  - `PartialImageIndex` set only for partial images (not completed events)
+  - Usage information attached to completed chunks
+  - Latency tracking per chunk
+  - Robust handling of interleaved chunks using incomplete image tracking
+
+**Endpoint**: `/v1/images/edits`
+
+---
+
+# 9. Image Variation
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier |
+| `image` | binary | ✅ | Image file to create variations from (multipart form-data) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `size` | string | ❌ | Image size: `"256x256"`, `"512x512"`, `"1024x1024"`, `"1792x1024"`, `"1024x1792"`, `"1536x1024"`, `"1024x1536"`, `"auto"` |
+| `response_format` | string | ❌ | Response format: `"url"` or `"b64_json"` |
+| `user` | string | ❌ | User identifier |
+
+---
+
+**Request Conversion**
+
+- **Model & Input**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Input.Image.Image` → `req.Input.Image.Image`
+- **Parameters**: All fields from `bifrostReq.Params` (`ImageVariationParameters`) are embedded directly into the OpenAI request struct via struct embedding. No field mapping or transformation is performed.
+- **Multipart Form Data**: The request is serialized as `multipart/form-data`:
+  - **Model**: Written as form field (`model`)
+  - **Image**: The image is written as an `image` field with proper MIME type detection (`image/jpeg`, `image/webp`, `image/png`) and Content-Type headers. If MIME type cannot be detected, defaults to `image/png`
+  - **Optional Parameters**: All optional parameters (`n`, `size`, `response_format`, `user`) are written as form fields
+  - **Integer Conversion**: Integer field (`n`) is converted to string using `strconv.Itoa`
+- **Multiple Images**: Additional images beyond the first one (if present in `ExtraParams["images"]`) are stored in `ExtraParams` but only the first image is sent to OpenAI (OpenAI API only supports single image input)
+
+**Response Conversion**
+
+- **Non-streaming**: OpenAI responses are unmarshaled directly into `BifrostImageVariationResponse` (which is a type alias for `BifrostImageGenerationResponse`). All fields are passed through as-is.
+- **Streaming**: Not supported for image variation requests.
+
+**Endpoint**: `/v1/images/variations`
+
+---
+
+# 10. Files API
 
 ## Upload
 
@@ -308,7 +416,7 @@ Operations:
 
 ---
 
-# 9. Batch API
+# 11. Batch API
 
 ## Create Batch
 
@@ -347,7 +455,7 @@ Operations:
 
 ---
 
-# 10. List Models
+# 12. List Models
 
 GET `/v1/models` - Lists available models with metadata. Model IDs in Bifrost responses are prefixed with `openai/` (e.g., `openai/gpt-4o`). Results are aggregated from all configured API keys. No request body or parameters required.
 

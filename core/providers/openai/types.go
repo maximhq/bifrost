@@ -675,17 +675,17 @@ func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
 
 // OpenAIImageStreamResponse is the struct for Image Generation streaming responses by OpenAI.
 type OpenAIImageStreamResponse struct {
-	Type              schemas.ImageGenerationEventType `json:"type,omitempty"`
-	SequenceNumber    *int                             `json:"sequence_number,omitempty"`
-	B64JSON           *string                          `json:"b64_json,omitempty"`
-	PartialImageIndex *int                             `json:"partial_image_index,omitempty"`
-	CreatedAt         int64                            `json:"created_at,omitempty"`
-	Size              string                           `json:"size,omitempty"`
-	Quality           string                           `json:"quality,omitempty"`
-	Background        string                           `json:"background,omitempty"`
-	OutputFormat      string                           `json:"output_format,omitempty"`
-	RawSSE            string                           `json:"-"` // For internal use
-	Usage             *schemas.ImageUsage              `json:"usage,omitempty"`
+	Type              schemas.ImageEventType `json:"type,omitempty"`
+	SequenceNumber    *int                   `json:"sequence_number,omitempty"`
+	B64JSON           *string                `json:"b64_json,omitempty"`
+	PartialImageIndex *int                   `json:"partial_image_index,omitempty"`
+	CreatedAt         int64                  `json:"created_at,omitempty"`
+	Size              string                 `json:"size,omitempty"`
+	Quality           string                 `json:"quality,omitempty"`
+	Background        string                 `json:"background,omitempty"`
+	OutputFormat      string                 `json:"output_format,omitempty"`
+	RawSSE            string                 `json:"-"` // For internal use
+	Usage             *schemas.ImageUsage    `json:"usage,omitempty"`
 	// Error fields for error events
 	Error *struct {
 		Code    *string `json:"code,omitempty"`
@@ -693,4 +693,30 @@ type OpenAIImageStreamResponse struct {
 		Param   *string `json:"param,omitempty"`
 		Type    *string `json:"type,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+// OpenAIImageEditRequest is the struct for Image Edit requests in OpenAI format.
+type OpenAIImageEditRequest struct {
+	Model string                  `json:"model"`
+	Input *schemas.ImageEditInput `json:"input"`
+
+	schemas.ImageEditParameters
+
+	Stream    *bool    `json:"stream,omitempty"`
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.
+type OpenAIImageVariationRequest struct {
+	Model string                      `json:"model"`
+	Input *schemas.ImageVariationInput `json:"input"`
+
+	schemas.ImageVariationParameters
+
+	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// IsStreamingRequested implements the StreamingRequest interface
+func (r *OpenAIImageEditRequest) IsStreamingRequested() bool {
+	return r.Stream != nil && *r.Stream
 }

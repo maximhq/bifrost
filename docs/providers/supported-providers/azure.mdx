@@ -25,6 +25,8 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Files | ✅ | - | `/openai/v1/files` |
 | List Models | ✅ | - | `/openai/v1/models` |
 | Image Generation | ✅ | ✅ | `/openai/v1/images/generations` |
+| Image Edit | ✅ | ✅ | `/openai/v1/images/edits` |
+| Image Variation | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -429,7 +431,28 @@ Image generation streaming is supported and uses OpenAI's streaming format with 
 
 ---
 
-# 6. List Models
+# 6. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Image Edit is supported for OpenAI models on Azure and uses the OpenAI-compatible format.
+
+Azure uses the same conversion as OpenAI (see [OpenAI Image Edit](/providers/supported-providers/openai#8-image-edit)):
+
+- **Request Conversion**: Uses `openai.HandleOpenAIImageEditRequest` with Azure-specific URL construction
+- **URL Format**: `{endpoint}/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
+- **Authentication**: Azure API key or OAuth bearer token (via `getAzureAuthHeaders`)
+- **Deployment Mapping**: Model identifier mapped to Azure deployment ID
+- **Response Conversion**: Same as OpenAI - responses unmarshaled directly into `BifrostImageGenerationResponse`
+- **Streaming**: Supported via `openai.HandleOpenAIImageEditStreamRequest` with Azure-specific URL and authentication
+
+**Endpoint**: `/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
+
+---
+
+# 7. List Models
 
 ## Request Parameters
 

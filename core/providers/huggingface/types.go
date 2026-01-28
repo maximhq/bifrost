@@ -463,5 +463,22 @@ type HuggingFaceFalAIImageStreamRequest struct {
 
 // HuggingFaceFalAIImageStreamResponse for fal-ai SSE events
 type HuggingFaceFalAIImageStreamResponse struct {
-	Images []FalAIImage `json:"images"`
+	Data   *FalAIImageData `json:"data,omitempty"`
+	Images []FalAIImage    `json:"images,omitempty"`
+}
+
+// HuggingFaceFalAIImageEditRequest for fal-ai image edit
+type HuggingFaceFalAIImageEditRequest struct {
+	Prompt              string                `json:"prompt"`
+	ImageURL            *string               `json:"image_url,omitempty"`  // For single image models
+	ImageURLs           []string              `json:"image_urls,omitempty"` // For multi-image models
+	NumImages           *int                  `json:"num_images,omitempty"`
+	ImageSize           *HuggingFaceFalAISize `json:"image_size,omitempty"`
+	GuidanceScale       *float64              `json:"guidance_scale,omitempty"`
+	NumInferenceSteps   *int                  `json:"num_inference_steps,omitempty"`
+	SyncMode            *bool                 `json:"sync_mode,omitempty"`
+	Seed                *int                  `json:"seed,omitempty"`
+	OutputFormat        *string               `json:"output_format,omitempty"`
+	EnableSafetyChecker *bool                 `json:"enable_safety_checker,omitempty"`
+	Acceleration        *string               `json:"acceleration,omitempty"`
 }

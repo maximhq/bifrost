@@ -30,6 +30,7 @@ func TestVertex(t *testing.T) {
 		EmbeddingModel:       "text-multilingual-embedding-002",
 		ReasoningModel:       "claude-4.5-haiku",
 		ImageGenerationModel: "gemini-2.5-flash-image",
+		ImageEditModel:       "imagen-3.0-capability-001",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -44,6 +45,7 @@ func TestVertex(t *testing.T) {
 			ImageBase64:           true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			FileBase64:            true,

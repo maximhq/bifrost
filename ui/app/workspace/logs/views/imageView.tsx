@@ -5,6 +5,7 @@ import { BifrostImageGenerationOutput } from "@/lib/types/logs";
 import { Image, ChevronLeft, ChevronRight } from "lucide-react";
 import { ImageMessage } from "@/components/chat/ImageMessage";
 import { Button } from "@/components/ui/button";
+import { RequestTypeLabels } from "@/lib/constants/logs";
 
 interface ImageGenerationInput {
 	prompt: string;
@@ -13,15 +14,33 @@ interface ImageGenerationInput {
 interface ImageViewProps {
 	imageInput?: ImageGenerationInput;
 	imageOutput?: BifrostImageGenerationOutput;
+	requestType?: string;
 }
 
-export default function ImageView({ imageInput, imageOutput }: ImageViewProps) {
+// Helper function to get method type label from request type
+function getMethodTypeLabel(requestType?: string): string {
+	if (!requestType) return "Image Generation";
+	
+	const normalizedType = requestType.toLowerCase();
+	if (normalizedType.includes("image_edit")) {
+		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Edit";
+	}
+	if (normalizedType.includes("image_variation")) {
+		return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Variation";
+	}
+	return RequestTypeLabels[normalizedType as keyof typeof RequestTypeLabels] || "Image Generation";
+}
+
+export default function ImageView({ imageInput, imageOutput, requestType }: ImageViewProps) {
 	const [currentIndex, setCurrentIndex] = useState(0);
 
 	// Get all valid images
 	const images = imageOutput?.data?.filter(img => img.url || img.b64_json) ?? [];
 	const totalImages = images.length;
 	const currentImage = images[currentIndex] ?? null;
+
+	// Get method type label
+	const methodTypeLabel = getMethodTypeLabel(requestType);
 
 	// Clamp currentIndex when images array changes to ensure it's always valid
 	useEffect(() => {
@@ -38,12 +57,12 @@ export default function ImageView({ imageInput, imageOutput }: ImageViewProps) {
 
 	return (
 		<div className="space-y-4">
-			{/* Image Generation Input */}
+			{/* Image Input */}
 			{imageInput && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<Image className="h-4 w-4" />
-						Image Generation Input
+						{methodTypeLabel} Input
 					</div>
 					<div className="space-y-4 p-6">
 						<div className="text-muted-foreground mb-2 text-xs font-medium">PROMPT</div>
@@ -52,12 +71,12 @@ export default function ImageView({ imageInput, imageOutput }: ImageViewProps) {
 				</div>
 			)}
 
-			{/* Image Generation Output */}
+			{/* Image Output */}
 			{(currentImage) && (
 				<div className="w-full rounded-sm border">
 					<div className="flex items-center gap-2 border-b px-6 py-2 text-sm font-medium">
 						<Image className="h-4 w-4" />
-						Image Generation Output
+						{methodTypeLabel} Output
 					</div>
 					<div className="space-y-4 p-6">
 						{currentImage && (

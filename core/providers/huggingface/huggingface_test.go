@@ -33,6 +33,7 @@ func TestHuggingface(t *testing.T) {
 		},
 		ReasoningModel:       "groq/openai/gpt-oss-120b",
 		ImageGenerationModel: "fal-ai/fal-ai/flux/dev",
+		ImageEditModel:       "fal-ai/fal-ai/flux-2/edit",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -68,6 +69,8 @@ func TestHuggingface(t *testing.T) {
 			FileBatchInput:        false,
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,
+			ImageEditStream:       true,
 		},
 	}
 

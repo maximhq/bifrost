@@ -39,6 +39,8 @@ func TestOpenAI(t *testing.T) {
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ReasoningModel:       "o1",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "gpt-image-1",
+		ImageVariationModel:  "dall-e-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: testutil.TestScenarios{
 			TextCompletion:        true,
@@ -67,6 +69,9 @@ func TestOpenAI(t *testing.T) {
 			ListModels:            true,
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,
+			ImageEditStream:       true,
+			ImageVariation:        true,
 			BatchCreate:           true,
 			BatchList:             true,
 			BatchRetrieve:         true,

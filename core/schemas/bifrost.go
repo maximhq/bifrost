@@ -101,6 +101,9 @@ const (
 	TranscriptionStreamRequest   RequestType = "transcription_stream"
 	ImageGenerationRequest       RequestType = "image_generation"
 	ImageGenerationStreamRequest RequestType = "image_generation_stream"
+	ImageEditRequest             RequestType = "image_edit"
+	ImageEditStreamRequest       RequestType = "image_edit_stream"
+	ImageVariationRequest        RequestType = "image_variation"
 	BatchCreateRequest           RequestType = "batch_create"
 	BatchListRequest             RequestType = "batch_list"
 	BatchRetrieveRequest         RequestType = "batch_retrieve"
@@ -202,6 +205,8 @@ type BifrostRequest struct {
 	SpeechRequest                *BifrostSpeechRequest
 	TranscriptionRequest         *BifrostTranscriptionRequest
 	ImageGenerationRequest       *BifrostImageGenerationRequest
+	ImageEditRequest             *BifrostImageEditRequest
+	ImageVariationRequest        *BifrostImageVariationRequest
 	FileUploadRequest            *BifrostFileUploadRequest
 	FileListRequest              *BifrostFileListRequest
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
@@ -242,6 +247,10 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks
 	case br.ImageGenerationRequest != nil:
 		return br.ImageGenerationRequest.Provider, br.ImageGenerationRequest.Model, br.ImageGenerationRequest.Fallbacks
+	case br.ImageEditRequest != nil:
+		return br.ImageEditRequest.Provider, br.ImageEditRequest.Model, br.ImageEditRequest.Fallbacks
+	case br.ImageVariationRequest != nil:
+		return br.ImageVariationRequest.Provider, br.ImageVariationRequest.Model, br.ImageVariationRequest.Fallbacks
 	case br.FileUploadRequest != nil:
 		if br.FileUploadRequest.Model != nil {
 			return br.FileUploadRequest.Provider, *br.FileUploadRequest.Model, nil
@@ -332,6 +341,10 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.TranscriptionRequest.Provider = provider
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Provider = provider
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Provider = provider
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Provider = provider
 	}
 }
 
@@ -353,6 +366,10 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.TranscriptionRequest.Model = model
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Model = model
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Model = model
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Model = model
 	}
 }
 
@@ -374,6 +391,10 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.TranscriptionRequest.Fallbacks = fallbacks
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Fallbacks = fallbacks
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Fallbacks = fallbacks
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -395,6 +416,10 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.TranscriptionRequest.RawRequestBody = rawRequestBody
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.RawRequestBody = rawRequestBody
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.RawRequestBody = rawRequestBody
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.RawRequestBody = rawRequestBody
 	}
 }
 

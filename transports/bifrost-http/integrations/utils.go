@@ -43,7 +43,7 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 	}
 }
 
-// safeGetRequestType safely obtains the request type from a BifrostStream chunk.
+// safeGetRequestType safely obtains the request type from a BifrostStreamChunk chunk.
 // It checks multiple sources in order of preference:
 // 1. Response ExtraFields if any response is available
 // 2. BifrostError ExtraFields if error is available and not nil

@@ -1,11 +1,14 @@
 package schemas
 
-type ImageGenerationEventType string
+type ImageEventType string
 
 const (
-	ImageGenerationEventTypePartial   ImageGenerationEventType = "image_generation.partial_image"
-	ImageGenerationEventTypeCompleted ImageGenerationEventType = "image_generation.completed"
-	ImageGenerationEventTypeError     ImageGenerationEventType = "error"
+	ImageGenerationEventTypePartial   ImageEventType = "image_generation.partial_image"
+	ImageGenerationEventTypeCompleted ImageEventType = "image_generation.completed"
+	ImageGenerationEventTypeError     ImageEventType = "error"
+	ImageEditEventTypePartial         ImageEventType = "image_edit.partial_image"
+	ImageEditEventTypeCompleted       ImageEventType = "image_edit.completed"
+	ImageEditEventTypeError           ImageEventType = "error"
 )
 
 // BifrostImageGenerationRequest represents an image generation request in bifrost format
@@ -89,7 +92,7 @@ type ImageTokenDetails struct {
 // Streaming Response
 type BifrostImageGenerationStreamResponse struct {
 	ID                string                     `json:"id,omitempty"`
-	Type              ImageGenerationEventType   `json:"type,omitempty"`
+	Type              ImageEventType             `json:"type,omitempty"`
 	Index             int                        `json:"-"` // Which image (0-N)
 	ChunkIndex        int                        `json:"-"` // Chunk order within image
 	PartialImageIndex *int                       `json:"partial_image_index,omitempty"`
@@ -108,3 +111,77 @@ type BifrostImageGenerationStreamResponse struct {
 	RawResponse       string                     `json:"-"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
+
+// BifrostImageEditRequest represents an image edit request in bifrost format
+type BifrostImageEditRequest struct {
+	Provider       ModelProvider        `json:"provider"`
+	Model          string               `json:"model"`
+	Input          *ImageEditInput      `json:"input"`
+	Params         *ImageEditParameters `json:"params,omitempty"`
+	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
+	RawRequestBody []byte               `json:"-"`
+}
+
+// GetRawRequestBody implements [utils.RequestBodyGetter].
+func (b *BifrostImageEditRequest) GetRawRequestBody() []byte {
+	return b.RawRequestBody
+}
+
+type ImageEditInput struct {
+	Images []ImageInput `json:"images"`
+	Prompt string       `json:"prompt"`
+}
+
+type ImageInput struct {
+	Image []byte `json:"image"`
+}
+
+type ImageEditParameters struct {
+	Type              *string                `json:"type,omitempty"`           // "inpainting", "outpainting", "background_removal",
+	Background        *string                `json:"background,omitempty"`     // "transparent", "opaque", "auto"
+	InputFidelity     *string                `json:"input_fidelity,omitempty"` // "low", "high"
+	Mask              []byte                 `json:"mask,omitempty"`
+	N                 *int                   `json:"n,omitempty"`                  // number of images to generate (1-10)
+	OutputCompression *int                   `json:"output_compression,omitempty"` // compression level (0-100%)
+	OutputFormat      *string                `json:"output_format,omitempty"`      // "png", "webp", "jpeg"
+	PartialImages     *int                   `json:"partial_images,omitempty"`     // 0-3
+	Quality           *string                `json:"quality,omitempty"`            // "auto", "high", "medium", "low", "standard"
+	ResponseFormat    *string                `json:"response_format,omitempty"`    // "url", "b64_json"
+	Size              *string                `json:"size,omitempty"`               // "256x256", "512x512", "1024x1024", "1536x1024", "1024x1536", "auto"
+	User              *string                `json:"user,omitempty"`
+	NegativePrompt    *string                `json:"negative_prompt,omitempty"`     // negative prompt for image editing
+	Seed              *int                   `json:"seed,omitempty"`                // seed for image editing
+	NumInferenceSteps *int                   `json:"num_inference_steps,omitempty"` // number of inference steps
+	ExtraParams       map[string]interface{} `json:"-"`
+}
+
+// BifrostImageVariationRequest represents an image variation request in bifrost format
+type BifrostImageVariationRequest struct {
+	Provider       ModelProvider             `json:"provider"`
+	Model          string                    `json:"model"`
+	Input          *ImageVariationInput      `json:"input"`
+	Params         *ImageVariationParameters `json:"params,omitempty"`
+	Fallbacks      []Fallback                `json:"fallbacks,omitempty"`
+	RawRequestBody []byte                    `json:"-"`
+}
+
+// GetRawRequestBody implements [utils.RequestBodyGetter].
+func (b *BifrostImageVariationRequest) GetRawRequestBody() []byte {
+	return b.RawRequestBody
+}
+
+type ImageVariationInput struct {
+	Image ImageInput `json:"image"`
+}
+
+type ImageVariationParameters struct {
+	N              *int                   `json:"n,omitempty"`               // Number of images (1-10)
+	ResponseFormat *string                `json:"response_format,omitempty"` // "url", "b64_json"
+	Size           *string                `json:"size,omitempty"`            // "256x256", "512x512", "1024x1024", "1792x1024", "1024x1792", "1536x1024", "1024x1536", "auto"
+	User           *string                `json:"user,omitempty"`
+	ExtraParams    map[string]interface{} `json:"-"`
+}
+
+// BifrostImageVariationResponse represents the image variation response in bifrost format
+// It uses the same structure as image generation response
+type BifrostImageVariationResponse = BifrostImageGenerationResponse

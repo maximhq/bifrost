@@ -1127,6 +1127,178 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
+// ImageEditRequest sends an image edit request to the specified provider.
+func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image edit request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ImageEditRequest,
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "images not provided for image edit request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageEditRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	// Prompt is not required when type is background_removal
+	if req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal" {
+		if req.Input.Prompt == "" {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "prompt not provided for image edit request",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ImageEditRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
+				},
+			}
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageEditRequest
+	bifrostReq.ImageEditRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	if response == nil || response.ImageGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageEditRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	return response.ImageGenerationResponse, nil
+}
+
+// ImageEditStreamRequest sends an image edit stream request to the specified provider.
+func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image edit stream request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ImageEditStreamRequest,
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "images not provided for image edit stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageEditStreamRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	// Prompt is not required when type is background_removal
+	if req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal" {
+		if req.Input.Prompt == "" {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "prompt not provided for image edit stream request",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ImageEditStreamRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
+				},
+			}
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageEditStreamRequest
+	bifrostReq.ImageEditRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
+}
+
+// ImageVariationRequest sends an image variation request to the specified provider.
+func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image variation request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ImageVariationRequest,
+			},
+		}
+	}
+	if req.Input == nil || req.Input.Image.Image == nil || len(req.Input.Image.Image) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "image not provided for image variation request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageVariationRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ImageVariationRequest
+	bifrostReq.ImageVariationRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	if response == nil || response.ImageGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageVariationRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	return response.ImageGenerationResponse, nil
+}
+
 // BatchCreateRequest creates a new batch job for asynchronous processing.
 func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -3997,6 +4169,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.ImageGenerationResponse = imageResponse
+	case schemas.ImageEditRequest:
+		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageGenerationResponse = imageEditResponse
+	case schemas.ImageVariationRequest:
+		imageVariationResponse, bifrostError := provider.ImageVariation(req.Context, key, req.BifrostRequest.ImageVariationRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ImageGenerationResponse = imageVariationResponse
 	case schemas.FileUploadRequest:
 		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
 		if bifrostError != nil {
@@ -4143,6 +4327,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.TranscriptionStream(req.Context, postHookRunner, key, req.BifrostRequest.TranscriptionRequest)
 	case schemas.ImageGenerationStreamRequest:
 		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
+	case schemas.ImageEditStreamRequest:
+		return provider.ImageEditStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageEditRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -4457,6 +4643,8 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
 	req.ImageGenerationRequest = nil
+	req.ImageEditRequest = nil
+	req.ImageVariationRequest = nil
 	req.FileUploadRequest = nil
 	req.FileListRequest = nil
 	req.FileRetrieveRequest = nil

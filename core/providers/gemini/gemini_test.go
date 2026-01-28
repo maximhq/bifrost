@@ -36,6 +36,7 @@ func TestGemini(t *testing.T) {
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
 		ImageGenerationModel: "gemini-2.5-flash-image",
+		ImageEditModel:       "gemini-3-pro-image-preview",
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
@@ -56,6 +57,7 @@ func TestGemini(t *testing.T) {
 			MultipleImages:        false,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             true,
 			FileBase64:            true,
 			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,

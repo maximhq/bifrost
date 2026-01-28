@@ -464,7 +464,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
 	// Edit images/ Image variation requests will be added here
-	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest
+	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
