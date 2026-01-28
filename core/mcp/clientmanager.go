@@ -681,7 +681,6 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	// Release lock BEFORE starting monitors to prevent deadlock
 	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
 	m.mu.Unlock()
-
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
