@@ -760,6 +760,78 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
+// This is used to detect changes to routing rules between config.json and database.
+// Skips: CreatedAt, UpdatedAt (dynamic fields)
+func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
+	hash := sha256.New()
+
+	// Hash ID
+	hash.Write([]byte(r.ID))
+
+	// Hash Name
+	hash.Write([]byte(r.Name))
+
+	// Hash Description
+	hash.Write([]byte(r.Description))
+
+	// Hash Enabled
+	if r.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+
+	// Hash CelExpression
+	hash.Write([]byte(r.CelExpression))
+
+	// Hash Provider
+	hash.Write([]byte(r.Provider))
+
+	// Hash Model
+	hash.Write([]byte(r.Model))
+
+	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
+	if r.Fallbacks != nil {
+		hash.Write([]byte(*r.Fallbacks))
+	} else if len(r.ParsedFallbacks) > 0 {
+		data, err := sonic.Marshal(r.ParsedFallbacks)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Query: use raw string when set, else marshal ParsedQuery (config-origin)
+	// Use OrderedMap's deterministic marshalling to ensure consistent hashes across runs
+	if r.Query != nil {
+		hash.Write([]byte(*r.Query))
+	} else if len(r.ParsedQuery) > 0 {
+		// Convert map to OrderedMap which has deterministic JSON marshalling with sorted keys
+		orderedMap := schemas.OrderedMap(r.ParsedQuery)
+		data, err := sonic.Marshal(orderedMap)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Scope
+	hash.Write([]byte(r.Scope))
+
+	// Hash ScopeID (nil = global)
+	scopeID := ""
+	if r.ScopeID != nil {
+		scopeID = *r.ScopeID
+	}
+	hash.Write([]byte(scopeID))
+
+	// Hash Priority
+	hash.Write([]byte(strconv.Itoa(r.Priority)))
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -891,5 +963,6 @@ type GovernanceConfig struct {
 	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
 	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
 	Providers    []tables.TableProvider    `json:"providers"`
+	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
 	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
 }

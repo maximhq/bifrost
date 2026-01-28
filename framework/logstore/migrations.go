@@ -55,6 +55,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddImageGenerationInputColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddVirtualKeyColumnsToMCPToolLogs(ctx, db); err != nil {
 		return err
 	}
@@ -868,6 +871,49 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) er
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding image generation input column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_rule_id_and_routing_rule_name_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing rule id and routing rule name columns: %s", err.Error())
 	}
 	return nil
 }

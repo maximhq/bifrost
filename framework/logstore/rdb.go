@@ -61,6 +61,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.VirtualKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
 	}
+	if len(filters.RoutingRuleIDs) > 0 {
+		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
+	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
 	}

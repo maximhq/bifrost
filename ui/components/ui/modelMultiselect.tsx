@@ -65,9 +65,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			? [{ label: stringValue, value: stringValue }]
 			: []
 		: arrayValue.map((model) => ({
-				label: model,
-				value: model,
-			}));
+			label: model,
+			value: model,
+		}));
 
 	// Fetch initial models on mount or when provider/keys change
 	useEffect(() => {
@@ -177,8 +177,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			isLoading={isLoading}
 			placeholder={placeholder}
 			disabled={shouldBeDisabled}
-			className={cn("!min-h-10 w-full", className)}
-			triggerClassName="!shadow-none !border-border !min-h-10 px-1"
+			className={cn("!min-h-9 w-full", className)}
+			triggerClassName="!shadow-none !border-border !min-h-9 px-1"
 			menuClassName="!z-[100] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 			isClearable={false}
 			closeMenuOnSelect={isSingleSelect}

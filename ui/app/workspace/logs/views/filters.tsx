@@ -74,10 +74,12 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	const availableModels = filterData?.models || [];
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const availableVirtualKeys = filterData?.virtual_keys || [];
+	const availableRoutingRules = filterData?.routing_rules || [];
 
 	// Create mappings from name to ID for keys and virtual keys
 	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
 	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
+	const routingRuleNameToId = new Map(availableRoutingRules.map((rule) => [rule.name, rule.id]));
 
 	// Sync local date state when filters change from URL
 	useEffect(() => {
@@ -134,6 +136,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			Models: "models",
 			"Selected Keys": "selected_key_ids",
 			"Virtual Keys": "virtual_key_ids",
+			"Routing Rules": "routing_rule_ids",
 		};
 
 		const filterKey = filterKeyMap[category];
@@ -144,6 +147,8 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			valueToStore = selectedKeyNameToId.get(value) || value;
 		} else if (category === "Virtual Keys") {
 			valueToStore = virtualKeyNameToId.get(value) || value;
+		} else if (category === "Routing Rules") {
+			valueToStore = routingRuleNameToId.get(value) || value;
 		}
 
 		const currentValues = (filters[filterKey] as string[]) || [];
@@ -165,6 +170,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			Models: "models",
 			"Selected Keys": "selected_key_ids",
 			"Virtual Keys": "virtual_key_ids",
+			"Routing Rules": "routing_rule_ids",
 		};
 
 		const filterKey = filterKeyMap[category];
@@ -176,6 +182,8 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			valueToCheck = selectedKeyNameToId.get(value) || value;
 		} else if (category === "Virtual Keys") {
 			valueToCheck = virtualKeyNameToId.get(value) || value;
+		} else if (category === "Routing Rules") {
+			valueToCheck = routingRuleNameToId.get(value) || value;
 		}
 
 		return Array.isArray(currentValues) && currentValues.includes(valueToCheck);
@@ -203,6 +211,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 		Models: filterDataLoading ? ["Loading models..."] : availableModels,
 		"Selected Keys": filterDataLoading ? ["Loading selected keys..."] : availableSelectedKeys.map((key) => key.name),
 		"Virtual Keys": filterDataLoading ? ["Loading virtual keys..."] : availableVirtualKeys.map((key) => key.name),
+		"Routing Rules": filterDataLoading ? ["Loading routing rules..."] : availableRoutingRules.map((rule) => rule.name),
 	} as const;
 
 	return (
@@ -281,13 +290,14 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 								.filter(([_, values]) => values.length > 0)
 								.map(([category, values]) => (
 									<CommandGroup key={category} heading={category}>
-										{values.map((value) => {
+										{values.map((value: string) => {
 											const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
 											const isLoading =
 												(category === "Providers" && providersLoading) ||
 												(category === "Models" && filterDataLoading) ||
 												(category === "Selected Keys" && filterDataLoading) ||
-												(category === "Virtual Keys" && filterDataLoading);
+												(category === "Virtual Keys" && filterDataLoading) ||
+												(category === "Routing Rules" && filterDataLoading);
 											return (
 												<CommandItem
 													key={value}

@@ -51,6 +51,9 @@ type LogManager interface {
 	// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
 	GetAvailableVirtualKeys(ctx context.Context) []KeyPair
 
+	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
+	GetAvailableRoutingRules(ctx context.Context) []KeyPair
+
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
 
@@ -144,6 +147,11 @@ func (p *PluginLogManager) GetAvailableSelectedKeys(ctx context.Context) []KeyPa
 // GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
 func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
 	return p.plugin.GetAvailableVirtualKeys(ctx)
+}
+
+// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
+func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableRoutingRules(ctx)
 }
 
 // DeleteLog deletes a log from the log store

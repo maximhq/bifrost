@@ -570,3 +570,198 @@ TableKey:
     bedrock_arn:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
       nullable: true
+
+# Routing Rules schemas
+
+RoutingRule:
+  type: object
+  description: CEL-based routing rule for intelligent request routing
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the routing rule
+    name:
+      type: string
+      description: Name of the routing rule
+    description:
+      type: string
+      description: Description of what the rule does
+    enabled:
+      type: boolean
+      description: Whether the rule is enabled and active
+    cel_expression:
+      type: string
+      description: CEL (Common Expression Language) expression for matching
+    provider:
+      type: string
+      description: Target provider (empty string uses incoming request provider)
+      nullable: true
+    model:
+      type: string
+      description: Target model (empty string uses incoming request model)
+      nullable: true
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback providers in format "provider/model"
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key]
+      description: Scope level for the rule
+    scope_id:
+      type: string
+      description: ID for the scope (empty for global scope)
+      nullable: true
+    priority:
+      type: integer
+      description: Priority for rule evaluation (lower number = higher priority)
+    query:
+      type: object
+      description: Visual rule tree structure from query builder
+      nullable: true
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+  oneOf:
+    - type: object
+      properties:
+        scope:
+          type: string
+          enum: [global]
+      required:
+        - scope
+      description: Global scope routing rule
+    - type: object
+      properties:
+        scope:
+          type: string
+          enum: [team, customer, virtual_key]
+        scope_id:
+          type: string
+      required:
+        - scope
+        - scope_id
+      description: Scoped routing rule (requires scope_id)
+
+CreateRoutingRuleRequest:
+  type: object
+  description: Request to create a routing rule
+  required:
+    - name
+    - cel_expression
+    - scope
+    - priority
+  properties:
+    name:
+      type: string
+      description: Name of the routing rule
+    description:
+      type: string
+      description: Optional description
+    enabled:
+      type: boolean
+      description: Whether the rule is enabled
+    cel_expression:
+      type: string
+      description: CEL expression for matching
+    provider:
+      type: string
+      description: Target provider (optional, empty uses incoming)
+      nullable: true
+    model:
+      type: string
+      description: Target model (optional, empty uses incoming)
+      nullable: true
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback providers in format "provider/model"
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key]
+      description: Scope level for the rule
+    scope_id:
+      type: string
+      description: ID for the scope (required if scope is not global)
+      nullable: true
+    priority:
+      type: integer
+      description: Priority for rule evaluation (lower number = higher priority)
+    query:
+      type: object
+      description: Visual rule tree structure
+      nullable: true
+  oneOf:
+    - type: object
+      properties:
+        scope:
+          type: string
+          enum: [global]
+      required:
+        - scope
+      description: Global scope routing rule
+    - type: object
+      properties:
+        scope:
+          type: string
+          enum: [team, customer, virtual_key]
+        scope_id:
+          type: string
+      required:
+        - scope
+        - scope_id
+      description: Scoped routing rule (requires scope_id)
+
+UpdateRoutingRuleRequest:
+  type: object
+  description: Request to update a routing rule
+  properties:
+    name:
+      type: string
+    description:
+      type: string
+    enabled:
+      type: boolean
+    cel_expression:
+      type: string
+    provider:
+      type: string
+      nullable: true
+    model:
+      type: string
+      nullable: true
+    fallbacks:
+      type: array
+      items:
+        type: string
+    priority:
+      type: integer
+    query:
+      type: object
+      nullable: true
+
+RoutingRuleResponse:
+  type: object
+  description: Response containing created/updated routing rule
+  properties:
+    message:
+      type: string
+    rule:
+      $ref: '#/RoutingRule'
+
+ListRoutingRulesResponse:
+  type: object
+  description: Response containing list of routing rules
+  properties:
+    rules:
+      type: array
+      items:
+        $ref: '#/RoutingRule'
+    count:
+      type: integer
+      description: Number of routing rules returned

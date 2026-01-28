@@ -481,9 +481,9 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 	assert.Equal(t, DecisionAllow, result.Decision)
 
 	// Check context was populated
-	vkID, _ := ctx.Value(schemas.BifrostContextKey("bf-governance-virtual-key-id")).(string)
-	teamID, _ := ctx.Value(schemas.BifrostContextKey("bf-governance-team-id")).(string)
-	customerID, _ := ctx.Value(schemas.BifrostContextKey("bf-governance-customer-id")).(string)
+	vkID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+	teamID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string)
+	customerID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string)
 
 	assert.Equal(t, "vk1", vkID)
 	assert.Equal(t, "team1", teamID)

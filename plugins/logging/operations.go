@@ -55,6 +55,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	data *UpdateLogData,
@@ -71,6 +73,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -199,6 +207,8 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	selectedKeyName string,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	streamResponse *streaming.ProcessedStreamResponse,
@@ -213,6 +223,12 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -427,6 +443,23 @@ func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
 			return KeyPair{
 				ID:   *log.VirtualKeyID,
 				Name: *log.VirtualKeyName,
+			}
+		}
+		return KeyPair{}
+	})
+}
+
+func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
+	result, err := p.store.FindAll(ctx, "routing_rule_id IS NOT NULL AND routing_rule_id != '' AND routing_rule_name IS NOT NULL AND routing_rule_name != ''", "routing_rule_id, routing_rule_name")
+	if err != nil {
+		p.logger.Error("failed to get available routing rules: %w", err)
+		return []KeyPair{}
+	}
+	return p.extractUniqueKeyPairs(result, func(log *logstore.Log) KeyPair {
+		if log.RoutingRuleID != nil && log.RoutingRuleName != nil {
+			return KeyPair{
+				ID:   *log.RoutingRuleID,
+				Name: *log.RoutingRuleName,
 			}
 		}
 		return KeyPair{}
