@@ -66,6 +66,8 @@ type LogMessage struct {
 	SelectedKeyName    string                             // Selected key name
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
+	RoutingRuleID      string                             // Routing rule ID
+	RoutingRuleName    string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
@@ -372,8 +374,10 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 	}
 	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
 	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
@@ -397,8 +401,10 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 		logMsg.RequestID = requestID
 		logMsg.SelectedKeyID = selectedKeyID
 		logMsg.VirtualKeyID = virtualKeyID
+		logMsg.RoutingRuleID = routingRuleID
 		logMsg.SelectedKeyName = selectedKeyName
 		logMsg.VirtualKeyName = virtualKeyName
+		logMsg.RoutingRuleName = routingRuleName
 		logMsg.NumberOfRetries = numberOfRetries
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
@@ -437,6 +443,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.RoutingRuleID,
+					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,
@@ -487,6 +495,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 						logMsg.SelectedKeyName,
 						logMsg.VirtualKeyID,
 						logMsg.VirtualKeyName,
+						logMsg.RoutingRuleID,
+						logMsg.RoutingRuleName,
 						logMsg.NumberOfRetries,
 						logMsg.SemanticCacheDebug,
 						logMsg.StreamResponse,
@@ -635,6 +645,8 @@ func (p *LoggerPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.Bif
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.RoutingRuleID,
+					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,

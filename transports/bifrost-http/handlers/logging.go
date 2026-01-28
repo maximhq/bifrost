@@ -78,6 +78,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
 	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -238,6 +241,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
 	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -320,6 +326,9 @@ func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -430,6 +439,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {

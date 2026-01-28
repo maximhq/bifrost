@@ -316,8 +316,8 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 		return result, bifrostErr, nil
 	}
 
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
 	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -325,10 +325,10 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
-	teamID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-id"))
-	teamName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-name"))
-	customerID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
-	customerName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
+	teamID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{

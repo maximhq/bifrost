@@ -33,7 +33,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, and customers
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -544,7 +544,10 @@ paths:
     $ref: './paths/management/governance.yaml#/budgets'
   /api/governance/rate-limits:
     $ref: './paths/management/governance.yaml#/rate-limits'
-
+  /api/governance/routing-rules:
+    $ref: './paths/management/governance.yaml#/routing-rules'
+  /api/governance/routing-rules/{rule_id}:
+    $ref: './paths/management/governance.yaml#/routing-rules-by-id'
 
   # Logging
   /api/logs:
