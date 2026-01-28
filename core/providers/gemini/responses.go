@@ -67,7 +67,6 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	bifrostReq.Params = params
 
 	return bifrostReq
-
 }
 
 func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *GeminiGenerationRequest {
@@ -2307,8 +2306,7 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 				},
 			}
 			if len(candidate.GroundingMetadata.WebSearchQueries) > 0 {
-				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query =
-					schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
+				webSearchmessage.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Query = schemas.Ptr(candidate.GroundingMetadata.WebSearchQueries[0])
 			}
 
 			sources := []schemas.ResponsesWebSearchToolCallActionSearchSource{}

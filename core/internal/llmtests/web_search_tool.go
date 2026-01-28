@@ -74,7 +74,6 @@ func RunWebSearchToolTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 		// Execute test with retry - Responses API only for web search
 		response, err := WithResponsesTestRetry(t, retryConfig, retryContext, expectations, "WebSearchTool", responsesOperation)
-
 		// Validate success
 		if err != nil {
 			t.Fatalf("❌ WebSearchTool test failed: %s", GetErrorMessage(err))
@@ -396,7 +395,6 @@ func RunWebSearchToolWithDomainsTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		}
 
 		response, err := WithResponsesTestRetry(t, retryConfig, retryContext, expectations, "WebSearchToolWithDomains", responsesOperation)
-
 		if err != nil {
 			t.Fatalf("❌ WebSearchToolWithDomains test failed: %s", GetErrorMessage(err))
 		}
@@ -500,7 +498,6 @@ func RunWebSearchToolContextSizesTest(t *testing.T, client *bifrost.Bifrost, ctx
 				}
 
 				response, err := WithResponsesTestRetry(t, retryConfig, retryContext, expectations, "WebSearchToolContextSize", responsesOperation)
-
 				if err != nil {
 					t.Fatalf("❌ WebSearchToolContextSize (%s) test failed: %s", size, GetErrorMessage(err))
 				}
@@ -594,7 +591,6 @@ func RunWebSearchToolMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		}
 
 		firstResponse, err := WithResponsesTestRetry(t, retryConfig, retryContext1, expectations, "WebSearchToolMultiTurn_Turn1", firstOperation)
-
 		if err != nil {
 			t.Fatalf("❌ First turn failed: %s", GetErrorMessage(err))
 		}
@@ -649,7 +645,6 @@ func RunWebSearchToolMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		}
 
 		secondResponse, err := WithResponsesTestRetry(t, retryConfig, retryContext2, expectations, "WebSearchToolMultiTurn_Turn2", secondOperation)
-
 		if err != nil {
 			t.Fatalf("❌ Second turn failed: %s", GetErrorMessage(err))
 		}
@@ -737,7 +732,6 @@ func RunWebSearchToolMaxUsesTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 		}
 
 		response, err := WithResponsesTestRetry(t, retryConfig, retryContext, expectations, "WebSearchToolMaxUses", responsesOperation)
-
 		if err != nil {
 			t.Fatalf("❌ WebSearchToolMaxUses test failed: %s", GetErrorMessage(err))
 		}

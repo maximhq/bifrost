@@ -52,7 +52,7 @@ type OpenAIChatRequest struct {
 	schemas.ChatParameters
 	Stream *bool `json:"stream,omitempty"`
 
-	//NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
+	// NOTE: MaxCompletionTokens is a new replacement for max_tokens but some providers still use max_tokens.
 	// This Field is populated only for such providers and is NOT to be used externally.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 

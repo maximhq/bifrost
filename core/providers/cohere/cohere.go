@@ -5,13 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"net/http"
-	"net/url"
 
 	"github.com/bytedance/sonic"
 

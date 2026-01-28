@@ -168,7 +168,7 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 // NOTE: This only gets called when a new custom provider is added
 func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// Payload structure
-	var payload = struct {
+	payload := struct {
 		Provider                 schemas.ModelProvider             `json:"provider"`
 		Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider
 		NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
@@ -299,7 +299,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	var payload = struct {
+	payload := struct {
 		Keys                     []schemas.Key                    `json:"keys"`                             // API keys for the provider
 		NetworkConfig            schemas.NetworkConfig            `json:"network_config"`                   // Network-related settings
 		ConcurrencyAndBufferSize schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"`      // Concurrency settings

@@ -61,7 +61,7 @@ func DownloadPlugin(url string, extension string) (string, error) {
 
 	// Set file permissions to be executable (for .so files)
 	if extension == ".so" {
-		err = os.Chmod(tempPath, 0755)
+		err = os.Chmod(tempPath, 0o755)
 		if err != nil {
 			os.Remove(tempPath)
 			return "", fmt.Errorf("failed to set executable permissions on plugin: %w", err)

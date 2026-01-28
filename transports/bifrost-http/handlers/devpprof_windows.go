@@ -10,4 +10,3 @@ import "time"
 func getCPUSample() cpuSample {
 	return cpuSample{timestamp: time.Now()}
 }
-

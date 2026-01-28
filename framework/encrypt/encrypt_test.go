@@ -216,7 +216,7 @@ func TestKDFDeterministic(t *testing.T) {
 
 	// Re-initialize with same passphrase (simulating restart)
 	Init(passphrase, bifrost.NewDefaultLogger(schemas.LogLevelInfo))
-	
+
 	// Should be able to decrypt the previously encrypted data
 	decrypted, err := Decrypt(encrypted1)
 	if err != nil {

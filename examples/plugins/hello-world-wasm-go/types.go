@@ -55,16 +55,16 @@ type PostHookOutput struct {
 
 // HTTPStreamChunkHookInput is the input for http_stream_chunk_hook
 type HTTPStreamChunkHookInput struct {
-	Context map[string]interface{}     `json:"context"`
-	Request *schemas.HTTPRequest       `json:"request,omitempty"`
+	Context map[string]interface{}      `json:"context"`
+	Request *schemas.HTTPRequest        `json:"request,omitempty"`
 	Chunk   *schemas.BifrostStreamChunk `json:"chunk,omitempty"`
 }
 
 // HTTPStreamChunkHookOutput is the output for http_stream_chunk_hook
 type HTTPStreamChunkHookOutput struct {
-	Context  map[string]interface{}     `json:"context"`
+	Context  map[string]interface{}      `json:"context"`
 	Chunk    *schemas.BifrostStreamChunk `json:"chunk,omitempty"`
-	HasChunk bool                       `json:"has_chunk"`
-	Skip     bool                       `json:"skip"`
-	Error    string                     `json:"error"`
+	HasChunk bool                        `json:"has_chunk"`
+	Skip     bool                        `json:"skip"`
+	Error    string                      `json:"error"`
 }

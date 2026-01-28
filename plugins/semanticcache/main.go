@@ -520,8 +520,8 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	// Check cache type to optimize embedding handling
 	var embedding []float32
 	var hash string
-	var shouldStoreEmbeddings = true
-	var shouldStoreHash = true
+	shouldStoreEmbeddings := true
+	shouldStoreHash := true
 
 	if ctx.Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)

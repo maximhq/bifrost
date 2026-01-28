@@ -12,7 +12,6 @@ import (
 
 // buildCompleteImageFromImageStreamChunks builds a complete image generation response from accumulated chunks
 func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStreamChunk) *schemas.BifrostImageGenerationResponse {
-
 	// Special case for final chunk, return the complete image response
 	for i := range len(chunks) {
 		if chunks[i].Delta != nil && (chunks[i].FinishReason != nil || chunks[i].Delta.Type == schemas.ImageGenerationEventTypeCompleted || chunks[i].Delta.Type == schemas.ImageEditEventTypeCompleted) {

@@ -126,7 +126,7 @@ func RunTranscriptionStreamTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				// Save temp audio file
 				tempDir := os.TempDir()
 				audioFileName := filepath.Join(tempDir, "stream_roundtrip_"+tc.name+"."+tc.format)
-				writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0644)
+				writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0o644)
 				if writeErr != nil {
 					t.Fatalf("Failed to save temp audio file: %v", writeErr)
 				}

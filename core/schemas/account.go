@@ -8,7 +8,7 @@ import "context"
 type Key struct {
 	ID                   string                `json:"id"`                               // The unique identifier for the key (used by bifrost to identify the key)
 	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
-	Value                EnvVar              `json:"value"`                            // The actual API key value
+	Value                EnvVar                `json:"value"`                            // The actual API key value
 	Models               []string              `json:"models"`                           // List of models this key can access
 	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
 	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
@@ -23,9 +23,9 @@ type Key struct {
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
-	Endpoint    EnvVar          `json:"endpoint"`              // Azure service endpoint URL
+	Endpoint    EnvVar            `json:"endpoint"`              // Azure service endpoint URL
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
-	APIVersion  *EnvVar         `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+	APIVersion  *EnvVar           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
 
 	ClientID     *EnvVar `json:"client_id,omitempty"`     // Azure client ID for authentication
 	ClientSecret *EnvVar `json:"client_secret,omitempty"` // Azure client secret for authentication
@@ -35,10 +35,10 @@ type AzureKeyConfig struct {
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexKeyConfig struct {
-	ProjectID       EnvVar          `json:"project_id"`
-	ProjectNumber   EnvVar          `json:"project_number"`
-	Region          EnvVar          `json:"region"`
-	AuthCredentials EnvVar          `json:"auth_credentials"`
+	ProjectID       EnvVar            `json:"project_id"`
+	ProjectNumber   EnvVar            `json:"project_number"`
+	Region          EnvVar            `json:"region"`
+	AuthCredentials EnvVar            `json:"auth_credentials"`
 	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
 }
 
@@ -60,11 +60,11 @@ type BatchS3Config struct {
 // BedrockKeyConfig represents the AWS Bedrock-specific configuration.
 // It contains AWS-specific settings required for authentication and service access.
 type BedrockKeyConfig struct {
-	AccessKey     EnvVar          `json:"access_key,omitempty"`      // AWS access key for authentication
-	SecretKey     EnvVar          `json:"secret_key,omitempty"`      // AWS secret access key for authentication
-	SessionToken  *EnvVar         `json:"session_token,omitempty"`   // AWS session token for temporary credentials
-	Region        *EnvVar         `json:"region,omitempty"`          // AWS region for service access
-	ARN           *EnvVar         `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
+	AccessKey     EnvVar            `json:"access_key,omitempty"`      // AWS access key for authentication
+	SecretKey     EnvVar            `json:"secret_key,omitempty"`      // AWS secret access key for authentication
+	SessionToken  *EnvVar           `json:"session_token,omitempty"`   // AWS session token for temporary credentials
+	Region        *EnvVar           `json:"region,omitempty"`          // AWS region for service access
+	ARN           *EnvVar           `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
 	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
 	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }

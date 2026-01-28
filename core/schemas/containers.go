@@ -147,9 +147,9 @@ type BifrostContainerFileCreateRequest struct {
 	ContainerID string        `json:"container_id"` // ID of the container
 
 	// One of these must be provided
-	File   []byte  `json:"-"`                    // File content (for multipart upload)
-	FileID *string `json:"file_id,omitempty"`    // Reference to existing file
-	Path   *string `json:"file_path,omitempty"`  // Path for the file in the container
+	File   []byte  `json:"-"`                   // File content (for multipart upload)
+	FileID *string `json:"file_id,omitempty"`   // Reference to existing file
+	Path   *string `json:"file_path,omitempty"` // Path for the file in the container
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`

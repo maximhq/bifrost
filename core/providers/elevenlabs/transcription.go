@@ -146,7 +146,6 @@ func ToBifrostTranscriptionResponse(chunks []ElevenlabsSpeechToTextChunkResponse
 	}
 
 	return response
-
 }
 
 func convertAdditionalFormat(format schemas.TranscriptionAdditionalFormat) (ElevenlabsAdditionalFormat, bool) {

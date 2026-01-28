@@ -139,7 +139,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					}
 
 					ttsResponse, err := WithSpeechTestRetry(t, speechRetryConfig, ttsRetryContext, ttsExpectations, "Transcription_RoundTrip_TTS_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-						bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)	
+						bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 						return client.SpeechRequest(bfCtx, ttsRequest)
 					})
 					if err != nil {
@@ -152,7 +152,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 					// Save temp audio file
 					tempDir := os.TempDir()
 					audioFileName := filepath.Join(tempDir, "roundtrip_"+tc.name+"."+tc.format)
-					writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0644)
+					writeErr := os.WriteFile(audioFileName, ttsResponse.Audio, 0o644)
 					require.NoError(t, writeErr, "Failed to save temp audio file")
 
 					// Register cleanup
@@ -274,7 +274,6 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
 					} else {
-
 						// Use the utility function to generate audio
 						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, tc.text, "primary", "mp3")
 					}
@@ -383,7 +382,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
 					} else {
-
 						// Use the utility function to generate audio
 						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 					}
@@ -478,7 +476,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 				}
 			} else {
-
 				// Generate audio for custom parameters test
 				audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextMedium, "secondary", "mp3")
 			}
@@ -577,7 +574,6 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							t.Fatalf("failed to read audio fixture %s: %v", filePath, readErr)
 						}
 					} else {
-
 						// Use the utility function to generate audio
 						audioData, _ = GenerateTTSAudioForTest(ctx, t, client, speechSynthesisProvider, speechSynthesisModel, TTSTestTextBasic, "primary", "mp3")
 					}

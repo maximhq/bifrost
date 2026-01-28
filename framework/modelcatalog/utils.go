@@ -89,7 +89,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
 		OutputCostPerCharacterAbove128kTokens:     entry.OutputCostPerCharacterAbove128kTokens,
 
-		//Pricing above 200k tokens (for gemini models)
+		// Pricing above 200k tokens (for gemini models)
 		InputCostPerTokenAbove200kTokens:           entry.InputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokens:          entry.OutputCostPerTokenAbove200kTokens,
 		CacheCreationInputTokenCostAbove200kTokens: entry.CacheCreationInputTokenCostAbove200kTokens,

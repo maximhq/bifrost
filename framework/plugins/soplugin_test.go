@@ -399,7 +399,7 @@ func buildHelloWorldPlugin(t *testing.T) string {
 	// Clean and create build directory to ensure fresh build with current Go version
 	buildDir := filepath.Join(absPluginDir, "build")
 	os.RemoveAll(buildDir)
-	err = os.MkdirAll(buildDir, 0755)
+	err = os.MkdirAll(buildDir, 0o755)
 	require.NoError(t, err, "Failed to create build directory")
 
 	// Build the plugin directly with go build
@@ -594,7 +594,7 @@ func buildHelloWorldPluginForBenchmark(b *testing.B) string {
 	buildDir := filepath.Join(absPluginDir, "build")
 	pluginPath := filepath.Join(buildDir, "hello-world"+pluginExt)
 	os.RemoveAll(buildDir)
-	err = os.MkdirAll(buildDir, 0755)
+	err = os.MkdirAll(buildDir, 0o755)
 	require.NoError(b, err, "Failed to create build directory")
 
 	// Build the plugin directly with go build

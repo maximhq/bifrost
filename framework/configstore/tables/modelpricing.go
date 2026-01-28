@@ -26,7 +26,7 @@ type TableModelPricing struct {
 	OutputCostPerTokenAbove128kTokens         *float64 `gorm:"default:null" json:"output_cost_per_token_above_128k_tokens,omitempty"`
 	OutputCostPerCharacterAbove128kTokens     *float64 `gorm:"default:null" json:"output_cost_per_character_above_128k_tokens,omitempty"`
 
-	//Pricing above 200k tokens (for gemini and claude models)
+	// Pricing above 200k tokens (for gemini and claude models)
 	InputCostPerTokenAbove200kTokens           *float64 `gorm:"default:null;column:input_cost_per_token_above_200k_tokens" json:"input_cost_per_token_above_200k_tokens,omitempty"`
 	OutputCostPerTokenAbove200kTokens          *float64 `gorm:"default:null;column:output_cost_per_token_above_200k_tokens" json:"output_cost_per_token_above_200k_tokens,omitempty"`
 	CacheCreationInputTokenCostAbove200kTokens *float64 `gorm:"default:null;column:cache_creation_input_token_cost_above_200k_tokens" json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`

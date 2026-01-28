@@ -30,7 +30,6 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: newGormLogger(logger),
 	})
-
 	if err != nil {
 		return nil, err
 	}

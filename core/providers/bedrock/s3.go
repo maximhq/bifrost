@@ -61,7 +61,6 @@ func uploadToS3(
 		Body:        bytes.NewReader(content),
 		ContentType: aws.String("application/jsonl"),
 	})
-
 	if err != nil {
 		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to upload to S3: %s/%s", bucket, key), err, providerName)
 	}

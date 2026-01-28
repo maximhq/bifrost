@@ -390,6 +390,7 @@ func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
+
 func (m *MockConfigStore) RunMigration(ctx context.Context, migration *migrator.Migration) error {
 	return nil
 }
@@ -926,7 +927,7 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	if err != nil {
 		t.Fatalf("failed to marshal config data: %v", err)
 	}
-	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(configPath, jsonData, 0o644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 }

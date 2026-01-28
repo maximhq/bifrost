@@ -71,8 +71,10 @@ var uiContent embed.FS
 
 var Version string
 
-var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
-var server *bifrostServer.BifrostHTTPServer
+var (
+	logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+	server *bifrostServer.BifrostHTTPServer
+)
 
 // init initializes command line flags (but does not parse them).
 // Flag parsing is deferred to main() to avoid conflicts with test flags.

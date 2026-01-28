@@ -102,7 +102,7 @@ func TestCrissCrossComplexBudgetHierarchy(t *testing.T) {
 	consumedBudget := 0.0
 	requestNum := 1
 	var lastSuccessfulCost float64
-	var shouldStop = false
+	shouldStop := false
 
 	for requestNum <= 50 {
 		longPrompt := "Please provide a comprehensive and detailed response to the following question. " +

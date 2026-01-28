@@ -81,8 +81,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 			Attributes: p.getResourceAttributes(),
 		},
 		ScopeSpans: []*ScopeSpan{{
-			Scope:  p.getInstrumentationScope(),
-			Spans:  otelSpans,
+			Scope: p.getInstrumentationScope(),
+			Spans: otelSpans,
 		}},
 	}
 }

@@ -1023,7 +1023,7 @@ func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *ve
 		if err != nil {
 			return err
 		}
-		var record = &tables.TableVectorStoreConfig{
+		record := &tables.TableVectorStoreConfig{
 			Type:    string(config.Type),
 			Enabled: config.Enabled,
 			Config:  jsonConfig,
@@ -1062,7 +1062,7 @@ func (s *RDBConfigStore) UpdateLogsStoreConfig(ctx context.Context, config *logs
 		if err != nil {
 			return err
 		}
-		var record = &tables.TableLogStoreConfig{
+		record := &tables.TableLogStoreConfig{
 			Enabled: config.Enabled,
 			Type:    string(config.Type),
 			Config:  jsonConfig,
@@ -2375,7 +2375,6 @@ func (s *RDBConfigStore) GetAuthConfig(ctx context.Context) (*AuthConfig, error)
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
 		}
-
 	}
 	if err := s.db.WithContext(ctx).First(&tables.TableGovernanceConfig{}, "key = ?", tables.ConfigIsAuthEnabledKey).Select("value").Scan(&isEnabled).Error; err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {

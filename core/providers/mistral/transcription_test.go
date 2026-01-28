@@ -1511,7 +1511,6 @@ func TestMistralTranscriptionIntegration(t *testing.T) {
 
 	t.Log("🎤 Testing Mistral transcription with voxtral-mini-latest...")
 	resp, err := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
-
 	if err != nil {
 		// Log the error but don't fail - the minimal audio may not be valid for Mistral
 		t.Logf("⚠️ Transcription returned error (may be expected for minimal audio): %v", err)
@@ -1573,7 +1572,6 @@ func TestMistralTranscriptionStreamIntegration(t *testing.T) {
 
 	t.Log("🎤 Testing Mistral streaming transcription with voxtral-mini-latest...")
 	streamChan, err := provider.TranscriptionStream(ctx, postHookRunner, schemas.Key{Value: *schemas.NewEnvVar(apiKey)}, request)
-
 	if err != nil {
 		// Log the error but don't fail - the minimal audio may not be valid for Mistral
 		t.Logf("⚠️ Streaming transcription returned error (may be expected for minimal audio): %v", err)

@@ -127,7 +127,8 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 									Role: schemas.ChatMessageRoleAssistant,
 									Content: &schemas.ChatMessageContent{
 										ContentStr: bifrost.Ptr("Hello! Response from " + tc.Name + " test."),
-									}},
+									},
+								},
 							},
 						},
 					},
@@ -326,7 +327,8 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 									Role: schemas.ChatMessageRoleAssistant,
 									Content: &schemas.ChatMessageContent{
 										ContentStr: bifrost.Ptr("Response for " + tc.Name),
-									}},
+									},
+								},
 							},
 						},
 					},

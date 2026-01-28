@@ -24,4 +24,3 @@ func getCPUSample() cpuSample {
 		systemTime: systemTime,
 	}
 }
-

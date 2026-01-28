@@ -141,7 +141,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 				return strings.EqualFold(s, headerName)
 			}) {
 				return false
-
 			}
 		}
 		return true

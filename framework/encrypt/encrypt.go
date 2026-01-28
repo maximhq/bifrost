@@ -17,8 +17,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var encryptionKey []byte
-var logger schemas.Logger
+var (
+	encryptionKey []byte
+	logger        schemas.Logger
+)
 
 var ErrEncryptionKeyNotInitialized = errors.New("encryption key is not initialized")
 

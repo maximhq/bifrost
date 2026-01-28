@@ -471,23 +471,21 @@ func convertFileDataToBytes(fileData string) ([]byte, string) {
 	return dataBytes, mimeType
 }
 
-var (
-	// Maps Gemini finish reasons to Bifrost format
-	geminiFinishReasonToBifrost = map[FinishReason]string{
-		FinishReasonStop:                  "stop",
-		FinishReasonMaxTokens:             "length",
-		FinishReasonSafety:                "content_filter",
-		FinishReasonRecitation:            "content_filter",
-		FinishReasonLanguage:              "content_filter",
-		FinishReasonOther:                 "stop",
-		FinishReasonBlocklist:             "content_filter",
-		FinishReasonProhibitedContent:     "content_filter",
-		FinishReasonSPII:                  "content_filter",
-		FinishReasonMalformedFunctionCall: "stop",
-		FinishReasonImageSafety:           "content_filter",
-		FinishReasonUnexpectedToolCall:    "tool_calls",
-	}
-)
+// Maps Gemini finish reasons to Bifrost format
+var geminiFinishReasonToBifrost = map[FinishReason]string{
+	FinishReasonStop:                  "stop",
+	FinishReasonMaxTokens:             "length",
+	FinishReasonSafety:                "content_filter",
+	FinishReasonRecitation:            "content_filter",
+	FinishReasonLanguage:              "content_filter",
+	FinishReasonOther:                 "stop",
+	FinishReasonBlocklist:             "content_filter",
+	FinishReasonProhibitedContent:     "content_filter",
+	FinishReasonSPII:                  "content_filter",
+	FinishReasonMalformedFunctionCall: "stop",
+	FinishReasonImageSafety:           "content_filter",
+	FinishReasonUnexpectedToolCall:    "tool_calls",
+}
 
 // ConvertGeminiFinishReasonToBifrost converts Gemini finish reasons to Bifrost format
 func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {

@@ -300,7 +300,6 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 
 	// Execute agent mode - should return immediately with non-auto-executable tools
 	result, err := ExecuteAgentForChatRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
-
 	// Should not return error for non-auto-executable tools
 	if err != nil {
 		t.Errorf("Expected no error for non-auto-executable tools, got: %v", err)
@@ -463,7 +462,6 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 
 	// Execute agent mode - should return immediately with non-auto-executable tools
 	result, err := ExecuteAgentForResponsesRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
-
 	// Should not return error for non-auto-executable tools
 	if err != nil {
 		t.Errorf("Expected no error for non-auto-executable tools, got: %v", err)

@@ -289,7 +289,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (any, error) {
-			//TODO: optimize this double Marshal
+			// TODO: optimize this double Marshal
 			// Format messages for Vertex API
 			var requestBody map[string]interface{}
 

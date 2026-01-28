@@ -110,7 +110,6 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					OnFinalFail: retryConfig.OnFinalFail,
 				}
 
-				
 				speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_"+tc.name, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 					requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 					return client.SpeechRequest(requestCtx, request)
@@ -128,7 +127,7 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 					tempDir := os.TempDir()
 					audioFileName := filepath.Join(tempDir, "tts_"+tc.name+"."+tc.format)
 
-					err := os.WriteFile(audioFileName, speechResponse.Audio, 0644)
+					err := os.WriteFile(audioFileName, speechResponse.Audio, 0o644)
 					require.NoError(t, err, "Failed to save audio file for SST testing")
 
 					// Register cleanup to remove temp file
@@ -216,8 +215,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				OnFinalFail: retryConfig.OnFinalFail,
 			}
 
-			
-
 			speechResponse, bifrostErr := WithSpeechTestRetry(t, speechRetryConfig, retryContext, expectations, "SpeechSynthesis_HD", func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 				requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				return client.SpeechRequest(requestCtx, request)
@@ -299,7 +296,6 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						OnFinalFail: voiceRetryConfig.OnFinalFail,
 					}
 
-					
 					speechResponse, bifrostErr := WithSpeechTestRetry(t, voiceSpeechRetryConfig, voiceRetryContext, expectations, "SpeechSynthesis_VoiceType_"+voiceType, func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 						requestCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 						return client.SpeechRequest(requestCtx, request)

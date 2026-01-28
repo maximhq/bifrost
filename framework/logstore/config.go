@@ -54,7 +54,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		var err error
 		if err = json.Unmarshal(temp.Config, &postgresConfig); err != nil {
 			return fmt.Errorf("failed to unmarshal postgres config: %w", err)
-		}		
+		}
 		c.Config = &postgresConfig
 	default:
 		return fmt.Errorf("unknown log store type: %s", temp.Type)
