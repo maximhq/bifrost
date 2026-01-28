@@ -517,3 +517,156 @@ rate-limits:
               $ref: '../../schemas/management/governance.yaml#/ListRateLimitsResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Routing Rules CRUD
+
+routing-rules:
+  get:
+    operationId: listRoutingRules
+    summary: List routing rules
+    description: Returns a list of all routing rules configured for intelligent request routing across providers.
+    tags:
+      - Governance
+    parameters:
+      - name: scope
+        in: query
+        description: Filter routing rules by scope (global, team, customer, virtual_key)
+        schema:
+          type: string
+      - name: scope_id
+        in: query
+        description: Filter routing rules by scope ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createRoutingRule
+    summary: Create routing rule
+    description: Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    responses:
+      '200':
+        description: Routing rule created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+routing-rules-by-id:
+  get:
+    operationId: getRoutingRule
+    summary: Get routing rule
+    description: Returns a specific routing rule by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rule:
+                  $ref: '../../schemas/management/governance.yaml#/RoutingRule'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateRoutingRule
+    summary: Update routing rule
+    description: Updates an existing routing rule's configuration.
+    tags:
+      - Governance
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    responses:
+      '200':
+        description: Routing rule updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteRoutingRule
+    summary: Delete routing rule
+    description: Deletes a routing rule.
+    tags:
+      - Governance
+    parameters:
+      - name: rule_id
+        in: path
+        required: true
+        description: Routing rule ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Routing rule deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Routing rule not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

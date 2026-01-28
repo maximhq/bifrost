@@ -81,6 +81,7 @@ export default function LogsPage() {
 			objects: parseAsArrayOf(parseAsString).withDefault([]),
 			selected_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			routing_rule_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			content_search: parseAsString.withDefault(""),
 			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
 			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
@@ -155,6 +156,7 @@ export default function LogsPage() {
 			objects: urlState.objects,
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
+			routing_rule_ids: urlState.routing_rule_ids,
 			content_search: urlState.content_search,
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
@@ -190,6 +192,7 @@ export default function LogsPage() {
 				objects: newFilters.objects || [],
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				routing_rule_ids: newFilters.routing_rule_ids || [],
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -619,8 +622,15 @@ export default function LogsPage() {
 		if (filters.selected_key_ids?.length && !filters.selected_key_ids.includes(log.selected_key_id)) {
 			return false;
 		}
-		if (filters.virtual_key_ids?.length && log.virtual_key_id && !filters.virtual_key_ids.includes(log.virtual_key_id)) {
-			return false;
+		if (filters.virtual_key_ids?.length) {
+			if (!log.virtual_key_id || !filters.virtual_key_ids.includes(log.virtual_key_id)) {
+				return false;
+			}
+		}
+		if (filters.routing_rule_ids?.length) {
+			if (!log.routing_rule_id || !filters.routing_rule_ids.includes(log.routing_rule_id)) {
+				return false;
+			}
 		}
 		if (filters.start_time && new Date(log.timestamp) < new Date(filters.start_time)) {
 			return false;

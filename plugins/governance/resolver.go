@@ -145,19 +145,19 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		}
 	}
 	// Set virtual key id and name in context
-	ctx.SetValue(schemas.BifrostContextKey("bf-governance-virtual-key-id"), vk.ID)
-	ctx.SetValue(schemas.BifrostContextKey("bf-governance-virtual-key-name"), vk.Name)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
 	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-team-id"), vk.Team.ID)
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-team-name"), vk.Team.Name)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
 		if vk.Team.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-id"), vk.Team.Customer.ID)
-			ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-name"), vk.Team.Customer.Name)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
 		}
 	}
 	if vk.Customer != nil {
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-id"), vk.Customer.ID)
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-name"), vk.Customer.Name)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
 	}
 	if !vk.IsActive {
 		return &EvaluationResult{

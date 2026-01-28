@@ -1,6 +1,7 @@
 // Types for the logs interface based on BifrostResponse schema
 
 import { DBKey, VirtualKey } from "./governance";
+import { RoutingRule } from "./routingRules";
 
 // Speech and Transcription types
 export interface VoiceConfig {
@@ -297,8 +298,10 @@ export interface LogEntry {
 	fallback_index: number;
 	selected_key_id: string;
 	virtual_key_id?: string;
+	routing_rule_id?: string;
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
+	routing_rule?: RoutingRule;
 	input_history: ChatMessage[];
 	responses_input_history: ResponsesMessage[];
 	output_message?: ChatMessage;
@@ -330,6 +333,7 @@ export interface LogFilters {
 	models?: string[];
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
+	routing_rule_ids?: string[];
 	status?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format

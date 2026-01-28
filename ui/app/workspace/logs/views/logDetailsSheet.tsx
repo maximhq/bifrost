@@ -305,6 +305,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							)}
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
+						{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
 
 							{/* Display audio params if present */}
 							{(log.params as any)?.audio && (

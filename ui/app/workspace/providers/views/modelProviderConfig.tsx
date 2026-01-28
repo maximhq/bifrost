@@ -3,7 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isKnownProvider, ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
@@ -39,6 +39,14 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 		id: "performance",
 		label: "Performance tuning",
 	});
+
+	// Governance tab for budgets and rate limits (requires Governance permission)
+	if (hasGovernanceAccess) {
+		availableTabs.push({
+			id: "governance",
+			label: "Governance",
+		});
+	}
 	return availableTabs;
 };
 
@@ -98,9 +106,9 @@ export default function ModelProviderConfig({ provider }: Props) {
 								<TabsContent value="performance">
 									<PerformanceFormFragment provider={provider} />
 								</TabsContent>
-								{/* <TabsContent value="governance">
+								<TabsContent value="governance">
 									<GovernanceFormFragment provider={provider} />
-								</TabsContent> */}
+								</TabsContent>
 							</Tabs>
 						</div>
 					</AccordionContent>

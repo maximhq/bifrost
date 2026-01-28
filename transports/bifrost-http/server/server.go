@@ -77,6 +77,8 @@ type ServerCallbacks interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
+	ReloadRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
+	RemoveRoutingRule(ctx context.Context, id string) error
 	// MCP related callbacks
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
@@ -524,6 +526,48 @@ func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
 	return governancePlugin.GetGovernanceStore().GetGovernanceData()
 }
 
+// ReloadRoutingRule reloads a routing rule from the database into the governance store
+func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error) {
+	governancePluginName := governance.PluginName
+	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
+		governancePluginName = name
+	}
+	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, governancePluginName)
+	if err != nil {
+		return nil, fmt.Errorf("governance plugin not found: %w", err)
+	}
+	// Get the governance store from the plugin
+	store := governancePlugin.GetGovernanceStore()
+	rule, err := s.Config.ConfigStore.GetRoutingRule(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get routing rule from config store: %w", err)
+	}
+	// Update the rule in the store (this updates the in-memory cache)
+	if err := store.UpdateRoutingRuleInMemory(rule); err != nil {
+		return nil, fmt.Errorf("failed to update routing rule in store: %w", err)
+	}
+	return rule, nil
+}
+
+// RemoveRoutingRule removes a routing rule from the governance store
+func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) error {
+	governancePluginName := governance.PluginName
+	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
+		governancePluginName = name
+	}
+	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, governancePluginName)
+	if err != nil {
+		return fmt.Errorf("governance plugin not found: %w", err)
+	}
+	// Get the governance store from the plugin
+	store := governancePlugin.GetGovernanceStore()
+	// Delete the rule from the store (this removes from in-memory cache)
+	if err := store.DeleteRoutingRuleInMemory(id); err != nil {
+		return fmt.Errorf("failed to delete routing rule from store: %w", err)
+	}
+	return nil
+}
+
 // ReloadClientConfigFromConfigStore reloads the client config from config store
 func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Context) error {
 	if s.Config == nil || s.Config.ConfigStore == nil {
@@ -901,6 +945,19 @@ func (s *BifrostHTTPServer) GetAllRedactedVirtualKeys(ctx context.Context, ids [
 		return nil
 	}
 	return virtualKeys
+}
+
+// GetAllRedactedRoutingRules gets all redacted routing rules from the config store
+func (s *BifrostHTTPServer) GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil
+	}
+	routingRules, err := s.Config.ConfigStore.GetRedactedRoutingRules(ctx, ids)
+	if err != nil {
+		logger.Error("failed to get all redacted routing rules: %v", err)
+		return nil
+	}
+	return routingRules
 }
 
 // PrepareCommonMiddlewares gets the common middlewares for the Bifrost HTTP server

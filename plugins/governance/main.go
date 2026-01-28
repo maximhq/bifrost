@@ -66,6 +66,7 @@ type GovernancePlugin struct {
 	store    GovernanceStore // Pure data access layer
 	resolver *BudgetResolver // Pure decision engine for hierarchical governance
 	tracker  *UsageTracker   // Business logic owner (updates, resets, persistence)
+	engine   *RoutingEngine  // Routing engine for dynamic routing
 
 	// Dependencies
 	configStore  configstore.ConfigStore
@@ -183,6 +184,13 @@ func Init(
 			}
 		}
 	}
+
+	// 5. Routing engine (dynamically routing requests based on routing rules)
+	engine, err := NewRoutingEngine(governanceStore, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
+
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
 		ctx:           ctx,
@@ -190,6 +198,7 @@ func Init(
 		store:         governanceStore,
 		resolver:      resolver,
 		tracker:       tracker,
+		engine:        engine,
 		configStore:   configStore,
 		modelCatalog:  modelCatalog,
 		mcpCatalog:    mcpCatalog,
@@ -241,6 +250,10 @@ func InitFromStore(
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
+	engine, err := NewRoutingEngine(governanceStore, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize routing engine: %w", err)
+	}
 	// Perform startup reset check for any expired limits from downtime
 	// Use distributed lock to prevent race condition when multiple instances boot simultaneously
 	if configStore != nil {
@@ -265,6 +278,7 @@ func InitFromStore(
 		store:         governanceStore,
 		resolver:      resolver,
 		tracker:       tracker,
+		engine:        engine,
 		configStore:   configStore,
 		modelCatalog:  modelCatalog,
 		mcpCatalog:    mcpCatalog,
@@ -282,43 +296,82 @@ func (p *GovernancePlugin) GetName() string {
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
 // It modifies the request in-place and returns nil to continue, or an HTTPResponse to short-circuit.
+// Optimized to skip unnecessary operations: only unmarshals/marshals when needed
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	now := time.Now()
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
-	if virtualKeyValue == nil {
+	hasRoutingRules := p.store.HasRoutingRules(ctx)
+
+	// If no virtual key and no routing rules configured, skip all processing
+	if virtualKeyValue == nil && !hasRoutingRules {
 		return nil, nil
 	}
-	// Get the virtual key from the store
-	virtualKey, ok := p.store.GetVirtualKey(*virtualKeyValue)
-	if !ok || virtualKey == nil || !virtualKey.IsActive {
-		return nil, nil
-	}
-	headers, err := p.addMCPIncludeTools(nil, virtualKey)
-	if err != nil {
-		p.logger.Error("failed to add MCP include tools: %v", err)
-		return nil, nil
-	}
-	for header, value := range headers {
-		req.Headers[header] = value
-	}
+
+	// If no body, nothing to process
 	if len(req.Body) == 0 {
 		return nil, nil
 	}
+
+	// Only unmarshal if we have VK or routing rules
 	var payload map[string]any
-	err = sonic.Unmarshal(req.Body, &payload)
+	var virtualKey *configstoreTables.TableVirtualKey
+	var ok bool
+	var needsMarshal bool
+
+	err := sonic.Unmarshal(req.Body, &payload)
 	if err != nil {
-		p.logger.Error("failed to unmarshal request body to check for virtual key: %v", err)
+		p.logger.Error("failed to unmarshal request body: %v", err)
 		return nil, nil
 	}
-	payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
-	if err != nil {
-		return nil, err
+
+	// Process virtual key if provided
+	if virtualKeyValue != nil {
+		virtualKey, ok = p.store.GetVirtualKey(*virtualKeyValue)
+		if !ok || virtualKey == nil || !virtualKey.IsActive {
+			return nil, nil
+		}
+		// Add MCP tools
+		headers, err := p.addMCPIncludeTools(nil, virtualKey)
+		if err != nil {
+			p.logger.Error("failed to add MCP include tools: %v", err)
+			return nil, nil
+		}
+		for header, value := range headers {
+			req.Headers[header] = value
+		}
+		// Load balance provider
+		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+		needsMarshal = true
 	}
-	body, err := sonic.Marshal(payload)
-	if err != nil {
-		p.logger.Error("failed to marshal request body to check for virtual key: %v", err)
-		return nil, nil
+
+	// Apply routing rules only if we have rules or matched decision
+	var routingDecision *RoutingDecision
+	if hasRoutingRules {
+		var err error
+		payload, routingDecision, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+		// Mark for marshal if a routing rule matched
+		if routingDecision != nil {
+			needsMarshal = true
+		}
 	}
-	req.Body = body
+
+	// Only marshal if something changed (VK processing or routing decision matched)
+	if needsMarshal {
+		body, err := sonic.Marshal(payload)
+		if err != nil {
+			p.logger.Error("failed to marshal request body: %v", err)
+			return nil, nil
+		}
+		req.Body = body
+	}
+
+	p.logger.Info("[Governance] HTTPTransportPreHook took %v", time.Since(now))
 	return nil, nil
 }
 
@@ -506,6 +559,94 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 
 	return body, nil
+}
+
+// applyRoutingRules evaluates routing rules and returns both the modified payload AND the routing decision
+// This allows the caller to determine if marshaling is necessary (only if decision != nil or payload changed)
+// Parameters:
+//   - ctx: Bifrost context
+//   - req: HTTP request
+//   - body: Request body (may be modified if routing rule matches)
+//   - virtualKey: Virtual key configuration (may be nil)
+//
+// Returns:
+//   - map[string]any: The potentially modified request body
+//   - *RoutingDecision: The matched routing decision (nil if no rule matched)
+//   - error: Any error that occurred during evaluation
+func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, *RoutingDecision, error) {
+	// Check if the request has a model field
+	modelValue, hasModel := body["model"]
+	if !hasModel {
+		// For genai integration, model is present in URL path
+		if strings.Contains(req.Path, "/genai") {
+			modelValue = req.CaseInsensitivePathParamLookup("model")
+		} else {
+			return body, nil, nil
+		}
+	}
+
+	modelStr, ok := modelValue.(string)
+	if !ok || modelStr == "" {
+		return body, nil, nil
+	}
+
+	var genaiRequestSuffix string
+	if strings.Contains(req.Path, "/genai") {
+		for _, sfx := range gemini.GeminiRequestSuffixPaths {
+			if before, ok := strings.CutSuffix(modelStr, sfx); ok {
+				modelStr = before
+				genaiRequestSuffix = sfx
+				break
+			}
+		}
+	}
+
+	// Parse provider and model from modelStr (format: "provider/model" or just "model")
+	provider, model := schemas.ParseModelString(modelStr, "")
+
+	// Build routing context
+	routingCtx := &RoutingContext{
+		VirtualKey:               virtualKey,
+		Provider:                 provider,
+		Model:                    model,
+		Headers:                  req.Headers,
+		QueryParams:              req.Query,
+		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider),
+	}
+
+	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, vk=%v, headerCount=%d, paramCount=%d",
+		provider, model, virtualKey != nil, len(req.Headers), len(req.Query))
+
+	// Evaluate routing rules
+	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
+	if err != nil {
+		p.logger.Error("failed to evaluate routing rules: %v", err)
+		return body, nil, nil
+	}
+
+	// If a routing rule matched, apply the decision
+	if decision != nil {
+		p.logger.Debug("[Governance] Routing rule matched: %s", decision.MatchedRuleName)
+
+		// Update model in request body
+		if strings.Contains(req.Path, "/genai") {
+			// For genai, model is in URL path
+			newModel := decision.Provider + "/" + decision.Model + genaiRequestSuffix
+			ctx.SetValue("model", newModel)
+		} else {
+			// For regular requests, update in body
+			body["model"] = decision.Provider + "/" + decision.Model
+		}
+
+		// Add fallbacks if present
+		if len(decision.Fallbacks) > 0 {
+			body["fallbacks"] = decision.Fallbacks
+		}
+
+		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, fallbacks=%v", decision.Provider, decision.Model, decision.Fallbacks)
+	}
+
+	return body, decision, nil
 }
 
 // addMCPIncludeTools adds the x-bf-mcp-include-tools header to the request headers

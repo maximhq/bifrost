@@ -734,6 +734,25 @@ export const globalHeaderFilterFormSchema = z.object({
 	header_filter_config: globalHeaderFilterConfigSchema,
 });
 
+// Routing rule creation schema
+export const routingRuleSchema = z
+	.object({
+		name: z.string().min(1, "Rule name is required").max(255, "Rule name must be less than 255 characters"),
+		description: z.string().max(1000, "Description must be less than 1000 characters").optional(),
+		cel_expression: z.string().optional(),
+		provider: z.string().min(1, "Provider is required"),
+		model: z.string().optional(),
+		fallbacks: z.array(z.string()).optional().default([]),
+		scope: z.enum(["global", "team", "customer", "virtual_key"]),
+		scope_id: z.string().optional(),
+		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
+		enabled: z.boolean().default(true),
+	})
+	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
+		message: "Scope ID is required when scope is not global",
+		path: ["scope_id"],
+	});
+
 // Export type inference helpers
 export type EnvVar = z.infer<typeof envVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -754,3 +773,4 @@ export type GlobalProxyConfigSchema = z.infer<typeof globalProxyConfigSchema>;
 export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
+export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;

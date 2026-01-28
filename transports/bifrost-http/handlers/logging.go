@@ -28,6 +28,7 @@ type LoggingHandler struct {
 type RedactedKeysManager interface {
 	GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key
 	GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey
+	GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule
 }
 
 // NewLoggingHandler creates a new logging handler instance
@@ -83,6 +84,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -184,12 +188,16 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	selectedKeyIDs := make(map[string]struct{})
 	virtualKeyIDs := make(map[string]struct{})
+	routingRuleIDs := make(map[string]struct{})
 	for _, log := range result.Logs {
 		if log.SelectedKeyID != "" {
 			selectedKeyIDs[log.SelectedKeyID] = struct{}{}
 		}
 		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
 			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
+		}
+		if log.RoutingRuleID != nil && *log.RoutingRuleID != "" {
+			routingRuleIDs[*log.RoutingRuleID] = struct{}{}
 		}
 	}
 
@@ -206,14 +214,18 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
 	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
 
-	// Add selected key and virtual key to the result
+	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+		}
+		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
+			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
 	}
 
@@ -243,6 +255,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -326,6 +341,9 @@ func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -437,6 +455,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
 	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -545,6 +566,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	models := h.logManager.GetAvailableModels(ctx)
 	selectedKeys := h.logManager.GetAvailableSelectedKeys(ctx)
 	virtualKeys := h.logManager.GetAvailableVirtualKeys(ctx)
+	routingRules := h.logManager.GetAvailableRoutingRules(ctx)
 
 	// Extract IDs for redaction lookup
 	selectedKeyIDs := make([]string, len(selectedKeys))
@@ -555,6 +577,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	for i, key := range virtualKeys {
 		virtualKeyIDs[i] = key.ID
 	}
+	routingRuleIDs := make([]string, len(routingRules))
+	for i, rule := range routingRules {
+		routingRuleIDs[i] = rule.ID
+	}
 
 	redactedSelectedKeys := make(map[string]schemas.Key)
 	for _, selectedKey := range h.redactedKeysManager.GetAllRedactedKeys(ctx, selectedKeyIDs) {
@@ -563,6 +589,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
 	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
 		redactedVirtualKeys[virtualKey.ID] = virtualKey
+	}
+	redactedRoutingRules := make(map[string]tables.TableRoutingRule)
+	for _, routingRule := range h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, routingRuleIDs) {
+		redactedRoutingRules[routingRule.ID] = routingRule
 	}
 
 	// Check if all selected key ids are present in the redacted selected keys (will not be present in case a key is deleted, but we still need to show its filter)
@@ -587,6 +617,17 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Check if all routing rule ids are present in the redacted routing rules (will not be present in case a routing rule is deleted, but we still need to show its filter)
+	for _, routingRule := range routingRules {
+		if _, ok := redactedRoutingRules[routingRule.ID]; !ok {
+			// Create a new routing rule struct directly since we know it doesn't exist
+			redactedRoutingRules[routingRule.ID] = tables.TableRoutingRule{
+				ID:   routingRule.ID,
+				Name: routingRule.Name + " (deleted)",
+			}
+		}
+	}
+
 	// Convert maps to arrays for frontend consumption
 	selectedKeysArray := make([]schemas.Key, 0, len(redactedSelectedKeys))
 	for _, key := range redactedSelectedKeys {
@@ -598,7 +639,12 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		virtualKeysArray = append(virtualKeysArray, key)
 	}
 
-	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray})
+	routingRulesArray := make([]tables.TableRoutingRule, 0, len(redactedRoutingRules))
+	for _, rule := range redactedRoutingRules {
+		routingRulesArray = append(routingRulesArray, rule)
+	}
+
+	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray})
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs
@@ -713,6 +759,36 @@ func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id str
 		}
 	}
 	return &tables.TableVirtualKey{
+		ID: id,
+		Name: func() string {
+			if name != "" {
+				return name + " (deleted)"
+			} else {
+				return ""
+			}
+		}(),
+	}
+}
+
+func findRedactedRoutingRule(redactedRoutingRules []tables.TableRoutingRule, id string, name string) *tables.TableRoutingRule {
+	if len(redactedRoutingRules) == 0 {
+		return &tables.TableRoutingRule{
+			ID: id,
+			Name: func() string {
+				if name != "" {
+					return name + " (deleted)"
+				} else {
+					return ""
+				}
+			}(),
+		}
+	}
+	for _, routingRule := range redactedRoutingRules {
+		if routingRule.ID == id {
+			return &routingRule
+		}
+	}
+	return &tables.TableRoutingRule{
 		ID: id,
 		Name: func() string {
 			if name != "" {

@@ -173,6 +173,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPClientConfigToOAuthConfig(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3000,6 +3003,40 @@ func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running is_ping_available migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingRulesTable adds the routing rules table for intelligent request routing
+func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_rules_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasTable(&tables.TableRoutingRule{}) {
+				if err := migrator.CreateTable(&tables.TableRoutingRule{}); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropTable(&tables.TableRoutingRule{}); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running routing_rules_table migration: %s", err.Error())
 	}
 	return nil
 }

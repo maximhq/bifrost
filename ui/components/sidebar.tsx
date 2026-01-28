@@ -21,6 +21,7 @@ import {
 	LayoutGrid,
 	LogOut,
 	Logs,
+	Network,
 	PanelLeftClose,
 	Puzzle,
 	ScrollText,
@@ -229,14 +230,13 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
 				tooltip={item.title}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isActive || isAnySubItemActive
-						? "bg-sidebar-accent text-primary border-primary/20"
-						: isAllowed && item.hasAccess
-							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
-				onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isActive || isAnySubItemActive
+					? "bg-sidebar-accent text-primary border-primary/20"
+					: isAllowed && item.hasAccess
+						? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+						: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					} `}
+				onClick={hasSubItems ? handleClick : (item.hasAccess ? () => handleNavigation(item.url) : undefined)}
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
@@ -272,13 +272,12 @@ const SidebarItemView = ({
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemActive
-											? "bg-sidebar-accent text-primary font-medium"
-											: subItem.hasAccess === false
-												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemActive
+										? "bg-sidebar-accent text-primary font-medium"
+										: subItem.hasAccess === false
+											? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+											: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										}`}
 									onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem))}
 								>
 									<div className="flex items-center gap-2">
@@ -359,6 +358,7 @@ export default function AppSidebar() {
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
@@ -415,7 +415,30 @@ export default function AppSidebar() {
 			url: "/workspace/providers",
 			icon: BoxIcon,
 			description: "Configure models",
-			hasAccess: hasModelProvidersAccess,
+			hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess || hasGovernanceAccess,
+			subItems: [
+				{
+					title: "Configurations",
+					url: "/workspace/providers",
+					icon: Cog,
+					description: "Configure models",
+					hasAccess: hasModelProvidersAccess,
+				},
+				{
+					title: "Budgets & Limits",
+					url: "/workspace/model-limits",
+					icon: Gauge,
+					description: "Model limits",
+					hasAccess: hasGovernanceAccess,
+				},
+				{
+					title: "Routing Rules",
+					url: "/workspace/routing-rules",
+					icon: Network,
+					description: "Intelligent routing rules",
+					hasAccess: hasRoutingRulesAccess,
+				},
+			],
 		},
 		{
 			title: "MCP Gateway",
@@ -461,7 +484,13 @@ export default function AppSidebar() {
 			icon: Landmark,
 			description: "Govern access",
 			hasAccess:
-				hasVirtualKeysAccess || hasGovernanceAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
+				hasGovernanceAccess ||
+				hasVirtualKeysAccess ||
+				hasCustomersAccess ||
+				hasTeamsAccess ||
+				hasUserProvisioningAccess ||
+				hasRbacAccess ||
+				hasAuditLogsAccess,
 			subItems: [
 				{
 					title: "Virtual Keys",
@@ -610,14 +639,14 @@ export default function AppSidebar() {
 				},
 				...(IS_ENTERPRISE
 					? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
+						{
+							title: "Proxy",
+							url: "/workspace/config/proxy",
+							icon: Globe,
+							description: "Proxy configuration",
+							hasAccess: hasSettingsAccess,
+						},
+					]
 					: []),
 				{
 					title: "API Keys",

@@ -8,6 +8,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+
 	"gorm.io/gorm"
 )
 
@@ -35,6 +36,7 @@ type SearchFilters struct {
 	Objects         []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
 	SelectedKeyIDs  []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs  []string   `json:"routing_rule_ids,omitempty"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
 	EndTime         *time.Time `json:"end_time,omitempty"`
 	MinLatency      *float64   `json:"min_latency,omitempty"`
@@ -87,6 +89,8 @@ type Log struct {
 	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	RoutingRuleID         *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingRuleName       *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
@@ -139,8 +143,9 @@ type Log struct {
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
-	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
-	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
+	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
+	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
+	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
 }
 
 // NewLogEntryFromMap creates a new Log from a map[string]interface{}

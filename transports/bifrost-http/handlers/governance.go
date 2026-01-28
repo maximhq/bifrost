@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,6 +35,8 @@ type GovernanceManager interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
+	ReloadRoutingRule(ctx context.Context, id string) (*configstoreTables.TableRoutingRule, error)
+	RemoveRoutingRule(ctx context.Context, id string) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -114,6 +117,34 @@ type CreateBudgetRequest struct {
 type UpdateBudgetRequest struct {
 	MaxLimit      *float64 `json:"max_limit,omitempty"`
 	ResetDuration *string  `json:"reset_duration,omitempty"`
+}
+
+// CreateRoutingRuleRequest represents the request body for creating a routing rule
+type CreateRoutingRuleRequest struct {
+	Name          string         `json:"name" validate:"required"`
+	Description   string         `json:"description,omitempty"`
+	Enabled       bool           `json:"enabled,omitempty"`
+	CelExpression string         `json:"cel_expression"`
+	Provider      string         `json:"provider,omitempty"` // Optional; empty uses incoming request provider
+	Model         string         `json:"model,omitempty"`    // Optional; empty uses incoming request model
+	Fallbacks     []string       `json:"fallbacks,omitempty"`
+	Scope         string         `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string        `json:"scope_id,omitempty"`
+	Query         map[string]any `json:"query,omitempty"`
+	Priority      int            `json:"priority,omitempty"` // Defaults to 0 if not provided
+}
+
+// UpdateRoutingRuleRequest represents the request body for updating a routing rule
+type UpdateRoutingRuleRequest struct {
+	Name          *string        `json:"name,omitempty"`
+	Description   *string        `json:"description,omitempty"`
+	Enabled       *bool          `json:"enabled,omitempty"`
+	CelExpression *string        `json:"cel_expression,omitempty"`
+	Provider      *string        `json:"provider,omitempty"`
+	Model         *string        `json:"model,omitempty"`
+	Fallbacks     []string       `json:"fallbacks,omitempty"`
+	Query         map[string]any `json:"query,omitempty"`
+	Priority      *int           `json:"priority,omitempty"`
 }
 
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
@@ -207,17 +238,24 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
+	// Routing Rules CRUD operations
+	r.GET("/api/governance/routing-rules", lib.ChainMiddlewares(h.getRoutingRules, middlewares...))
+	r.POST("/api/governance/routing-rules", lib.ChainMiddlewares(h.createRoutingRule, middlewares...))
+	r.GET("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.getRoutingRule, middlewares...))
+	r.PUT("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRule, middlewares...))
+	r.DELETE("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRule, middlewares...))
+
 	// Model Config CRUD operations
-	// r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
-	// r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
-	// r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
-	// r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
-	// r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
+	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
+	r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
+	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
+	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
+	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
 
 	// Provider Governance operations
-	// r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
-	// r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
-	// r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
+	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
+	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -2192,5 +2230,274 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Provider governance deleted successfully",
+	})
+}
+
+// Routing Rules CRUD Operations
+
+// getRoutingRules retrieves all routing rules with optional filtering from database
+func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
+	// Get query parameters for filtering
+	scope := string(ctx.QueryArgs().Peek("scope"))
+	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
+
+	var rules []configstoreTables.TableRoutingRule
+	var err error
+
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		gd := h.governanceManager.GetGovernanceData()
+		if gd == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		inMemoryRules := gd.RoutingRules
+
+		// Filter rules by scope and scopeID
+		for _, rule := range inMemoryRules {
+			// If scope filter is specified, only include matching rules
+			if scope != "" && rule.Scope != scope {
+				continue
+			}
+			// If scopeID filter is specified, only include matching rules
+			if scopeID != "" {
+				ruleScope := ""
+				if rule.ScopeID != nil {
+					ruleScope = *rule.ScopeID
+				}
+				if ruleScope != scopeID {
+					continue
+				}
+			}
+			rules = append(rules, *rule)
+		}
+	} else {
+		// Get from config store (database)
+		if scope != "" || scopeID != "" {
+			rules, err = h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
+		} else {
+			rules, err = h.configStore.GetRoutingRules(ctx)
+		}
+		if err != nil {
+			SendError(ctx, 500, "Failed to get routing rules")
+			return
+		}
+	}
+
+	// Convert to JSON-serializable format
+	response := make([]configstoreTables.TableRoutingRule, 0, len(rules))
+	for _, rule := range rules {
+		response = append(response, rule)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"rules": response,
+		"count": len(response),
+	})
+}
+
+// getRoutingRule retrieves a single routing rule by ID from database
+func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	var rule *configstoreTables.TableRoutingRule
+	var err error
+
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		gd := h.governanceManager.GetGovernanceData()
+		if gd == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		inMemoryRules := gd.RoutingRules
+
+		// Find rule by ID in memory
+		for _, r := range inMemoryRules {
+			if r.ID == ruleID {
+				rule = r
+				break
+			}
+		}
+		if rule == nil {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+	} else {
+		rule, err = h.configStore.GetRoutingRule(ctx, ruleID)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, 404, "Routing rule not found")
+				return
+			}
+			logger.Error("failed to get routing rule: %v", err)
+			SendError(ctx, 500, "Failed to retrieve routing rule")
+			return
+		}
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"rule": rule,
+	})
+}
+
+// createRoutingRule creates a new routing rule
+func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
+	// Parse request body
+	var req CreateRoutingRuleRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	// Validate required fields
+	if req.Name == "" {
+		SendError(ctx, 400, "name field is required")
+		return
+	}
+
+	// Set defaults
+	scope := req.Scope
+	if scope == "" {
+		scope = "global"
+	}
+
+	// Validate scope_id is required when scope is not global
+	if scope != "global" && (req.ScopeID == nil || *req.ScopeID == "") {
+		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	}
+
+	priority := req.Priority
+	if priority == 0 && req.Priority == 0 { // Default to 0
+		priority = 0
+	}
+
+	// Create routing rule
+	rule := &configstoreTables.TableRoutingRule{
+		ID:              uuid.NewString(),
+		Name:            req.Name,
+		Description:     req.Description,
+		Enabled:         req.Enabled,
+		CelExpression:   req.CelExpression,
+		Provider:        req.Provider,
+		Model:           req.Model,
+		Scope:           scope,
+		ScopeID:         req.ScopeID,
+		Priority:        priority,
+		ParsedFallbacks: req.Fallbacks,
+		ParsedQuery:     req.Query,
+	}
+
+	// Create in database
+	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
+		return
+	}
+
+	// Update in-memory store via manager callback
+	if _, err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule created successfully",
+		"rule":    rule,
+	})
+}
+
+// updateRoutingRule updates an existing routing rule
+func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	// Parse request body
+	var req UpdateRoutingRuleRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+		logger.Error("failed to get routing rule: %v", err)
+		SendError(ctx, 500, "Failed to retrieve routing rule")
+		return
+	}
+
+	// Update fields if provided
+	if req.Name != nil && *req.Name != "" {
+		rule.Name = *req.Name
+	}
+	if req.Description != nil {
+		rule.Description = *req.Description
+	}
+	if req.Enabled != nil {
+		rule.Enabled = *req.Enabled
+	}
+	if req.CelExpression != nil {
+		rule.CelExpression = *req.CelExpression
+	}
+	if req.Provider != nil {
+		rule.Provider = *req.Provider
+	}
+	if req.Model != nil {
+		rule.Model = *req.Model
+	}
+	if req.Priority != nil {
+		rule.Priority = *req.Priority
+	}
+	if req.Query != nil {
+		rule.ParsedQuery = req.Query
+	}
+	if req.Fallbacks != nil {
+		rule.ParsedFallbacks = req.Fallbacks
+	}
+
+	// Update in database
+	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
+		return
+	}
+
+	// Update in-memory store via manager callback
+	if _, err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule updated successfully",
+		"rule":    rule,
+	})
+}
+
+// deleteRoutingRule deletes a routing rule
+func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	// Delete from database
+	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("Failed to delete routing rule from database: %v", err))
+		return
+	}
+
+	// Remove from in-memory store via manager callback (non-fatal: DB already updated)
+	if err := h.governanceManager.RemoveRoutingRule(ctx, ruleID); err != nil {
+		logger.Error("failed to remove routing rule from memory: %v", err)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule deleted successfully",
 	})
 }

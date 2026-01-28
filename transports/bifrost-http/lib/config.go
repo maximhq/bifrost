@@ -1010,7 +1010,6 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			customersToAdd = append(customersToAdd, configData.Governance.Customers[i])
 		}
 	}
-
 	// Merge Teams by ID with hash comparison
 	teamsToAdd := make([]configstoreTables.TableTeam, 0)
 	teamsToUpdate := make([]configstoreTables.TableTeam, 0)
@@ -1117,12 +1116,44 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])
 		}
 	}
+	// Merge RoutingRules by ID with hash comparison
+	routingRulesToAdd := make([]configstoreTables.TableRoutingRule, 0)
+	routingRulesToUpdate := make([]configstoreTables.TableRoutingRule, 0)
+	for i, newRoutingRule := range configData.Governance.RoutingRules {
+		fileRoutingRuleHash, err := configstore.GenerateRoutingRuleHash(newRoutingRule)
+		if err != nil {
+			logger.Warn("failed to generate routing rule hash for %s: %v", newRoutingRule.ID, err)
+			continue
+		}
+		configData.Governance.RoutingRules[i].ConfigHash = fileRoutingRuleHash
+
+		found := false
+		for j, existingRoutingRule := range governanceConfig.RoutingRules {
+			if existingRoutingRule.ID == newRoutingRule.ID {
+				found = true
+				if existingRoutingRule.ConfigHash != fileRoutingRuleHash {
+					logger.Debug("config hash mismatch for routing rule %s, syncing from config file", newRoutingRule.ID)
+					configData.Governance.RoutingRules[i].ConfigHash = fileRoutingRuleHash
+					routingRulesToUpdate = append(routingRulesToUpdate, configData.Governance.RoutingRules[i])
+					governanceConfig.RoutingRules[j] = configData.Governance.RoutingRules[i]
+				} else {
+					logger.Debug("config hash matches for routing rule %s, keeping DB config", newRoutingRule.ID)
+				}
+				break
+			}
+		}
+		if !found {
+			configData.Governance.RoutingRules[i].ConfigHash = fileRoutingRuleHash
+			routingRulesToAdd = append(routingRulesToAdd, configData.Governance.RoutingRules[i])
+		}
+	}
 	// Add merged items to config
 	config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 	config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
 	config.GovernanceConfig.Customers = append(governanceConfig.Customers, customersToAdd...)
 	config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
 	config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
+	config.GovernanceConfig.RoutingRules = append(governanceConfig.RoutingRules, routingRulesToAdd...)
 	// Update store with merged config items
 	hasChanges := len(budgetsToAdd) > 0 || len(budgetsToUpdate) > 0 ||
 		len(rateLimitsToAdd) > 0 || len(rateLimitsToUpdate) > 0 ||
@@ -1263,10 +1294,11 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		logger.Debug("createGovernanceConfigInStore: ConfigStore is nil, skipping")
 		return
 	}
-	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys",
+	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys, %d routing_rules",
 		len(config.GovernanceConfig.Budgets),
 		len(config.GovernanceConfig.RateLimits),
-		len(config.GovernanceConfig.VirtualKeys))
+		len(config.GovernanceConfig.VirtualKeys),
+		len(config.GovernanceConfig.RoutingRules))
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		for i := range config.GovernanceConfig.Budgets {
 			budget := &config.GovernanceConfig.Budgets[i]
@@ -1317,6 +1349,19 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateTeam(ctx, team, tx); err != nil {
 				return fmt.Errorf("failed to create team %s: %w", team.ID, err)
+			}
+		}
+
+		for i := range config.GovernanceConfig.RoutingRules {
+			rule := &config.GovernanceConfig.RoutingRules[i]
+			ruleHash, err := configstore.GenerateRoutingRuleHash(*rule)
+			if err != nil {
+				logger.Warn("failed to generate routing rule hash for %s: %v", rule.ID, err)
+			} else {
+				rule.ConfigHash = ruleHash
+			}
+			if err := config.ConfigStore.CreateRoutingRule(ctx, rule, tx); err != nil {
+				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
 			}
 		}
 

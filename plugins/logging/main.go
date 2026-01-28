@@ -70,6 +70,8 @@ type LogMessage struct {
 	SelectedKeyName    string                             // Selected key name
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
+	RoutingRuleID      string                             // Routing rule ID
+	RoutingRuleName    string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
@@ -392,8 +394,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
 	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
@@ -417,8 +421,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		logMsg.RequestID = requestID
 		logMsg.SelectedKeyID = selectedKeyID
 		logMsg.VirtualKeyID = virtualKeyID
+		logMsg.RoutingRuleID = routingRuleID
 		logMsg.SelectedKeyName = selectedKeyName
 		logMsg.VirtualKeyName = virtualKeyName
+		logMsg.RoutingRuleName = routingRuleName
 		logMsg.NumberOfRetries = numberOfRetries
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
@@ -457,6 +463,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.RoutingRuleID,
+					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,
@@ -507,6 +515,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 						logMsg.SelectedKeyName,
 						logMsg.VirtualKeyID,
 						logMsg.VirtualKeyName,
+						logMsg.RoutingRuleID,
+						logMsg.RoutingRuleName,
 						logMsg.NumberOfRetries,
 						logMsg.SemanticCacheDebug,
 						logMsg.StreamResponse,
@@ -655,6 +665,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					logMsg.Latency,
 					logMsg.VirtualKeyID,
 					logMsg.VirtualKeyName,
+					logMsg.RoutingRuleID,
+					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
 					logMsg.UpdateData,
@@ -678,6 +690,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 							updatedEntry.VirtualKey = &tables.TableVirtualKey{
 								ID:   *updatedEntry.VirtualKeyID,
 								Name: *updatedEntry.VirtualKeyName,
+							}
+						}
+						if updatedEntry.RoutingRuleID != nil && updatedEntry.RoutingRuleName != nil {
+							updatedEntry.RoutingRule = &tables.TableRoutingRule{
+								ID:   *updatedEntry.RoutingRuleID,
+								Name: *updatedEntry.RoutingRuleName,
 							}
 						}
 						callback(p.ctx, updatedEntry)
