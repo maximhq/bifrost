@@ -409,7 +409,6 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 	// Second lock: Update client with final connection details and tools
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Verify client still exists (could have been cleaned up during heavy operations)
 	if client, exists := m.clientMap[config.ID]; exists {
@@ -430,6 +429,7 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 
 		logger.Info(fmt.Sprintf("%s Connected to MCP server '%s'", MCPLogPrefix, config.Name))
 	} else {
+		m.mu.Unlock()
 		// Clean up resources before returning error: client was removed during connection setup
 		// Cancel SSE context if it was created
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE && cancel != nil {
@@ -443,7 +443,9 @@ func (m *MCPManager) connectToMCPClient(config schemas.MCPClientConfig) error {
 		}
 		return fmt.Errorf("client %s was removed during connection setup", config.Name)
 	}
-
+	// Release lock BEFORE starting monitors to prevent deadlock
+	// (StartMonitoring -> Start() tries to acquire RLock on the same mutex)
+	m.mu.Unlock()
 	// Register OnConnectionLost hook for SSE connections to detect idle timeouts
 	if config.ConnectionType == schemas.MCPConnectionTypeSSE && externalClient != nil {
 		externalClient.OnConnectionLost(func(err error) {
