@@ -196,6 +196,11 @@ const (
 	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
+	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
+	BifrostContextKeyStreamingRequestBody                BifrostContextKey = "bifrost-streaming-request-body"                   // *StreamingRequestBody (set by bifrost - DO NOT SET THIS MANUALLY)) holds streaming body for large payloads
+	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"                     // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
+	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length"             // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
 )
 
 // RoutingEngine constants
