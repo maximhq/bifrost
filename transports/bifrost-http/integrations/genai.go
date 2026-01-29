@@ -499,15 +499,31 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		r.IsEmbedding = isEmbedding
 		r.IsCountTokens = isCountTokens
 
-		// Detect if this is a speech or transcription request by examining the request body
-		// Speech detection takes priority over transcription
-		r.IsSpeech = isSpeechRequest(r)
-		r.IsTranscription = isTranscriptionRequest(r)
+		// Check for large payload streaming mode
+		if streamingBody, ok := bifrostCtx.Value(schemas.BifrostContextKeyStreamingRequestBody).(*StreamingRequestBody); ok && streamingBody != nil {
+			// Large payload path: use pre-extracted metadata
+			// WaitForMetadata handles both paths:
+			// - Phase A (prefetch): returns immediately (done channel is nil)
+			// - Phase B (byte-level scanner): waits for scan to complete
+			metadata := streamingBody.WaitForMetadata()
 
-		// Detect if this is an image generation request
-		// isImagenPredict takes precedence for :predict endpoints
-		r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
-		r.IsImageEdit = isImageEditRequest(r)
+			r.IsSpeech = IsSpeechRequestFromMetadata(metadata)
+			r.IsTranscription = IsTranscriptionRequestFromMetadata(metadata)
+			r.IsImageGeneration = isImagenPredict || IsImageGenerationRequestFromMetadata(metadata)
+			r.IsImageEdit = IsImageEditRequestFromMetadata(metadata)
+		} else {
+			// Normal path: small payloads use existing body inspection
+			// This path is UNCHANGED from current behavior
+			// Detect if this is a speech or transcription request by examining the request body
+			// Speech detection takes priority over transcription
+			r.IsSpeech = isSpeechRequest(r)
+			r.IsTranscription = isTranscriptionRequest(r)
+
+			// Detect if this is an image generation request
+			// isImagenPredict takes precedence for :predict endpoints
+			r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
+			r.IsImageEdit = isImageEditRequest(r)
+		}
 
 		return nil
 	case *gemini.GeminiEmbeddingRequest:

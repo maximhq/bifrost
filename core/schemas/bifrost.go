@@ -203,6 +203,10 @@ const (
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
+	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"           // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
+	BifrostContextKeyStreamingRequestBody                BifrostContextKey = "bifrost-streaming-request-body"       // *StreamingRequestBody (set by bifrost - DO NOT SET THIS MANUALLY)) holds streaming body for large payloads
+	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"         // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
+	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length" // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
 )
 
 // RoutingEngine constants

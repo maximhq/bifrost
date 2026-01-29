@@ -537,14 +537,50 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodHead {
+			// Detect large payload mode for GenAI routes
+			isLargePayload := false
+			var streamingBody *StreamingRequestBody
+
+			if config.Type == RouteConfigTypeGenAI {
+				lpConfig := DefaultLargePayloadConfig()
+				isLargePayload = IsLargePayload(ctx, lpConfig)
+
+				if isLargePayload {
+					// Create streaming body with two-phase extraction:
+					// Phase A: Prefetch 64KB + sonic.Get() (fast path)
+					// Phase B: byte-level scanner fallback if metadata not in prefetch
+					// Memory: O(64-128KB), NOT O(payload)
+					var err error
+					streamingBody, err = CreateStreamingRequestBody(ctx, lpConfig)
+					if err != nil {
+						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to create streaming body"))
+						return
+					}
+
+					// Store streaming body in context for provider
+					bifrostCtx.SetValue(schemas.BifrostContextKeyStreamingRequestBody, streamingBody)
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+					// Also store the reader directly for providers that can't import transports
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadReader, streamingBody.UpstreamReader)
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, streamingBody.ContentLength)
+
+					// Debug headers for test verification of code path
+					ctx.Response.Header.Set("X-Bifrost-Large-Payload", "true")
+					if streamingBody.UsedJstreamFallback {
+						ctx.Response.Header.Set("X-Bifrost-Large-Payload-Phase", "B")
+					} else {
+						ctx.Response.Header.Set("X-Bifrost-Large-Payload-Phase", "A")
+					}
+				}
+			}
+
 			if config.RequestParser != nil {
 				// Use custom parser (e.g., for multipart/form-data)
 				if err := config.RequestParser(ctx, req); err != nil {
 					g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse request"))
 					return
 				}
-			} else {
-				// Use default JSON parsing
+			} else if !isLargePayload {
 				rawBody = ctx.Request.Body()
 				if len(rawBody) > 0 {
 					if err := sonic.Unmarshal(rawBody, req); err != nil {
@@ -567,6 +603,9 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 					}
 				}
 			}
+			// Large payload mode: body streams via streamingBody.UpstreamReader
+			// Request body passes through UNCHANGED to upstream
+			// Model extracted from URL (not body)
 		}
 
 		// Execute pre-request callback if configured
