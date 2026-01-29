@@ -55,6 +55,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	data *UpdateLogData,
@@ -71,6 +73,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -199,6 +207,8 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	selectedKeyName string,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	streamResponse *streaming.ProcessedStreamResponse,
@@ -213,6 +223,12 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries

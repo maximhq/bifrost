@@ -170,6 +170,7 @@ export const baseApi = createApi({
 		"Permissions",
 		"APIKeys",
 		"OAuth2Config",
+		"RoutingRules",
 	],
 	endpoints: () => ({}),
 });
