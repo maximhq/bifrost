@@ -76,7 +76,7 @@ oauth-config-status:
         content:
           application/json:
             schema:
-              $ref: '../../openapi.yaml#/components/responses/NotFound'
+              $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
