@@ -1,0 +1,1 @@
+- fix: skip OpenAI parameter filtering for custom providers
