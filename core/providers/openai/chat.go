@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -65,6 +66,11 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		}
 		return openaiReq
 	default:
+		// Check if provider is a custom provider
+		isCustomProvider := !slices.Contains(schemas.StandardProviders, bifrostReq.Provider)
+		if isCustomProvider {
+			return openaiReq
+		}
 		openaiReq.filterOpenAISpecificParameters()
 		return openaiReq
 	}
