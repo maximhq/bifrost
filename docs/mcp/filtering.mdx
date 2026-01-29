@@ -146,6 +146,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "x-bf-mcp-include-tools: bifrostInternal-echo,bifrostInternal-calculator" \
   -d '...'
+
+# Empty clients filter blocks ALL tools - no tools available to LLM
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-clients: []" \
+  -d '...'
+# Result: No MCP tools available (deny-all)
+
+# Empty tools filter also blocks ALL tools
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-tools: []" \
+  -d '...'
+# Result: No MCP tools available (deny-all)
 ```
 
 ### Go SDK Context Values
@@ -172,6 +184,18 @@ ctx = context.WithValue(ctx,
     []string{"bifrostInternal-*"})
 
 response, err := client.ChatCompletionRequest(ctx, request)
+
+// Empty include-clients blocks ALL tools - no tools available
+ctx = context.WithValue(context.Background(),
+    schemas.BifrostContextKey("mcp-include-clients"),
+    []string{})  // Empty slice = deny-all
+// Result: No MCP tools available to LLM
+
+// Empty include-tools also blocks ALL tools
+ctx = context.WithValue(context.Background(),
+    schemas.BifrostContextKey("mcp-include-tools"),
+    []string{})  // Empty slice = deny-all
+// Result: No MCP tools available to LLM
 ```
 
 ### Wildcard Support

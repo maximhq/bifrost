@@ -1,0 +1,886 @@
+---
+title: "Routing Rules"
+description: "Configure dynamic, expression-based routing decisions using CEL expressions to control how requests are routed across providers."
+icon: "chart-diagram"
+---
+
+## Overview
+
+Routing Rules provide dynamic, expression-based control over request routing. They execute **before governance provider selection** and can override it, allowing you to make sophisticated routing decisions based on request context, headers, parameters, capacity metrics, and organizational hierarchy.
+
+Unlike governance routing (which uses static provider weights), routing rules use **CEL expressions** (Common Expression Language) to evaluate conditions at runtime and make routing decisions dynamically.
+
+---
+
+## How It Works
+
+### Request Flow
+
+<img src="/media/routing-rules-flow.svg" alt="Routing Rules Request Flow" />
+
+### Scope Hierarchy & Precedence
+
+Routing rules are organized by scope with **first-match-wins** evaluation:
+
+```
+VirtualKey Scope (Highest Priority)
+    ↓
+Team Scope
+    ↓
+Customer Scope
+    ↓
+Global Scope (Lowest Priority, applies to all)
+```
+
+**How it works:**
+1. When a request arrives with a Virtual Key, Bifrost builds a scope chain
+2. Rules are evaluated in scope order (highest to lowest)
+3. The **first matching rule** wins - no further rules are evaluated
+4. Within each scope, rules are sorted by **priority** (ascending: 0 evaluates before 10)
+5. If no rule matches, the incoming provider/model is used unchanged
+
+**Example:**
+```
+VirtualKey (vk-123) is attached to Team (team-456),
+which belongs to Customer (cust-789)
+
+Evaluation order:
+1. Check Virtual Key scope rules (vk-123)
+2. Check Team scope rules (team-456)
+3. Check Customer scope rules (cust-789)
+4. Check Global scope rules
+
+First match → Decision
+```
+
+## CEL Expression Guide
+
+### Available Variables
+
+Routing rules evaluate CEL expressions with these available variables:
+
+#### Request Context
+```cel
+model          // Requested model (string)
+provider       // Current provider (string)
+request_type   // Request type (chat_completion, embedding, batch, image_generation, moderation, transcription, translation)
+```
+
+#### Headers & Parameters
+```cel
+headers["header-name"]     // Request header (case-insensitive key lookup)
+params["param-name"]        // Query parameter
+```
+
+**Header Examples:**
+```cel
+headers["x-tier"] == "premium"
+headers["x-api-version"] == "v2"
+headers["user-agent"].contains("mobile")
+```
+
+#### Organization Context
+```cel
+virtual_key_id             // VK ID (string, empty if no VK)
+virtual_key_name           // VK name (string)
+team_id                    // Team ID (string, empty if not in team)
+team_name                  // Team name (string)
+customer_id                // Customer ID (string)
+customer_name              // Customer name (string)
+```
+
+**Organization Examples:**
+```cel
+team_name == "ml-research"
+customer_id == "acme-corp"
+virtual_key_name.startsWith("prod-")
+```
+
+#### Capacity Metrics (as percentages: 0-100)
+```cel
+budget_used      // Budget usage percentage for provider/model (0.0 to 100.0)
+tokens_used      // Token rate limit usage percentage (0.0 to 100.0)
+request          // Request rate limit usage percentage (0.0 to 100.0)
+```
+
+**Capacity Examples:**
+```cel
+budget_used > 80           // Route to fallback when 80%+ of budget used
+tokens_used < 50           // Route to fast provider when below 50% token limit
+request > 90               // Switch providers when request limit near max
+```
+
+### CEL Operators & Functions
+
+#### Comparison Operators
+```cel
+==    // Equal
+!=    // Not equal
+>     // Greater than
+<     // Less than
+>=    // Greater or equal
+<=    // Less or equal
+```
+
+#### Logical Operators
+```cel
+&&    // AND
+||    // OR
+!     // NOT
+```
+
+#### String Functions
+```cel
+.startsWith("prefix")      // Check string prefix
+.endsWith("suffix")        // Check string suffix
+.contains("substring")     // Check substring
+.matches("regex")          // Regex match
+```
+
+#### Collections
+```cel
+"value" in ["item1", "item2", "item3"]    // Check membership
+```
+
+### Expression Examples
+
+#### Simple Conditions
+```cel
+// Route based on header value
+headers["x-tier"] == "premium"
+
+// Route based on team
+team_name == "research"
+
+// Route based on model
+model == "gpt-4o"
+
+// Route based on request type
+request_type == "embedding"
+
+// Route to fallback when budget high
+budget_used > 80
+```
+
+#### Complex Conditions (Multiple Criteria)
+```cel
+// Premium tier research team
+headers["x-tier"] == "premium" && team_name == "research"
+
+// High capacity or premium
+budget_used > 90 || headers["x-priority"] == "high"
+
+// Specific team and model
+team_name == "ml-ops" && model.startsWith("claude-")
+
+// Region-based with capacity check
+headers["x-region"] == "us-east" && tokens_used < 75
+
+// Route embeddings to cheaper provider
+request_type == "embedding" && budget_used > 50
+```
+
+#### Pattern Matching
+```cel
+// Match models starting with prefix
+model.startsWith("gpt-4")
+
+// Match custom headers
+headers["x-environment"] in ["staging", "testing"]
+
+// Email domain matching
+headers["x-user-email"].contains("@company.com")
+
+// Regex patterns
+headers["x-app-version"].matches("[0-9]+\\.[0-9]+\\.[0-9]+")
+```
+
+### Validation & Error Handling
+
+- **Invalid CEL syntax** → Rule logs warning, skipped, evaluation continues
+- **Missing header/parameter** → Expression returns false (graceful no-match)
+- **Type mismatches** → Logged as warning, rule skipped
+- **Empty expression** → Rule always matches (use `true`/`false` for explicit behavior)
+
+---
+
+## Configuration
+
+<Tabs>
+<Tab title="Web UI">
+
+Access routing rules from the dashboard:
+
+**Routing Rules Dashboard**
+<Frame>
+  <img src="/media/ui-routing-rules-dashboard.png" alt="Routing Rules Dashboard" />
+</Frame>
+
+**Features:**
+- List all rules with scope, priority, and enabled status
+- Filter by scope or scope_id
+- Create/Edit/Delete rules
+- View rule expressions and targets
+- Enable/disable rules without deletion
+- Drag to reorder priority
+
+**Create/Edit Rule Sheet**
+<Frame>
+  <img src="/media/ui-create-routing-rule.png" alt="Create Routing Rule Dialog" />
+</Frame>
+
+**Fields:**
+- **Name** (required): Unique rule identifier
+- **Description** (optional): Internal notes
+- **Enabled**: Toggle rule on/off
+- **CEL Expression**: Visual or manual expression builder
+- **Provider** (required): Target provider if matched
+- **Model** (optional): Target model if matched (empty = use original)
+- **Fallbacks** (optional): Array of fallback providers
+- **Scope**: Where rule applies (global, customer, team, virtual_key)
+- **Scope ID**: Required if scope is not global
+- **Priority**: Lower = evaluated first (default: 0)
+
+### Visual CEL Builder
+
+The dashboard includes a visual query builder for CEL expressions:
+
+- **Condition Builder**: Select field, operator, value
+- **Logical Operators**: Combine conditions with AND/OR
+- **Manual Mode**: Switch to edit CEL directly
+- **Validation**: Real-time syntax validation
+- **Conversion**: Auto-converts visual rules to CEL
+
+</Tab>
+
+<Tab title="API">
+
+### List Routing Rules
+```bash
+GET /api/governance/routing-rules
+
+# Optional query parameters:
+?scope=global&scope_id=<id>&from_memory=true
+```
+
+**Response:**
+```json
+{
+  "rules": [
+    {
+      "id": "rule-uuid-123",
+      "name": "Premium Tier Route",
+      "description": "Route premium users to fast provider",
+      "enabled": true,
+      "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+      "provider": "openai",
+      "model": "gpt-4o",
+      "fallbacks": ["azure/gpt-4o", "groq/gpt-3.5-turbo"],
+      "scope": "global",
+      "scope_id": null,
+      "priority": 10,
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### Get Single Rule
+```bash
+GET /api/governance/routing-rules/{rule_id}
+```
+
+### Create Rule
+```bash
+POST /api/governance/routing-rules
+
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "name": "Budget Overflow Route",
+  "description": "When budget is high, route to cheaper provider",
+  "enabled": true,
+  "cel_expression": "budget_used > 85",
+  "provider": "groq",
+  "model": "",
+  "fallbacks": ["openai/gpt-4o"],
+  "scope": "team",
+  "scope_id": "team-uuid-456",
+  "priority": 5
+}
+```
+
+**Response:** `201 Created`
+```json
+{
+  "message": "Routing rule created successfully",
+  "rule": { /* rule object */ }
+}
+```
+
+### Update Rule
+```bash
+PUT /api/governance/routing-rules/{rule_id}
+
+Content-Type: application/json
+```
+
+**Request Body (all fields optional):**
+```json
+{
+  "name": "Updated Rule Name",
+  "enabled": false,
+  "cel_expression": "budget_used > 90",
+  "priority": 20
+}
+```
+
+### Delete Rule
+```bash
+DELETE /api/governance/routing-rules/{rule_id}
+```
+
+**Response:** `200 OK`
+```json
+{
+  "message": "Routing rule deleted successfully"
+}
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+Define routing rules in your `config.json` file under the governance configuration:
+
+**Structure:**
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "rule-uuid-123",
+        "name": "Premium Tier Route",
+        "description": "Route premium users to fast provider",
+        "enabled": true,
+        "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+        "provider": "openai",
+        "model": "gpt-4o",
+        "fallbacks": ["azure/gpt-4o", "groq/gpt-3.5-turbo"],
+        "scope": "global",
+        "scope_id": null,
+        "priority": 10
+      },
+      {
+        "id": "rule-uuid-456",
+        "name": "Budget Overflow Route",
+        "description": "Route to cheaper provider when budget is high",
+        "enabled": true,
+        "cel_expression": "budget_used > 85",
+        "provider": "groq",
+        "model": "llama-2-70b",
+        "fallbacks": [],
+        "scope": "team",
+        "scope_id": "team-ml-ops",
+        "priority": 5
+      }
+    ]
+  }
+}
+```
+
+**Fields:**
+- **id** (string, auto-generated): Unique rule identifier (UUID)
+- **name** (string, required): Rule name (must be unique within scope)
+- **description** (string, optional): Internal documentation
+- **enabled** (boolean): Whether rule is active
+- **cel_expression** (string): CEL expression for rule matching
+- **provider** (string, optional): Target provider if matched (empty string = use incoming request provider)
+- **model** (string, optional): Target model if matched (empty string = use incoming request model)
+- **fallbacks** (array[string]): Fallback providers in "provider/model" format
+- **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
+- **scope_id** (string, optional): ID of scoped entity (null for global scope)
+- **priority** (number): Rule evaluation order within scope (lower = evaluated first)
+
+**Loading from config.json:**
+Routes are automatically loaded on startup from the `config.json` governance section. Changes require application restart.
+
+**Example with Multiple Rules:**
+```json
+{
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "tier-based",
+        "name": "Premium Tier Fast Track",
+        "enabled": true,
+        "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+        "provider": "openai",
+        "model": "gpt-4o",
+        "fallbacks": ["azure/gpt-4o"],
+        "scope": "global",
+        "priority": 0
+      },
+      {
+        "id": "capacity-failover",
+        "name": "Budget Exhaustion Fallback",
+        "enabled": true,
+        "cel_expression": "budget_used > 90",
+        "provider": "groq",
+        "model": "llama-2-70b",
+        "fallbacks": [],
+        "scope": "global",
+        "priority": 5
+      },
+      {
+        "id": "team-preference",
+        "name": "ML Team Anthropic Route",
+        "enabled": true,
+        "cel_expression": "team_name == \"ml-research\"",
+        "provider": "anthropic",
+        "model": "claude-3-opus-20240229",
+        "fallbacks": ["bedrock/claude-3-opus"],
+        "scope": "team",
+        "scope_id": "team-ml-research",
+        "priority": 0
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Real-World Use Cases
+
+**When to use Routing Rules:**
+- Dynamic routing based on request headers or parameters
+- Capacity-based routing (route to fallback when budget/rate limit is high)
+- Organization-based routing (different rules for different teams/customers)
+- A/B testing or canary deployments
+- Conditional provider override based on complex logic
+
+### Use Case 1: Tier-Based Routing
+
+Route requests based on customer tier using headers:
+
+```json
+{
+  "name": "Premium Tier Fast Track",
+  "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "fallbacks": ["azure/gpt-4o"],
+  "scope": "global",
+  "priority": 10
+}
+```
+
+### Use Case 2: Capacity-Based Failover
+
+Route to cheaper provider when budget is exhausted:
+
+```json
+{
+  "name": "Budget Exhaustion Fallback",
+  "cel_expression": "budget_used > 90",
+  "provider": "groq",
+  "model": "llama-2-70b",
+  "fallbacks": [],
+  "scope": "global",
+  "priority": 5
+}
+```
+
+### Use Case 3: Team-Specific Routing
+
+Route team-specific requests to their preferred provider:
+
+```json
+{
+  "name": "ML Team Anthropic Preference",
+  "cel_expression": "team_name == \"ml-research\"",
+  "provider": "anthropic",
+  "model": "claude-3-opus-20240229",
+  "fallbacks": ["bedrock/claude-3-opus"],
+  "scope": "team",
+  "scope_id": "team-ml-research-uuid",
+  "priority": 0
+}
+```
+
+### Use Case 4: Complex Multi-Condition Routing
+
+Combine multiple criteria for sophisticated routing:
+
+```json
+{
+  "name": "Production Premium Route",
+  "cel_expression": "headers[\"x-environment\"] == \"production\" && headers[\"x-priority\"] == \"high\" && tokens_used < 75",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "fallbacks": ["azure/gpt-4o"],
+  "scope": "global",
+  "priority": 5
+}
+```
+
+### Use Case 5: A/B Testing
+
+Route percentage of traffic using request patterns:
+
+```json
+{
+  "name": "A/B Test New Model",
+  "cel_expression": "headers[\"x-user-id\"].contains(\"test-\") || headers[\"x-ab-test\"] == \"new-model\"",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "fallbacks": ["openai/gpt-4o"],
+  "scope": "global",
+  "priority": 15
+}
+```
+
+### Use Case 6: Regional Routing
+
+Route based on region headers:
+
+```json
+{
+  "name": "EU Data Residency",
+  "cel_expression": "headers[\"x-region\"] == \"eu\"",
+  "provider": "azure",
+  "model": "gpt-4o",
+  "fallbacks": [],
+  "scope": "global",
+  "priority": 0
+}
+```
+
+---
+
+## Integration with Governance & Load Balancing
+
+### Interaction with Governance Routing
+
+Routing Rules run **BEFORE** governance provider selection and can override it:
+
+**If a routing rule matches:**
+```
+1. Routing Rules → CEL expression evaluation (first-match-wins)
+2. Rule matches → provider/model/fallbacks overridden
+3. Governance provider_configs → SKIPPED
+4. Load Balancing → selects best key
+```
+
+**If no routing rule matches:**
+```
+1. Routing Rules → CEL expression evaluation
+2. No match → continue
+3. Governance routing → provider/model selection (weighted random)
+4. Load Balancing → selects best key
+```
+
+**Example:**
+- Governance configures: 70% Azure, 30% OpenAI
+- Routing rule exists: `budget_used > 85 → groq`
+- Request arrives with budget_used = 90%
+- **Result**: Groq selected by routing rule, governance provider_configs **ignored**
+
+### Interaction with Load Balancing
+
+Routing rules determine provider BEFORE adaptive load balancing runs:
+
+```
+1. Routing Rules evaluate first → determine provider (if matched)
+   OR
+2. Governance selects provider (if no routing rule matched)
+   ↓
+3. Load Balancing Level 1 → skipped (provider already determined by routing rules or governance)
+4. Load Balancing Level 2 → key selection (performance-based within selected provider)
+```
+
+**Key Insight:** Load balancing Level 2 (key selection) always runs regardless of whether the provider was determined by routing rules or governance. This means you get automatic key-level optimization in all cases.
+
+### Fallback Chain
+
+Routing rules can define fallbacks that flow into load balancing:
+
+```json
+{
+  "provider": "openai",
+  "fallbacks": ["azure/gpt-4o", "groq/gpt-3.5-turbo"]
+}
+```
+
+If OpenAI fails:
+1. Level 2 load balancing evaluates Azure keys
+2. If all Azure keys fail, tries Groq
+
+---
+
+## Execution & Performance
+
+### CEL Compilation
+
+- **First evaluation**: CEL expression is compiled into a bytecode program
+- **Subsequent evaluations**: Program is cached and reused
+- **Performance**: Cached program evaluation is very fast (microseconds)
+- **Memory**: Compiled programs cached in memory until Bifrost restart
+
+### Priority & Ordering
+
+Rules within the same scope are evaluated in **ascending priority order**:
+
+```
+Priority 0 → Priority 5 → Priority 10 → Priority 100 (first match wins)
+```
+
+**Best Practice:** Use priority 0-10 for critical rules, 100+ for fallbacks.
+
+### Optimization Tips
+
+1. **Order rules by likelihood**: Put frequently matching rules first
+2. **Use specific scopes**: Avoid global scope when possible (narrower = faster)
+3. **Avoid expensive string operations**: Prefer `==` over `.matches()` with regex
+4. **Keep expressions simple**: Complex conditions increase evaluation time
+5. **Use reasonable priorities**: Gaps in priorities (0, 10, 20) make reordering easy
+
+---
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Rule Naming">
+    ✅ **Good names:**
+    - "Premium Tier Fast Track"
+    - "Budget Exhaustion Fallback"
+    - "ML Team Anthropic Route"
+    - "Production High Priority Route"
+
+    ❌ **Bad names:**
+    - "Rule 1"
+    - "Fix"
+    - "Temp"
+    - "TODO"
+  </Accordion>
+
+  <Accordion title="CEL Expression Safety">
+    ✅ **Safe patterns:**
+    ```cel
+    headers["x-tier"] == "premium"                    // Exact match
+    headers["x-region"] in ["us", "eu", "asia"]      // Membership
+    team_name.startsWith("prod-")                    // Prefix check
+    budget_used > 80                                 // Numeric comparison
+    ```
+
+    ❌ **Risky patterns:**
+    ```cel
+    headers["x-tier"].matches(".*premium.*")         // Complex regex
+    headers["x-config"].contains("json")             // Fragile
+    model.length() > 5 && ...                        // Undocumented behavior
+    ```
+  </Accordion>
+
+  <Accordion title="Scope Management">
+    ✅ **Good scope design:**
+    - Global rules for organization-wide policies
+    - Customer scope for compliance (EU, data residency)
+    - Team scope for team preferences
+    - Virtual Key scope for specific integrations
+
+    ❌ **Avoid:**
+    - Too many virtual key-level rules (maintenance nightmare)
+    - Conflicting rules across scopes
+    - Rules that duplicate governance routing
+  </Accordion>
+
+  <Accordion title="Testing & Validation">
+    ✅ **Validate before deployment:**
+    1. Test CEL expression with expected headers
+    2. Verify provider/model exist in your setup
+    3. Check fallbacks are valid providers
+    4. Confirm scope_id matches actual entity
+    5. Test with `from_memory=true` to verify in-memory state
+
+    ❌ **Don't:**
+    - Deploy rules without testing
+    - Use nonexistent providers
+    - Create circular fallback chains
+  </Accordion>
+
+  <Accordion title="Monitoring">
+    ✅ **Track rule usage:**
+    - Log which rules match (logged in Bifrost logs as `[RoutingEngine]`)
+    - Monitor routing decisions by scope
+    - Alert on unexpected provider selection patterns
+    - Review priority order occasionally
+
+    ❌ **Don't forget:**
+    - Disabling unused rules (instead of deleting)
+    - Updating documentation when rules change
+    - Testing failover chains
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Troubleshooting
+
+### Rule Not Matching
+
+**Symptom**: Rule expression is correct but doesn't match
+
+**Diagnosis**:
+1. Check if rule is **enabled** (`enabled: true`)
+2. Verify **scope matches** (check VirtualKey's team/customer hierarchy)
+3. Check rule **priority** vs other rules in scope (lower priority evaluates first)
+4. Verify **variable values**: Use `from_memory=true` to debug
+
+**Solutions**:
+```bash
+# Get current routing rules in memory
+GET /api/governance/routing-rules?from_memory=true
+
+# Check if your variables are present
+# Example: Is team_name actually set?
+# Verify headers are lowercase in CEL
+```
+
+### Expression Compilation Error
+
+**Symptom**: "Failed to compile rule: invalid CEL syntax"
+
+**Common causes**:
+- Unclosed quotes: `headers["x-tier` (missing closing quote)
+- Invalid operators: `headers["x"] ??` (not standard CEL)
+- String escaping: `headers["x-\type"]` (incorrect escape)
+
+**Solutions**:
+1. Use the visual CEL builder to avoid syntax errors
+2. Test expressions incrementally
+3. Check CEL operator documentation above
+4. Wrap complex expressions in parentheses: `(A && B) || (C && D)`
+
+### Wrong Provider Selected
+
+**Symptom**: Request routed to unexpected provider
+
+**Diagnosis**:
+1. Multiple rules matching? (first-match-wins means earlier rules take precedence)
+2. Governance routing already determined provider? (check scope hierarchy)
+3. Load balancing changed key? (rule sets provider, LB sets key)
+
+**Solutions**:
+1. Lower priority of matching rules
+2. Verify scope precedence (VirtualKey > Team > Customer > Global)
+3. Check if another rule has lower priority and matches first
+4. Review logs: `[RoutingEngine] Rule matched! Decision: provider=...`
+
+### Header/Parameter Not Found
+
+**Symptom**: "no such key" error in CEL evaluation
+
+**This is normal!** Bifrost treats missing headers as non-matches:
+```cel
+headers["x-optional"] == "value"  # Returns false if header missing
+```
+
+If you need to check if header exists:
+```cel
+headers["x-optional"] != ""  # True only if present and non-empty
+```
+
+### Debugging with Logs
+
+Enable debug logging to see routing rule evaluation:
+
+```
+[RoutingEngine] Starting rule evaluation for provider=openai, model=gpt-4o
+[RoutingEngine] Scope chain: [virtual_key(vk-123) team(team-456) customer(cust-789) global]
+[RoutingEngine] Evaluating scope=virtual_key, scopeID=vk-123, ruleCount=2
+[RoutingEngine] Evaluating rule: id=rule-1, name=Premium Route, expression=headers["x-tier"]=="premium"
+[RoutingEngine] Rule rule-1 evaluation result: matched=false
+[RoutingEngine] Evaluating rule: id=rule-2, name=Budget Fallback, expression=budget_used>80
+[RoutingEngine] Rule rule-2 evaluation result: matched=true
+[RoutingEngine] Rule matched! Decision: provider=groq, model=gpt-3.5-turbo, fallbacks=[azure/gpt-4o]
+```
+
+---
+
+## API Reference
+
+### Request/Response Examples
+
+#### Create Capacity-Based Rule
+```bash
+curl -X POST http://localhost:8080/api/governance/routing-rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "High Budget Fallback",
+    "description": "Switch to cheaper provider when budget >85%",
+    "enabled": true,
+    "cel_expression": "budget_used > 85",
+    "provider": "groq",
+    "model": "llama-2-70b",
+    "fallbacks": ["openai/gpt-3.5-turbo"],
+    "scope": "global",
+    "priority": 10
+  }'
+```
+
+#### Create Header-Based Rule
+```bash
+curl -X POST http://localhost:8080/api/governance/routing-rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Premium Tier Route",
+    "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+    "provider": "openai",
+    "model": "gpt-4o",
+    "scope": "global",
+    "priority": 5
+  }'
+```
+
+#### List Rules by Team Scope
+```bash
+curl http://localhost:8080/api/governance/routing-rules \
+  -H "Authorization: Bearer your-token" \
+  -G \
+  --data-urlencode "scope=team" \
+  --data-urlencode "scope_id=team-uuid-123"
+```
+
+#### Get In-Memory Rules (Debug)
+```bash
+curl http://localhost:8080/api/governance/routing-rules?from_memory=true \
+  -H "Authorization: Bearer your-token"
+```
+
+---
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="Provider Routing" icon="route" href="/providers/provider-routing">
+    Understand how routing rules fit into the complete routing pipeline
+  </Card>
+  <Card title="Virtual Keys" icon="key" href="/features/governance/virtual-keys">
+    Configure Virtual Keys that scope routing rules
+  </Card>
+  <Card title="Governance" icon="shield-check" href="/features/governance/routing">
+    Learn about the governance layer (applied after routing rules determine provider selection when no rule matches)
+  </Card>
+  <Card title="CEL Language Spec" icon="code" href="https://github.com/google/cel-spec">
+    Complete CEL expression language documentation
+  </Card>
+</CardGroup>

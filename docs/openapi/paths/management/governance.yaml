@@ -670,3 +670,231 @@ routing-rules-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Model Configs CRUD
+
+model-configs:
+  get:
+    operationId: listModelConfigs
+    summary: List model configs
+    description: Returns a list of all model configurations with their budget and rate limit settings.
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListModelConfigsResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  post:
+    operationId: createModelConfig
+    summary: Create model config
+    description: Creates a new model configuration with budget and rate limit settings.
+    tags:
+      - Governance
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/CreateModelConfigRequest'
+    responses:
+      '200':
+        description: Model config created successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelConfigResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+model-configs-by-id:
+  get:
+    operationId: getModelConfig
+    summary: Get model config
+    description: Returns a specific model configuration by ID.
+    tags:
+      - Governance
+    parameters:
+      - name: mc_id
+        in: path
+        required: true
+        description: Model config ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model_config:
+                  $ref: '../../schemas/management/governance.yaml#/ModelConfig'
+      '404':
+        description: Model config not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  put:
+    operationId: updateModelConfig
+    summary: Update model config
+    description: Updates an existing model configuration's budget and rate limit settings.
+    tags:
+      - Governance
+    parameters:
+      - name: mc_id
+        in: path
+        required: true
+        description: Model config ID
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateModelConfigRequest'
+    responses:
+      '200':
+        description: Model config updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ModelConfigResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Model config not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteModelConfig
+    summary: Delete model config
+    description: Deletes a model configuration.
+    tags:
+      - Governance
+    parameters:
+      - name: mc_id
+        in: path
+        required: true
+        description: Model config ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Model config deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Model config not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Provider Governance
+
+provider-governance:
+  get:
+    operationId: listProviderGovernance
+    summary: List provider governance
+    description: Returns a list of all providers with their governance settings (budget and rate limits).
+    tags:
+      - Governance
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ListProviderGovernanceResponse'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+provider-governance-by-name:
+  put:
+    operationId: updateProviderGovernance
+    summary: Update provider governance
+    description: Updates governance settings (budget and rate limits) for a specific provider.
+    tags:
+      - Governance
+    parameters:
+      - name: provider_name
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
+    responses:
+      '200':
+        description: Provider governance updated successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/governance.yaml#/ProviderGovernanceResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteProviderGovernance
+    summary: Delete provider governance
+    description: Removes governance settings (budget and rate limits) for a specific provider.
+    tags:
+      - Governance
+    parameters:
+      - name: provider_name
+        in: path
+        required: true
+        description: Provider name
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Provider governance deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '404':
+        description: Provider not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

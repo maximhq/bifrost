@@ -111,6 +111,7 @@
                   "providers/supported-providers/xai"
                 ]
               },
+              "providers/routing-rules",
               "providers/provider-routing",
               "providers/reasoning",
               "providers/performance",

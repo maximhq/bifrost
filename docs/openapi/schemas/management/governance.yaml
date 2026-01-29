@@ -765,3 +765,143 @@ ListRoutingRulesResponse:
     count:
       type: integer
       description: Number of routing rules returned
+
+# Model Configs
+
+ModelConfig:
+  type: object
+  description: Model configuration with budget and rate limit settings
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the model config
+    model_name:
+      type: string
+      description: Name of the model
+    provider:
+      type: string
+      description: Provider name (optional - applies to all providers if not specified)
+    budget:
+      $ref: '#/Budget'
+      description: Budget configuration for this model
+    rate_limit:
+      $ref: '#/RateLimit'
+      description: Rate limit configuration for this model
+    created_at:
+      type: string
+      format: date-time
+      description: When this model config was created
+    updated_at:
+      type: string
+      format: date-time
+      description: When this model config was last updated
+
+ModelConfigResponse:
+  type: object
+  description: Response containing a created/updated model config
+  properties:
+    message:
+      type: string
+    model_config:
+      $ref: '#/ModelConfig'
+
+ListModelConfigsResponse:
+  type: object
+  description: Response containing list of model configs
+  properties:
+    model_configs:
+      type: array
+      items:
+        $ref: '#/ModelConfig'
+    count:
+      type: integer
+      description: Number of model configs returned
+
+CreateModelConfigRequest:
+  type: object
+  description: Request to create a new model config
+  required:
+    - model_name
+  properties:
+    model_name:
+      type: string
+      description: Name of the model (required)
+    provider:
+      type: string
+      description: Provider name (optional - applies to all providers if not specified)
+    budget:
+      $ref: '#/CreateBudgetRequest'
+      description: Budget configuration
+    rate_limit:
+      $ref: '#/CreateRateLimitRequest'
+      description: Rate limit configuration
+
+UpdateModelConfigRequest:
+  type: object
+  description: Request to update an existing model config
+  properties:
+    model_name:
+      type: string
+      description: Name of the model
+    provider:
+      type: string
+      description: Provider name
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+      description: Budget configuration
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+      description: Rate limit configuration
+
+# Provider Governance
+
+ProviderGovernance:
+  type: object
+  description: Provider-level governance settings (budget and rate limits)
+  properties:
+    provider:
+      type: string
+      description: Provider name
+    budget:
+      $ref: '#/Budget'
+      description: Budget configuration for this provider
+    rate_limit:
+      $ref: '#/RateLimit'
+      description: Rate limit configuration for this provider
+
+ProviderGovernanceResponse:
+  type: object
+  description: Response containing provider governance settings
+  properties:
+    provider:
+      type: string
+      description: Provider name
+    budget:
+      $ref: '#/Budget'
+      description: Budget configuration
+    rate_limit:
+      $ref: '#/RateLimit'
+      description: Rate limit configuration
+
+ListProviderGovernanceResponse:
+  type: object
+  description: Response containing list of provider governance settings
+  properties:
+    providers:
+      type: array
+      items:
+        $ref: '#/ProviderGovernanceResponse'
+    count:
+      type: integer
+      description: Number of providers with governance settings
+
+UpdateProviderGovernanceRequest:
+  type: object
+  description: Request to update provider governance settings
+  properties:
+    budget:
+      $ref: '#/UpdateBudgetRequest'
+      description: Budget configuration
+    rate_limit:
+      $ref: '#/UpdateRateLimitRequest'
+      description: Rate limit configuration
