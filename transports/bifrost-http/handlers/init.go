@@ -2,8 +2,10 @@ package handlers
 
 import "github.com/maximhq/bifrost/core/schemas"
 
-var version string
-var logger schemas.Logger
+var (
+	version string
+	logger  schemas.Logger
+)
 
 // SetLogger sets the logger for the application.
 func SetLogger(l schemas.Logger) {

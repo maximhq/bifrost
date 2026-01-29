@@ -220,7 +220,7 @@ func (bc *BifrostContext) Value(key any) any {
 func (bc *BifrostContext) SetValue(key, value any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return
 	}
 	bc.valuesMu.Lock()
@@ -232,17 +232,17 @@ func (bc *BifrostContext) SetValue(key, value any) {
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it
-func (bc *BifrostContext) GetAndSetValue(key any, value any) any {	
+func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}
 	if bc.userValues == nil {
 		bc.userValues = make(map[any]any)
-	}	
+	}
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
 	return oldValue

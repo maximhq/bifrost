@@ -123,7 +123,6 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	requiredTask string,
 	requestType schemas.RequestType,
 ) ([]byte, time.Duration, *schemas.BifrostError) {
-
 	// Build URL with original model name
 	url, urlErr := provider.getInferenceProviderRouteURL(ctx, inferenceProvider, originalModelName, requestType)
 	if urlErr != nil {
@@ -414,7 +413,6 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 
 // ListModels queries the Hugging Face model hub API to list models served by the inference provider.
 func (provider *HuggingFaceProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-
 	if err := providerUtils.CheckOperationAllowed(schemas.HuggingFace, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
 	}
@@ -428,7 +426,6 @@ func (provider *HuggingFaceProvider) ListModels(ctx *schemas.BifrostContext, key
 		provider.listModelsByKey,
 		provider.logger,
 	)
-
 }
 
 func (provider *HuggingFaceProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
@@ -883,7 +880,6 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 	}
 
 	return bifrostResponse, nil
-
 }
 
 // TranscriptionStream is not supported by the Hugging Face provider.
@@ -1050,7 +1046,6 @@ func HandleHuggingFaceImageGenerationStreaming(
 	postHookRunner schemas.PostHookRunner,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	// Set headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",

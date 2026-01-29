@@ -1925,7 +1925,6 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 				params.Include = []string{"web_search_call.action.sources"}
 			}
 		}
-
 	}
 
 	bifrostReq.Params = params

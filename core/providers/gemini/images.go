@@ -409,7 +409,6 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings - support both camelCase (canonical) and snake_case (legacy) keys

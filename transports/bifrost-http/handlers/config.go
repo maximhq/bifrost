@@ -88,7 +88,7 @@ func (h *ConfigHandler) getVersion(ctx *fasthttp.RequestCtx) {
 
 // getConfig handles GET /config - Get the current configuration
 func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
-	var mapConfig = make(map[string]any)
+	mapConfig := make(map[string]any)
 
 	if query := string(ctx.QueryArgs().Peek("from_db")); query == "true" {
 		if h.store.ConfigStore == nil {

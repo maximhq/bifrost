@@ -346,8 +346,10 @@ type HuggingFaceTranscriptionResponseChunk struct {
 	Timestamp []float64 `json:"timestamp"`
 }
 
-type HuggingFaceGenerationParameters = HuggingFaceTranscriptionGenerationParameters
-type HuggingFaceEarlyStoppingUnion = HuggingFaceTranscriptionEarlyStopping
+type (
+	HuggingFaceGenerationParameters = HuggingFaceTranscriptionGenerationParameters
+	HuggingFaceEarlyStoppingUnion   = HuggingFaceTranscriptionEarlyStopping
+)
 
 // # IMAGE GENERATION TYPES
 

@@ -538,7 +538,7 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 			OutputTokens: bifrostResp.Usage.CompletionTokens,
 		}
 
-		//NOTE: We cannot segregate between cache creation and cache read tokens, so we will use the total cached tokens as the cache read tokens
+		// NOTE: We cannot segregate between cache creation and cache read tokens, so we will use the total cached tokens as the cache read tokens
 		if bifrostResp.Usage.PromptTokensDetails != nil && bifrostResp.Usage.PromptTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.PromptTokensDetails.CachedTokens
 		}

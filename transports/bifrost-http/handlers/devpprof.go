@@ -133,8 +133,10 @@ type DevPprofHandler struct {
 }
 
 // Global collector instance
-var globalCollector *MetricsCollector
-var collectorOnce sync.Once
+var (
+	globalCollector *MetricsCollector
+	collectorOnce   sync.Once
+)
 
 // IsDevMode checks if dev mode is enabled via environment variable
 func IsDevMode() bool {

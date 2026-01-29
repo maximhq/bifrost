@@ -2118,7 +2118,7 @@ func HandleOpenAITranscriptionRequest(
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
-	//TODO: add HandleProviderResponse here
+	// TODO: add HandleProviderResponse here
 
 	// Parse raw response for RawResponse field
 	var rawResponse interface{}
@@ -2389,8 +2389,8 @@ func HandleOpenAITranscriptionStreamRequest(
 // It formats the request, sends it to OpenAI, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
+	req *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
 		return nil, err
 	}
@@ -2423,7 +2423,6 @@ func HandleOpenAIImageGenerationRequest(
 	sendBackRawResponse bool,
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -2505,7 +2504,6 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil, provider.GetProviderKey())
 	}
@@ -2554,7 +2552,6 @@ func HandleOpenAIImageGenerationStreaming(
 	postResponseConverter func(*schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	// Set headers
 	headers := map[string]string{
 		"Content-Type":  "application/json",

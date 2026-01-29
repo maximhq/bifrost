@@ -87,7 +87,7 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	if err := sonic.Unmarshal(decodedBody, &openAIErr); err != nil || openAIErr.Error == nil {
 		// Try Vertex error format if OpenAI format fails or is incomplete
 		if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
-			//try with single Vertex error format
+			// try with single Vertex error format
 			var vertexErr VertexError
 			if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
 				// Try VertexValidationError format (validation errors from Mistral endpoint)

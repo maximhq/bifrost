@@ -20,7 +20,7 @@ const (
 	defaultInferenceBaseURL = "https://router.huggingface.co"
 	modelHubBaseURL         = "https://huggingface.co"
 
-	//For custom deployments, HF offers inference endpoints under
+	// For custom deployments, HF offers inference endpoints under
 	// inferenceBaseEndpointsEndpointBaseURL = "https://api.endpoints.huggingface.cloud/v2"
 )
 
@@ -226,7 +226,6 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 	// Check cache first
 	if cached, ok := provider.modelProviderMappingCache.Load(huggingfaceModelName); ok {
 		if mappings, ok := cached.(map[inferenceProvider]HuggingFaceInferenceProviderMapping); ok {
-
 			return mappings, nil
 		}
 	}
@@ -350,5 +349,4 @@ func getMimeTypeForAudioType(audioType string) string {
 	}
 
 	return "audio/mpeg"
-
 }

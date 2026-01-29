@@ -234,7 +234,6 @@ func ValidateSpeechResponse(t *testing.T, response *schemas.BifrostSpeechRespons
 	logValidationResults(t, result, scenarioName)
 
 	return result
-
 }
 
 // ValidateImageGenerationResponse performs comprehensive validation for image generation responses

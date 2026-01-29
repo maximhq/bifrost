@@ -115,7 +115,6 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings

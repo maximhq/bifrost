@@ -415,15 +415,15 @@ type AnthropicToolInputExample struct {
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name          string                          `json:"name"`
-	Type          *AnthropicToolType              `json:"type,omitempty"`
-	Description   *string                         `json:"description,omitempty"`
-	InputSchema   *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
-	CacheControl  *schemas.CacheControl           `json:"cache_control,omitempty"`
-	DeferLoading  *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
-	Strict        *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
-	AllowedCallers []string                       `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
-	InputExamples []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
+	Name           string                          `json:"name"`
+	Type           *AnthropicToolType              `json:"type,omitempty"`
+	Description    *string                         `json:"description,omitempty"`
+	InputSchema    *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
+	CacheControl   *schemas.CacheControl           `json:"cache_control,omitempty"`
+	DeferLoading   *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
+	Strict         *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
+	AllowedCallers []string                        `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
+	InputExamples  []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch

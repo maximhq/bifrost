@@ -133,7 +133,6 @@ func (h *WebSocketHandler) connectStream(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	})
-
 	if err != nil {
 		logger.Error("websocket upgrade error: %v", err)
 		return

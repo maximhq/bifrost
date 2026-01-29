@@ -5,7 +5,6 @@ package handlers
 import (
 	"bufio"
 	"context"
-
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1541,7 +1540,6 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 
 // imageGeneration handles POST /v1/images/generations - Processes image generation requests
 func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
-
 	var req ImageGenerationHTTPRequest
 
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {

@@ -8,8 +8,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const MinimumReasoningMaxTokens = 1
-const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+const (
+	MinimumReasoningMaxTokens  = 1
+	DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+)
+
 // Limits for tokenize input api call https://docs.cohere.com/reference/tokenize#request
 const (
 	cohereTokenizeMinTextLength = 1

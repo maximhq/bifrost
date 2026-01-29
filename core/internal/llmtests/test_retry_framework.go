@@ -471,7 +471,6 @@ func WithChatTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostChatResponse, *schemas.BifrostError),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostChatResponse
 	var lastError *schemas.BifrostError
 
@@ -624,7 +623,6 @@ func WithResponsesTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostResponsesResponse
 	var lastError *schemas.BifrostError
 
@@ -1239,7 +1237,6 @@ func WithDualAPITestRetry(
 	chatOperation func() (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	responsesOperation func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 ) DualAPITestResult {
-
 	var lastResult DualAPITestResult
 
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
@@ -1450,7 +1447,6 @@ func WithTextCompletionTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError),
 ) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostTextCompletionResponse
 	var lastError *schemas.BifrostError
 
@@ -1603,7 +1599,6 @@ func WithSpeechTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostSpeechResponse, *schemas.BifrostError),
 ) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostSpeechResponse
 	var lastError *schemas.BifrostError
 
@@ -1778,7 +1773,6 @@ func WithEmbeddingTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError),
 ) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostEmbeddingResponse
 	var lastError *schemas.BifrostError
 
@@ -1931,7 +1925,6 @@ func WithTranscriptionTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError),
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostTranscriptionResponse
 	var lastError *schemas.BifrostError
 
@@ -2108,7 +2101,6 @@ func WithCountTokensTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostCountTokensResponse, *schemas.BifrostError),
 ) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostCountTokensResponse
 	var lastError *schemas.BifrostError
 
@@ -2266,7 +2258,6 @@ func WithImageGenerationRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError),
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostImageGenerationResponse
 	var lastError *schemas.BifrostError
 
@@ -2445,7 +2436,6 @@ func WithListModelsTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostListModelsResponse
 	var lastError *schemas.BifrostError
 
@@ -2583,7 +2573,6 @@ func WithBatchCreateTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError),
 ) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostBatchCreateResponse
 	var lastError *schemas.BifrostError
 
@@ -2687,7 +2676,6 @@ func WithBatchListTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostBatchListResponse, *schemas.BifrostError),
 ) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostBatchListResponse
 	var lastError *schemas.BifrostError
 
@@ -2783,7 +2771,6 @@ func WithBatchRetrieveTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError),
 ) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostBatchRetrieveResponse
 	var lastError *schemas.BifrostError
 
@@ -2879,7 +2866,6 @@ func WithBatchCancelTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError),
 ) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostBatchCancelResponse
 	var lastError *schemas.BifrostError
 
@@ -2975,7 +2961,6 @@ func WithBatchResultsTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError),
 ) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostBatchResultsResponse
 	var lastError *schemas.BifrostError
 
@@ -3075,7 +3060,6 @@ func WithFileUploadTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostFileUploadResponse, *schemas.BifrostError),
 ) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostFileUploadResponse
 	var lastError *schemas.BifrostError
 
@@ -3171,7 +3155,6 @@ func WithFileListTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostFileListResponse, *schemas.BifrostError),
 ) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostFileListResponse
 	var lastError *schemas.BifrostError
 
@@ -3267,7 +3250,6 @@ func WithFileRetrieveTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError),
 ) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostFileRetrieveResponse
 	var lastError *schemas.BifrostError
 
@@ -3363,7 +3345,6 @@ func WithFileDeleteTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError),
 ) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostFileDeleteResponse
 	var lastError *schemas.BifrostError
 
@@ -3459,7 +3440,6 @@ func WithFileContentTestRetry(
 	scenarioName string,
 	operation func() (*schemas.BifrostFileContentResponse, *schemas.BifrostError),
 ) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
-
 	var lastResponse *schemas.BifrostFileContentResponse
 	var lastError *schemas.BifrostError
 
@@ -3571,7 +3551,6 @@ func WithSpeechStreamValidationRetry(
 
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
-
 		// If we have an error getting the stream, check if we should retry
 		if err != nil {
 			// Log error with ❌ prefix for first attempt
@@ -3729,7 +3708,6 @@ func WithResponsesStreamValidationRetry(
 
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
-
 		// If we have an error getting the stream, check if we should retry
 		if err != nil {
 			// Log error with ❌ prefix for first attempt
@@ -3942,7 +3920,6 @@ func WithChatStreamValidationRetry(
 
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
-
 		// If we have an error getting the stream, check if we should retry
 		if err != nil {
 			// Log error with ❌ prefix for first attempt
@@ -4091,8 +4068,8 @@ func WithImageGenerationStreamRetry(
 	config TestRetryConfig,
 	context TestRetryContext,
 	operation func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError),
-	validateStream func(chan *schemas.BifrostStreamChunk) ImageGenerationStreamValidationResult) ImageGenerationStreamValidationResult {
-
+	validateStream func(chan *schemas.BifrostStreamChunk) ImageGenerationStreamValidationResult,
+) ImageGenerationStreamValidationResult {
 	var lastResult ImageGenerationStreamValidationResult
 
 	for attempt := 1; attempt <= config.MaxAttempts; attempt++ {
@@ -4100,7 +4077,6 @@ func WithImageGenerationStreamRetry(
 
 		// Execute the operation to get the stream
 		responseChannel, err := operation()
-
 		// If we have an error getting the stream, check if we should retry
 		if err != nil {
 			// Log error with ❌ prefix for first attempt

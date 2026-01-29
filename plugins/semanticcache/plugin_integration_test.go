@@ -18,7 +18,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
-	
+
 	// Test request
 	request := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
@@ -70,7 +70,8 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 							Role: schemas.ChatMessageRoleAssistant,
 							Content: &schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("Hello! How can I help you today?"),
-							}},
+							},
+						},
 					},
 				},
 			},
@@ -208,7 +209,8 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 							Role: schemas.ChatMessageRoleAssistant,
 							Content: &schemas.ChatMessageContent{
 								ContentStr: bifrost.Ptr("It's sunny today!"),
-							}},
+							},
+						},
 					},
 				},
 			},
@@ -309,7 +311,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)		
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 
 	request := &schemas.BifrostRequest{
@@ -547,7 +549,7 @@ func TestSemanticCache_CustomThresholdHandling(t *testing.T) {
 	defer setup.Cleanup()
 
 	// Configure plugin with custom threshold key
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)	
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(CacheKey, "test-cache-enabled")
 	ctx.SetValue(CacheThresholdKey, 0.95) // Very high threshold
 

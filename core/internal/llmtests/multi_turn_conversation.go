@@ -133,19 +133,19 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		expectations2.ShouldContainKeywords = []string{"alice"}                                  // Case insensitive
 		expectations2.ShouldNotContainWords = []string{"don't know", "can't remember", "forgot"} // Memory failure indicators
 
-	response2, bifrostErr := WithChatTestRetry(t, chatRetryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-		return client.ChatCompletionRequest(bfCtx, secondRequest)
-	})
+		response2, bifrostErr := WithChatTestRetry(t, chatRetryConfig2, retryContext2, expectations2, "MultiTurnConversation_Step2", func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ChatCompletionRequest(bfCtx, secondRequest)
+		})
 
-	if bifrostErr != nil {
-		t.Fatalf("❌ MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
-	}
+		if bifrostErr != nil {
+			t.Fatalf("❌ MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
+		}
 
-	// Validation already happened inside WithChatTestRetry via expectations2
-	// If we reach here, the model successfully remembered "Alice"
-	content := GetChatContent(response2)
-	t.Logf("✅ Model successfully remembered the name: %s", content)
-	t.Logf("✅ Multi-turn conversation completed successfully")
+		// Validation already happened inside WithChatTestRetry via expectations2
+		// If we reach here, the model successfully remembered "Alice"
+		content := GetChatContent(response2)
+		t.Logf("✅ Model successfully remembered the name: %s", content)
+		t.Logf("✅ Multi-turn conversation completed successfully")
 	})
 }

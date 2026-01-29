@@ -907,7 +907,6 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1209,7 +1208,6 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.logger,
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -1229,7 +1227,8 @@ func (provider *AzureProvider) TranscriptionStream(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the bifrost response or an error if the request fails.
 func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key,
-	request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	request *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate api key configs
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
@@ -1281,7 +1280,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 	key schemas.Key,
 	request *schemas.BifrostImageGenerationRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-
 	// Validate api key configs
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
@@ -1334,7 +1332,6 @@ func (provider *AzureProvider) ImageGenerationStream(
 		postResponseConverter,
 		provider.logger,
 	)
-
 }
 
 // ImageEdit performs an image edit request to Azure's API.

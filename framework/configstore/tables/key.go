@@ -11,17 +11,17 @@ import (
 
 // TableKey represents an API key configuration in the database
 type TableKey struct {
-	ID         uint             `gorm:"primaryKey;autoIncrement" json:"id"`
-	Name       string           `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
-	ProviderID uint             `gorm:"index;not null" json:"provider_id"`
-	Provider   string           `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
-	KeyID      string           `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
+	ID         uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	Name       string         `gorm:"type:varchar(255);uniqueIndex:idx_key_name;not null" json:"name"`
+	ProviderID uint           `gorm:"index;not null" json:"provider_id"`
+	Provider   string         `gorm:"index;type:varchar(50)" json:"provider"`                          // ModelProvider as string
+	KeyID      string         `gorm:"type:varchar(255);uniqueIndex:idx_key_id;not null" json:"key_id"` // UUID from schemas.Key
 	Value      schemas.EnvVar `gorm:"type:text;not null" json:"value"`
-	ModelsJSON string           `gorm:"type:text" json:"-"` // JSON serialized []string
-	Weight     *float64         `json:"weight"`
-	Enabled    *bool            `gorm:"default:true" json:"enabled,omitempty"`
-	CreatedAt  time.Time        `gorm:"index;not null" json:"created_at"`
-	UpdatedAt  time.Time        `gorm:"index;not null" json:"updated_at"`
+	ModelsJSON string         `gorm:"type:text" json:"-"` // JSON serialized []string
+	Weight     *float64       `json:"weight"`
+	Enabled    *bool          `gorm:"default:true" json:"enabled,omitempty"`
+	CreatedAt  time.Time      `gorm:"index;not null" json:"created_at"`
+	UpdatedAt  time.Time      `gorm:"index;not null" json:"updated_at"`
 
 	// Config hash is used to detect changes synced from config.json file
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
@@ -29,7 +29,7 @@ type TableKey struct {
 	// Azure config fields (embedded instead of separate table for simplicity)
 	AzureEndpoint        *schemas.EnvVar `gorm:"type:text" json:"azure_endpoint,omitempty"`
 	AzureAPIVersion      *schemas.EnvVar `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
-	AzureDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	AzureDeploymentsJSON *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 	AzureClientID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_client_id,omitempty"`
 	AzureClientSecret    *schemas.EnvVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
 	AzureTenantID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_tenant_id,omitempty"`
@@ -39,7 +39,7 @@ type TableKey struct {
 	VertexProjectNumber   *schemas.EnvVar `gorm:"type:varchar(255)" json:"vertex_project_number,omitempty"`
 	VertexRegion          *schemas.EnvVar `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
 	VertexAuthCredentials *schemas.EnvVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
-	VertexDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	VertexDeploymentsJSON *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.EnvVar `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
@@ -47,8 +47,8 @@ type TableKey struct {
 	BedrockSessionToken      *schemas.EnvVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
 	BedrockRegion            *schemas.EnvVar `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
 	BedrockARN               *schemas.EnvVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
-	BedrockDeploymentsJSON   *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
-	BedrockBatchS3ConfigJSON *string `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
+	BedrockDeploymentsJSON   *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations

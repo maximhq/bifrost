@@ -67,7 +67,7 @@ func TestCustomerBudgetExceededWithMultipleVKs(t *testing.T) {
 	consumedBudget := 0.0
 	requestNum := 1
 	var lastSuccessfulCost float64
-	var shouldStop = false
+	shouldStop := false
 	vkIndex := 0
 
 	for requestNum <= 50 {
@@ -242,7 +242,7 @@ func TestCustomerBudgetExceededWithMultipleTeams(t *testing.T) {
 	consumedBudget := 0.0
 	requestNum := 1
 	var lastSuccessfulCost float64
-	var shouldStop = false
+	shouldStop := false
 	vkIndex := 0
 
 	for requestNum <= 50 {

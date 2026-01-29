@@ -96,7 +96,6 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 	}
 
 	return bedrockReq, nil
-
 }
 
 // ToBedrockImageVariationRequest converts a Bifrost image variation request to a Bedrock image variation request

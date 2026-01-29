@@ -8,9 +8,11 @@ import (
 )
 
 // DefaultBedrockRegion is the default region for Bedrock
-const DefaultBedrockRegion = "us-east-1"
-const MinimumReasoningMaxTokens = 1
-const DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+const (
+	DefaultBedrockRegion       = "us-east-1"
+	MinimumReasoningMaxTokens  = 1
+	DefaultCompletionMaxTokens = 4096 // Only used for relative reasoning max token calculation - not passed in body by default
+)
 
 // ==================== REQUEST TYPES ====================
 

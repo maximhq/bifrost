@@ -103,7 +103,6 @@ func (mc *ModelCatalog) syncPricing(ctx context.Context) error {
 
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("failed to sync pricing data to database: %w", err)
 	}

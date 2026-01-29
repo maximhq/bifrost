@@ -33,7 +33,6 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		var input InputsCustomType
 		if bifrostReq.Input.Text != nil {
 			input = InputsCustomType{Text: bifrostReq.Input.Text}
-
 		} else if bifrostReq.Input.Texts != nil {
 			input = InputsCustomType{Texts: bifrostReq.Input.Texts}
 		}

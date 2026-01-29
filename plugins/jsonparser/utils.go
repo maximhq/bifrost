@@ -10,7 +10,6 @@ import (
 
 // getRequestID extracts a unique identifier for the request to maintain state
 func (p *JsonParserPlugin) getRequestID(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) string {
-
 	// Try to get from result
 	if result != nil && result.ChatResponse != nil && result.ChatResponse.ID != "" {
 		return result.ChatResponse.ID

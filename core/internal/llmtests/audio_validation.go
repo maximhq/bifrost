@@ -96,12 +96,12 @@ func SaveAndValidateAudio(t *testing.T, audioData []byte) (string, error) {
 	filePath := filepath.Join(bifrostDir, fileName)
 
 	// Ensure bifrost subdirectory exists
-	if err := os.MkdirAll(bifrostDir, 0755); err != nil {
+	if err := os.MkdirAll(bifrostDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create temp directory: %w", err)
 	}
 
 	// Write audio data to file
-	if err := os.WriteFile(filePath, audioData, 0644); err != nil {
+	if err := os.WriteFile(filePath, audioData, 0o644); err != nil {
 		return "", fmt.Errorf("failed to write audio file: %w", err)
 	}
 

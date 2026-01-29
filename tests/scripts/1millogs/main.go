@@ -34,18 +34,22 @@ var (
 )
 
 // Providers and models for variety
-var providers = []string{"openai", "anthropic", "cohere", "azure", "gemini", "mistral"}
-var models = map[string][]string{
-	"openai":    {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"},
-	"anthropic": {"claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"},
-	"cohere":    {"command-r-plus", "command-r", "command"},
-	"azure":     {"gpt-4o", "gpt-35-turbo"},
-	"gemini":    {"gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"},
-	"mistral":   {"mistral-large-2411", "mistral-medium", "mistral-small"},
-}
+var (
+	providers = []string{"openai", "anthropic", "cohere", "azure", "gemini", "mistral"}
+	models    = map[string][]string{
+		"openai":    {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"},
+		"anthropic": {"claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"},
+		"cohere":    {"command-r-plus", "command-r", "command"},
+		"azure":     {"gpt-4o", "gpt-35-turbo"},
+		"gemini":    {"gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"},
+		"mistral":   {"mistral-large-2411", "mistral-medium", "mistral-small"},
+	}
+)
 
-var statuses = []string{"success", "error", "processing"}
-var objects = []string{"chat.completion", "text.completion", "embedding"}
+var (
+	statuses = []string{"success", "error", "processing"}
+	objects  = []string{"chat.completion", "text.completion", "embedding"}
+)
 
 // Sample conversation content for realistic data
 var userPrompts = []string{
@@ -403,7 +407,7 @@ func connectDB() (*gorm.DB, error) {
 	case "sqlite":
 		// Ensure directory exists
 		dir := filepath.Dir(*dbPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create directory: %w", err)
 		}
 

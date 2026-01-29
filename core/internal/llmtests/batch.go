@@ -69,7 +69,6 @@ func RunBatchCreateTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchCreateRequest(bfCtx, request)
 		})
-
 		if err != nil {
 			// Check if this is an unsupported operation error
 			if err.Error != nil && (err.Error.Code != nil && *err.Error.Code == "unsupported_operation") {
@@ -137,7 +136,6 @@ func RunBatchListTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchListRequest(bfCtx, request)
 		})
-
 		if err != nil {
 			// Check if this is an unsupported operation error
 			if err.Error != nil && (err.Error.Code != nil && *err.Error.Code == "unsupported_operation") {
@@ -265,7 +263,6 @@ func RunBatchRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchRetrieveRequest(bfCtx, retrieveRequest)
 		})
-
 		if err != nil {
 			t.Fatalf("❌ BatchRetrieve failed after retries: %v", GetErrorMessage(err))
 		}
@@ -392,7 +389,6 @@ func RunBatchCancelTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchCancelRequest(bfCtx, cancelRequest)
 		})
-
 		if err != nil {
 			// Note: Cancel might fail if batch has already completed
 			t.Logf("[WARNING] BatchCancel failed after retries (batch may have already completed): %v", GetErrorMessage(err))
@@ -459,7 +455,6 @@ func RunBatchResultsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Cont
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.BatchResultsRequest(bfCtx, request)
 		})
-
 		if err != nil {
 			// This is expected to fail with a "batch not found" error since we're using a fake ID
 			// In a real test, you would use an actual completed batch ID
@@ -581,7 +576,6 @@ func RunFileUploadTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileUploadRequest(bfCtx, request)
 		})
-
 		if err != nil {
 			// Check if this is an unsupported operation error
 			if err.Error != nil && (err.Error.Code != nil && *err.Error.Code == "unsupported_operation") {
@@ -650,7 +644,6 @@ func RunFileListTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileListRequest(bfCtx, request)
 		})
-
 		if err != nil {
 			// Check if this is an unsupported operation error
 			if err.Error != nil && (err.Error.Code != nil && *err.Error.Code == "unsupported_operation") {
@@ -769,7 +762,6 @@ func RunFileRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Cont
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileRetrieveRequest(bfCtx, retrieveRequest)
 		})
-
 		if err != nil {
 			t.Fatalf("❌ FileRetrieve failed after retries: %v", GetErrorMessage(err))
 		}
@@ -887,7 +879,6 @@ func RunFileDeleteTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileDeleteRequest(bfCtx, deleteRequest)
 		})
-
 		if err != nil {
 			t.Fatalf("❌ FileDelete failed after retries: %v", GetErrorMessage(err))
 		}
@@ -1005,7 +996,6 @@ func RunFileContentTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileContentRequest(bfCtx, contentRequest)
 		})
-
 		if err != nil {
 			t.Fatalf("❌ FileContent failed after retries: %v", GetErrorMessage(err))
 		}

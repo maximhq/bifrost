@@ -302,7 +302,8 @@ func CreateImageResponsesMessage(text, imageURL string) schemas.ResponsesMessage
 		Content: &schemas.ResponsesMessageContent{
 			ContentBlocks: []schemas.ResponsesMessageContentBlock{
 				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: bifrost.Ptr(text)},
-				{Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeImage,
 					ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
 						ImageURL: bifrost.Ptr(imageURL),
 					},
@@ -541,7 +542,6 @@ func ExtractToolCalls(response *schemas.BifrostResponse) []ToolCallInfo {
 
 // getEmbeddingVector extracts the float32 vector from a BifrostEmbeddingResponse
 func getEmbeddingVector(embedding schemas.EmbeddingData) ([]float32, error) {
-
 	if embedding.Embedding.EmbeddingArray != nil {
 		return embedding.Embedding.EmbeddingArray, nil
 	}

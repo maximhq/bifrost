@@ -43,7 +43,7 @@ func TestVKBudgetExceeded(t *testing.T) {
 	requestNum := 1
 	var lastSuccessfulCost float64
 
-	var shouldStop = false
+	shouldStop := false
 
 	for requestNum <= 50 {
 		// Create a longer prompt to consume more tokens and budget faster

@@ -696,7 +696,6 @@ func (c *IncompleteStreamCondition) ShouldRetry(response *schemas.BifrostRespons
 				}
 			}
 		}
-
 	}
 
 	// For Responses API, check completion status in output messages

@@ -297,7 +297,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 // Test calculateBackoff - exponential growth (base calculations without jitter)
 func TestCalculateBackoff_ExponentialGrowth(t *testing.T) {
 	config := createTestConfig(5, 100*time.Millisecond, 5*time.Second)
-	
+
 	// Test the base exponential calculation by checking that results fall within expected ranges
 	// Since we can't easily mock rand.Float64, we'll test the bounds instead
 	testCases := []struct {

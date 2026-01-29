@@ -223,7 +223,6 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return &schemas.BifrostRequest{
 						ResponsesRequest: openaiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
-
 				}
 				return nil, errors.New("invalid request type")
 			},

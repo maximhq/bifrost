@@ -2847,7 +2847,6 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					Signature: block.ReasoningContent.ReasoningText.Signature,
 				})
 			}
-
 		} else if block.ToolUse != nil {
 			// Tool use content
 			// Create copies of the values to avoid range loop variable capture

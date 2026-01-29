@@ -207,7 +207,7 @@ func (h *MCPServerHandler) DeleteVKMCPServer(vkValue string) {
 func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools []schemas.ChatTool, toolFilter []string) {
 	// Clear existing tools
 	toolMap := server.ListTools()
-	for toolName, _ := range toolMap {
+	for toolName := range toolMap {
 		server.DeleteTools(toolName)
 	}
 

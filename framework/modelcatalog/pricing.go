@@ -18,7 +18,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 	var imageUsage *schemas.ImageUsage
 
-	//TODO: Detect batch operations
+	// TODO: Detect batch operations
 	isBatch := false
 
 	switch {

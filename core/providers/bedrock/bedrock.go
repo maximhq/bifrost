@@ -1749,7 +1749,6 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 
 // FileUpload uploads a file to S3 for Bedrock batch processing.
 func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		if err.Error != nil {
 			provider.logger.Error("file upload operation not allowed: %s", err.Error.Message)
