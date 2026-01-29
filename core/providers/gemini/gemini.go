@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -633,6 +634,37 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		headers["x-goog-api-key"] = key.Value.GetValue()
 	}
 
+	// Check for large payload streaming mode
+	var bodyReader io.Reader
+	var bodySize int
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		if reader, readerOk := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader); readerOk && reader != nil {
+			bodyReader = reader
+			if contentLength, lenOk := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); lenOk {
+				bodySize = contentLength
+			}
+		}
+	}
+
+	// For normal path, convert request to []byte
+	if bodyReader == nil {
+		var err *schemas.BifrostError
+		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				reqBody := ToGeminiResponsesRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
+				}
+				return reqBody, nil
+			},
+			provider.GetProviderKey())
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return HandleGeminiResponsesStream(
 		ctx,
 		provider.client,
@@ -647,10 +679,14 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		postHookRunner,
 		nil,
 		provider.logger,
+		bodyReader, // nil for normal path, io.Reader for large payloads
+		bodySize,   // 0 for normal path, content length for large payloads
 	)
 }
 
 // HandleGeminiResponsesStream handles streaming for Gemini-compatible APIs.
+// For large payloads, pass bodyReader and bodySize instead of jsonBody for zero-copy streaming.
+// If bodyReader is non-nil, it will be used instead of jsonBody.
 func HandleGeminiResponsesStream(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
@@ -665,6 +701,8 @@ func HandleGeminiResponsesStream(
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
 	logger schemas.Logger,
+	bodyReader io.Reader, // Optional: for large payload streaming (pass nil for normal path)
+	bodySize int, // Required if bodyReader is non-nil
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -681,7 +719,20 @@ func HandleGeminiResponsesStream(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	// Set body: streaming reader for large payloads, byte slice for normal path
+	isStreamingBody := bodyReader != nil
+	if isStreamingBody {
+		req.SetBodyStream(bodyReader, bodySize)
+	} else {
+		req.SetBody(jsonBody)
+	}
+
+	// For streaming body, we can't include raw request in errors
+	rawRequestBody := jsonBody
+	canSendRawRequest := sendBackRawRequest && !isStreamingBody
+	if isStreamingBody {
+		rawRequestBody = nil
+	}
 
 	// Make the request
 	doErr := client.Do(req, resp)
@@ -695,18 +746,18 @@ func HandleGeminiResponsesStream(
 					Message: schemas.ErrRequestCancelled,
 					Error:   doErr,
 				},
-			}, jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			}, rawRequestBody, nil, canSendRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, doErr, providerName), rawRequestBody, nil, canSendRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), rawRequestBody, nil, canSendRawRequest, sendBackRawResponse)
 	}
 
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil), rawRequestBody, nil, canSendRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -735,7 +786,7 @@ func HandleGeminiResponsesStream(
 			providerUtils.ProcessAndSendBifrostError(
 				ctx,
 				postHookRunner,
-				providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse),
+				providerUtils.EnrichError(ctx, bifrostErr, rawRequestBody, nil, canSendRawRequest, sendBackRawResponse),
 				responseChan,
 				logger,
 			)
@@ -805,7 +856,7 @@ func HandleGeminiResponsesStream(
 						},
 					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, rawRequestBody, nil, canSendRawRequest, sendBackRawResponse), responseChan, logger)
 					return
 				}
 				logger.Warn("Failed to process chunk: %v", err)
@@ -826,7 +877,7 @@ func HandleGeminiResponsesStream(
 					ModelRequested: model,
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, rawRequestBody, nil, canSendRawRequest, sendBackRawResponse), responseChan, logger)
 				return
 			}
 
@@ -863,8 +914,8 @@ func HandleGeminiResponsesStream(
 					}
 
 					if isLastChunk {
-						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
+						if canSendRawRequest {
+							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, rawRequestBody)
 						}
 						response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
