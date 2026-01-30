@@ -543,14 +543,14 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"))
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 50.0, status.RateLimitTokenPercentUsed)
 
 	// Update usage to exhausted state
 	rl.TokenCurrentUsage = 1000
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"))
+	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.RateLimitTokenPercentUsed)
 }
@@ -578,14 +578,14 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	store.providers.Store("openai", providerConfig)
 
 	// Get status
-	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"))
+	status := store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.NotNil(t, status)
 	assert.Equal(t, 60.0, status.BudgetPercentUsed)
 
 	// Update usage to exhausted state
 	budget.CurrentUsage = 100.0
-	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"))
+	status = store.GetBudgetAndRateLimitStatus(context.Background(), "", schemas.ModelProvider("openai"), nil, nil, nil)
 
 	assert.Equal(t, 100.0, status.BudgetPercentUsed)
 }

@@ -35,7 +35,7 @@ type GovernanceManager interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
-	ReloadRoutingRule(ctx context.Context, id string) (*configstoreTables.TableRoutingRule, error)
+	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 }
 
@@ -2398,7 +2398,7 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update in-memory store via manager callback
-	if _, err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
 		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
@@ -2467,7 +2467,7 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Update in-memory store via manager callback
-	if _, err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
 		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}

@@ -4,9 +4,9 @@ import FullPageLoader from "@/components/fullPageLoader";
 import {
 	getErrorMessage,
 	useLazyGetCoreConfigQuery,
-	useGetVirtualKeysQuery,
-	useGetTeamsQuery,
-	useGetCustomersQuery,
+	useLazyGetCustomersQuery,
+	useLazyGetTeamsQuery,
+	useLazyGetVirtualKeysQuery,
 } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useRef, useState } from "react";
@@ -18,44 +18,9 @@ export default function VirtualKeysPage() {
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
-
-	// Use regular queries with polling, skip until governance is enabled
-	const {
-		data: virtualKeysData,
-		error: vkError,
-		isLoading: vkLoading,
-		refetch: refetchVirtualKeys,
-	} = useGetVirtualKeysQuery(undefined, {
-		skip: !governanceEnabled || !hasVirtualKeysAccess,
-		pollingInterval: governanceEnabled && hasVirtualKeysAccess ? 10000 : 0,
-		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
-	});
-
-	const {
-		data: teamsData,
-		error: teamsError,
-		isLoading: teamsLoading,
-		refetch: refetchTeams,
-	} = useGetTeamsQuery({}, {
-		skip: !governanceEnabled || !hasTeamsAccess,
-		pollingInterval: governanceEnabled && hasTeamsAccess ? 10000 : 0,
-		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
-	});
-
-	const {
-		data: customersData,
-		error: customersError,
-		isLoading: customersLoading,
-		refetch: refetchCustomers,
-	} = useGetCustomersQuery(undefined, {
-		skip: !governanceEnabled || !hasCustomersAccess,
-		pollingInterval: governanceEnabled && hasCustomersAccess ? 10000 : 0,
-		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
-	});
-
+	const [triggerGetVirtualKeys, { data: virtualKeysData, error: vkError, isLoading: vkLoading }] = useLazyGetVirtualKeysQuery();
+	const [triggerGetTeams, { data: teamsData, error: teamsError, isLoading: teamsLoading }] = useLazyGetTeamsQuery();
+	const [triggerGetCustomers, { data: customersData, error: customersError, isLoading: customersLoading }] = useLazyGetCustomersQuery();
 	const shownErrorsRef = useRef(new Set<string>());
 	const isLoading = vkLoading || teamsLoading || customersLoading || governanceEnabled === null;
 
@@ -66,6 +31,10 @@ export default function VirtualKeysPage() {
 			.then((res) => {
 				if (res.data?.client_config?.enable_governance) {
 					setGovernanceEnabled(true);
+					// Trigger lazy queries when governance is enabled
+					if (hasVirtualKeysAccess) triggerGetVirtualKeys();
+					if (hasTeamsAccess) triggerGetTeams({});
+					if (hasCustomersAccess) triggerGetCustomers();
 				} else {
 					setGovernanceEnabled(false);
 					toast.error("Governance is not enabled. Please enable it in the config.");
@@ -76,7 +45,15 @@ export default function VirtualKeysPage() {
 				setGovernanceEnabled(false);
 				toast.error(getErrorMessage(err) || "Failed to load configuration");
 			});
-	}, [triggerGetConfig]);
+	}, [
+		triggerGetConfig,
+		triggerGetVirtualKeys,
+		triggerGetTeams,
+		triggerGetCustomers,
+		hasVirtualKeysAccess,
+		hasTeamsAccess,
+		hasCustomersAccess,
+	]);
 
 	// Handle query errors - show consolidated error if all APIs fail
 	useEffect(() => {
@@ -102,15 +79,9 @@ export default function VirtualKeysPage() {
 
 	const handleRefresh = () => {
 		if (governanceEnabled) {
-			if (hasVirtualKeysAccess) {
-				refetchVirtualKeys();
-			}
-			if (hasTeamsAccess) {
-				refetchTeams();
-			}
-			if (hasCustomersAccess) {
-				refetchCustomers();
-			}
+			triggerGetVirtualKeys();
+			triggerGetTeams({});
+			triggerGetCustomers();
 		}
 	};
 

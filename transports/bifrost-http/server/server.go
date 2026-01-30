@@ -77,7 +77,7 @@ type ServerCallbacks interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
-	ReloadRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
+	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
 	// MCP related callbacks
 	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
@@ -527,26 +527,26 @@ func (s *BifrostHTTPServer) GetGovernanceData() *governance.GovernanceData {
 }
 
 // ReloadRoutingRule reloads a routing rule from the database into the governance store
-func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error) {
+func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
 	governancePluginName := governance.PluginName
 	if name, ok := s.Ctx.Value(schemas.BifrostContextKeyGovernancePluginName).(string); ok && name != "" {
 		governancePluginName = name
 	}
 	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, governancePluginName)
 	if err != nil {
-		return nil, fmt.Errorf("governance plugin not found: %w", err)
+		return fmt.Errorf("governance plugin not found: %w", err)
 	}
 	// Get the governance store from the plugin
 	store := governancePlugin.GetGovernanceStore()
 	rule, err := s.Config.ConfigStore.GetRoutingRule(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get routing rule from config store: %w", err)
+		return fmt.Errorf("failed to get routing rule from config store: %w", err)
 	}
 	// Update the rule in the store (this updates the in-memory cache)
 	if err := store.UpdateRoutingRuleInMemory(rule); err != nil {
-		return nil, fmt.Errorf("failed to update routing rule in store: %w", err)
+		return fmt.Errorf("failed to update routing rule in store: %w", err)
 	}
-	return rule, nil
+	return nil
 }
 
 // RemoveRoutingRule removes a routing rule from the governance store
