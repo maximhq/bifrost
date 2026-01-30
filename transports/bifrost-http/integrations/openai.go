@@ -117,6 +117,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.TextCompletionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAITextCompletionRequest{}
 			},
@@ -166,6 +169,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ChatCompletionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
@@ -215,6 +221,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
@@ -269,6 +278,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CountTokensRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
@@ -305,6 +317,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.EmbeddingRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIEmbeddingRequest{}
 			},
@@ -341,6 +356,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.SpeechRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAISpeechRequest{}
 			},
@@ -382,6 +400,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.TranscriptionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAITranscriptionRequest{}
 			},
@@ -432,6 +453,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageGenerationRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIImageGenerationRequest{}
 			},
@@ -480,6 +504,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageEditRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIImageEditRequest{}
 			},
@@ -528,6 +555,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageVariationRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIImageVariationRequest{}
 			},
@@ -583,6 +613,9 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ListModelsRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
@@ -647,6 +680,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCreateRequest{}
 			},
@@ -756,6 +792,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchListRequest{}
 			},
@@ -802,6 +841,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchRetrieveRequest{}
 			},
@@ -853,6 +895,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchCancelRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCancelRequest{}
 			},
@@ -908,6 +953,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileUploadRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileUploadRequest{}
 			},
@@ -959,6 +1007,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileListRequest{}
 			},
@@ -1006,6 +1057,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileRetrieveRequest{}
 			},
@@ -1052,6 +1106,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileDeleteRequest{}
 			},
@@ -1100,6 +1157,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileContentRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileContentRequest{}
 			},
@@ -1471,6 +1531,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerCreateRequest{}
 			},
@@ -1510,6 +1573,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerListRequest{}
 			},
@@ -1545,6 +1611,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerRetrieveRequest{}
 			},
@@ -1580,6 +1649,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerDeleteRequest{}
 			},
@@ -1707,6 +1779,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileCreateRequest{}
 			},
@@ -1740,6 +1815,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileListRequest{}
 			},
@@ -1772,6 +1850,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileRetrieveRequest{}
 			},
@@ -1804,6 +1885,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileContentRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileContentRequest{}
 			},
@@ -1836,6 +1920,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileDeleteRequest{}
 			},

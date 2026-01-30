@@ -27,6 +27,9 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/complete",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.TextCompletionRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
@@ -63,6 +66,9 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
@@ -145,6 +151,9 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/models",
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ListModelsRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
@@ -282,6 +291,9 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/messages/count_tokens",
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CountTokensRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
@@ -311,6 +323,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCreateRequest
+		},
 		GetRequestTypeInstance: func() any {
 			return &anthropic.AnthropicBatchCreateRequest{}
 		},
@@ -386,6 +401,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchListRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchListRequest{}
 		},
@@ -428,6 +446,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchRetrieveRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchRetrieveRequest{}
 		},
@@ -464,6 +485,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}/cancel",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCancelRequest
+		},
 		GetRequestTypeInstance: func() any {
 			return &anthropic.AnthropicBatchCancelRequest{}
 		},
@@ -500,6 +524,9 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}/results",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchResultsRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicBatchResultsRequest{}
 		},
@@ -680,6 +707,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileUploadRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileUploadRequest{}
 		},
@@ -769,6 +799,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileListRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileListRequest{}
 		},
@@ -810,6 +843,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files/{file_id}/content",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
 		},
@@ -847,6 +883,9 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files/{file_id}",
 		Method: "DELETE",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileDeleteRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &anthropic.AnthropicFileDeleteRequest{}
 		},

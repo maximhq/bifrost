@@ -521,49 +521,112 @@ const (
 	AudioMimeFLAC2 = "audio/x-flac" // Alternative FLAC
 )
 
+// PathToTypeMapping maps exact paths to request types (only for non-parameterized paths)
+// Parameterized paths are set per-route in RegisterRoutes
+var PathToTypeMapping = map[string]schemas.RequestType{
+	"/v1/completions":          schemas.TextCompletionRequest,
+	"/v1/chat/completions":     schemas.ChatCompletionRequest,
+	"/v1/responses":            schemas.ResponsesRequest,
+	"/v1/embeddings":           schemas.EmbeddingRequest,
+	"/v1/audio/speech":         schemas.SpeechRequest,
+	"/v1/audio/transcriptions": schemas.TranscriptionRequest,
+	"/v1/images/generations":   schemas.ImageGenerationRequest,
+	"/v1/count_tokens":         schemas.CountTokensRequest,
+	"/v1/images/edits":         schemas.ImageEditRequest,
+	"/v1/images/variations":    schemas.ImageVariationRequest,
+	"/v1/models":               schemas.ListModelsRequest,
+}
+
+// createRequestTypeMiddleware creates a middleware that sets the request type for a specific route
+func createRequestTypeMiddleware(requestType schemas.RequestType) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+			next(ctx)
+		}
+	}
+}
+
+// RegisterRequestTypeMiddleware handles exact path matching for non-parameterized routes
+func RegisterRequestTypeMiddleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		path := string(ctx.Path())
+		if requestType, ok := PathToTypeMapping[path]; ok {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+		}
+		next(ctx)
+	}
+}
+
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	// Base middlewares for all routes
+	baseMiddlewares := append([]schemas.BifrostHTTPMiddleware{RegisterRequestTypeMiddleware}, middlewares...)
+
 	// Model endpoints
-	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
 
-	// Completion endpoints
-	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, middlewares...))
-	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, middlewares...))
-	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, middlewares...))
-	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
-	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
-	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
-	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, middlewares...))
-	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, middlewares...))
-	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, middlewares...))
-	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, middlewares...))
+	// Completion endpoints (non-parameterized)
+	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
+	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
+	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
+	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
+	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
+	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
+	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
+	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
+	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 
-	// Batch API endpoints
-	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, middlewares...))
-	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, middlewares...))
-	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, middlewares...))
-	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, middlewares...))
-	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, middlewares...))
+	// Batch API endpoints (parameterized routes need explicit request type middleware)
+	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
+	batchListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchListRequest)}, middlewares...)
+	batchRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchRetrieveRequest)}, middlewares...)
+	batchCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCancelRequest)}, middlewares...)
+	batchResultsMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchResultsRequest)}, middlewares...)
 
-	// File API endpoints
-	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, middlewares...))
-	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, middlewares...))
-	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, middlewares...))
-	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, middlewares...))
-	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, middlewares...))
+	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, batchCreateMW...))
+	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, batchListMW...))
+	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, batchRetrieveMW...))
+	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, batchCancelMW...))
+	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, batchResultsMW...))
 
-	// Container API endpoints
-	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, middlewares...))
-	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, middlewares...))
-	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, middlewares...))
-	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, middlewares...))
+	// File API endpoints (parameterized routes need explicit request type middleware)
+	fileUploadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileUploadRequest)}, middlewares...)
+	fileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileListRequest)}, middlewares...)
+	fileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileRetrieveRequest)}, middlewares...)
+	fileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileDeleteRequest)}, middlewares...)
+	fileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileContentRequest)}, middlewares...)
 
-	// Container Files API endpoints
-	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, middlewares...))
-	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, middlewares...))
-	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, middlewares...))
+	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, fileUploadMW...))
+	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, fileListMW...))
+	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, fileRetrieveMW...))
+	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, fileDeleteMW...))
+	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, fileContentMW...))
+
+	// Container API endpoints (parameterized routes need explicit request type middleware)
+	containerCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerCreateRequest)}, middlewares...)
+	containerListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerListRequest)}, middlewares...)
+	containerRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerRetrieveRequest)}, middlewares...)
+	containerDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, containerCreateMW...))
+	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, containerListMW...))
+	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, containerRetrieveMW...))
+	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, containerDeleteMW...))
+
+	// Container Files API endpoints (parameterized routes need explicit request type middleware)
+	containerFileCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileCreateRequest)}, middlewares...)
+	containerFileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileListRequest)}, middlewares...)
+	containerFileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileRetrieveRequest)}, middlewares...)
+	containerFileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileContentRequest)}, middlewares...)
+	containerFileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, containerFileCreateMW...))
+	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, containerFileListMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, containerFileRetrieveMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, containerFileContentMW...))
+	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
 // listModels handles GET /v1/models - Process list models requests

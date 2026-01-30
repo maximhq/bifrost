@@ -31,6 +31,7 @@ type RoutingContext struct {
 	VirtualKey               *configstoreTables.TableVirtualKey // nil if no VK
 	Provider                 schemas.ModelProvider              // Current provider
 	Model                    string                             // Current model
+	RequestType              string                             // Normalized request type (e.g., "chat_completion", "embedding") from HTTP context
 	Fallbacks                []string                           // Fallback chain: ["provider/model", ...]
 	Headers                  map[string]string                  // Request headers for dynamic routing
 	QueryParams              map[string]string                  // Query parameters for dynamic routing
@@ -88,23 +89,23 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 
 		// Evaluate each rule
 		for _, rule := range rules {
-			re.logger.Debug("[RoutingEngine] Evaluating rule: id=%s, name=%s, expression=%s", rule.ID, rule.Name, rule.CelExpression)
+			re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
 			// Get or compile and cache the CEL program
 			program, err := re.store.GetRoutingProgram(rule)
 			if err != nil {
-				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.ID, err)
+				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
 				continue
 			}
 
 			// Evaluate the CEL expression
 			matched, err := evaluateCELExpression(program, variables)
 			if err != nil {
-				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.ID, err)
+				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
 				continue
 			}
 
-			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.ID, matched)
+			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
 
 			// If rule matched, return routing decision
 			if matched {
@@ -224,6 +225,7 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	// Basic request context
 	variables["model"] = ctx.Model
 	variables["provider"] = string(ctx.Provider)
+	variables["request_type"] = ctx.RequestType // Normalized request type (e.g., "chat_completion", "embedding")
 
 	// Headers and params - normalize headers to lowercase keys for case-insensitive CEL matching
 	// This allows CEL expressions like headers["content-type"] to work regardless of how the header was sent
@@ -339,6 +341,7 @@ func createCELEnvironment() (*cel.Env, error) {
 		// Basic request context
 		cel.Variable("model", cel.StringType),
 		cel.Variable("provider", cel.StringType),
+		cel.Variable("request_type", cel.StringType), // Normalized request type (e.g., "chat_completion", "embedding", "text_completion")
 
 		// Headers and params (dynamic from request)
 		cel.Variable("headers", cel.MapType(cel.StringType, cel.StringType)),

@@ -298,6 +298,10 @@ type PreRequestCallback func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bifro
 // If it returns an error, an error response is sent instead of the success response.
 type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error
 
+// HTTPRequestTypeGetter is a function type that accepts only a *fasthttp.RequestCtx and
+// returns a schemas.RequestType indicating the HTTP request type derived from the context.
+type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
+
 // StreamConfig defines streaming-specific configuration for an integration
 //
 // SSE FORMAT BEHAVIOR:
@@ -335,6 +339,7 @@ const (
 	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
+	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -343,6 +348,7 @@ type RouteConfig struct {
 	Type                                   RouteConfigType                        // Type of the route
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
+	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func() interface{}                     // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
@@ -441,20 +447,33 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			continue
 		}
 
+		registerRequestTypeMiddleware := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return func(ctx *fasthttp.RequestCtx) {
+				if route.GetHTTPRequestType != nil {
+					ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(ctx))
+				}
+				next(ctx)
+			}
+		}
+
+		// Create a fresh middlewares list for this route (don't mutate the original)
+		// This ensures each route only has its own middleware plus the originally passed middlewares
+		routeMiddlewares := append([]schemas.BifrostHTTPMiddleware{registerRequestTypeMiddleware}, middlewares...)
+
 		handler := g.createHandler(route)
 		switch method {
 		case fasthttp.MethodPost:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodGet:
-			r.GET(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.GET(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodPut:
-			r.PUT(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.PUT(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodDelete:
-			r.DELETE(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.DELETE(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodHead:
-			r.HEAD(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...)) // Default to POST
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...)) // Default to POST
 		}
 	}
 }

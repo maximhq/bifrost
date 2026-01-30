@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -30,6 +31,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/models/{model:*}",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			_, requestType := extractModelAndRequestType(ctx)
+			return requestType
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &gemini.GeminiGenerationRequest{}
 		},
@@ -113,13 +118,16 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				return gemini.ToGeminiError(err)
 			},
 		},
-		PreCallback: extractAndSetModelFromURL,
+		PreCallback: extractAndSetModelAndRequestType,
 	})
 
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/models",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ListModelsRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostListModelsRequest{}
 		},
@@ -152,6 +160,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/upload/v1beta/files",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileUploadRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileUploadRequest{}
 		},
@@ -182,6 +193,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileListRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileListRequest{}
 		},
@@ -212,6 +226,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files/{file_id}",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileRetrieveRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileRetrieveRequest{}
 		},
@@ -242,6 +259,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files/{file_id}",
 		Method: "DELETE",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileDeleteRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &schemas.BifrostFileDeleteRequest{}
 		},
@@ -374,8 +394,8 @@ var embeddingPaths = []string{
 	":batchEmbedContents",
 }
 
-// extractAndSetModelFromURL extracts model from URL and sets it in the request
-func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+// extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
+func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
 	if model == nil {
 		return fmt.Errorf("model parameter is required")
@@ -441,6 +461,83 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
+}
+
+// extractAndSetModelFromURL extracts model from URL and sets it in the request
+func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.RequestType) {
+	model := ctx.UserValue("model")
+	if model == nil {
+		return "", ""
+	}
+
+	modelStr := model.(string)
+
+	// Check if this is a count tokens request
+	if strings.HasSuffix(modelStr, ":countTokens") {
+		return modelStr, schemas.CountTokensRequest
+	}
+
+	isPredict := strings.HasSuffix(modelStr, ":predict")
+
+	// Check if this is an embedding request
+	isEmbedding := false
+	for _, path := range embeddingPaths {
+		if strings.HasSuffix(modelStr, path) {
+			isEmbedding = true
+			break
+		}
+	}
+	if isEmbedding {
+		return modelStr, schemas.EmbeddingRequest
+	}
+
+	// Remove Google GenAI API endpoint suffixes if present
+	for _, sfx := range gemini.GeminiRequestSuffixPaths {
+		modelStr = strings.TrimSuffix(modelStr, sfx)
+	}
+
+	// Remove trailing colon if present
+	if len(modelStr) > 0 && modelStr[len(modelStr)-1] == ':' {
+		modelStr = modelStr[:len(modelStr)-1]
+	}
+
+	// Determine if :predict is for image generation (Imagen) or embedding
+	// Imagen models use :predict for image generation
+	isImagenPredict := isPredict && schemas.IsImagenModel(modelStr)
+	if isPredict && !isImagenPredict {
+		// :predict for non-Imagen models is embedding
+		isEmbedding = true
+	}
+
+	if isEmbedding {
+		return modelStr, schemas.EmbeddingRequest
+	}
+
+	// Create a proper GeminiGenerationRequest to detect request type
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	if err := sonic.Unmarshal(ctx.Request.Body(), geminiReq); err != nil {
+		return modelStr, ""
+	}
+
+	// Set the model on the request so detection functions can use it
+	geminiReq.Model = modelStr
+
+	// Detect if this is a speech or transcription request by examining the request body
+	// Speech detection takes priority over transcription
+	if isSpeechRequest(geminiReq) {
+		return modelStr, schemas.SpeechRequest
+	}
+	if isTranscriptionRequest(geminiReq) {
+		return modelStr, schemas.TranscriptionRequest
+	}
+	if isImageGenerationRequest(geminiReq) {
+		return modelStr, schemas.ImageGenerationRequest
+	}
+	if isImageEditRequest(geminiReq) {
+		return modelStr, schemas.ImageEditRequest
+	}
+
+	return modelStr, schemas.ResponsesRequest
 }
 
 // isSpeechRequest checks if the request is for speech generation (text-to-speech)

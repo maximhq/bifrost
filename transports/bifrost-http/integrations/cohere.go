@@ -7,6 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // CohereRouter holds route registrations for Cohere endpoints.
@@ -28,8 +29,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Chat completions endpoint (v2/chat)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v2/chat",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereChatRequest{}
 		},
@@ -69,8 +74,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Embeddings endpoint (v2/embed)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v2/embed",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.EmbeddingRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereEmbeddingRequest{}
 		},
@@ -97,8 +106,12 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Tokenize endpoint (v1/tokenize)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v1/tokenize",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.CountTokensRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &cohere.CohereCountTokensRequest{}
 		},

@@ -162,7 +162,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 					isNonAsync={true}
 					isClearable={false}
 					placeholder="Select providers..."
-					className="w-[240px]"
+					className="w-[360px]"
 					triggerClassName="!shadow-none !border-border h-10"
 					menuClassName="!z-[100] w-full cursor-pointer"
 				/>
@@ -174,7 +174,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 
 		return (
 			<Select value={value || ""} onValueChange={handleOnChange}>
-				<SelectTrigger className="w-[240px]">
+				<SelectTrigger className="w-[360px]">
 					{isProviderField && value ? (
 						<div className="flex items-center gap-2">
 							<RenderProviderIcon
@@ -258,7 +258,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 				value={value || ""}
 				onChange={(e) => handleOnChange(e.target.value)}
 				placeholder={placeholder}
-				className="min-h-[80px] w-[240px] font-mono text-sm"
+				className="min-h-[80px] w-[360px] font-mono text-sm"
 			/>
 		);
 	}
@@ -274,7 +274,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 					value={value || ""}
 					onChange={(e) => handleOnChange(e.target.value)}
 					placeholder={placeholder}
-					className={`w-[240px] font-mono text-sm ${regexError ? "border-red-500 bg-red-50 dark:bg-red-950" : ""
+					className={`w-[360px] font-mono text-sm ${regexError ? "border-red-500 bg-red-50 dark:bg-red-950" : ""
 						}`}
 				/>
 				{regexError && (
@@ -291,7 +291,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 			value={value || ""}
 			onChange={(e) => handleOnChange(e.target.value)}
 			placeholder={placeholder}
-			className="w-[240px]"
+			className="w-[360px]"
 		/>
 	);
 }

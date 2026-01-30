@@ -298,7 +298,6 @@ func (p *GovernancePlugin) GetName() string {
 // It modifies the request in-place and returns nil to continue, or an HTTPResponse to short-circuit.
 // Optimized to skip unnecessary operations: only unmarshals/marshals when needed
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	now := time.Now()
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
 	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
@@ -371,7 +370,6 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		req.Body = body
 	}
 
-	p.logger.Info("[Governance] HTTPTransportPreHook took %v", time.Since(now))
 	return nil, nil
 }
 
@@ -604,18 +602,29 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 	// Parse provider and model from modelStr (format: "provider/model" or just "model")
 	provider, model := schemas.ParseModelString(modelStr, "")
 
+	// Extract normalized request type from context (set by HTTP middleware)
+	requestType := ""
+	if val := ctx.Value(schemas.BifrostContextKeyHTTPRequestType); val != nil {
+		if requestTypeEnum, ok := val.(schemas.RequestType); ok {
+			requestType = string(requestTypeEnum)
+		} else if requestTypeStr, ok := val.(string); ok {
+			requestType = requestTypeStr
+		}
+	}
+
 	// Build routing context
 	routingCtx := &RoutingContext{
 		VirtualKey:               virtualKey,
 		Provider:                 provider,
 		Model:                    model,
+		RequestType:              requestType,
 		Headers:                  req.Headers,
 		QueryParams:              req.Query,
 		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider),
 	}
 
-	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, vk=%v, headerCount=%d, paramCount=%d",
-		provider, model, virtualKey != nil, len(req.Headers), len(req.Query))
+	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",
+		provider, model, requestType, virtualKey != nil, len(req.Headers), len(req.Query))
 
 	// Evaluate routing rules
 	decision, err := p.engine.EvaluateRoutingRules(ctx, routingCtx)
