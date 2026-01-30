@@ -1,2 +1,3 @@
 - feat: added support for image editing and variations
 - fix: skip OpenAI parameter filtering for custom providers
+- fix: add finish reason to Gemini chat completion response

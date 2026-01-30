@@ -236,8 +236,12 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			}
 		}
 
+		// Convert finish reason to Bifrost format
+		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+
 		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
-			Index: 0,
+			Index:        0,
+			FinishReason: &finishReason,
 			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 				Message: message,
 			},

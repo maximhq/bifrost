@@ -1,2 +1,4 @@
 - feat: added support for image editing and variations
 - fix: encode provider names in API URLs
+- feat: added routing engine for conditional routing of requests
+- fix: add finish reason to Gemini chat completion response
