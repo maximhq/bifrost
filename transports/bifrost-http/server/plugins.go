@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/otel"
+	"github.com/maximhq/bifrost/plugins/prometheus"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
@@ -99,6 +100,33 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %w", err)
 		}
 		return litellmcompat.Init(*litellmConfig, logger)
+
+	case prometheus.PluginName:
+		promConfig, err := MarshalPluginConfig[prometheus.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal prometheus plugin config: %w", err)
+		}
+		promPlugin, err := prometheus.Init(promConfig, logger)
+		if err != nil {
+			return nil, err
+		}
+		// Get the telemetry plugin's registry and set it on the prometheus plugin
+		telemetryPlugin, telErr := lib.FindPluginAs[*telemetry.PrometheusPlugin](bifrostConfig, telemetry.PluginName)
+		if telErr != nil {
+			return nil, fmt.Errorf("prometheus plugin requires telemetry plugin to be enabled: %w", telErr)
+		}
+		registry := telemetryPlugin.GetRegistry()
+		if registry == nil {
+			return nil, fmt.Errorf("telemetry plugin registry is nil")
+		}
+		if err := promPlugin.SetRegistry(registry); err != nil {
+			return nil, fmt.Errorf("failed to set registry on prometheus plugin: %w", err)
+		}
+		// Start the push loop
+		if err := promPlugin.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start prometheus plugin: %w", err)
+		}
+		return promPlugin, nil
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)

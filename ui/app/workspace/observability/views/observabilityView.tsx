@@ -12,6 +12,7 @@ import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
+import PrometheusView from "./plugins/prometheusView";
 
 type SupportedPlatform = {
 	id: string;
@@ -37,6 +38,11 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 				/>
 			</svg>
 		),
+	},
+	{
+		id: "prometheus",
+		name: "Prometheus",
+		icon: <Image alt="Prometheus" src="/images/prometheus-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "maxim",
@@ -156,6 +162,7 @@ export default function ObservabilityView() {
 				</div>
 			</div>
 			<div className="w-full pt-4">
+				{selectedPlugin?.name === "prometheus" && <PrometheusView />}
 				{selectedPlugin?.name === "otel" && <OtelView />}
 				{selectedPlugin?.name === "maxim" && <MaximView />}
 				{selectedPlugin?.name === "datadog" && <DatadogView />}
