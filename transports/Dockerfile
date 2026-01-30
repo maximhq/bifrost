@@ -55,7 +55,7 @@ WORKDIR /app
 # musl: C standard library (required for CGO binaries)
 # libgcc: GCC runtime library
 # ca-certificates: For HTTPS connections
-RUN apk add --no-cache musl libgcc ca-certificates
+RUN apk add --no-cache musl libgcc ca-certificates wget
 
 # Create data directory and set up user
 COPY --from=builder /app/main .
