@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.1
+**Latest Version:** 2.0.2
 
 ## Changelog
+
+### v2.0.2
+
+- Added Qdrant vector store support with deployment, service, and PVC templates
+- Added headless service template for StatefulSet DNS resolution
+- Fixed gitignore pattern that was excluding template files from version control
 
 ### v2.0.1
 

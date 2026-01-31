@@ -1,0 +1,65 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "qdrant") .Values.vectorStore.qdrant.enabled (not .Values.vectorStore.qdrant.external.enabled) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bifrost.fullname" . }}-qdrant
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bifrost.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: vectorstore-qdrant
+  template:
+    metadata:
+      labels:
+        {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: vectorstore-qdrant
+    spec:
+      containers:
+        - name: qdrant
+          image: "{{ .Values.vectorStore.qdrant.image.repository }}:{{ .Values.vectorStore.qdrant.image.tag }}"
+          imagePullPolicy: {{ .Values.vectorStore.qdrant.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 6333
+              protocol: TCP
+            - name: grpc
+              containerPort: 6334
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.vectorStore.qdrant.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /qdrant/storage
+      volumes:
+        - name: data
+          {{- if .Values.vectorStore.qdrant.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "bifrost.fullname" . }}-qdrant
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}
+

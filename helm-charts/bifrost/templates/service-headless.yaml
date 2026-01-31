@@ -1,0 +1,30 @@
+{{- if and (eq .Values.storage.mode "sqlite") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
+# Headless service for StatefulSet pod DNS resolution
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bifrost.fullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    {{- if .Values.bifrost.cluster.enabled }}
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip
+      protocol: TCP
+      name: gossip
+    - port: {{ .Values.bifrost.cluster.gossip.port }}
+      targetPort: gossip-udp
+      protocol: UDP
+      name: gossip-udp
+    {{- end }}
+  selector:
+    {{- include "bifrost.selectorLabels" . | nindent 4 }}
+{{- end }}
