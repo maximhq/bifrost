@@ -1852,6 +1852,7 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 					AzureKeyConfig:   dbKey.AzureKeyConfig,
 					VertexKeyConfig:  dbKey.VertexKeyConfig,
 					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 					ConfigHash:       dbKey.ConfigHash,
 				}
 			}

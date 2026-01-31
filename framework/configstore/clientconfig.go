@@ -330,6 +330,16 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
+
+		if key.ReplicateKeyConfig != nil {
+			replicateConfig := &schemas.ReplicateKeyConfig{
+				Deployments: key.ReplicateKeyConfig.Deployments,
+			}
+			if key.ReplicateKeyConfig.SigningSecret != nil {
+				replicateConfig.SigningSecret = key.ReplicateKeyConfig.SigningSecret.Redacted()
+			}
+			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -441,6 +451,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash BedrockKeyConfig
 	if key.BedrockKeyConfig != nil {
 		data, err := sonic.Marshal(key.BedrockKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash ReplicateKeyConfig
+	if key.ReplicateKeyConfig != nil {
+		data, err := sonic.Marshal(key.ReplicateKeyConfig)
 		if err != nil {
 			return "", err
 		}

@@ -267,19 +267,20 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:         dbProvider.Name,
-				ProviderID:       dbProvider.ID,
-				KeyID:            key.ID,
-				Name:             key.Name,
-				Value:            key.Value,
-				Models:           key.Models,
-				Weight:           &key.Weight,
-				Enabled:          key.Enabled,
-				UseForBatchAPI:   key.UseForBatchAPI,
-				AzureKeyConfig:   key.AzureKeyConfig,
-				VertexKeyConfig:  key.VertexKeyConfig,
-				BedrockKeyConfig: key.BedrockKeyConfig,
-				ConfigHash:       keyHash,
+				Provider:           dbProvider.Name,
+				ProviderID:         dbProvider.ID,
+				KeyID:              key.ID,
+				Name:               key.Name,
+				Value:              key.Value,
+				Models:             key.Models,
+				Weight:             &key.Weight,
+				Enabled:            key.Enabled,
+				UseForBatchAPI:     key.UseForBatchAPI,
+				AzureKeyConfig:     key.AzureKeyConfig,
+				VertexKeyConfig:    key.VertexKeyConfig,
+				BedrockKeyConfig:   key.BedrockKeyConfig,
+				ReplicateKeyConfig: key.ReplicateKeyConfig,
+				ConfigHash:         keyHash,
 			}
 
 			// Handle Azure config
@@ -313,6 +314,14 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
+
+			// Handle Replicate config
+			if key.ReplicateKeyConfig != nil {
+				dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret
+				if key.ReplicateKeyConfig.SigningSecret != nil {
+					dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret.Redacted()
+				}
 			}
 
 			dbKeys = append(dbKeys, dbKey)
@@ -420,19 +429,20 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       keyHash,
+			Provider:           dbProvider.Name,
+			ProviderID:         dbProvider.ID,
+			KeyID:              key.ID,
+			Name:               key.Name,
+			Value:              key.Value,
+			Models:             key.Models,
+			Weight:             &key.Weight,
+			Enabled:            key.Enabled,
+			UseForBatchAPI:     key.UseForBatchAPI,
+			AzureKeyConfig:     key.AzureKeyConfig,
+			VertexKeyConfig:    key.VertexKeyConfig,
+			BedrockKeyConfig:   key.BedrockKeyConfig,
+			ReplicateKeyConfig: key.ReplicateKeyConfig,
+			ConfigHash:         keyHash,
 		}
 
 		// Handle Azure config
@@ -465,6 +475,14 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 				dbKey.BedrockBatchS3ConfigJSON = &s
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
+		}
+
+		// Handle Replicate config
+		if key.ReplicateKeyConfig != nil {
+			dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret
+			if key.ReplicateKeyConfig.SigningSecret != nil {
+				dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret.Redacted()
 			}
 		}
 
@@ -534,19 +552,20 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       key.ConfigHash,
+			Provider:           dbProvider.Name,
+			ProviderID:         dbProvider.ID,
+			KeyID:              key.ID,
+			Name:               key.Name,
+			Value:              key.Value,
+			Models:             key.Models,
+			Weight:             &key.Weight,
+			Enabled:            key.Enabled,
+			UseForBatchAPI:     key.UseForBatchAPI,
+			AzureKeyConfig:     key.AzureKeyConfig,
+			VertexKeyConfig:    key.VertexKeyConfig,
+			BedrockKeyConfig:   key.BedrockKeyConfig,
+			ReplicateKeyConfig: key.ReplicateKeyConfig,
+			ConfigHash:         key.ConfigHash,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -576,6 +595,14 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 				dbKey.BedrockBatchS3ConfigJSON = &s
 			} else {
 				dbKey.BedrockBatchS3ConfigJSON = nil
+			}
+		}
+
+		// Handle Replicate config
+		if key.ReplicateKeyConfig != nil {
+			dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret
+			if key.ReplicateKeyConfig.SigningSecret != nil {
+				dbKey.ReplicateSigningSecret = key.ReplicateKeyConfig.SigningSecret.Redacted()
 			}
 		}
 
@@ -649,17 +676,18 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
 			keys[i] = schemas.Key{
-				ID:               dbKey.KeyID,
-				Name:             dbKey.Name,
-				Value:            dbKey.Value,
-				Models:           dbKey.Models,
-				Weight:           getWeight(dbKey.Weight),
-				Enabled:          dbKey.Enabled,
-				UseForBatchAPI:   dbKey.UseForBatchAPI,
-				AzureKeyConfig:   dbKey.AzureKeyConfig,
-				VertexKeyConfig:  dbKey.VertexKeyConfig,
-				BedrockKeyConfig: dbKey.BedrockKeyConfig,
-				ConfigHash:       dbKey.ConfigHash,
+				ID:                 dbKey.KeyID,
+				Name:               dbKey.Name,
+				Value:              dbKey.Value,
+				Models:             dbKey.Models,
+				Weight:             getWeight(dbKey.Weight),
+				Enabled:            dbKey.Enabled,
+				UseForBatchAPI:     dbKey.UseForBatchAPI,
+				AzureKeyConfig:     dbKey.AzureKeyConfig,
+				VertexKeyConfig:    dbKey.VertexKeyConfig,
+				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+				ConfigHash:         dbKey.ConfigHash,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -690,17 +718,18 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
 		keys[i] = schemas.Key{
-			ID:               dbKey.KeyID,
-			Name:             dbKey.Name,
-			Value:            dbKey.Value,
-			Models:           dbKey.Models,
-			Weight:           getWeight(dbKey.Weight),
-			Enabled:          dbKey.Enabled,
-			UseForBatchAPI:   dbKey.UseForBatchAPI,
-			AzureKeyConfig:   dbKey.AzureKeyConfig,
-			VertexKeyConfig:  dbKey.VertexKeyConfig,
-			BedrockKeyConfig: dbKey.BedrockKeyConfig,
-			ConfigHash:       dbKey.ConfigHash,
+			ID:                 dbKey.KeyID,
+			Name:               dbKey.Name,
+			Value:              dbKey.Value,
+			Models:             dbKey.Models,
+			Weight:             getWeight(dbKey.Weight),
+			Enabled:            dbKey.Enabled,
+			UseForBatchAPI:     dbKey.UseForBatchAPI,
+			AzureKeyConfig:     dbKey.AzureKeyConfig,
+			VertexKeyConfig:    dbKey.VertexKeyConfig,
+			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+			ConfigHash:         dbKey.ConfigHash,
 		}
 	}
 	return &ProviderConfig{
@@ -831,7 +860,6 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		ToolManagerConfig: &toolManagerConfig,
 	}, nil
 }
-
 
 // GetMCPClientByID retrieves an MCP client by ID from the database.
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
