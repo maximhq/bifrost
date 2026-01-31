@@ -94,7 +94,7 @@ spec:
                   key: {{ .Values.bifrost.plugins.semanticCache.secretRef.key | default "api-key" }}
             {{- end }}
             {{- /* PostgreSQL password from existing secret */ -}}
-            {{- if and (eq .Values.storage.mode "postgres") .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}
+            {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}
             - name: BIFROST_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
