@@ -722,12 +722,147 @@ Uses gRPC with Protobuf encoding for lower latency:
 
 ```json
 {
-  "collector_url": "http://localhost:4317",
+  "collector_url": "localhost:4317",
   "protocol": "grpc"
 }
 ```
 
 Default port: **4317**
+
+---
+
+## Metrics Push (Cluster Mode)
+
+<Note>
+**Multi-node deployments**: If you are running multiple Bifrost nodes, use push-based metrics for accurate aggregation. Pull-based `/metrics` scraping may miss nodes behind a load balancer.
+</Note>
+
+The OTel plugin supports **push-based metrics export** via OTLP, which is essential for multi-node cluster deployments. Instead of relying on Prometheus scraping each node's `/metrics` endpoint (which can miss nodes behind a load balancer), all nodes actively push metrics to a central OTEL Collector.
+
+### Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `metrics_enabled` | `boolean` | ❌ No | Enable push-based metrics export (default: `false`) |
+| `metrics_endpoint` | `string` | ✅ Yes (if enabled) | OTLP metrics endpoint URL |
+| `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
+
+### Example Configuration
+
+<Tabs group="metrics-config">
+<Tab title="HTTP Protocol">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "http://otel-collector:4318/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "metrics_enabled": true,
+        "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+        "metrics_push_interval": 15
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="gRPC Protocol">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "otel-collector:4317",
+        "trace_type": "genai_extension",
+        "protocol": "grpc",
+        "metrics_enabled": true,
+        "metrics_endpoint": "otel-collector:4317",
+        "metrics_push_interval": 15
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+### Pushed Metrics
+
+These are the same **Prometheus-style metrics** from the telemetry plugin, pushed via OTLP protocol to a central collector:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
+| `bifrost_success_requests_total` | Counter | Successful upstream requests |
+| `bifrost_error_requests_total` | Counter | Error requests with reason labels |
+| `bifrost_input_tokens_total` | Counter | Total input tokens |
+| `bifrost_output_tokens_total` | Counter | Total output tokens |
+| `bifrost_cache_hits_total` | Counter | Cache hits |
+| `bifrost_cost_total` | Counter | Total cost in USD |
+| `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
+| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
+| `http_requests_total` | Counter | Total HTTP requests |
+| `http_request_duration_seconds` | Histogram | HTTP request duration |
+
+### OTEL Collector Configuration
+
+Configure your OTEL Collector to receive OTLP metrics and export to your preferred backend (Datadog, Prometheus, etc.):
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1000
+
+exporters:
+  # For Datadog
+  datadog:
+    api:
+      key: ${DD_API_KEY}
+  
+  # Or for Prometheus remote write
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [datadog]  # or prometheusremotewrite
+```
+
+### Why Push vs Pull?
+
+| Aspect | Pull (`/metrics` scrape) | Push (OTEL metrics) |
+|--------|--------------------------|---------------------|
+| Load balancer | May miss nodes | All nodes push |
+| Service discovery | Required | Not required |
+| Scraper configuration | Per-node endpoints | Single collector |
+| Cluster aggregation | Query-side `sum()` | Collector handles it |
+
+For **single-node deployments**, pull-based `/metrics` scraping works well. For **multi-node clusters**, push-based metrics ensures all nodes are captured.
 
 ---
 

@@ -1,0 +1,252 @@
+---
+title: "Prometheus"
+description: "Monitor Bifrost metrics with Prometheus scraping or Push Gateway for multi-node deployments"
+icon: "chart-line"
+---
+
+## Overview
+
+Bifrost exposes Prometheus metrics via two methods:
+
+1. **Pull-based (Scraping)**: Traditional `/metrics` endpoint that Prometheus can scrape
+2. **Push-based (Push Gateway)**: Push metrics to a Prometheus Push Gateway for cluster deployments
+
+<Note>
+  **For multi-node deployments**: Use the Push Gateway method to ensure accurate metric aggregation. Traditional scraping may miss nodes behind load balancers.
+</Note>
+
+---
+
+## Pull-based Scraping
+
+Bifrost automatically exposes a `/metrics` endpoint when the telemetry plugin is enabled (enabled by default). No additional configuration is needed.
+
+### Prometheus Configuration
+
+Add Bifrost to your Prometheus `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'bifrost'
+    static_configs:
+      - targets: ['bifrost-host:8080']
+    scrape_interval: 15s
+```
+
+### Endpoint
+
+```
+GET /metrics
+```
+
+Returns metrics in Prometheus exposition format.
+
+---
+
+## Push-based (Push Gateway)
+
+For multi-node cluster deployments, the Prometheus plugin pushes metrics to a [Prometheus Push Gateway](https://github.com/prometheus/pushgateway). This ensures all nodes' metrics are captured regardless of load balancer routing.
+
+### Configuration
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `push_gateway_url` | `string` | ✅ Yes | - | Push Gateway URL (e.g., `http://pushgateway:9091`) |
+| `job_name` | `string` | ❌ No | `bifrost` | Job label for pushed metrics |
+| `instance_id` | `string` | ❌ No | hostname | Instance identifier for metric grouping |
+| `push_interval` | `integer` | ❌ No | `15` | Push interval in seconds (1-300) |
+| `basic_auth` | `object` | ❌ No | - | Basic auth credentials |
+
+### Basic Auth Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `username` | `string` | ✅ Yes | Basic auth username |
+| `password` | `string` | ✅ Yes | Basic auth password |
+
+---
+
+## Setup
+
+<Tabs group="setup-method">
+<Tab title="UI">
+
+1. Navigate to **Observability** → **Prometheus** in the Bifrost UI
+2. The `/metrics` endpoint is shown at the top for scraping configuration
+3. To enable Push Gateway:
+   - Enter the **Push Gateway URL**
+   - Configure **Job Name** and **Push Interval** as needed
+   - Optionally set a custom **Instance ID**
+   - Enable **Basic Authentication** if required
+   - Toggle **Enable Push Gateway** on
+   - Click **Save Prometheus Configuration**
+
+</Tab>
+<Tab title="Config File">
+
+```json
+{
+  "plugins": [
+    {
+      "name": "prometheus",
+      "enabled": true,
+      "config": {
+        "push_gateway_url": "http://pushgateway:9091",
+        "job_name": "bifrost",
+        "push_interval": 15
+      }
+    }
+  ]
+}
+```
+
+### With Basic Auth
+
+```json
+{
+  "plugins": [
+    {
+      "name": "prometheus",
+      "enabled": true,
+      "config": {
+        "push_gateway_url": "http://pushgateway:9091",
+        "job_name": "bifrost",
+        "push_interval": 15,
+        "instance_id": "bifrost-node-1",
+        "basic_auth": {
+          "username": "admin",
+          "password": "secret"
+        }
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Available Metrics
+
+The following metrics are available from both the `/metrics` endpoint and Push Gateway:
+
+### HTTP Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_requests_total` | Counter | Total HTTP requests by path, method, status |
+| `http_request_duration_seconds` | Histogram | HTTP request latency |
+| `http_request_size_bytes` | Histogram | Request body size |
+| `http_response_size_bytes` | Histogram | Response body size |
+
+### Bifrost LLM Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
+| `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_success_requests_total` | Counter | Successful provider requests |
+| `bifrost_error_requests_total` | Counter | Failed provider requests |
+| `bifrost_input_tokens_total` | Counter | Total input tokens processed |
+| `bifrost_output_tokens_total` | Counter | Total output tokens generated |
+| `bifrost_cost_total` | Counter | Total cost in USD |
+| `bifrost_cache_hits_total` | Counter | Cache hits by type |
+| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token (streaming) |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency (streaming) |
+
+### Default Labels
+
+All Bifrost metrics include these labels:
+
+- `provider` - LLM provider name
+- `model` - Model identifier
+- `method` - Request type (chat, completion, embedding, etc.)
+- `virtual_key_id` / `virtual_key_name` - Virtual key identifiers
+- `selected_key_id` / `selected_key_name` - Actual key used
+- `number_of_retries` - Retry count
+- `fallback_index` - Fallback position
+- `team_id` / `team_name` - Team identifiers (if governance enabled)
+- `customer_id` / `customer_name` - Customer identifiers (if governance enabled)
+
+---
+
+## Push Gateway Setup
+
+If you don't have a Push Gateway running, deploy one:
+
+### Docker
+
+```bash
+docker run -d -p 9091:9091 prom/pushgateway
+```
+
+### Kubernetes (Helm)
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm install pushgateway prometheus-community/prometheus-pushgateway
+```
+
+### Configure Prometheus to Scrape Push Gateway
+
+Add to your `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: 'pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
+```
+
+<Note>
+  The `honor_labels: true` setting is important - it preserves the `job` and `instance` labels pushed by Bifrost instead of overwriting them with the Push Gateway's labels.
+</Note>
+
+---
+
+## Pull vs Push: When to Use Each
+
+| Scenario | Recommended Method |
+|----------|-------------------|
+| Single Bifrost instance | Pull (scraping) |
+| Multiple instances, direct access | Pull (scraping) |
+| Multiple instances behind load balancer | **Push (Push Gateway)** |
+| Kubernetes with service mesh | Pull or Push |
+| Serverless / ephemeral instances | **Push (Push Gateway)** |
+
+### Why Push for Clusters?
+
+When multiple Bifrost instances run behind a load balancer:
+
+1. **Scraping randomness**: Each scrape may hit different nodes, missing metrics from others
+2. **Instance tracking**: Push Gateway properly tracks per-instance metrics via `instance` label
+3. **Aggregation**: Downstream tools (Grafana, Datadog) can aggregate across all instances
+
+---
+
+## Troubleshooting
+
+### Push Gateway Connection Failed
+
+```
+failed to push metrics to push gateway: connection refused
+```
+
+- Verify the Push Gateway URL is correct and reachable from Bifrost
+- Check firewall rules between Bifrost and Push Gateway
+- Ensure Push Gateway is running: `curl http://pushgateway:9091/metrics`
+
+### Metrics Not Appearing
+
+- Verify the telemetry plugin is enabled (required for metrics collection)
+- Check Bifrost logs for push errors
+- Verify Prometheus is scraping the Push Gateway with `honor_labels: true`
+
+### Authentication Failed
+
+- Double-check username and password
+- Ensure basic auth is configured on the Push Gateway side
+- Check for special characters that may need escaping

@@ -50,6 +50,12 @@ type Config struct {
 	TraceType    TraceType         `json:"trace_type"`
 	Protocol     Protocol          `json:"protocol"`
 	TLSCACert    string            `json:"tls_ca_cert"`
+	Insecure     bool              `json:"insecure"` // Skip TLS when true; ignored if TLSCACert is set
+
+	// Metrics push configuration
+	MetricsEnabled      bool   `json:"metrics_enabled"`
+	MetricsEndpoint     string `json:"metrics_endpoint"`
+	MetricsPushInterval int    `json:"metrics_push_interval"` // in seconds, default 15
 }
 
 // OtelPlugin is the plugin for OpenTelemetry.
@@ -72,6 +78,9 @@ type OtelPlugin struct {
 	client OtelClient
 
 	pricingManager *modelcatalog.ModelCatalog
+
+	// Metrics push support
+	metricsExporter *MetricsExporter
 }
 
 // Init function for the OTEL plugin
@@ -123,13 +132,13 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	}
 	p.ctx, p.cancel = context.WithCancel(ctx)
 	if config.Protocol == ProtocolGRPC {
-		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers, config.TLSCACert)
+		p.client, err = NewOtelClientGRPC(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if config.Protocol == ProtocolHTTP {
-		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers, config.TLSCACert)
+		p.client, err = NewOtelClientHTTP(config.CollectorURL, config.Headers, config.TLSCACert, config.Insecure)
 		if err != nil {
 			return nil, err
 		}
@@ -137,6 +146,38 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 	if p.client == nil {
 		return nil, fmt.Errorf("otel client is not initialized. invalid protocol type")
 	}
+
+	// Initialize metrics exporter if enabled
+	if config.MetricsEnabled {
+		if config.MetricsEndpoint == "" {
+			return nil, fmt.Errorf("metrics_endpoint is required when metrics_enabled is true")
+		}
+		pushInterval := config.MetricsPushInterval
+		if pushInterval <= 0 {
+			pushInterval = 15 // default 15 seconds
+		} else if pushInterval > 300 {
+			return nil, fmt.Errorf("metrics_push_interval must be between 1 and 300 seconds, got %d", pushInterval)
+		}
+		metricsConfig := &MetricsConfig{
+			ServiceName:  config.ServiceName,
+			Endpoint:     config.MetricsEndpoint,
+			Headers:      config.Headers,
+			Protocol:     config.Protocol,
+			TLSCACert:    config.TLSCACert,
+			Insecure:     config.Insecure,
+			PushInterval: pushInterval,
+		}
+		p.metricsExporter, err = NewMetricsExporter(p.ctx, metricsConfig)
+		if err != nil {
+			// Clean up trace client if metrics exporter fails
+			if p.client != nil {
+				p.client.Close()
+			}
+			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
+		}
+		logger.Info("OTEL metrics push enabled, pushing to %s every %d seconds", config.MetricsEndpoint, pushInterval)
+	}
+
 	return p, nil
 }
 
@@ -238,10 +279,21 @@ func (p *OtelPlugin) Cleanup() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+	// Shutdown metrics exporter first
+	if p.metricsExporter != nil {
+		if err := p.metricsExporter.Shutdown(context.Background()); err != nil {
+			logger.Error("failed to shutdown metrics exporter: %v", err)
+		}
+	}
 	if p.client != nil {
 		return p.client.Close()
 	}
 	return nil
+}
+
+// GetMetricsExporter returns the metrics exporter for external use (e.g., by telemetry plugin)
+func (p *OtelPlugin) GetMetricsExporter() *MetricsExporter {
+	return p.metricsExporter
 }
 
 // Compile-time check that OtelPlugin implements ObservabilityPlugin
