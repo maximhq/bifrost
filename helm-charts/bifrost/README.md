@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.0
+**Latest Version:** 2.0.1
 
 ## Changelog
+
+### v2.0.1
+
+- Added missing StatefulSet template for SQLite with persistence mode
+- Added headless service for StatefulSet DNS resolution
+- v2.0.0 documented StatefulSet support but the template was not included - this release fixes that
 
 ### v2.0.0 (Breaking Change)
 
