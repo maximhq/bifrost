@@ -4,7 +4,48 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 1.5.0
+**Latest Version:** 2.0.0
+
+## Changelog
+
+### v2.0.0 (Breaking Change)
+
+#### StatefulSet for SQLite with Persistence
+
+This release fixes the multi-attach volume error when running multiple replicas with SQLite storage mode.
+
+#### What Changed
+
+- When using `storage.mode: sqlite` with `storage.persistence.enabled: true`, Bifrost now deploys as a **StatefulSet** instead of a Deployment
+- Each pod gets its own dedicated PersistentVolumeClaim (e.g., `data-bifrost-0`, `data-bifrost-1`, `data-bifrost-2`)
+- A headless service is created for StatefulSet DNS resolution
+- HorizontalPodAutoscaler now correctly references StatefulSet or Deployment based on storage configuration
+
+#### Who Is Affected
+
+- Users running SQLite mode with persistence enabled and multiple replicas
+- Users upgrading existing SQLite deployments need to migrate (see below)
+
+#### Who Is NOT Affected
+
+- Users running PostgreSQL mode (`storage.mode: postgres`) - no changes, still uses Deployment
+- Users running SQLite without persistence (`storage.persistence.enabled: false`)
+- Users running SQLite with an existing PVC claim (`storage.persistence.existingClaim`)
+
+#### Migration Guide for Existing SQLite Deployments
+
+Since Kubernetes doesn't allow in-place conversion from Deployment to StatefulSet, you need to:
+
+1. Back up your data (if needed)
+2. Uninstall the existing release: `helm uninstall bifrost`
+3. Delete the old PVC: `kubectl delete pvc bifrost-data`
+4. Install with the new chart version: `helm install bifrost bifrost/bifrost --set image.tag=<latest-image>`
+
+**Note:** For production high-availability setups, we recommend using PostgreSQL mode which scales horizontally without these concerns.
+
+### v1.7.0
+
+- Previous stable release with Deployment-based architecture for all storage modes
 
 ## Quick Start
 
@@ -16,7 +57,7 @@ helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install Bifrost with default configuration (SQLite storage)
-helm install bifrost bifrost/bifrost --set image.tag=v1.5.0
+helm install bifrost bifrost/bifrost --set image.tag=v1.4.3
 ```
 
 ## Prerequisites
@@ -35,7 +76,7 @@ helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install with default values
-helm install bifrost bifrost/bifrost --set image.tag=v1.5.0
+helm install bifrost bifrost/bifrost --set image.tag=v1.4.3
 
 # Or install with custom values
 helm install bifrost bifrost/bifrost -f my-values.yaml
@@ -49,7 +90,7 @@ git clone https://github.com/maximhq/bifrost.git
 cd bifrost/helm-charts
 
 # Install from local chart
-helm install bifrost ./bifrost --set image.tag=v1.3.37
+helm install bifrost ./bifrost --set image.tag=v1.5.2
 ```
 
 ### Interactive Installation
@@ -341,7 +382,7 @@ The chart includes pre-configured examples in `values-examples/`:
 # From Helm repository
 helm install bifrost bifrost/bifrost \
   -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml \
-  --set image.tag=v1.3.37
+  --set image.tag=v1.5.2
 
 # From local source
 helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
@@ -423,7 +464,7 @@ bifrost:
 helm repo update
 
 # Upgrade release
-helm upgrade bifrost bifrost/bifrost --set image.tag=v1.3.37
+helm upgrade bifrost bifrost/bifrost --set image.tag=v1.5.2
 
 # Or with custom values
 helm upgrade bifrost bifrost/bifrost -f my-values.yaml

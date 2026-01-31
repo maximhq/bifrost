@@ -1,3 +1,7 @@
+{{- /* Use Deployment when: postgres mode, OR sqlite without persistence, OR sqlite with existingClaim */}}
+{{- /* StatefulSet is used for: sqlite mode with persistence enabled and no existingClaim */}}
+{{- $useStatefulSet := and (eq .Values.storage.mode "sqlite") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
+{{- if not $useStatefulSet }}
 {{- if not .Values.image.tag }}
 {{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/maximhq/bifrost/tags" }}
 {{- end }}
@@ -218,3 +222,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
