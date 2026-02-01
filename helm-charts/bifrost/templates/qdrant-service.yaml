@@ -1,0 +1,25 @@
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "qdrant") .Values.vectorStore.qdrant.enabled (not .Values.vectorStore.qdrant.external.enabled) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bifrost.fullname" . }}-qdrant
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "bifrost.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore-qdrant
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6333
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 6334
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "bifrost.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: vectorstore-qdrant
+{{- end }}
+

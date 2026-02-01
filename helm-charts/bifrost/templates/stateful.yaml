@@ -1,12 +1,11 @@
-{{- /* Use Deployment when: postgres mode, OR sqlite without persistence, OR sqlite with existingClaim */}}
 {{- /* StatefulSet is used for: sqlite mode with persistence enabled and no existingClaim */}}
 {{- $useStatefulSet := and (eq .Values.storage.mode "sqlite") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
-{{- if not $useStatefulSet }}
+{{- if $useStatefulSet }}
 {{- if not .Values.image.tag }}
 {{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/maximhq/bifrost/tags" }}
 {{- end }}
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "bifrost.fullname" . }}
   namespace: {{ .Release.Namespace }}
@@ -20,6 +19,7 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
+  serviceName: {{ include "bifrost.fullname" . }}-headless
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
@@ -183,10 +183,8 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if eq .Values.storage.mode "sqlite" }}
             - name: data
               mountPath: {{ .Values.bifrost.appDir }}
-            {{- end }}
             - name: config
               mountPath: {{ .Values.bifrost.appDir }}/config.json
               subPath: config.json
@@ -198,15 +196,6 @@ spec:
         - name: config
           configMap:
             name: {{ include "bifrost.fullname" . }}-config
-        {{- if eq .Values.storage.mode "sqlite" }}
-        - name: data
-          {{- if .Values.storage.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: {{ .Values.storage.persistence.existingClaim | default (printf "%s-data" (include "bifrost.fullname" .)) }}
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
-        {{- end }}
         {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -222,4 +211,23 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "bifrost.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.storage.persistence.accessMode }}
+        {{- if .Values.storage.persistence.storageClass }}
+        {{- if (eq "-" .Values.storage.persistence.storageClass) }}
+        storageClassName: ""
+        {{- else }}
+        storageClassName: {{ .Values.storage.persistence.storageClass }}
+        {{- end }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.persistence.size }}
 {{- end }}
+
