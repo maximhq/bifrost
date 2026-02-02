@@ -67,9 +67,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 	const { data: providerGovernanceData, isLoading: isLoadingGovernance } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess || !governanceEnabled,
-		pollingInterval: hasViewAccess && governanceEnabled ? 10000 : 0,
 		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
 	});
 	const [updateProviderGovernance, { isLoading: isUpdating }] = useUpdateProviderGovernanceMutation();
 	const [deleteProviderGovernance, { isLoading: isDeleting }] = useDeleteProviderGovernanceMutation();

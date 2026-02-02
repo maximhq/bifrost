@@ -173,9 +173,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 
 	const { data: providerGovernanceData, isLoading } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess || !governanceEnabled,
-		pollingInterval: hasViewAccess && governanceEnabled ? 10000 : 0,
 		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
 	});
 
 	// Find governance data for this provider

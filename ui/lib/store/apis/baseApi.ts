@@ -156,6 +156,7 @@ export const baseApi = createApi({
 		"HealthCheck",
 		"DBKeys",
 		"Models",
+		"BaseModels",
 		"ModelConfigs",
 		"ProviderGovernance",
 		"Plugins",

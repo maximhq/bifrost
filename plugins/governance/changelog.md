@@ -1,0 +1,4 @@
+- feat: cross-provider model matching - budget/rate-limit configs for `gpt-4o` now apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: add EventBroadcaster support for real-time governance update notifications
+- feat: expand GovernanceData with ModelConfigs and Providers for in-memory reads
+- fix: model/provider usage is now tracked even when no virtual key is present

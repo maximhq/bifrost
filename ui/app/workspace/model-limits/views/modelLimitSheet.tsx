@@ -235,7 +235,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												onChange={field.onChange}
 												placeholder="Select a model..."
 												isSingleSelect
-												loadModelsOnEmptyProvider
+												loadModelsOnEmptyProvider="base_models"
 											/>
 										</FormControl>
 										<FormMessage />

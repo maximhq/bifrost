@@ -21,9 +21,7 @@ export default function ModelLimitsView() {
 		refetch: refetchModelConfigs,
 	} = useGetModelConfigsQuery(undefined, {
 		skip: !governanceEnabled || !hasGovernanceAccess,
-		pollingInterval: governanceEnabled && hasGovernanceAccess ? 10000 : 0,
 		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
 	});
 
 	const isLoading = modelConfigsLoading || governanceEnabled === null;

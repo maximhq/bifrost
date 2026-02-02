@@ -21,6 +21,7 @@ import {
 	LayoutGrid,
 	LogOut,
 	Logs,
+	Network,
 	PanelLeftClose,
 	Puzzle,
 	ScrollText,
@@ -172,6 +173,7 @@ const SidebarItemView = ({
 	router,
 	isSidebarCollapsed,
 	expandSidebar,
+	isGovernanceEnabled,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -184,6 +186,7 @@ const SidebarItemView = ({
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
+	isGovernanceEnabled: boolean;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -265,6 +268,8 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
+						// Hide governance-dependent subitems when governance is disabled
+						if ((subItem.url === "/workspace/model-limits" || subItem.url === "/workspace/routing-rules") && !isGovernanceEnabled) return null;
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
 						const SubItemIcon = subItem.icon;
@@ -423,20 +428,20 @@ export default function AppSidebar() {
 					description: "Configure models",
 					hasAccess: hasModelProvidersAccess,
 				},
-				// {
-				// 	title: "Budgets & Limits",
-				// 	url: "/workspace/model-limits",
-				// 	icon: Gauge,
-				// 	description: "Model limits",
-				// 	hasAccess: hasGovernanceAccess,
-				// },
-				// {
-				// 	title: "Routing Rules",
-				// 	url: "/workspace/routing-rules",
-				// 	icon: Network,
-				// 	description: "Intelligent routing rules",
-				// 	hasAccess: hasRoutingRulesAccess,
-				// },
+				{
+					title: "Budgets & Limits",
+					url: "/workspace/model-limits",
+					icon: Gauge,
+					description: "Model limits",
+					hasAccess: hasGovernanceAccess,
+				},
+				{
+					title: "Routing Rules",
+					url: "/workspace/routing-rules",
+					icon: Network,
+					description: "Intelligent routing rules",
+					hasAccess: hasRoutingRulesAccess,
+				},
 			],
 		},
 		{
@@ -873,6 +878,7 @@ export default function AppSidebar() {
 										router={router}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
+										isGovernanceEnabled={isGovernanceEnabled}
 									/>
 								);
 							})}

@@ -30,6 +30,8 @@ tmp/
 tmp-*
 private
 **/bin
+build/
+target/
 
 # Go workspaces (local only)
 go.work
@@ -43,8 +45,10 @@ go.work.sum
 # Test reports
 test-reports
 
-# Cursor specific
-.claude
+# AI Agent specific
+.claude/
+.codex/
+.cursor/
 
 # Python specific
 **/__pycache__/**
@@ -54,11 +58,6 @@ test-reports
 **/.coverage/
 **/.pytest_cache/
 
-
-# Cursor specific
-.cursor/
-build/
-target/
 
 # Nix specific
 .direnv
