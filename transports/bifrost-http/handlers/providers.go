@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -274,16 +275,16 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, response)
 		return
 	}
-	if payload.CustomProviderConfig == nil ||
-		!payload.CustomProviderConfig.IsKeyLess ||
-		(payload.CustomProviderConfig.AllowedRequests != nil && payload.CustomProviderConfig.AllowedRequests.ListModels) {
-		go func() {
-			if _, err := h.modelsManager.ReloadProvider(context.Background(), payload.Provider); err != nil {
-				logger.Warn("Failed to refetch models for provider %s: %v", payload.Provider, err)
-			}
-		}()
+
+	// Attempt model discovery
+	err = h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig)
+
+	if err != nil {
+		logger.Warn("Model discovery failed for provider %s: %v", payload.Provider, err)
 	}
+
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
+
 	SendJSON(ctx, response)
 }
 
@@ -463,13 +464,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, response)
 		return
 	}
-	// Refetch models if any key is added or removed
-	go func() {
-		if _, err := h.modelsManager.ReloadProvider(context.Background(), provider); err != nil {
-			logger.Warn("Failed to refetch models for provider %s: %v", provider, err)
-		}
-	}()
+
+	// Attempt model discovery
+	err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
+
+	if err != nil {
+		logger.Warn("Model discovery failed for provider %s: %v", provider, err)
+	}
+
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
+
 	SendJSON(ctx, response)
 }
 
@@ -902,6 +906,29 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 	return resultKeys, nil
 }
 
+// attemptModelDiscovery performs model discovery with timeout
+func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
+	// Determine if we should attempt model discovery
+	shouldDiscoverModels := customProviderConfig == nil ||
+		!customProviderConfig.IsKeyLess
+
+	if !shouldDiscoverModels {
+		return nil
+	}
+
+	// Attempt model discovery with reasonable timeout
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig, status ProviderStatus) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
@@ -909,6 +936,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 	if config.ConcurrencyAndBufferSize == nil {
 		config.ConcurrencyAndBufferSize = &schemas.DefaultConcurrencyAndBufferSize
 	}
+
 	return ProviderResponse{
 		Name:                     provider,
 		Keys:                     config.Keys,

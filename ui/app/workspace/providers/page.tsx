@@ -158,61 +158,65 @@ export default function Providers() {
 												}}
 												asChild
 											>
-												<div className="flex items-center gap-2">
-													<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-													<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
-													<ProviderStatusBadge status={p.status} />
-												</div>
+											<div className="flex items-center gap-2">
+												<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
+												<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
+												<KeyDiscoveryFailedBadge provider={p} />
+												<ProviderStatusBadge status={p.status} />
+											</div>
 											</TooltipTrigger>
 										</Tooltip>
 									);
 								})}
 								{customProviders.length > 0 && <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom Providers</div>}
-								{customProviders.map((p) => (
-									<Tooltip key={p.name}>
-										<TooltipTrigger
-											className={cn(
-												"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
-												selectedProvider?.name === p.name
-													? "bg-secondary opacity-100 hover:opacity-100"
-													: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-											)}
-											onClick={(e) => {
-												e.preventDefault();
-												e.stopPropagation();
-												if (providerFormIsDirty) {
-													setPendingRedirection(p.name);
-													setShowRedirectionDialog(true);
-													return;
-												}
-												setProvider(p.name);
-											}}
-											asChild
-										>
-											<div className="group flex w-full items-center gap-2">
-												<div className="flex w-full items-center gap-2">
-													<RenderProviderIcon
-														provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
-														size="sm"
-														className="h-4 w-4"
-													/>
-													<div className="text-sm">{p.name}</div>
-													<ProviderStatusBadge status={p.status} />
-												</div>
-												{selectedProvider?.name === p.name && hasProviderDeleteAccess && (
-													<Trash
-														className="text-muted-foreground hover:text-destructive ml-auto hidden h-4 w-4 cursor-pointer group-hover:block"
-														onClick={(event) => {
-															event.preventDefault();
-															event.stopPropagation();
-															setShowDeleteProviderDialog(true);
-														}}
-													/>
+								{customProviders.map((p) => {
+									return (
+										<Tooltip key={p.name}>
+											<TooltipTrigger
+												className={cn(
+													"mb-1 flex w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
+													selectedProvider?.name === p.name
+														? "bg-secondary opacity-100 hover:opacity-100"
+														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
 												)}
-											</div>
-										</TooltipTrigger>
-									</Tooltip>
-								))}
+												onClick={(e) => {
+													e.preventDefault();
+													e.stopPropagation();
+													if (providerFormIsDirty) {
+														setPendingRedirection(p.name);
+														setShowRedirectionDialog(true);
+														return;
+													}
+													setProvider(p.name);
+												}}
+												asChild
+											>
+												<div className="group flex w-full items-center gap-2">
+													<div className="flex w-full items-center gap-2">
+														<RenderProviderIcon
+															provider={p.custom_provider_config?.base_provider_type as ProviderIconType}
+															size="sm"
+															className="h-4 w-4"
+														/>
+														<div className="text-sm">{p.name}</div>
+														<KeyDiscoveryFailedBadge provider={p} />
+														<ProviderStatusBadge status={p.status} />
+													</div>
+													{selectedProvider?.name === p.name && hasProviderDeleteAccess && (
+														<Trash
+															className="text-muted-foreground hover:text-destructive ml-auto hidden h-4 w-4 cursor-pointer group-hover:block"
+															onClick={(event) => {
+																event.preventDefault();
+																event.stopPropagation();
+																setShowDeleteProviderDialog(true);
+															}}
+														/>
+													)}
+												</div>
+											</TooltipTrigger>
+										</Tooltip>
+									);
+								})}
 							</div>
 						</div>
 					</div>
@@ -258,4 +262,39 @@ function ProviderStatusBadge({ status }: { status: ProviderStatus }) {
 			<TooltipContent>{status === "error" ? "Provider could not be initialized" : "Provider is deleted"}</TooltipContent>
 		</Tooltip>
 	) : null;
+}
+
+function KeyDiscoveryFailedBadge({ 
+	provider 
+}: { 
+	provider: { 
+		keys: Array<{ model_discovery_status?: string }>;
+		model_discovery_status?: string;
+		model_discovery_error?: string;
+	} 
+}) {
+	const hasFailedKeys = provider.keys?.some((key) => key.model_discovery_status === "failed");
+	const providerFailed = provider.model_discovery_status === "failed";
+	const hasFailed = hasFailedKeys || providerFailed;
+
+	if (!hasFailed) return null;
+
+	// Determine the tooltip message
+	let tooltipMessage = "";
+	if (providerFailed && hasFailedKeys) {
+		tooltipMessage = "Provider and one or more keys have failed model discovery.";
+	} else if (providerFailed) {
+		tooltipMessage = provider.model_discovery_error || "Provider model discovery failed.";
+	} else if (hasFailedKeys) {
+		tooltipMessage = "One or more keys have failed list models. Check keys for details.";
+	}
+
+	return (
+		<Tooltip>
+			<TooltipTrigger>
+				<AlertCircle className="h-3 w-3" />
+			</TooltipTrigger>
+			<TooltipContent>{tooltipMessage}</TooltipContent>
+		</Tooltip>
+	);
 }

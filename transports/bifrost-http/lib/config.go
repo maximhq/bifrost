@@ -679,6 +679,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 				logger.Warn("failed to generate key hash for file key %s (%s): %v, falling back to name comparison", fileKey.Name, provider, err)
 				if fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+					fileKeys[i].ModelDiscoveryError = dbKey.ModelDiscoveryError
 					found = true
 					break
 				}
@@ -690,6 +692,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			if dbKey.ConfigHash != "" {
 				if fileKeyHash == dbKey.ConfigHash || fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+					fileKeys[i].ModelDiscoveryError = dbKey.ModelDiscoveryError
 					found = true
 					break
 				}
@@ -708,6 +712,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
 					if fileKey.Name == dbKey.Name {
 						fileKeys[i].ID = dbKey.ID
+						fileKeys[i].ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+						fileKeys[i].ModelDiscoveryError = dbKey.ModelDiscoveryError
 						found = true
 						break
 					}
@@ -715,6 +721,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 				}
 				if fileKeyHash == dbKeyHash || fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+					fileKeys[i].ModelDiscoveryError = dbKey.ModelDiscoveryError
 					found = true
 					break
 				}
@@ -758,6 +766,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
 					fileKey.ID = dbKey.ID
 					fileKey.ConfigHash = fileKeyHash
+					fileKey.ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+					fileKey.ModelDiscoveryError = dbKey.ModelDiscoveryError
 					mergedKeys = append(mergedKeys, fileKey)
 				}
 			} else {
@@ -782,6 +792,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
 					fileKey.ID = dbKey.ID
 					fileKey.ConfigHash = fileKeyHash
+					fileKey.ModelDiscoveryStatus = dbKey.ModelDiscoveryStatus
+					fileKey.ModelDiscoveryError = dbKey.ModelDiscoveryError
 					mergedKeys = append(mergedKeys, fileKey)
 				} else {
 					// Key unchanged - keep DB version
@@ -1882,17 +1894,19 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 			keys := make([]schemas.Key, len(dbProvider.Keys))
 			for i, dbKey := range dbProvider.Keys {
 				keys[i] = schemas.Key{
-					ID:               dbKey.ID,
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					Enabled:          dbKey.Enabled,
-					UseForBatchAPI:   dbKey.UseForBatchAPI,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
-					ConfigHash:       dbKey.ConfigHash,
+					ID:                   dbKey.ID,
+					Name:                 dbKey.Name,
+					Value:                dbKey.Value,
+					Models:               dbKey.Models,
+					Weight:               dbKey.Weight,
+					Enabled:              dbKey.Enabled,
+					UseForBatchAPI:       dbKey.UseForBatchAPI,
+					AzureKeyConfig:       dbKey.AzureKeyConfig,
+					VertexKeyConfig:      dbKey.VertexKeyConfig,
+					BedrockKeyConfig:     dbKey.BedrockKeyConfig,
+					ConfigHash:           dbKey.ConfigHash,
+					ModelDiscoveryStatus: dbKey.ModelDiscoveryStatus,
+					ModelDiscoveryError:  dbKey.ModelDiscoveryError,
 				}
 			}
 			providerConfig := configstore.ProviderConfig{

@@ -18,6 +18,8 @@ type Key struct {
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	ModelDiscoveryStatus string                `json:"model_discovery_status,omitempty"` // Status of model discovery
+	ModelDiscoveryError  string                `json:"model_discovery_error,omitempty"`  // Error message if discovery failed
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.

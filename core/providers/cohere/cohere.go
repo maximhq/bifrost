@@ -187,13 +187,13 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	// Build base URL first
 	baseURL := provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest)
-	
+
 	// Parse and add query parameters
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to parse request URL", err, providerName)
 	}
-	
+
 	q := u.Query()
 	q.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
 	if request.ExtraParams != nil {
@@ -265,7 +265,9 @@ func (provider *CohereProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		return nil, err
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
-		return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		return providerUtils.HandleKeylessListModelsRequest(provider.GetProviderKey(), func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,

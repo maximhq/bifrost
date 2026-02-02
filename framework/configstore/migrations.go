@@ -179,6 +179,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBaseModelPricingColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddKeyModelDiscoveryStatusColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddProviderModelDiscoveryStatusColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3060,7 +3066,7 @@ func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 		ID: "add_oauth_tables",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()			
+			migrator := tx.Migrator()
 			// Create oauth_configs table FIRST (before adding FK columns that reference it)
 			if !migrator.HasTable(&tables.TableOauthConfig{}) {
 				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
@@ -3226,4 +3232,110 @@ func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error 
 		},
 	}})
 	return m.Migrate()
+}
+
+// migrationAddKeyModelDiscoveryStatusColumns adds model discovery tracking columns to config_keys table
+// These columns track the status of model discovery attempts for each individual key
+func migrationAddKeyModelDiscoveryStatusColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_key_model_discovery_status_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add model_discovery_status column
+			if !migrator.HasColumn(&tables.TableKey{}, "model_discovery_status") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "model_discovery_status"); err != nil {
+					return err
+				}
+			}
+
+			// Add model_discovery_error column
+			if !migrator.HasColumn(&tables.TableKey{}, "model_discovery_error") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "model_discovery_error"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop model_discovery_error column
+			if migrator.HasColumn(&tables.TableKey{}, "model_discovery_error") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "model_discovery_error"); err != nil {
+					return err
+				}
+			}
+
+			// Drop model_discovery_status column
+			if migrator.HasColumn(&tables.TableKey{}, "model_discovery_status") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "model_discovery_status"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running key model discovery status migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderModelDiscoveryStatusColumns adds model discovery tracking columns to config_providers table
+// These columns track the status of model discovery attempts for keyless providers
+func migrationAddProviderModelDiscoveryStatusColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_provider_model_discovery_status_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add model_discovery_status column
+			if !migrator.HasColumn(&tables.TableProvider{}, "model_discovery_status") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "model_discovery_status"); err != nil {
+					return err
+				}
+			}
+
+			// Add model_discovery_error column
+			if !migrator.HasColumn(&tables.TableProvider{}, "model_discovery_error") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "model_discovery_error"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop model_discovery_error column
+			if migrator.HasColumn(&tables.TableProvider{}, "model_discovery_error") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "model_discovery_error"); err != nil {
+					return err
+				}
+			}
+
+			// Drop model_discovery_status column
+			if migrator.HasColumn(&tables.TableProvider{}, "model_discovery_status") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "model_discovery_status"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running provider model discovery status migration: %s", err.Error())
+	}
+	return nil
 }

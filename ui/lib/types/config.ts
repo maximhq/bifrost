@@ -101,6 +101,8 @@ export interface ModelProviderKey {
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
+	model_discovery_status?: "unknown" | "success" | "failed";
+    model_discovery_error?: string;
 }
 
 // Default ModelProviderKey
@@ -226,6 +228,8 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	model_discovery_status?: "unknown" | "success" | "failed";
+	model_discovery_error?: string;
 }
 
 // ProviderResponse matching Go's ProviderResponse
