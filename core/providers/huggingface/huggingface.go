@@ -108,7 +108,11 @@ func (provider *HuggingFaceProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL composes the final request URL based on context overrides.
 func (provider *HuggingFaceProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // completeRequestWithModelAliasCache performs a request and retries once on 404 by clearing the cache and refetching model info
@@ -1022,8 +1026,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 	// Build streaming URL - append /stream to the fal-ai route, honoring path overrides
 	defaultPath := fmt.Sprintf("/fal-ai/%s/stream", modelName)
-	streamPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, schemas.ImageGenerationStreamRequest)
-	streamURL := provider.networkConfig.BaseURL + streamPath
+	streamURL := provider.buildRequestURL(ctx, defaultPath, schemas.ImageGenerationStreamRequest)
 
 	return HandleHuggingFaceImageGenerationStreaming(
 		ctx,
@@ -1449,8 +1452,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	// Build streaming URL - append /stream to the fal-ai edit route, honoring path overrides
 	defaultPath := fmt.Sprintf("/fal-ai/%s/stream", modelName)
-	streamPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, schemas.ImageEditStreamRequest)
-	streamURL := provider.networkConfig.BaseURL + streamPath
+	streamURL := provider.buildRequestURL(ctx, defaultPath, schemas.ImageEditStreamRequest)
 
 	// Set headers
 	headers := map[string]string{

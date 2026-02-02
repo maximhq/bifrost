@@ -119,7 +119,11 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *CohereProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // completeRequest sends a request to Cohere's API and handles the response.
@@ -181,20 +185,29 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Build query parameters
-	params := url.Values{}
-	params.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
+	// Build base URL first
+	baseURL := provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest)
+	
+	// Parse and add query parameters
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to parse request URL", err, providerName)
+	}
+	
+	q := u.Query()
+	q.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
 	if request.ExtraParams != nil {
 		if endpoint, ok := request.ExtraParams["endpoint"].(string); ok && endpoint != "" {
-			params.Set("endpoint", endpoint)
+			q.Set("endpoint", endpoint)
 		}
 		if defaultOnly, ok := request.ExtraParams["default_only"].(bool); ok && defaultOnly {
-			params.Set("default_only", "true")
+			q.Set("default_only", "true")
 		}
 	}
+	u.RawQuery = q.Encode()
 
-	// Build URL
-	req.SetRequestURI(provider.buildRequestURL(ctx, fmt.Sprintf("/v1/models?%s", params.Encode()), schemas.ListModelsRequest))
+	// Set the final URL
+	req.SetRequestURI(u.String())
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {

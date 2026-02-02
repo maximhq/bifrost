@@ -507,7 +507,12 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest))
+	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest)
+	if isCompleteURL {
+		req.SetRequestURI(requestPath)
+	} else {
+		req.SetRequestURI(provider.networkConfig.BaseURL + requestPath)
+	}
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	if key.Value.GetValue() != "" {
@@ -730,14 +735,27 @@ func (provider *ElevenlabsProvider) ImageVariation(ctx *schemas.BifrostContext, 
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
 func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
 	baseURL := provider.networkConfig.BaseURL
-	requestPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
-
-	u, parseErr := url.Parse(baseURL)
-	if parseErr != nil {
-		return baseURL + requestPath
+	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	
+	var finalURL string
+	if isCompleteURL {
+		finalURL = requestPath
+	} else {
+		u, parseErr := url.Parse(baseURL)
+		if parseErr != nil {
+			finalURL = baseURL + requestPath
+		} else {
+			u.Path = path.Join(u.Path, requestPath)
+			finalURL = u.String()
+		}
 	}
 
-	u.Path = path.Join(u.Path, requestPath)
+	// Parse the final URL to add query parameters
+	u, parseErr := url.Parse(finalURL)
+	if parseErr != nil {
+		return finalURL
+	}
+
 	q := u.Query()
 
 	if request.Params != nil {

@@ -299,26 +299,41 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
-func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) string {
-	// If path set in context, return it
+// It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
+// If the boolean is false, the returned string is a path (leading slash ensured).
+func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
+	// If path/url set in context, return it.
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
-		return pathInContext
+		trimmed := strings.TrimSpace(pathInContext)
+		if u, err := url.Parse(trimmed); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			return trimmed, true
+		}
+		return trimmed, false
 	}
-	// If path override set in custom provider config, return it
+
+	// If path override set in custom provider config, return it.
 	if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
-			pathOverride := strings.TrimSpace(raw)
-			if pathOverride == "" {
-				return defaultPath
+			override := strings.TrimSpace(raw)
+			if override == "" {
+				return defaultPath, false
 			}
-			if !strings.HasPrefix(pathOverride, "/") {
-				pathOverride = "/" + pathOverride
+
+			// Treat absolute URLs with scheme+host as full URLs.
+			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+				return override, true
 			}
-			return pathOverride
+
+			// Otherwise treat as a path override (ensure leading slash).
+			if !strings.HasPrefix(override, "/") {
+				override = "/" + override
+			}
+			return override, false
 		}
 	}
-	// Return default path
-	return defaultPath
+
+	// Return default path.
+	return defaultPath, false
 }
 
 type RequestBodyGetter interface {

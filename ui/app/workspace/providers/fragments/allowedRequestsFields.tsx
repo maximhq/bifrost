@@ -134,8 +134,11 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 											</PopoverTrigger>
 											<PopoverContent className="w-80" align="end" onOpenAutoFocus={(e) => e.preventDefault()}>
 												<div className="space-y-2">
-													<h4 className="text-sm font-medium">Custom Path</h4>
-													<p className="text-muted-foreground text-xs">Override the default endpoint path</p>
+													<h4 className="text-sm font-medium">Custom Path or URL</h4>
+													<p className="text-muted-foreground text-xs">
+														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass
+														base_url
+													</p>
 													<Input placeholder={placeholder} {...pathField} value={pathField.value || ""} className="h-9" />
 												</div>
 											</PopoverContent>
@@ -175,7 +178,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 				<div className="text-sm font-medium">Allowed Request Types</div>
 				<p className="text-muted-foreground text-xs">
 					Select which request types this custom provider can handle.{" "}
-					{!isPathOverrideDisabled ? "Click the settings icon to customize endpoint paths." : ""}
+					{!isPathOverrideDisabled ? "Click the settings icon to customize endpoint paths or use full URLs." : ""}
 				</p>
 			</div>
 
