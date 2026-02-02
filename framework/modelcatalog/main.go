@@ -37,7 +37,8 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	modelPool map[schemas.ModelProvider][]string
+	modelPool      map[schemas.ModelProvider][]string
+	baseModelIndex map[string]string // model string → canonical base model name
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -49,6 +50,8 @@ type ModelCatalog struct {
 
 // PricingEntry represents a single model's pricing information
 type PricingEntry struct {
+	// Base model name (pre-computed canonical name, e.g., "gpt-4o" for "gpt-4o-2024-08-06")
+	BaseModel string `json:"base_model,omitempty"`
 	// Basic pricing
 	InputCostPerToken  float64 `json:"input_cost_per_token"`
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
@@ -110,6 +113,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		modelPool:              make(map[schemas.ModelProvider][]string),
+		baseModelIndex:         make(map[string]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -271,6 +275,24 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	return result
 }
 
+// GetDistinctBaseModelNames returns all unique base model names from the catalog (thread-safe).
+// This is used for governance model selection when no specific provider is chosen.
+func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, baseName := range mc.baseModelIndex {
+		seen[baseName] = true
+	}
+
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+	return result
+}
+
 // GetProvidersForModel returns all providers for a given model (thread-safe)
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
 	mc.mu.RLock()
@@ -405,6 +427,54 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	return false
 }
 
+// GetBaseModelName returns the canonical base model name for a given model string.
+// It uses the pre-computed base_model from the pricing catalog when available,
+// falling back to algorithmic date/version stripping for models not in the catalog.
+//
+// Examples:
+//
+//	mc.GetBaseModelName("gpt-4o")                    // Returns: "gpt-4o"
+//	mc.GetBaseModelName("openai/gpt-4o")             // Returns: "gpt-4o"
+//	mc.GetBaseModelName("gpt-4o-2024-08-06")         // Returns: "gpt-4o" (algorithmic fallback)
+func (mc *ModelCatalog) GetBaseModelName(model string) string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	// Step 1: Direct lookup in base model index
+	if base, ok := mc.baseModelIndex[model]; ok {
+		return base
+	}
+
+	// Step 2: Strip provider prefix and try again
+	_, baseName := schemas.ParseModelString(model, "")
+	if baseName != model {
+		if base, ok := mc.baseModelIndex[baseName]; ok {
+			return base
+		}
+	}
+
+	// Step 3: Fallback to algorithmic date/version stripping
+	// (for models not in the catalog, e.g., user-configured custom models)
+	return schemas.BaseModelName(baseName)
+}
+
+// IsSameModel checks if two model strings refer to the same underlying model.
+// It compares the canonical base model names derived from the pricing catalog
+// (or algorithmic fallback for models not in the catalog).
+//
+// Examples:
+//
+//	mc.IsSameModel("gpt-4o", "gpt-4o")                            // true (direct match)
+//	mc.IsSameModel("openai/gpt-4o", "gpt-4o")                     // true (same base model)
+//	mc.IsSameModel("gpt-4o", "claude-3-5-sonnet")                  // false (different models)
+//	mc.IsSameModel("openai/gpt-4o", "anthropic/claude-3-5-sonnet") // false
+func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
+	if model1 == model2 {
+		return true
+	}
+	return mc.GetBaseModelName(model1) == mc.GetBaseModelName(model2)
+}
+
 // AddModelDataToPool adds model data to the model pool.
 func (mc *ModelCatalog) AddModelDataToPool(modelData *schemas.BifrostListModelsResponse) {
 	if modelData == nil {
@@ -494,8 +564,9 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	// Clear existing model pool
+	// Clear existing model pool and base model index
 	mc.modelPool = make(map[schemas.ModelProvider][]string)
+	mc.baseModelIndex = make(map[string]string)
 
 	// Map to track unique models per provider
 	providerModels := make(map[schemas.ModelProvider]map[string]bool)
@@ -512,6 +583,11 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 
 		// Add model to the provider's model set (using map for deduplication)
 		providerModels[normalizedProvider][pricing.Model] = true
+
+		// Build base model index from pre-computed base_model field
+		if pricing.BaseModel != "" {
+			mc.baseModelIndex[pricing.Model] = pricing.BaseModel
+		}
 	}
 
 	// Convert sets to slices and assign to modelPool

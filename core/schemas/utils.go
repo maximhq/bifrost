@@ -31,21 +31,32 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// knownProviders is a set of all known provider strings for O(1) lookup.
+// Built once from StandardProviders at package init time.
+// Used by ParseModelString to distinguish real provider prefixes (e.g. "openai/gpt-4o")
+// from model namespace prefixes (e.g. "meta-llama/Llama-3.1-8B").
+var knownProviders = func() map[string]bool {
+	m := make(map[string]bool, len(StandardProviders))
+	for _, p := range StandardProviders {
+		m[string(p)] = true
+	}
+	return m
+}()
+
 // ParseModelString extracts provider and model from a model string.
 // For model strings like "anthropic/claude", it returns ("anthropic", "claude").
 // For model strings like "claude", it returns ("", "claude").
+// Only splits on "/" when the prefix is a known Bifrost provider, so model
+// namespaces like "meta-llama/Llama-3.1-8B" are preserved as-is.
 func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvider, string) {
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
-		if len(parts) == 2 {
-			extractedProvider := parts[0]
-			extractedModel := parts[1]
-
-			return ModelProvider(extractedProvider), extractedModel
+		if len(parts) == 2 && knownProviders[parts[0]] {
+			return ModelProvider(parts[0]), parts[1]
 		}
 	}
-	// No provider prefix found, return empty provider and the original model
+	// No known provider prefix found, return default provider and the original model
 	return defaultProvider, model
 }
 

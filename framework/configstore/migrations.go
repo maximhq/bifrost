@@ -176,6 +176,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBaseModelPricingColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3195,4 +3198,32 @@ func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) 
 		return fmt.Errorf("error while running mcp client config oauth migration: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddBaseModelPricingColumn adds the base_model column to the model_pricing table
+func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_base_model_pricing_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				if err := migrator.AddColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
+					return fmt.Errorf("failed to add column base_model: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				if err := migrator.DropColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
+					return fmt.Errorf("failed to drop column base_model: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
 }

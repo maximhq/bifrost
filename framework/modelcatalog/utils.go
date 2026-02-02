@@ -67,6 +67,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 
 	pricing := configstoreTables.TableModelPricing{
 		Model:              modelName,
+		BaseModel:          entry.BaseModel,
 		Provider:           provider,
 		InputCostPerToken:  entry.InputCostPerToken,
 		OutputCostPerToken: entry.OutputCostPerToken,
@@ -114,6 +115,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 // convertTableModelPricingToPricingData converts the TableModelPricing struct to a DataSheetPricingEntry struct
 func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
 	return &PricingEntry{
+		BaseModel:                                  pricing.BaseModel,
 		Provider:                                   pricing.Provider,
 		Mode:                                       pricing.Mode,
 		InputCostPerToken:                          pricing.InputCostPerToken,
