@@ -1,6 +1,11 @@
 package governance
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -8,6 +13,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -259,4 +265,102 @@ func buildProviderWithGovernance(name string, budget *configstoreTables.TableBud
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// Datasheet is fetched once per test binary run via sync.Once.
+var (
+	datasheetOnce      sync.Once
+	datasheetBaseIndex map[string]string
+	datasheetErr       error
+)
+
+// fetchDatasheetBaseIndex downloads the default datasheet and builds a
+// model → base_model index, mirroring ModelCatalog.populateModelPoolFromPricingData.
+func fetchDatasheetBaseIndex() {
+	client := &http.Client{Timeout: modelcatalog.DefaultPricingTimeout}
+	resp, err := client.Get(modelcatalog.DefaultPricingURL)
+	if err != nil {
+		datasheetErr = err
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		datasheetErr = fmt.Errorf("datasheet HTTP %d", resp.StatusCode)
+		return
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		datasheetErr = err
+		return
+	}
+
+	var entries map[string]modelcatalog.PricingEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		datasheetErr = err
+		return
+	}
+
+	index := make(map[string]string, len(entries))
+	for modelKey, entry := range entries {
+		if entry.BaseModel == "" {
+			continue
+		}
+		// Strip provider prefix (same as convertPricingDataToTableModelPricing)
+		modelName := modelKey
+		if strings.Contains(modelKey, "/") {
+			parts := strings.Split(modelKey, "/")
+			if len(parts) > 1 {
+				modelName = strings.Join(parts[1:], "/")
+			}
+		}
+		index[modelName] = entry.BaseModel
+	}
+
+	datasheetBaseIndex = index
+}
+
+// mockModelMatcher implements ModelMatcher for testing.
+// It fetches the default datasheet to build a base model index,
+// matching the production ModelCatalog.GetBaseModelName behavior:
+// 1. Direct lookup in base model index
+// 2. Strip provider prefix and retry lookup
+// 3. Fallback to algorithmic date/version stripping
+type mockModelMatcher struct {
+	baseModelIndex map[string]string
+}
+
+func (m *mockModelMatcher) GetBaseModelName(model string) string {
+	// Step 1: Direct lookup in base model index
+	if base, ok := m.baseModelIndex[model]; ok {
+		return base
+	}
+
+	// Step 2: Strip provider prefix and try again
+	_, baseName := schemas.ParseModelString(model, "")
+	if baseName != model {
+		if base, ok := m.baseModelIndex[baseName]; ok {
+			return base
+		}
+	}
+
+	// Step 3: Fallback to algorithmic date/version stripping
+	return schemas.BaseModelName(baseName)
+}
+
+func (m *mockModelMatcher) IsSameModel(model1, model2 string) bool {
+	if model1 == model2 {
+		return true
+	}
+	return m.GetBaseModelName(model1) == m.GetBaseModelName(model2)
+}
+
+func newMockModelMatcher(t *testing.T) ModelMatcher {
+	t.Helper()
+	datasheetOnce.Do(fetchDatasheetBaseIndex)
+	if datasheetErr != nil {
+		t.Skipf("skipping: failed to fetch datasheet for mock model matcher: %v", datasheetErr)
+	}
+	return &mockModelMatcher{baseModelIndex: datasheetBaseIndex}
 }

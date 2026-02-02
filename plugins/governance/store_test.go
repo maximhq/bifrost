@@ -22,7 +22,7 @@ func TestGovernanceStore_GetVirtualKey(t *testing.T) {
 			*buildVirtualKey("vk1", "sk-bf-test1", "Test VK 1", true),
 			*buildVirtualKey("vk2", "sk-bf-test2", "Test VK 2", false),
 		},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -71,7 +71,7 @@ func TestGovernanceStore_ConcurrentReads(t *testing.T) {
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Launch 100 concurrent readers
@@ -109,7 +109,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Retrieve VK with budget
@@ -149,7 +149,7 @@ func TestGovernanceStore_CheckBudget_SingleBudget(t *testing.T) {
 			testStore, _ := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*testVK},
 				Budgets:     []configstoreTables.TableBudget{*testBudget},
-			})
+			}, nil)
 
 			testVK, _ = testStore.GetVirtualKey("sk-bf-test")
 			err := testStore.CheckBudget(context.Background(), testVK, &EvaluationRequest{Provider: schemas.OpenAI}, nil)
@@ -186,7 +186,7 @@ func TestGovernanceStore_CheckBudget_HierarchyValidation(t *testing.T) {
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	vk, _ = store.GetVirtualKey("sk-bf-test")
@@ -219,7 +219,7 @@ func TestGovernanceStore_UpdateRateLimitUsage_TokensAndRequests(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Test updating tokens
@@ -272,7 +272,7 @@ func TestGovernanceStore_ResetExpiredRateLimits(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Reset expired rate limits
@@ -307,7 +307,7 @@ func TestGovernanceStore_ResetExpiredBudgets(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Reset expired budgets
@@ -335,7 +335,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Budgets: budgets,
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	allBudgets := store.GetGovernanceData().Budgets
@@ -348,7 +348,7 @@ func TestGovernanceStore_GetAllBudgets(t *testing.T) {
 // TestGovernanceStore_RoutingRules_CreateAndRetrieve tests creating and retrieving routing rules
 func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	// Create a global routing rule
@@ -411,7 +411,7 @@ func TestGovernanceStore_RoutingRules_CreateAndRetrieve(t *testing.T) {
 // TestGovernanceStore_RoutingRules_PriorityOrdering tests that rules are sorted by priority
 func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	// Create rules with different priorities
@@ -458,7 +458,7 @@ func TestGovernanceStore_RoutingRules_PriorityOrdering(t *testing.T) {
 // TestGovernanceStore_RoutingRules_DisabledRulesFiltered tests that disabled rules are filtered out
 func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	enabledRule := &configstoreTables.TableRoutingRule{
@@ -491,7 +491,7 @@ func TestGovernanceStore_RoutingRules_DisabledRulesFiltered(t *testing.T) {
 // TestGovernanceStore_RoutingRules_DeleteRule tests deleting a routing rule
 func TestGovernanceStore_RoutingRules_DeleteRule(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -521,7 +521,7 @@ func TestGovernanceStore_RoutingRules_DeleteRule(t *testing.T) {
 // TestGovernanceStore_RateLimitStatus tests rate limit status calculation
 func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	// Create a rate limit with 1000 token limit
@@ -558,7 +558,7 @@ func TestGovernanceStore_RateLimitStatus(t *testing.T) {
 // TestGovernanceStore_BudgetStatus tests budget status calculation
 func TestGovernanceStore_BudgetStatus(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	budgetID := "provider:openai:budget"
@@ -593,7 +593,7 @@ func TestGovernanceStore_BudgetStatus(t *testing.T) {
 // TestGovernanceStore_RoutingRules_MultipleScopes tests rules with multiple scopes
 func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	customerID := "cust-123"
@@ -640,7 +640,7 @@ func TestGovernanceStore_RoutingRules_MultipleScopes(t *testing.T) {
 // TestCompileAndCacheProgram tests CEL program compilation and caching
 func TestCompileAndCacheProgram(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -668,7 +668,7 @@ func TestCompileAndCacheProgram(t *testing.T) {
 // TestCompileAndCacheProgram_InvalidExpression tests error handling for invalid CEL
 func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -690,7 +690,7 @@ func TestCompileAndCacheProgram_InvalidExpression(t *testing.T) {
 // TestCompileAndCacheProgram_CacheInvalidation tests cache invalidation on rule update
 func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -721,7 +721,7 @@ func TestCompileAndCacheProgram_CacheInvalidation(t *testing.T) {
 // TestCompileAndCacheProgram_CacheInvalidationOnDelete tests cache invalidation on rule deletion
 func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{
@@ -747,7 +747,7 @@ func TestCompileAndCacheProgram_CacheInvalidationOnDelete(t *testing.T) {
 // TestCompileAndCacheProgram_EmptyExpression tests compilation of empty CEL expression (defaults to "true")
 func TestCompileAndCacheProgram_EmptyExpression(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	rule := &configstoreTables.TableRoutingRule{

@@ -22,7 +22,7 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -57,7 +57,7 @@ func TestUsageTracker_UpdateUsage_FailedRequest(t *testing.T) {
 func TestUsageTracker_UpdateUsage_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -91,7 +91,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -154,7 +154,7 @@ func TestUsageTracker_UpdateUsage_StreamingOptimization(t *testing.T) {
 // TestUsageTracker_Cleanup tests cleanup of the usage tracker
 func TestUsageTracker_Cleanup(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)

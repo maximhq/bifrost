@@ -128,6 +128,7 @@ func Init(
 	modelCatalog *modelcatalog.ModelCatalog,
 	mcpCatalog *mcpcatalog.MCPCatalog,
 	inMemoryStore InMemoryStore,
+	eventBroadcaster schemas.EventBroadcaster,
 ) (*GovernancePlugin, error) {
 	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
@@ -145,10 +146,11 @@ func Init(
 		isVkMandatory = config.IsVkMandatory
 	}
 
-	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig)
+	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize governance store: %w", err)
 	}
+	governanceStore.eventBroadcaster = eventBroadcaster
 	// Initialize components in dependency order with fixed, optimal settings
 	// Resolver (pure decision engine for hierarchical governance, depends only on store)
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
@@ -230,6 +232,7 @@ func InitFromStore(
 	modelCatalog *modelcatalog.ModelCatalog,
 	mcpCatalog *mcpcatalog.MCPCatalog,
 	inMemoryStore InMemoryStore,
+	eventBroadcaster schemas.EventBroadcaster,
 ) (*GovernancePlugin, error) {
 	if configStore == nil {
 		logger.Warn("governance plugin requires config store to persist data, running in memory only mode")
@@ -247,6 +250,9 @@ func InitFromStore(
 	var isVkMandatory *bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
+	}
+	if localStore, ok := governanceStore.(*LocalGovernanceStore); ok {
+		localStore.eventBroadcaster = eventBroadcaster
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -299,10 +305,10 @@ func (p *GovernancePlugin) GetName() string {
 // Optimized to skip unnecessary operations: only unmarshals/marshals when needed
 func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	virtualKeyValue := parseVirtualKeyFromHTTPRequest(req)
-	// hasRoutingRules := p.store.HasRoutingRules(ctx)
+	hasRoutingRules := p.store.HasRoutingRules(ctx)
 
 	// If no virtual key and no routing rules configured, skip all processing
-	if virtualKeyValue == nil { // && !hasRoutingRules {
+	if virtualKeyValue == nil && !hasRoutingRules {
 		return nil, nil
 	}
 
@@ -347,18 +353,18 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	}
 
 	// Apply routing rules only if we have rules or matched decision
-	// var routingDecision *RoutingDecision
-	// if hasRoutingRules {
-	// 	var err error
-	// 	payload, routingDecision, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	// Mark for marshal if a routing rule matched
-	// 	if routingDecision != nil {
-	// 		needsMarshal = true
-	// 	}
-	// }
+	var routingDecision *RoutingDecision
+	if hasRoutingRules {
+		var err error
+		payload, routingDecision, err = p.applyRoutingRules(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+		// Mark for marshal if a routing rule matched
+		if routingDecision != nil {
+			needsMarshal = true
+		}
+	}
 
 	// Only marshal if something changed (VK processing or routing decision matched)
 	if needsMarshal {
@@ -712,27 +718,24 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
 	// Check if virtual key is mandatory
-	if evaluationRequest.VirtualKey == "" {
-		if p.isVkMandatory != nil && *p.isVkMandatory {
-			return nil, &schemas.BifrostError{
-				Type:       bifrost.Ptr("virtual_key_required"),
-				StatusCode: bifrost.Ptr(401),
-				Error: &schemas.ErrorField{
-					Message: "virtual key is missing in headers and is mandatory.",
-				},
-			}
+	if evaluationRequest.VirtualKey == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+		return nil, &schemas.BifrostError{
+			Type:       bifrost.Ptr("virtual_key_required"),
+			StatusCode: bifrost.Ptr(401),
+			Error: &schemas.ErrorField{
+				Message: "virtual key is missing in headers and is mandatory.",
+			},
 		}
-		return nil, nil // No virtual key and not mandatory, allow request
 	}
 
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
-	// result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
+	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 
 	// If model/provider checks passed and virtual key exists, evaluate virtual key checks
 	// This will overwrite the result with virtual key-specific decision
-	// if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-	result := p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
-	// }
+	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
+		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+	}
 	// If model/provider checks failed, skip virtual key evaluation and proceed to final decision handling
 
 	// Mark request as rejected in context if not allowed
@@ -837,11 +840,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
-
-	// Skip if no virtual key
-	if virtualKey == "" {
-		return result, err, nil
-	}
 
 	// Extract request type, provider, and model
 	requestType, provider, model := bifrost.GetResponseFields(result, err)

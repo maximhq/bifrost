@@ -80,17 +80,21 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-	// 	t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
-	// }
+	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
+	if update.Provider != "" && update.Model != "" {
+		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+		}
+	}
 
 	// 2. Update budget usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	// if shouldUpdateBudget && update.Cost > 0 {
-	// 	if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
-	// 		t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
-	// 	}
-	// }
+	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
+	if update.Provider != "" && update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
+		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
+			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+		}
+	}
 
 	// 3. Now handle virtual key-level updates (if virtual key exists)
 	if update.VirtualKey == "" {

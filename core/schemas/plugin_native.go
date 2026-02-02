@@ -11,6 +11,11 @@ import (
 // Used internally for CORS, Auth, Tracing middleware. Plugins use HTTPTransportIntercept instead.
 type BifrostHTTPMiddleware func(next fasthttp.RequestHandler) fasthttp.RequestHandler
 
+// EventBroadcaster is a generic callback for broadcasting typed events to connected clients (e.g., via WebSocket).
+// Any plugin or subsystem can use this to push real-time updates to the frontend.
+// eventType identifies the message (e.g., "governance_update"), data is the JSON-serializable payload.
+type EventBroadcaster func(eventType string, data interface{})
+
 // LLMPluginShortCircuit represents a plugin's decision to short-circuit the normal flow.
 // It can contain either a response (success short-circuit), a stream (streaming short-circuit), or an error (error short-circuit).
 type LLMPluginShortCircuit struct {

@@ -20,7 +20,7 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -35,7 +35,7 @@ func TestBudgetResolver_EvaluateRequest_AllowedRequest(t *testing.T) {
 // TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound tests missing VK
 func TestBudgetResolver_EvaluateRequest_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -53,7 +53,7 @@ func TestBudgetResolver_EvaluateRequest_VirtualKeyBlocked(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -76,7 +76,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderBlocked(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -108,7 +108,7 @@ func TestBudgetResolver_EvaluateRequest_ModelBlocked(t *testing.T) {
 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -131,7 +131,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_TokenLimit(t *testing.
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -154,7 +154,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExceeded_RequestLimit(t *testin
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -187,7 +187,7 @@ func TestBudgetResolver_EvaluateRequest_RateLimitExpired(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Reset expired rate limits (simulating ticker behavior)
@@ -214,7 +214,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -241,7 +241,7 @@ func TestBudgetResolver_EvaluateRequest_BudgetExpired(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -275,7 +275,7 @@ func TestBudgetResolver_EvaluateRequest_MultiLevelBudgetHierarchy(t *testing.T) 
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -309,7 +309,7 @@ func TestBudgetResolver_EvaluateRequest_ProviderLevelRateLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*providerRL},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -332,7 +332,7 @@ func TestBudgetResolver_CheckRateLimits_BothExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -347,7 +347,7 @@ func TestBudgetResolver_CheckRateLimits_BothExceeded(t *testing.T) {
 // TestBudgetResolver_IsProviderAllowed tests provider filtering logic
 func TestBudgetResolver_IsProviderAllowed(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -395,7 +395,7 @@ func TestBudgetResolver_IsProviderAllowed(t *testing.T) {
 // TestBudgetResolver_IsModelAllowed tests model filtering logic
 func TestBudgetResolver_IsModelAllowed(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -470,7 +470,7 @@ func TestBudgetResolver_ContextPopulation(t *testing.T) {
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)

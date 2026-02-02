@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -17,7 +18,7 @@ import (
 
 func TestStore_CheckProviderBudget_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	err = store.CheckProviderBudget(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil)
@@ -29,7 +30,7 @@ func TestStore_CheckProviderBudget_NoBudget(t *testing.T) {
 	provider := buildProviderWithGovernance("openai", nil, nil)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err = store.CheckProviderBudget(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil)
@@ -43,7 +44,7 @@ func TestStore_CheckProviderBudget_WithinLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err = store.CheckProviderBudget(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil)
@@ -57,7 +58,7 @@ func TestStore_CheckProviderBudget_Exceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err = store.CheckProviderBudget(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil)
@@ -72,7 +73,7 @@ func TestStore_CheckProviderBudget_WithBaseline(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// With baseline that would exceed limit
@@ -88,7 +89,7 @@ func TestStore_CheckProviderBudget_WithBaseline(t *testing.T) {
 
 func TestStore_CheckProviderRateLimit_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -101,7 +102,7 @@ func TestStore_CheckProviderRateLimit_NoRateLimit(t *testing.T) {
 	provider := buildProviderWithGovernance("openai", nil, nil)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -116,7 +117,7 @@ func TestStore_CheckProviderRateLimit_TokenLimitExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -132,7 +133,7 @@ func TestStore_CheckProviderRateLimit_RequestLimitExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -148,7 +149,7 @@ func TestStore_CheckProviderRateLimit_BothLimitsExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -164,7 +165,7 @@ func TestStore_CheckProviderRateLimit_WithinLimits(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err, decision := store.CheckProviderRateLimit(context.Background(), &EvaluationRequest{Provider: schemas.OpenAI}, nil, nil)
@@ -178,7 +179,7 @@ func TestStore_CheckProviderRateLimit_WithinLimits(t *testing.T) {
 
 func TestStore_CheckModelBudget_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -193,7 +194,7 @@ func TestStore_CheckModelBudget_ModelOnly_WithinLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -208,7 +209,7 @@ func TestStore_CheckModelBudget_ModelOnly_Exceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -225,7 +226,7 @@ func TestStore_CheckModelBudget_ModelWithProvider_WithinLimit(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -241,7 +242,7 @@ func TestStore_CheckModelBudget_ModelWithProvider_Exceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -262,7 +263,7 @@ func TestStore_CheckModelBudget_BothModelAndModelProvider_ChecksBoth(t *testing.
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		Budgets:      []configstoreTables.TableBudget{*budget1, *budget2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -280,7 +281,7 @@ func TestStore_CheckModelBudget_ProviderSpecific_DifferentProvider_Passes(t *tes
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Request with Azure (different provider) for same model should pass
@@ -295,7 +296,7 @@ func TestStore_CheckModelBudget_ProviderSpecific_DifferentProvider_Passes(t *tes
 
 func TestStore_CheckModelRateLimit_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -311,7 +312,7 @@ func TestStore_CheckModelRateLimit_ModelOnly_TokenLimitExceeded(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -328,7 +329,7 @@ func TestStore_CheckModelRateLimit_ModelOnly_RequestLimitExceeded(t *testing.T) 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -346,7 +347,7 @@ func TestStore_CheckModelRateLimit_ModelWithProvider_WithinLimits(t *testing.T) 
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -367,7 +368,7 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth(t *testi
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -389,7 +390,7 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth_RequestL
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -408,7 +409,7 @@ func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes(t *
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Request with Azure (different provider) for same model should pass
@@ -427,7 +428,7 @@ func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes_Req
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Request with Azure (different provider) for same model should pass
@@ -443,7 +444,7 @@ func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes_Req
 
 func TestStore_UpdateProviderBudgetUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
@@ -457,7 +458,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "", schemas.OpenAI, 10.0)
@@ -483,7 +484,7 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 
 func TestStore_UpdateProviderRateLimitUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 1000, true, true)
@@ -497,7 +498,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "", schemas.OpenAI, 5000, true, false)
@@ -526,7 +527,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	// Update requests 500 times
@@ -559,7 +560,7 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 
 func TestStore_UpdateModelBudgetUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -574,7 +575,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -607,7 +608,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		Budgets:      []configstoreTables.TableBudget{*budget1, *budget2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -635,7 +636,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 
 func TestStore_UpdateModelRateLimitUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -650,7 +651,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -685,7 +686,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -715,7 +716,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -755,7 +756,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -789,7 +790,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 
 func TestResolver_EvaluateModelAndProviderRequest_NoConfigs(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -806,7 +807,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetExceeded(t *test
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -824,7 +825,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitExceeded(t *t
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -842,7 +843,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelBudgetExceeded(t *testing
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -860,7 +861,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded(t *test
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -878,7 +879,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelRateLimitExceeded_Request
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -901,7 +902,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderBudgetThenModelBudget(
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -925,7 +926,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -949,7 +950,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderRateLimitThenModelRate
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -976,7 +977,7 @@ func TestResolver_EvaluateModelAndProviderRequest_AllChecksPass(t *testing.T) {
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -994,7 +995,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderOnly_NoModel(t *testin
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -1012,7 +1013,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ModelOnly_NoProvider(t *testin
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -1032,7 +1033,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificBudget_Differe
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -1052,7 +1053,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -1072,7 +1073,7 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-	})
+	}, nil)
 	require.NoError(t, err)
 
 	resolver := NewBudgetResolver(store, nil, logger)
@@ -1087,850 +1088,1012 @@ func TestResolver_EvaluateModelAndProviderRequest_ProviderSpecificRateLimit_Diff
 // End-to-End Tests - PreLLMHook Integration
 // ============================================================================
 
-// func TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
-// 	provider := buildProviderWithGovernance("openai", budget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers: []configstoreTables.TableProvider{*provider},
-// 		Budgets:   []configstoreTables.TableBudget{*budget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
-// }
-
-// func TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
-// 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers:  []configstoreTables.TableProvider{*provider},
-// 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when provider rate limit is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
-// }
-
-// func TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		Budgets:      []configstoreTables.TableBudget{*budget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model budget is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
-// }
-
-// func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
-// }
-
-// func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit (request limit) is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
-// }
-
-// func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Provider budget and rate limit within limits
-// 	providerBudget := buildBudget("budget1", 100.0, "1h")
-// 	providerRateLimit := buildRateLimit("rl1", 10000, 1000)
-// 	provider := buildProviderWithGovernance("openai", providerBudget, providerRateLimit)
-// 	// Model budget and rate limit within limits
-// 	modelBudget := buildBudget("budget2", 200.0, "1h")
-// 	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, modelRateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers:    []configstoreTables.TableProvider{*provider},
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.Nil(t, shortCircuit, "Should not short circuit when all checks pass")
-// 	assert.NotNil(t, result)
-// }
-
-// func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Provider budget exceeded
-// 	providerBudget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h")
-// 	provider := buildProviderWithGovernance("openai", providerBudget, nil)
-// 	// Model budget within limit
-// 	modelBudget := buildBudget("budget2", 200.0, "1h")
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers:    []configstoreTables.TableProvider{*provider},
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	// Should fail at provider level (checked first)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
-// }
-
-// func TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// OpenAI GPT-4O has budget (exceeded)
-// 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
-// 	providerStr := "openai"
-// 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		Budgets:      []configstoreTables.TableBudget{*budget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.Azure, // Different provider
-// 			Model:    "gpt-4o",      // Same model
-// 		},
-// 	}
-
-// 	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
-// 	assert.NotNil(t, result)
-// }
-
-// func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// OpenAI GPT-4O has rate limit (exceeded)
-// 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
-// 	providerStr := "openai"
-// 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.Azure, // Different provider
-// 			Model:    "gpt-4o",      // Same model
-// 		},
-// 	}
-
-// 	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
-// 	assert.NotNil(t, result)
-// }
-
-// func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// OpenAI GPT-4O has rate limit (request limit exceeded)
-// 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
-// 	providerStr := "openai"
-// 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.Azure, // Different provider
-// 			Model:    "gpt-4o",      // Same model
-// 		},
-// 	}
-
-// 	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used (request limit)")
-// 	assert.NotNil(t, result)
-// }
-
-// // ============================================================================
-// // End-to-End Tests - PreLLMHook Integration with Virtual Key Fallback
-// // ============================================================================
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key budget exceeded
-// 	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
-// 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 		Budgets:     []configstoreTables.TableBudget{*vkBudget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key rate limit exceeded (token)
-// 	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 10000, 1000, 0) // Tokens at max
-// 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK token rate limit is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key rate limit exceeded (request)
-// 	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 0, 1000, 1000) // Requests at max
-// 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK request rate limit is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key checks also pass
-// 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.Nil(t, shortCircuit, "Should not short circuit when both model/provider and VK checks pass")
-// 	assert.NotNil(t, result)
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key not found
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-nonexistent")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is not found")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "not found")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key is inactive
-// 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", false) // Inactive
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is inactive")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "inactive")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key blocks OpenAI provider
-// 	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
-// 		buildProviderConfig("anthropic", []string{"claude-3-sonnet"}), // Only Anthropic allowed
-// 	}
-// 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI, // Not allowed by VK
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks provider")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (no limits)
-// 	// Virtual key blocks specific model
-// 	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
-// 		buildProviderConfig("openai", []string{"gpt-4", "gpt-4-turbo"}), // Only these models allowed
-// 	}
-// 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-3.5-turbo", // Not in allowed list
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks model")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
-// }
-
-// func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Model/provider checks pass (within limits)
-// 	providerBudget := buildBudget("provider-budget1", 200.0, "1h")
-// 	provider := buildProviderWithGovernance("openai", providerBudget, nil)
-// 	modelBudget := buildBudget("model-budget1", 150.0, "1h")
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
-// 	// Virtual key budget exceeded
-// 	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
-// 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers:    []configstoreTables.TableProvider{*provider},
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
-// 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget, *vkBudget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
-// 	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
-// 	req := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
-// 	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
-// 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
-// }
-
-// // ============================================================================
-// // End-to-End Tests - PostHook Integration (Usage Tracking)
-// // ============================================================================
-
-// func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Set budget with initial usage close to limit to test the flow
-// 	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
-// 	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
-// 	provider := buildProviderWithGovernance("openai", budget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers: []configstoreTables.TableProvider{*provider},
-// 		Budgets:   []configstoreTables.TableBudget{*budget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	// First request: PreLLMHook should pass, PostHook updates usage
-// 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
-// 	req1 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
-// 	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
-
-// 	result1 := &schemas.BifrostResponse{
-// 		ChatResponse: &schemas.BifrostChatResponse{
-// 			Model: "gpt-4",
-// 			Usage: &schemas.BifrostLLMUsage{
-// 				PromptTokens:     1000,
-// 				CompletionTokens: 500,
-// 				TotalTokens:      1500,
-// 			},
-// 			ExtraFields: schemas.BifrostResponseExtraFields{
-// 				RequestType:    schemas.ChatCompletionRequest,
-// 				Provider:       schemas.OpenAI,
-// 				ModelRequested: "gpt-4",
-// 			},
-// 		},
-// 	}
-
-// 	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
-// 	assert.NoError(t, err, "Should successfully process PostHook for provider budget usage update")
-
-// 	// Wait for async processing to complete
-// 	time.Sleep(200 * time.Millisecond)
-
-// 	// Second request: Verify the flow works (budget check should still pass since cost is 0 without model catalog)
-// 	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
-// 	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
-// 	req2 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
-// 	// Without model catalog, cost is 0, so budget won't be exceeded
-// 	// This test verifies the PostHook -> PreLLMHook flow works correctly
-// 	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
-// }
-
-// func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Set rate limit: 10000 tokens, 1000 requests
-// 	// First request: 10000 tokens, 1 request (brings usage to exactly the limit)
-// 	// Second request: Should fail because we're already at the limit
-// 	rateLimit := buildRateLimit("rl1", 10000, 1000)
-// 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		Providers:  []configstoreTables.TableProvider{*provider},
-// 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	// First request: PreLLMHook should pass, PostHook updates usage to 10000
-// 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
-// 	req1 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
-// 	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
-
-// 	result1 := &schemas.BifrostResponse{
-// 		ChatResponse: &schemas.BifrostChatResponse{
-// 			Model: "gpt-4",
-// 			Usage: &schemas.BifrostLLMUsage{
-// 				PromptTokens:     6000,
-// 				CompletionTokens: 4000,
-// 				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
-// 			},
-// 			ExtraFields: schemas.BifrostResponseExtraFields{
-// 				RequestType:    schemas.ChatCompletionRequest,
-// 				Provider:       schemas.OpenAI,
-// 				ModelRequested: "gpt-4",
-// 			},
-// 		},
-// 	}
-
-// 	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
-// 	assert.NoError(t, err, "Should successfully process PostHook for provider rate limit usage update")
-
-// 	// Wait for async processing to complete
-// 	time.Sleep(200 * time.Millisecond)
-
-// 	// Second request: Should fail because we're already at the token limit (10000/10000)
-// 	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
-// 	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
-// 	req2 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
-// 	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
-// 	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
-// }
-
-// func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Set budget with initial usage close to limit to test the flow
-// 	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
-// 	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		Budgets:      []configstoreTables.TableBudget{*budget},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	// First request: PreLLMHook should pass, PostHook updates usage
-// 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
-// 	req1 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
-// 	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
-
-// 	result1 := &schemas.BifrostResponse{
-// 		ChatResponse: &schemas.BifrostChatResponse{
-// 			Model: "gpt-4",
-// 			Usage: &schemas.BifrostLLMUsage{
-// 				PromptTokens:     1000,
-// 				CompletionTokens: 500,
-// 				TotalTokens:      1500,
-// 			},
-// 			ExtraFields: schemas.BifrostResponseExtraFields{
-// 				RequestType:    schemas.ChatCompletionRequest,
-// 				Provider:       schemas.OpenAI,
-// 				ModelRequested: "gpt-4",
-// 			},
-// 		},
-// 	}
-
-// 	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
-// 	assert.NoError(t, err, "Should successfully process PostHook for model budget usage update")
-
-// 	// Wait for async processing to complete
-// 	time.Sleep(200 * time.Millisecond)
-
-// 	// Second request: Verify the flow works (budget check should still pass since cost is 0 without model catalog)
-// 	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
-// 	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
-// 	req2 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
-// 	// Without model catalog, cost is 0, so budget won't be exceeded
-// 	// This test verifies the PostHook -> PreLLMHook flow works correctly
-// 	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
-// }
-
-// func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
-// 	logger := NewMockLogger()
-// 	// Set rate limit: 10000 tokens, 1000 requests
-// 	// First request: 10000 tokens, 1 request (brings usage to exactly the limit)
-// 	// Second request: Should fail because we're already at the limit
-// 	rateLimit := buildRateLimit("rl1", 10000, 1000)
-// 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-// 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
-// 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
-// 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
-// 	})
-// 	require.NoError(t, err)
-
-// 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
-// 	require.NoError(t, err)
-
-// 	// First request: PreLLMHook should pass, PostHook updates usage to 10000
-// 	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
-// 	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
-// 	req1 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
-// 	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
-
-// 	result1 := &schemas.BifrostResponse{
-// 		ChatResponse: &schemas.BifrostChatResponse{
-// 			Model: "gpt-4",
-// 			Usage: &schemas.BifrostLLMUsage{
-// 				PromptTokens:     6000,
-// 				CompletionTokens: 4000,
-// 				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
-// 			},
-// 			ExtraFields: schemas.BifrostResponseExtraFields{
-// 				RequestType:    schemas.ChatCompletionRequest,
-// 				Provider:       schemas.OpenAI,
-// 				ModelRequested: "gpt-4",
-// 			},
-// 		},
-// 	}
-
-// 	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
-// 	assert.NoError(t, err, "Should successfully process PostHook for model rate limit usage update")
-
-// 	// Wait for async processing to complete
-// 	time.Sleep(200 * time.Millisecond)
-
-// 	// Second request: Should fail because we're already at the token limit (10000/10000)
-// 	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
-// 	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
-// 	req2 := &schemas.BifrostRequest{
-// 		RequestType: schemas.ChatCompletionRequest,
-// 		ChatRequest: &schemas.BifrostChatRequest{
-// 			Provider: schemas.OpenAI,
-// 			Model:    "gpt-4",
-// 		},
-// 	}
-
-// 	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
-// 	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
-// 	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
-// }
+func TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	provider := buildProviderWithGovernance("openai", budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers: []configstoreTables.TableProvider{*provider},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
+}
+
+func TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
+	provider := buildProviderWithGovernance("openai", nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:  []configstoreTables.TableProvider{*provider},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when provider rate limit is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
+}
+
+func TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model budget is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
+}
+
+func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
+}
+
+func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model rate limit (request limit) is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
+}
+
+func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Provider budget and rate limit within limits
+	providerBudget := buildBudget("budget1", 100.0, "1h")
+	providerRateLimit := buildRateLimit("rl1", 10000, 1000)
+	provider := buildProviderWithGovernance("openai", providerBudget, providerRateLimit)
+	// Model budget and rate limit within limits
+	modelBudget := buildBudget("budget2", 200.0, "1h")
+	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, modelRateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:    []configstoreTables.TableProvider{*provider},
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
+		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.Nil(t, shortCircuit, "Should not short circuit when all checks pass")
+	assert.NotNil(t, result)
+}
+
+func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Provider budget exceeded
+	providerBudget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h")
+	provider := buildProviderWithGovernance("openai", providerBudget, nil)
+	// Model budget within limit
+	modelBudget := buildBudget("budget2", 200.0, "1h")
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:    []configstoreTables.TableProvider{*provider},
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	// Should fail at provider level (checked first)
+	assert.NotNil(t, shortCircuit, "Should short circuit when provider budget is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
+}
+
+func TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// OpenAI GPT-4O has budget (exceeded)
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	providerStr := "openai"
+	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Azure, // Different provider
+			Model:    "gpt-4o",      // Same model
+		},
+	}
+
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
+	assert.NotNil(t, result)
+}
+
+func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// OpenAI GPT-4O has rate limit (exceeded)
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
+	providerStr := "openai"
+	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Azure, // Different provider
+			Model:    "gpt-4o",      // Same model
+		},
+	}
+
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used")
+	assert.NotNil(t, result)
+}
+
+func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit(t *testing.T) {
+	logger := NewMockLogger()
+	// OpenAI GPT-4O has rate limit (request limit exceeded)
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
+	providerStr := "openai"
+	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Azure, // Different provider
+			Model:    "gpt-4o",      // Same model
+		},
+	}
+
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.Nil(t, shortCircuit, "Should not short circuit when model config is provider-specific and different provider is used (request limit)")
+	assert.NotNil(t, result)
+}
+
+// ============================================================================
+// End-to-End Tests - PreLLMHook Integration with Virtual Key Fallback
+// ============================================================================
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key budget exceeded
+	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*vkBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key rate limit exceeded (token)
+	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 10000, 1000, 0) // Tokens at max
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK token rate limit is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key rate limit exceeded (request)
+	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 0, 1000, 1000) // Requests at max
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK request rate limit is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key checks also pass
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", true)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	result, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.Nil(t, shortCircuit, "Should not short circuit when both model/provider and VK checks pass")
+	assert.NotNil(t, result)
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key not found
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-nonexistent")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is not found")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "not found")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key is inactive
+	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", false) // Inactive
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK is inactive")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "inactive")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key blocks OpenAI provider
+	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("anthropic", []string{"claude-3-sonnet"}), // Only Anthropic allowed
+	}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, // Not allowed by VK
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks provider")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (no limits)
+	// Virtual key blocks specific model
+	providerConfigs := []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4", "gpt-4-turbo"}), // Only these models allowed
+	}
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-3.5-turbo", // Not in allowed list
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK blocks model")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
+}
+
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
+	logger := NewMockLogger()
+	// Model/provider checks pass (within limits)
+	providerBudget := buildBudget("provider-budget1", 200.0, "1h")
+	provider := buildProviderWithGovernance("openai", providerBudget, nil)
+	modelBudget := buildBudget("model-budget1", 150.0, "1h")
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
+	// Virtual key budget exceeded
+	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:    []configstoreTables.TableProvider{*provider},
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget, *vkBudget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
+	parentCtx = context.WithValue(parentCtx, schemas.BifrostContextKeyRequestID, "req-1")
+	ctx := schemas.NewBifrostContext(parentCtx, schemas.NoDeadline)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit, _ := plugin.PreLLMHook(ctx, req)
+	assert.NotNil(t, shortCircuit, "Should short circuit when model/provider pass but VK budget is exceeded")
+	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
+}
+
+// ============================================================================
+// End-to-End Tests - PostHook Integration (Usage Tracking)
+// ============================================================================
+
+func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Set budget with initial usage close to limit to test the flow
+	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
+	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
+	provider := buildProviderWithGovernance("openai", budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers: []configstoreTables.TableProvider{*provider},
+		Budgets:   []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// First request: PreLLMHook should pass, PostHook updates usage
+	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
+	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
+	req1 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
+
+	result1 := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     1000,
+				CompletionTokens: 500,
+				TotalTokens:      1500,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
+	assert.NoError(t, err, "Should successfully process PostHook for provider budget usage update")
+
+	// Wait for async processing to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Second request: Verify the flow works (budget check should still pass since cost is 0 without model catalog)
+	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	// Without model catalog, cost is 0, so budget won't be exceeded
+	// This test verifies the PostHook -> PreLLMHook flow works correctly
+	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
+}
+
+func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Set rate limit: 10000 tokens, 1000 requests
+	// First request: 10000 tokens, 1 request (brings usage to exactly the limit)
+	// Second request: Should fail because we're already at the limit
+	rateLimit := buildRateLimit("rl1", 10000, 1000)
+	provider := buildProviderWithGovernance("openai", nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Providers:  []configstoreTables.TableProvider{*provider},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// First request: PreLLMHook should pass, PostHook updates usage to 10000
+	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
+	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
+	req1 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
+
+	result1 := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     6000,
+				CompletionTokens: 4000,
+				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
+	assert.NoError(t, err, "Should successfully process PostHook for provider rate limit usage update")
+
+	// Wait for async processing to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Second request: Should fail because we're already at the token limit (10000/10000)
+	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
+	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
+}
+
+func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Set budget with initial usage close to limit to test the flow
+	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
+	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// First request: PreLLMHook should pass, PostHook updates usage
+	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
+	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
+	req1 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
+
+	result1 := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     1000,
+				CompletionTokens: 500,
+				TotalTokens:      1500,
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
+	assert.NoError(t, err, "Should successfully process PostHook for model budget usage update")
+
+	// Wait for async processing to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Second request: Verify the flow works (budget check should still pass since cost is 0 without model catalog)
+	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	// Without model catalog, cost is 0, so budget won't be exceeded
+	// This test verifies the PostHook -> PreLLMHook flow works correctly
+	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
+}
+
+func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
+	logger := NewMockLogger()
+	// Set rate limit: 10000 tokens, 1000 requests
+	// First request: 10000 tokens, 1 request (brings usage to exactly the limit)
+	// Second request: Should fail because we're already at the limit
+	rateLimit := buildRateLimit("rl1", 10000, 1000)
+	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil)
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	// First request: PreLLMHook should pass, PostHook updates usage to 10000
+	parentCtx1 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
+	ctx1 := schemas.NewBifrostContext(parentCtx1, schemas.NoDeadline)
+	req1 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit1, _ := plugin.PreLLMHook(ctx1, req1)
+	assert.Nil(t, shortCircuit1, "First request should pass PreLLMHook")
+
+	result1 := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Model: "gpt-4",
+			Usage: &schemas.BifrostLLMUsage{
+				PromptTokens:     6000,
+				CompletionTokens: 4000,
+				TotalTokens:      10000, // 10000 tokens used (exactly at limit)
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ChatCompletionRequest,
+				Provider:       schemas.OpenAI,
+				ModelRequested: "gpt-4",
+			},
+		},
+	}
+
+	_, _, err = plugin.PostLLMHook(ctx1, result1, nil)
+	assert.NoError(t, err, "Should successfully process PostHook for model rate limit usage update")
+
+	// Wait for async processing to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Second request: Should fail because we're already at the token limit (10000/10000)
+	parentCtx2 := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
+	ctx2 := schemas.NewBifrostContext(parentCtx2, schemas.NoDeadline)
+	req2 := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4",
+		},
+	}
+
+	_, shortCircuit2, _ := plugin.PreLLMHook(ctx2, req2)
+	assert.NotNil(t, shortCircuit2, "Second request should fail PreLLMHook due to token limit exceeded")
+	assert.Contains(t, shortCircuit2.Error.Error.Message, "token limit exceeded", "Error should indicate token limit exceeded")
+}
+
+// ============================================================================
+// Cross-Provider Model Matching Tests
+// ============================================================================
+
+// TestStore_CheckModelBudget_CrossProviderModelMatch tests that a model-only config
+// for "gpt-4o" is matched when the request uses "openai/gpt-4o" (OpenRouter-style prefix).
+func TestStore_CheckModelBudget_CrossProviderModelMatch(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, mc)
+	require.NoError(t, err)
+
+	// Request with provider-prefixed model name should match the "gpt-4o" config
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil)
+	assert.Error(t, err, "Should reject: openai/gpt-4o should match model-only config for gpt-4o")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestStore_CheckModelBudget_CrossProviderModelMatch_WithinLimit tests that the match works
+// and correctly allows requests within the budget.
+func TestStore_CheckModelBudget_CrossProviderModelMatch_WithinLimit(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudget("budget1", 100.0, "1h")
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, mc)
+	require.NoError(t, err)
+
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil)
+	assert.NoError(t, err, "Should allow: budget is within limit")
+}
+
+// TestStore_CheckModelRateLimit_CrossProviderModelMatch tests that a model-only rate limit config
+// for "gpt-4o" is matched when the request uses "openai/gpt-4o".
+func TestStore_CheckModelRateLimit_CrossProviderModelMatch(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Token limit at max
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, mc)
+	require.NoError(t, err)
+
+	errResult, decision := store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil, nil)
+	assert.Error(t, errResult, "Should reject: openai/gpt-4o should match model-only rate limit for gpt-4o")
+	assert.Contains(t, errResult.Error(), "token limit exceeded")
+	assert.NotEqual(t, DecisionAllow, decision)
+}
+
+// TestStore_UpdateModelBudgetUsage_CrossProviderModelMatch tests that usage for "openai/gpt-4o"
+// is correctly attributed to the model-only config for "gpt-4o".
+func TestStore_UpdateModelBudgetUsage_CrossProviderModelMatch(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudget("budget1", 100.0, "1h")
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, mc)
+	require.NoError(t, err)
+
+	// Update usage with prefixed model name
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 50.0)
+	assert.NoError(t, err, "Should successfully update budget usage via cross-provider match")
+
+	// Now exceed the budget
+	err = store.UpdateProviderAndModelBudgetUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 55.0)
+	assert.NoError(t, err)
+
+	// Budget should now be exceeded
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil)
+	assert.Error(t, err, "Budget should be exceeded after usage updates via cross-provider match")
+	assert.Contains(t, err.Error(), "budget exceeded")
+}
+
+// TestStore_UpdateModelRateLimitUsage_CrossProviderModelMatch tests that rate limit usage
+// for "openai/gpt-4o" is correctly attributed to the model-only config for "gpt-4o".
+func TestStore_UpdateModelRateLimitUsage_CrossProviderModelMatch(t *testing.T) {
+	logger := NewMockLogger()
+	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000, 0) // Low token limit
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
+	}, mc)
+	require.NoError(t, err)
+
+	// Update token usage with prefixed model name
+	err = store.UpdateProviderAndModelRateLimitUsageInMemory(context.Background(), "openai/gpt-4o", schemas.OpenRouter, 100, true, false)
+	assert.NoError(t, err, "Should successfully update rate limit via cross-provider match")
+
+	// Rate limit should now be exceeded
+	errResult, decision := store.CheckModelRateLimit(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil, nil)
+	assert.Error(t, errResult, "Token limit should be exceeded after usage update via cross-provider match")
+	assert.Contains(t, errResult.Error(), "token limit exceeded")
+	assert.NotEqual(t, DecisionAllow, decision)
+}
+
+// TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly tests that model+provider configs
+// (e.g., "gpt-4o:openai") use exact matching and do NOT fuzzy-match.
+func TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	providerStr := "openai"
+	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
+
+	mc := newMockModelMatcher(t)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, mc)
+	require.NoError(t, err)
+
+	// Request with the exact matching model+provider should be rejected (budget exceeded)
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "Exact model+provider match should apply budget")
+
+	// Request with a different provider should NOT match the provider-specific config
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenRouter}, nil)
+	assert.NoError(t, err, "Different provider should not match provider-specific config")
+}
+
+// TestStore_CheckModelBudget_NoCatalog_NoMatch tests that without a model catalog,
+// cross-provider matching does not happen (graceful degradation).
+func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
+	logger := NewMockLogger()
+	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
+	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
+
+	// No model catalog passed (nil)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
+		Budgets:      []configstoreTables.TableBudget{*budget},
+	}, nil)
+	require.NoError(t, err)
+
+	// Without catalog, "openai/gpt-4o" won't match "gpt-4o" config
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "openai/gpt-4o", Provider: schemas.OpenRouter}, nil)
+	assert.NoError(t, err, "Without model catalog, cross-provider matching should not happen")
+
+	// Direct match should still work
+	err = store.CheckModelBudget(context.Background(), &EvaluationRequest{Model: "gpt-4o", Provider: schemas.OpenAI}, nil)
+	assert.Error(t, err, "Direct match should still work without catalog")
+}
