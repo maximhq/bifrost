@@ -1,2 +1,3 @@
 - feat: add EventBroadcaster type for real-time event streaming to WebSocket clients
 - fix: model names with namespaces (e.g., `meta-llama/Llama-3.1-8B`) are now correctly preserved instead of being incorrectly split as provider-prefixed models
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage

@@ -253,7 +253,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	}
 
 	// Set usage information
-	bifrostResp.Usage = convertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 
 	return bifrostResp
 }
@@ -435,7 +435,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 
 	// Add usage information if this is the last chunk
 	if isLastChunk && response.UsageMetadata != nil {
-		streamResponse.Usage = convertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
+		streamResponse.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 	}
 
 	return streamResponse, nil, isLastChunk
@@ -487,7 +487,7 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 		Model:   response.ModelVersion,
 		Object:  objectType,
 		Choices: []schemas.BifrostResponseChoice{choice},
-		Usage:   convertGeminiUsageMetadataToChatUsage(response.UsageMetadata),
+		Usage:   ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata),
 	}
 
 	if !response.CreateTime.IsZero() {

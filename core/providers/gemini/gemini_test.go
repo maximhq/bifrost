@@ -1737,3 +1737,330 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata *gemini.GenerateContentResponseUsageMetadata
+		expected *schemas.BifrostLLMUsage
+	}{
+		{
+			name: "CompleteModalityBreakdown",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     6,
+				CandidatesTokenCount: 42,
+				TotalTokenCount:      48,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 6},
+					{Modality: gemini.ModalityAudio, TokenCount: 0},
+					{Modality: gemini.ModalityImage, TokenCount: 0},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 1},
+				},
+				ThoughtsTokenCount: 41,
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     6,
+				CompletionTokens: 42,
+				TotalTokens:      48,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens:  6,
+					AudioTokens: 0,
+					ImageTokens: 0,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					TextTokens:      1,
+					ReasoningTokens: 41,
+				},
+			},
+		},
+		{
+			name: "MultimodalInputWithCache",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        150,
+				CandidatesTokenCount:    50,
+				TotalTokenCount:         200,
+				CachedContentTokenCount: 100,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+					{Modality: gemini.ModalityImage, TokenCount: 100},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     150,
+				CompletionTokens: 50,
+				TotalTokens:      200,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens:   50,
+					ImageTokens:  100,
+					CachedTokens: 100,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					TextTokens: 50,
+				},
+			},
+		},
+		{
+			name: "AudioOutputGeneration",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     20,
+				CandidatesTokenCount: 80,
+				TotalTokenCount:      100,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 20},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityAudio, TokenCount: 80},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     20,
+				CompletionTokens: 80,
+				TotalTokens:      100,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens: 20,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					AudioTokens: 80,
+				},
+			},
+		},
+		{
+			name: "ImageOutputGeneration",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     30,
+				CandidatesTokenCount: 120,
+				TotalTokenCount:      150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 30},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityImage, TokenCount: 120},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     30,
+				CompletionTokens: 120,
+				TotalTokens:      150,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens: 30,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ImageTokens: func() *int { v := 120; return &v }(),
+				},
+			},
+		},
+		{
+			name: "BasicUsageNoDetails",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 20,
+				TotalTokenCount:      30,
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     10,
+				CompletionTokens: 20,
+				TotalTokens:      30,
+			},
+		},
+		{
+			name:     "NilMetadata",
+			metadata: nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ConvertGeminiUsageMetadataToChatUsage(tt.metadata)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.PromptTokens, result.PromptTokens)
+			assert.Equal(t, tt.expected.CompletionTokens, result.CompletionTokens)
+			assert.Equal(t, tt.expected.TotalTokens, result.TotalTokens)
+
+			// Check prompt token details
+			if tt.expected.PromptTokensDetails != nil {
+				require.NotNil(t, result.PromptTokensDetails)
+				assert.Equal(t, tt.expected.PromptTokensDetails.TextTokens, result.PromptTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.AudioTokens, result.PromptTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.ImageTokens, result.PromptTokensDetails.ImageTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.CachedTokens, result.PromptTokensDetails.CachedTokens)
+			} else {
+				assert.Nil(t, result.PromptTokensDetails)
+			}
+
+			// Check completion token details
+			if tt.expected.CompletionTokensDetails != nil {
+				require.NotNil(t, result.CompletionTokensDetails)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.TextTokens, result.CompletionTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.AudioTokens, result.CompletionTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.ReasoningTokens, result.CompletionTokensDetails.ReasoningTokens)
+
+				if tt.expected.CompletionTokensDetails.ImageTokens != nil {
+					require.NotNil(t, result.CompletionTokensDetails.ImageTokens)
+					assert.Equal(t, *tt.expected.CompletionTokensDetails.ImageTokens, *result.CompletionTokensDetails.ImageTokens)
+				} else {
+					assert.Nil(t, result.CompletionTokensDetails.ImageTokens)
+				}
+			} else {
+				assert.Nil(t, result.CompletionTokensDetails)
+			}
+		})
+	}
+}
+
+// TestConvertGeminiUsageMetadataToResponsesUsage tests the conversion of Gemini usage metadata to Bifrost responses usage
+func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata *gemini.GenerateContentResponseUsageMetadata
+		expected *schemas.ResponsesResponseUsage
+	}{
+		{
+			name: "CompleteModalityBreakdown",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     100,
+				CandidatesTokenCount: 50,
+				TotalTokenCount:      150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 60},
+					{Modality: gemini.ModalityAudio, TokenCount: 20},
+					{Modality: gemini.ModalityImage, TokenCount: 20},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 40},
+					{Modality: gemini.ModalityAudio, TokenCount: 10},
+				},
+				ThoughtsTokenCount: 5,
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  150,
+				InputTokens:  100,
+				OutputTokens: 50,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens:  60,
+					AudioTokens: 20,
+					ImageTokens: 20,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					TextTokens:      40,
+					AudioTokens:     10,
+					ReasoningTokens: 5,
+				},
+			},
+		},
+		{
+			name: "WithCachedTokens",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        200,
+				CandidatesTokenCount:    100,
+				TotalTokenCount:         300,
+				CachedContentTokenCount: 150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 200},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 100},
+				},
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  300,
+				InputTokens:  200,
+				OutputTokens: 100,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens:   200,
+					CachedTokens: 150,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					TextTokens: 100,
+				},
+			},
+		},
+		{
+			name: "AudioOnlyOutput",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     50,
+				CandidatesTokenCount: 200,
+				TotalTokenCount:      250,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityAudio, TokenCount: 200},
+				},
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  250,
+				InputTokens:  50,
+				OutputTokens: 200,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens: 50,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					AudioTokens: 200,
+				},
+			},
+		},
+		{
+			name: "BasicUsageNoDetails",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 20,
+				TotalTokenCount:      30,
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:         30,
+				InputTokens:         10,
+				OutputTokens:        20,
+				InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{},
+			},
+		},
+		{
+			name:     "NilMetadata",
+			metadata: nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ConvertGeminiUsageMetadataToResponsesUsage(tt.metadata)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.TotalTokens, result.TotalTokens)
+			assert.Equal(t, tt.expected.InputTokens, result.InputTokens)
+			assert.Equal(t, tt.expected.OutputTokens, result.OutputTokens)
+
+			// Check input token details
+			if tt.expected.InputTokensDetails != nil {
+				require.NotNil(t, result.InputTokensDetails)
+				assert.Equal(t, tt.expected.InputTokensDetails.TextTokens, result.InputTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.AudioTokens, result.InputTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.ImageTokens, result.InputTokensDetails.ImageTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.CachedTokens, result.InputTokensDetails.CachedTokens)
+			}
+
+			// Check output token details
+			if tt.expected.OutputTokensDetails != nil {
+				require.NotNil(t, result.OutputTokensDetails)
+				assert.Equal(t, tt.expected.OutputTokensDetails.TextTokens, result.OutputTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.OutputTokensDetails.AudioTokens, result.OutputTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.OutputTokensDetails.ReasoningTokens, result.OutputTokensDetails.ReasoningTokens)
+			}
+		})
+	}
+}

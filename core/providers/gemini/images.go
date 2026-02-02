@@ -333,9 +333,6 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 		Data:  []schemas.ImageData{},
 	}
 
-	// Extract usage metadata
-	inputTokens, outputTokens, totalTokens, _, _ := response.extractUsageMetadata()
-
 	// Process candidates to extract image data
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
@@ -359,12 +356,8 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 				}
 			}
 
-			// Set usage information
-			bifrostResp.Usage = &schemas.ImageUsage{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  totalTokens,
-			}
+			// Set usage information with modality details
+			bifrostResp.Usage = convertGeminiUsageMetadataToImageUsage(response.UsageMetadata)
 			// Only assign imageData when it has elements
 			if len(imageData) > 0 {
 				bifrostResp.Data = imageData
@@ -763,14 +756,8 @@ func ToGeminiImageGenerationResponse(ctx context.Context, bifrostResp *schemas.B
 		}
 	}
 
-	// Convert usage metadata
-	if bifrostResp.Usage != nil {
-		geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-			PromptTokenCount:     int32(bifrostResp.Usage.InputTokens),
-			CandidatesTokenCount: int32(bifrostResp.Usage.OutputTokens),
-			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
-		}
-	}
+	// Convert usage metadata with modality details
+	geminiResp.UsageMetadata = convertBifrostImageUsageToGeminiUsageMetadata(bifrostResp.Usage)
 
 	return geminiResp, nil
 }

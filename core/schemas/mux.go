@@ -895,6 +895,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			TextTokens:               ru.OutputTokensDetails.TextTokens,
 			AcceptedPredictionTokens: ru.OutputTokensDetails.AcceptedPredictionTokens,
 			AudioTokens:              ru.OutputTokensDetails.AudioTokens,
+			ImageTokens:              ru.OutputTokensDetails.ImageTokens,
 			ReasoningTokens:          ru.OutputTokensDetails.ReasoningTokens,
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,

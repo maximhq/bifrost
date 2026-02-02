@@ -1780,7 +1780,7 @@ type GenerateContentResponsePromptFeedback struct {
 // ModalityTokenCount represents token counting info for a single modality.
 type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
-	Modality string `json:"modality,omitempty"`
+	Modality Modality `json:"modality,omitempty"`
 	// Number of tokens.
 	TokenCount int32 `json:"tokenCount,omitempty"`
 }

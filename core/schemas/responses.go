@@ -439,6 +439,7 @@ type ResponsesResponseOutputTokens struct {
 	TextTokens               int  `json:"text_tokens,omitempty"`
 	AcceptedPredictionTokens int  `json:"accepted_prediction_tokens,omitempty"`
 	AudioTokens              int  `json:"audio_tokens,omitempty"`
+	ImageTokens              *int `json:"image_tokens,omitempty"`
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
