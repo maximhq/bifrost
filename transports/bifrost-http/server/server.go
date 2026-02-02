@@ -839,8 +839,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	// Websocket handler needs to go below UI handler
 	logger.Debug("initializing websocket server")
+	if s.WebSocketHandler == nil {
+		s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
+	}
 	if loggerPlugin != nil {
-		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, loggerPlugin.GetPluginLogManager(), s.Config.ClientConfig.AllowedOrigins)
 		loggerPlugin.SetLogCallback(func(ctx context.Context, logEntry *logstore.Log) {
 			err := s.NewLogEntryAdded(ctx, logEntry)
 			if err != nil {
@@ -848,8 +850,6 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 			}
 		})
 		loggerPlugin.SetMCPToolLogCallback(s.WebSocketHandler.BroadcastMCPLogUpdate)
-	} else {
-		s.WebSocketHandler = handlers.NewWebSocketHandler(ctx, nil, s.Config.ClientConfig.AllowedOrigins)
 	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
@@ -1000,6 +1000,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
+	// Initialize WebSocket handler early so plugins can wire event broadcasters during Init.
+	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
+	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
+	s.Config.EventBroadcaster = s.WebSocketHandler.BroadcastEvent
 	// Initializing plugin loader
 	s.Config.PluginLoader = &dynamicPlugins.SharedObjectPluginLoader{}
 	// Initialize log retention cleaner if log store is configured

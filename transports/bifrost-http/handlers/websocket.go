@@ -13,7 +13,6 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -27,7 +26,6 @@ type WebSocketClient struct {
 // WebSocketHandler manages WebSocket connections for real-time updates
 type WebSocketHandler struct {
 	ctx            context.Context
-	logManager     logging.LogManager
 	allowedOrigins []string
 	clients        map[*websocket.Conn]*WebSocketClient
 	mu             sync.RWMutex
@@ -36,10 +34,9 @@ type WebSocketHandler struct {
 }
 
 // NewWebSocketHandler creates a new WebSocket handler instance
-func NewWebSocketHandler(ctx context.Context, logManager logging.LogManager, allowedOrigins []string) *WebSocketHandler {
+func NewWebSocketHandler(ctx context.Context, allowedOrigins []string) *WebSocketHandler {
 	return &WebSocketHandler{
 		ctx:            ctx,
-		logManager:     logManager,
 		allowedOrigins: allowedOrigins,
 		clients:        make(map[*websocket.Conn]*WebSocketClient),
 		stopChan:       make(chan struct{}),
@@ -259,6 +256,26 @@ func (h *WebSocketHandler) BroadcastUpdatesToClients(tags []string) {
 	}
 
 	h.BroadcastMarshaledMessage(data)
+}
+
+// BroadcastEvent sends a typed event to all connected WebSocket clients.
+// Any subsystem can use this to push real-time updates to the frontend.
+func (h *WebSocketHandler) BroadcastEvent(eventType string, data interface{}) {
+	message := struct {
+		Type string      `json:"type"`
+		Data interface{} `json:"data"`
+	}{
+		Type: eventType,
+		Data: data,
+	}
+
+	bytes, err := json.Marshal(message)
+	if err != nil {
+		logger.Error("failed to marshal event %s: %v", eventType, err)
+		return
+	}
+
+	h.BroadcastMarshaledMessage(bytes)
 }
 
 // BroadcastMarshaledMessage sends an adaptive routing update to all connected WebSocket clients

@@ -275,6 +275,10 @@ type Config struct {
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
 	MCPCatalog   *mcpcatalog.MCPCatalog
+
+	// Optional event broadcaster for real-time updates (e.g., WebSocket).
+	// Set by HTTP server at startup; may be nil in non-HTTP usage.
+	EventBroadcaster schemas.EventBroadcaster
 }
 
 var DefaultClientConfig = configstore.ClientConfig{

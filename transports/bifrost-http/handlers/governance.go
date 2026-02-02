@@ -270,9 +270,14 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
+		// Convert map to slice to match the non-memory response format (array)
+		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
+		for _, vk := range data.VirtualKeys {
+			virtualKeys = append(virtualKeys, vk)
+		}
 		SendJSON(ctx, map[string]interface{}{
-			"virtual_keys": data.VirtualKeys,
-			"count":        len(data.VirtualKeys),
+			"virtual_keys": virtualKeys,
+			"count":        len(virtualKeys),
 		})
 		return
 	}
@@ -1617,6 +1622,19 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"model_configs": data.ModelConfigs,
+			"count":         len(data.ModelConfigs),
+		})
+		return
+	}
 	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve model configs: %v", err)
@@ -1969,6 +1987,29 @@ type ProviderGovernanceResponse struct {
 
 // getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		var result []ProviderGovernanceResponse
+		for _, p := range data.Providers {
+			if p.Budget != nil || p.RateLimit != nil {
+				result = append(result, ProviderGovernanceResponse{
+					Provider:  p.Name,
+					Budget:    p.Budget,
+					RateLimit: p.RateLimit,
+				})
+			}
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"providers": result,
+			"count":     len(result),
+		})
+		return
+	}
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve providers: %v", err)

@@ -70,7 +70,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
 		return governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
-			bifrostConfig.MCPCatalog, inMemoryStore)
+			bifrostConfig.MCPCatalog, inMemoryStore, bifrostConfig.EventBroadcaster)
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
