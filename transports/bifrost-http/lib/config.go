@@ -683,6 +683,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 				logger.Warn("failed to generate key hash for file key %s (%s): %v, falling back to name comparison", fileKey.Name, provider, err)
 				if fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].Status = dbKey.Status
+					fileKeys[i].Description = dbKey.Description
 					found = true
 					break
 				}
@@ -694,6 +696,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 			if dbKey.ConfigHash != "" {
 				if fileKeyHash == dbKey.ConfigHash || fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].Status = dbKey.Status
+					fileKeys[i].Description = dbKey.Description
 					found = true
 					break
 				}
@@ -712,6 +716,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
 					if fileKey.Name == dbKey.Name {
 						fileKeys[i].ID = dbKey.ID
+						fileKeys[i].Status = dbKey.Status
+						fileKeys[i].Description = dbKey.Description
 						found = true
 						break
 					}
@@ -719,6 +725,8 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 				}
 				if fileKeyHash == dbKeyHash || fileKey.Name == dbKey.Name {
 					fileKeys[i].ID = dbKey.ID
+					fileKeys[i].Status = dbKey.Status
+					fileKeys[i].Description = dbKey.Description
 					found = true
 					break
 				}
@@ -762,6 +770,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
 					fileKey.ID = dbKey.ID
 					fileKey.ConfigHash = fileKeyHash
+					fileKey.Status = dbKey.Status
+					fileKey.Description = dbKey.Description
 					mergedKeys = append(mergedKeys, fileKey)
 				}
 			} else {
@@ -786,6 +796,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					logger.Debug("key %s changed in config file for provider %s, updating", fileKey.Name, provider)
 					fileKey.ID = dbKey.ID
 					fileKey.ConfigHash = fileKeyHash
+					fileKey.Status = dbKey.Status
+					fileKey.Description = dbKey.Description
 					mergedKeys = append(mergedKeys, fileKey)
 				} else {
 					// Key unchanged - keep DB version
@@ -1989,6 +2001,8 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 					BedrockKeyConfig: dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 					ConfigHash:       dbKey.ConfigHash,
+					Status:           dbKey.Status,
+					Description:      dbKey.Description,
 				}
 			}
 			providerConfig := configstore.ProviderConfig{

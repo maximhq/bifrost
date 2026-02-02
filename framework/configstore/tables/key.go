@@ -57,6 +57,9 @@ type TableKey struct {
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
+	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
+	Description string `gorm:"type:text" json:"description,omitempty"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Models             []string                    `gorm:"-" json:"models"`
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`

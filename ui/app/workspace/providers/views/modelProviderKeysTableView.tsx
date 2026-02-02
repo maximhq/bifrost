@@ -15,11 +15,12 @@ import { CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { AlertCircle, CheckCircle2, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { ReactNode, useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
@@ -138,6 +139,19 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									<TableRow key={index} data-testid={`key-row-${key.name}`} className="text-sm transition-colors hover:bg-white" onClick={() => {}}>
 										<TableCell>
 											<div className="flex items-center space-x-2">
+												{key.status === "success" && (
+													<CheckCircle2 className="text-green-600 h-4 w-4 flex-shrink-0" />
+												)}
+												{key.status === "list_models_failed" && (
+													<Tooltip>
+														<TooltipTrigger>
+															<AlertCircle className="text-destructive h-4 w-4 flex-shrink-0" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs break-words">
+															{key.description || "Model discovery failed for this key"}
+														</TooltipContent>
+													</Tooltip>
+												)}
 												<span className="font-mono text-sm">{key.name}</span>
 											</div>
 										</TableCell>

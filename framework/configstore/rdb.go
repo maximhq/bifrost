@@ -240,6 +240,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			ConfigHash:               providerConfig.ConfigHash,
+			Status:                   providerConfig.Status,
+			Description:              providerConfig.Description,
 		}
 
 		// Upsert provider (create or update if exists)
@@ -281,6 +283,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				BedrockKeyConfig:   key.BedrockKeyConfig,
 				ReplicateKeyConfig: key.ReplicateKeyConfig,
 				ConfigHash:         keyHash,
+				Status:             string(key.Status),
+				Description:        key.Description,
 			}
 
 			// Handle Azure config
@@ -330,6 +334,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.ID = existingKey.ID                 // Keep the same database ID
 				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
 				dbKey.Enabled = existingKey.Enabled       // Preserve the existing Enabled status
+				dbKey.Status = existingKey.Status
+				dbKey.Description = existingKey.Description
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -342,6 +348,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.KeyID = existingKey.KeyID // Preserve original KeyID
 					dbKey.ProviderID = existingKey.ProviderID
 					dbKey.Enabled = existingKey.Enabled
+					dbKey.Status = existingKey.Status
+					dbKey.Description = existingKey.Description
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -435,6 +443,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			ConfigHash:         keyHash,
+			Status:             string(key.Status),
+			Description:        key.Description,
 		}
 
 		// Handle Azure config
@@ -477,6 +487,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			// not when updating via UI (so DB updates aren't overwritten on restart)
 			dbKey.ID = existingKey.ID
 			dbKey.ConfigHash = existingKey.ConfigHash
+			dbKey.Status = existingKey.Status
+			dbKey.Description = existingKey.Description
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -550,6 +562,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			BedrockKeyConfig:   key.BedrockKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			ConfigHash:         key.ConfigHash,
+			Status:             string(key.Status),
+			Description:        key.Description,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -664,6 +678,8 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 				ConfigHash:         dbKey.ConfigHash,
+				Status:             schemas.KeyStatusType(dbKey.Status),
+				Description:        dbKey.Description,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -675,6 +691,8 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			ConfigHash:               dbProvider.ConfigHash,
+			Status:                   dbProvider.Status,
+			Description:              dbProvider.Description,
 		}
 		processedProviders[provider] = providerConfig
 	}
@@ -706,6 +724,8 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 			ConfigHash:         dbKey.ConfigHash,
+			Status:             schemas.KeyStatusType(dbKey.Status),
+			Description:        dbKey.Description,
 		}
 	}
 	return &ProviderConfig{
@@ -717,6 +737,8 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		ConfigHash:               dbProvider.ConfigHash,
+		Status:                   dbProvider.Status,
+		Description:              dbProvider.Description,
 	}, nil
 }
 
@@ -751,6 +773,49 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 		return nil, err
 	}
 	return &provider, nil
+}
+
+// UpdateStatus updates the status for either a key or provider.
+// - If keyID is non-empty: updates the key's status (for keyed providers)
+// - If keyID is empty and provider is non-empty: updates the provider's status (for keyless providers)
+func (s *RDBConfigStore) UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, description string) error {
+	// Update key-level status (for keyed providers)
+	if keyID != "" {
+		result := s.db.WithContext(ctx).
+			Model(&tables.TableKey{}).
+			Where("key_id = ?", keyID).
+			Updates(map[string]interface{}{
+				"status":      status,
+				"description": description,
+			})
+		if result.Error != nil {
+			return s.parseGormError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	// Update provider-level status (for keyless providers)
+	if provider != "" {
+		result := s.db.WithContext(ctx).
+			Model(&tables.TableProvider{}).
+			Where("name = ?", string(provider)).
+			Updates(map[string]interface{}{
+				"status":      status,
+				"description": description,
+			})
+		if result.Error != nil {
+			return s.parseGormError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	return fmt.Errorf("either keyID or provider must be non-empty")
 }
 
 // GetMCPConfig retrieves the MCP configuration from the database.

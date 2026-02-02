@@ -114,6 +114,8 @@ export interface ModelProviderKey {
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
+	status?: "unknown" | "success" | "list_models_failed";
+	description?: string;
 }
 
 // Default ModelProviderKey
@@ -239,12 +241,14 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	status?: "unknown" | "success" | "list_models_failed";
+	description?: string;
 }
 
 // ProviderResponse matching Go's ProviderResponse
 export interface ModelProvider extends ModelProviderConfig {
 	name: ModelProviderName;
-	status: ProviderStatus;
+	provider_status: ProviderStatus;
 	config_hash?: string; // Present when config is synced from config.json
 }
 

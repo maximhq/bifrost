@@ -245,7 +245,9 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 		return nil, err
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
-		return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		return providerUtils.HandleKeylessListModelsRequest(schemas.Anthropic, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,

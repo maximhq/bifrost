@@ -806,6 +806,10 @@ func (m *MockConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) 
 	return nil, nil
 }
 
+func (m *MockConfigStore) UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error {
+	return nil
+}
+
 // Session
 func (m *MockConfigStore) GetSession(ctx context.Context, token string) (*tables.SessionsTable, error) {
 	return nil, nil

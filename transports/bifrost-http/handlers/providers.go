@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
@@ -65,7 +66,9 @@ type ProviderResponse struct {
 	SendBackRawRequest       bool                             `json:"send_back_raw_request"`            // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                             `json:"send_back_raw_response"`           // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig    `json:"custom_provider_config,omitempty"` // Custom provider configuration
-	Status                   ProviderStatus                   `json:"status"`                           // Status of the provider
+	ProviderStatus           ProviderStatus                   `json:"provider_status"`                  // Health/initialization status of the provider
+	Status                   string                           `json:"status,omitempty"`                 // Operational status (e.g., list_models_failed)
+	Description              string                           `json:"description,omitempty"`            // Error/status description
 	ConfigHash               string                           `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
 }
 
@@ -258,7 +261,15 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
-	// Get redacted config for response
+	
+	// Attempt model discovery
+	err := h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig)
+
+	if err != nil {
+		logger.Warn("Model discovery failed for provider %s: %v", payload.Provider, err)
+	}
+
+	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
@@ -270,20 +281,15 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			Status:                   config.Status,
+			Description:              config.Description,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
-	if payload.CustomProviderConfig == nil ||
-		!payload.CustomProviderConfig.IsKeyLess ||
-		(payload.CustomProviderConfig.AllowedRequests != nil && payload.CustomProviderConfig.AllowedRequests.ListModels) {
-		go func() {
-			if _, err := h.modelsManager.ReloadProvider(context.Background(), payload.Provider); err != nil {
-				logger.Warn("Failed to refetch models for provider %s: %v", payload.Provider, err)
-			}
-		}()
-	}
+
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
+
 	SendJSON(ctx, response)
 }
 
@@ -349,6 +355,8 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		ConcurrencyAndBufferSize: oldConfigRaw.ConcurrencyAndBufferSize,
 		ProxyConfig:              oldConfigRaw.ProxyConfig,
 		CustomProviderConfig:     oldConfigRaw.CustomProviderConfig,
+		Status:                   oldConfigRaw.Status,
+		Description:              oldConfigRaw.Description,
 	}
 
 	// Environment variable cleanup is now handled automatically by mergeKeys function
@@ -452,7 +460,14 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Get redacted config for response
+	// Attempt model discovery
+	err = h.attemptModelDiscovery(ctx, provider, payload.CustomProviderConfig)
+
+	if err != nil {
+		logger.Warn("Model discovery failed for provider %s: %v", provider, err)
+	}
+
+	// Get redacted config for response (in-memory store is now updated by updateKeyStatus)
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
@@ -464,17 +479,15 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 			SendBackRawRequest:       config.SendBackRawRequest,
 			SendBackRawResponse:      config.SendBackRawResponse,
 			CustomProviderConfig:     config.CustomProviderConfig,
+			Status:                   config.Status,
+			Description:              config.Description,
 		}, ProviderStatusActive)
 		SendJSON(ctx, response)
 		return
 	}
-	// Refetch models if any key is added or removed
-	go func() {
-		if _, err := h.modelsManager.ReloadProvider(context.Background(), provider); err != nil {
-			logger.Warn("Failed to refetch models for provider %s: %v", provider, err)
-		}
-	}()
+
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
+
 	SendJSON(ctx, response)
 }
 
@@ -894,6 +907,10 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 			// Preserve ConfigHash from old key (UI doesn't send it back)
 			mergedKey.ConfigHash = oldRawKey.ConfigHash
 
+			// Preserve Status and Description from old key (UI doesn't send them back, they're updated by model discovery)
+			mergedKey.Status = oldRawKey.Status
+			mergedKey.Description = oldRawKey.Description
+
 			resultKeys = append(resultKeys, mergedKey)
 		} else {
 			// Keep unchanged key
@@ -907,6 +924,29 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 	return resultKeys, nil
 }
 
+// attemptModelDiscovery performs model discovery with timeout
+func (h *ProviderHandler) attemptModelDiscovery(ctx *fasthttp.RequestCtx, provider schemas.ModelProvider, customProviderConfig *schemas.CustomProviderConfig) error {
+	// Determine if we should attempt model discovery
+	shouldDiscoverModels := customProviderConfig == nil ||
+		!customProviderConfig.IsKeyLess
+
+	if !shouldDiscoverModels {
+		return nil
+	}
+
+	// Attempt model discovery with reasonable timeout
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	_, err := h.modelsManager.ReloadProvider(ctxWithTimeout, provider)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelProvider, config configstore.ProviderConfig, status ProviderStatus) ProviderResponse {
 	if config.NetworkConfig == nil {
 		config.NetworkConfig = &schemas.DefaultNetworkConfig
@@ -914,6 +954,7 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 	if config.ConcurrencyAndBufferSize == nil {
 		config.ConcurrencyAndBufferSize = &schemas.DefaultConcurrencyAndBufferSize
 	}
+
 	return ProviderResponse{
 		Name:                     provider,
 		Keys:                     config.Keys,
@@ -923,7 +964,9 @@ func (h *ProviderHandler) getProviderResponseFromConfig(provider schemas.ModelPr
 		SendBackRawRequest:       config.SendBackRawRequest,
 		SendBackRawResponse:      config.SendBackRawResponse,
 		CustomProviderConfig:     config.CustomProviderConfig,
-		Status:                   status,
+		ProviderStatus:           status,
+		Status:                   config.Status,
+		Description:              config.Description,
 		ConfigHash:               config.ConfigHash,
 	}
 }

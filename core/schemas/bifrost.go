@@ -758,4 +758,5 @@ type BifrostErrorExtraFields struct {
 	RawRequest     interface{}   `json:"raw_request,omitempty"`
 	RawResponse    interface{}   `json:"raw_response,omitempty"`
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
+	KeyStatuses    []KeyStatus   `json:"-"`
 }

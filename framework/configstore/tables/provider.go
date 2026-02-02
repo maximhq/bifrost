@@ -50,6 +50,10 @@ type TableProvider struct {
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
+	// Model discovery status tracking for keyless providers
+	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
+	Description string `gorm:"type:text" json:"description,omitempty"`
 }
 
 // TableName represents a provider configuration in the database

@@ -247,6 +247,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddReplicateDeploymentsJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddKeyStatusColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddProviderStatusColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddRateLimitToTeamsAndCustomers(ctx, db); err != nil {
 		return err
 	}
@@ -3357,6 +3363,112 @@ func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running replicate deployments JSON migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddKeyStatusColumns adds status and description columns to config_keys table
+// These columns track the status and description of each individual key
+func migrationAddKeyStatusColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_key_status_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add status column
+			if !migrator.HasColumn(&tables.TableKey{}, "status") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "status"); err != nil {
+					return err
+				}
+			}
+
+			// Add description column
+			if !migrator.HasColumn(&tables.TableKey{}, "description") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "description"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop description column
+			if migrator.HasColumn(&tables.TableKey{}, "description") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "description"); err != nil {
+					return err
+				}
+			}
+
+			// Drop status column
+			if migrator.HasColumn(&tables.TableKey{}, "status") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "status"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running key model discovery status migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderStatusColumns adds status and description columns to config_providers table
+// These columns track the status of model discovery attempts for keyless providers
+func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_provider_status_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add status column
+			if !migrator.HasColumn(&tables.TableProvider{}, "status") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "status"); err != nil {
+					return err
+				}
+			}
+
+			// Add description column
+			if !migrator.HasColumn(&tables.TableProvider{}, "description") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "description"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop description column
+			if migrator.HasColumn(&tables.TableProvider{}, "description") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "description"); err != nil {
+					return err
+				}
+			}
+
+			// Drop status column
+			if migrator.HasColumn(&tables.TableProvider{}, "status") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "status"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running provider model discovery status migration: %s", err.Error())
 	}
 	return nil
 }

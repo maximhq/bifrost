@@ -1265,6 +1265,13 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{})
 		Type: formatType,
 	}
 
+	// Extract name if present
+	if name, ok := formatMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+		format.Name = schemas.Ptr(strings.TrimSpace(name))
+	} else {
+		format.Name = schemas.Ptr("output_format")
+	}
+
 	// Extract schema if present
 	if schemaMap, ok := formatMap["schema"].(map[string]interface{}); ok {
 		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}

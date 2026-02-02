@@ -90,16 +90,18 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	providerName := provider.GetProviderKey()
 
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
-		return listModelsByKey(
-			ctx,
-			provider.client,
-			provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
-			schemas.Key{},
-			provider.networkConfig.ExtraHeaders,
-			providerName,
-			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		)
+		return providerUtils.HandleKeylessListModelsRequest(providerName, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			return listModelsByKey(
+				ctx,
+				provider.client,
+				provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
+				schemas.Key{},
+				provider.networkConfig.ExtraHeaders,
+				providerName,
+				providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+				providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+			)
+		})
 	}
 
 	return HandleOpenAIListModelsRequest(ctx,

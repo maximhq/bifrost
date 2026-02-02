@@ -148,3 +148,63 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 	}
 	return nil, fmt.Errorf("invalid config type")
 }
+
+// updateKeyStatus updates the model discovery status for keys or providers based on key statuses.
+// For keyed providers: updates individual key status
+// For keyless providers: updates provider-level status
+func (s *BifrostHTTPServer) updateKeyStatus(
+	ctx context.Context,
+	keyStatuses []schemas.KeyStatus,
+) {
+	if s.Config == nil || s.Config.ConfigStore == nil || len(keyStatuses) == 0 {
+		return
+	}
+
+	// Update each key/provider status individually
+	for _, ks := range keyStatuses {
+		errorMsg := ""
+		if ks.Error != nil && ks.Error.Error != nil {
+			errorMsg = ks.Error.Error.Message
+		}
+
+		if err := s.Config.ConfigStore.UpdateStatus(ctx, ks.Provider, ks.KeyID, string(ks.Status), errorMsg); err != nil {
+			target := ks.KeyID
+			if target == "" {
+				target = string(ks.Provider)
+			}
+			logger.Error("failed to update model discovery status for %s: %v", target, err)
+			continue // Skip in-memory update if DB update failed
+		}
+
+		s.Config.Mu.Lock()
+
+		providerConfig, exists := s.Config.Providers[ks.Provider]
+		if !exists {
+			s.Config.Mu.Unlock()
+			logger.Warn("provider %s not found in memory during status update", ks.Provider)
+			continue
+		}
+
+		// Find and update the specific key in the Keys slice
+		updated := false
+		for i := range providerConfig.Keys {
+			if providerConfig.Keys[i].ID == ks.KeyID {
+				// Update Status and Description fields
+				providerConfig.Keys[i].Status = ks.Status
+				providerConfig.Keys[i].Description = errorMsg
+				updated = true
+				break
+			}
+		}
+
+		if updated {
+			// Write the modified config back to the map
+			s.Config.Providers[ks.Provider] = providerConfig
+			logger.Debug("updated in-memory status for key %s of provider %s", ks.KeyID, ks.Provider)
+		} else {
+			logger.Warn("key %s not found in provider %s during in-memory update", ks.KeyID, ks.Provider)
+		}
+
+		s.Config.Mu.Unlock()
+	}
+}

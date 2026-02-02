@@ -18,6 +18,14 @@ type ListModelsByKeyResult struct {
 	KeyID    string
 }
 
+// KeyStatus represents the status of model listing for a specific key
+type KeyStatus struct {
+	KeyID    string        `json:"key_id"`   // Empty for keyless providers
+	Status   KeyStatusType `json:"status"`   // "success", "failed"
+	Provider ModelProvider `json:"provider"` // Always populated
+	Error    *BifrostError `json:"error,omitempty"`
+}
+
 type BifrostListModelsRequest struct {
 	Provider ModelProvider `json:"provider"`
 
@@ -35,6 +43,9 @@ type BifrostListModelsResponse struct {
 	Data          []Model                    `json:"data"`
 	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
 	NextPageToken string                     `json:"next_page_token,omitempty"` // Token to retrieve next page
+
+	// Key-level status tracking for multi-key providers, internal field
+	KeyStatuses []KeyStatus `json:"-"`
 
 	// Anthropic specific fields
 	FirstID *string `json:"-"`

@@ -1524,30 +1524,50 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 }
 
 // extractSuccessfulListModelsResponses extracts successful responses from a results channel
-// and tracks the last error encountered. This utility reduces code duplication across providers
+// and tracks per-key status information. This utility reduces code duplication across providers
 // for handling multi-key ListModels requests.
 func extractSuccessfulListModelsResponses(
 	results chan schemas.ListModelsByKeyResult,
 	providerName schemas.ModelProvider,
-) ([]*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+) ([]*schemas.BifrostListModelsResponse, []schemas.KeyStatus, *schemas.BifrostError) {
 	var successfulResponses []*schemas.BifrostListModelsResponse
+	var keyStatuses []schemas.KeyStatus
 	var lastError *schemas.BifrostError
 
 	for result := range results {
 		if result.Err != nil {
-			getLogger().Debug(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, result.Err.Error.Message))
+			errMsg := "unknown error"
+			if errorField := result.Err.Error; errorField != nil {
+				if errorField.Message != "" {
+					errMsg = errorField.Message
+				} else if errorField.Error != nil {
+					errMsg = errorField.Error.Error()
+				}
+			}
+			getLogger().Warn(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, errMsg))
+			keyStatuses = append(keyStatuses, schemas.KeyStatus{
+				KeyID:    result.KeyID,
+				Provider: providerName,
+				Status:   schemas.KeyStatusListModelsFailed,
+				Error:    result.Err,
+			})
 			lastError = result.Err
 			continue
 		}
 
+		keyStatuses = append(keyStatuses, schemas.KeyStatus{
+			KeyID:    result.KeyID,
+			Provider: providerName,
+			Status:   schemas.KeyStatusSuccess,
+		})
 		successfulResponses = append(successfulResponses, result.Response)
 	}
 
 	if len(successfulResponses) == 0 {
 		if lastError != nil {
-			return nil, lastError
+			return nil, keyStatuses, lastError
 		}
-		return nil, &schemas.BifrostError{
+		return nil, keyStatuses, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "all keys failed to list models",
@@ -1559,12 +1579,44 @@ func extractSuccessfulListModelsResponses(
 		}
 	}
 
-	return successfulResponses, nil
+	return successfulResponses, keyStatuses, nil
+}
+
+// HandleKeylessListModelsRequest wraps a list models request for keyless providers
+// and automatically populates the KeyStatuses field with provider-level status tracking.
+// This centralizes the status tracking logic for keyless providers.
+func HandleKeylessListModelsRequest(
+	provider schemas.ModelProvider,
+	listFunc func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	resp, bifrostErr := listFunc()
+
+	keyStatus := schemas.KeyStatus{
+		KeyID:    "", // Empty for keyless providers
+		Provider: provider,
+	}
+
+	// If request failed, attach status to error
+	if bifrostErr != nil {
+		keyStatus.Status = schemas.KeyStatusListModelsFailed
+		keyStatus.Error = bifrostErr
+		bifrostErr.ExtraFields.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		return nil, bifrostErr
+	}
+
+	// Success case
+	if resp != nil {
+		keyStatus.Status = schemas.KeyStatusSuccess
+		resp.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		return resp, nil
+	}
+
+	return resp, bifrostErr
 }
 
 // HandleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
 // It launches concurrent requests for all keys and waits for all goroutines to complete.
-// It returns the aggregated response or an error if the request fails.
+// It returns the aggregated response with per-key status information or an error if the request fails.
 func HandleMultipleListModelsRequests(
 	ctx *schemas.BifrostContext,
 	keys []schemas.Key,
@@ -1590,14 +1642,19 @@ func HandleMultipleListModelsRequests(
 	wg.Wait()
 	close(results)
 
-	successfulResponses, err := extractSuccessfulListModelsResponses(results, request.Provider)
+	successfulResponses, keyStatuses, err := extractSuccessfulListModelsResponses(results, request.Provider)
 	if err != nil {
+		// Attach key statuses to error's ExtraFields
+		err.ExtraFields.KeyStatuses = keyStatuses
 		return nil, err
 	}
 
 	// Aggregate all successful responses
 	response := aggregateListModelsResponses(successfulResponses)
 	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	// Attach key statuses to response
+	response.KeyStatuses = keyStatuses
 
 	// Set ExtraFields
 	latency := time.Since(startTime)

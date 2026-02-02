@@ -437,11 +437,10 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 		return provider.ListModels(ctx, keys, request)
 	}, schemas.ListModelsRequest, req.Provider, "", nil, bifrost.logger)
 	if bifrostErr != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType: schemas.ListModelsRequest,
-			Provider:    req.Provider,
-		}
-		return nil, bifrostErr
+		bifrostErr.ExtraFields.RequestType = schemas.ListModelsRequest
+		bifrostErr.ExtraFields.Provider = req.Provider
+		// Return response even on error if it contains KeyStatuses for tracking
+		return response, bifrostErr
 	}
 	return response, nil
 }
@@ -471,8 +470,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 
 	// Result structure for collecting provider responses
 	type providerResult struct {
-		models []schemas.Model
-		err    *schemas.BifrostError
+		provider    schemas.ModelProvider
+		models      []schemas.Model
+		keyStatuses []schemas.KeyStatus
+		err         *schemas.BifrostError
 	}
 
 	results := make(chan providerResult, len(providerKeys))
@@ -489,6 +490,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 			defer wg.Done()
 
 			providerModels := make([]schemas.Model, 0)
+			var providerKeyStatuses []schemas.KeyStatus
 			var providerErr *schemas.BifrostError
 
 			// Create request for this provider with limit of 1000
@@ -521,6 +523,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 						providerErr = bifrostErr
 						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, GetErrorMessage(bifrostErr))
 					}
+					// Collect key statuses from error (failure case)
+					if len(bifrostErr.ExtraFields.KeyStatuses) > 0 {
+						providerKeyStatuses = append(providerKeyStatuses, bifrostErr.ExtraFields.KeyStatuses...)
+					}
 					break
 				}
 
@@ -529,6 +535,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 				}
 
 				providerModels = append(providerModels, response.Data...)
+
+				if len(response.KeyStatuses) > 0 {
+					providerKeyStatuses = append(providerKeyStatuses, response.KeyStatuses...)
+				}
 
 				// Check if there are more pages
 				if response.NextPageToken == "" {
@@ -539,7 +549,12 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 				providerRequest.PageToken = response.NextPageToken
 			}
 
-			results <- providerResult{models: providerModels, err: providerErr}
+			results <- providerResult{
+				provider:    providerKey,
+				models:      providerModels,
+				keyStatuses: providerKeyStatuses,
+				err:         providerErr,
+			}
 		}(providerKey)
 	}
 
@@ -547,13 +562,17 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 	wg.Wait()
 	close(results)
 
-	// Accumulate all models from all providers
+	// Accumulate all models and key statuses from all providers
 	allModels := make([]schemas.Model, 0)
+	allKeyStatuses := make([]schemas.KeyStatus, 0)
 	var firstError *schemas.BifrostError
 
 	for result := range results {
 		if len(result.models) > 0 {
 			allModels = append(allModels, result.models...)
+		}
+		if len(result.keyStatuses) > 0 {
+			allKeyStatuses = append(allKeyStatuses, result.keyStatuses...)
 		}
 		if result.err != nil && firstError == nil {
 			firstError = result.err
@@ -562,6 +581,8 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 
 	// If we couldn't get any models from any provider, return the first error
 	if len(allModels) == 0 && firstError != nil {
+		// Attach all key statuses to the error
+		firstError.ExtraFields.KeyStatuses = allKeyStatuses
 		return nil, firstError
 	}
 
@@ -570,9 +591,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 		return allModels[i].ID < allModels[j].ID
 	})
 
-	// Return aggregated response with accumulated latency
+	// Return aggregated response with accumulated latency and key statuses
 	response := &schemas.BifrostListModelsResponse{
-		Data: allModels,
+		Data:        allModels,
+		KeyStatuses: allKeyStatuses,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.ListModelsRequest,
 			Latency:     time.Since(startTime).Milliseconds(),

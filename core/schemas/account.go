@@ -3,6 +3,13 @@ package schemas
 
 import "context"
 
+type KeyStatusType string
+
+const (
+	KeyStatusSuccess          KeyStatusType = "success"
+	KeyStatusListModelsFailed KeyStatusType = "list_models_failed"
+)
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
@@ -19,6 +26,8 @@ type Key struct {
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	Status               KeyStatusType         `json:"status,omitempty"`                 // Status of key
+	Description          string                `json:"description,omitempty"`            // Description of key
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.
