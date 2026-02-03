@@ -191,6 +191,142 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 	}
 }
 
+// TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
+// for both streaming and non-streaming responses to enable round-trip compatibility
+func TestThoughtSignatureInToolCalls(t *testing.T) {
+	thoughtSig := []byte{0x01, 0x02, 0x03, 0x04, 0x05} // Sample signature
+	
+	tests := []struct {
+		name     string
+		response *gemini.GenerateContentResponse
+		isStream bool
+	}{
+		{
+			name: "NonStream_ToolCallWithThoughtSignature",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-non-stream",
+				ModelVersion: "gemini-3-pro-preview",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonStop,
+						Content: &gemini.Content{
+							Role: string(gemini.RoleModel),
+							Parts: []*gemini.Part{
+								{
+									FunctionCall: &gemini.FunctionCall{
+										Name: "get_weather",
+										ID:   "call_123",
+										Args: map[string]interface{}{
+											"location": "San Francisco",
+										},
+									},
+									ThoughtSignature: thoughtSig,
+								},
+							},
+						},
+					},
+				},
+			},
+			isStream: false,
+		},
+		{
+			name: "Stream_ToolCallWithThoughtSignature",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-stream",
+				ModelVersion: "gemini-3-pro-preview",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonStop,
+						Content: &gemini.Content{
+							Role: string(gemini.RoleModel),
+							Parts: []*gemini.Part{
+								{
+									FunctionCall: &gemini.FunctionCall{
+										Name: "get_weather",
+										ID:   "call_456",
+										Args: map[string]interface{}{
+											"location": "New York",
+										},
+									},
+									ThoughtSignature: thoughtSig,
+								},
+							},
+						},
+					},
+				},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount: 10,
+					TotalTokenCount:  20,
+				},
+			},
+			isStream: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bifrostResp *schemas.BifrostChatResponse
+
+			if tt.isStream {
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+			} else {
+				bifrostResp = tt.response.ToBifrostChatResponse()
+			}
+
+			require.NotNil(t, bifrostResp, "Response should not be nil")
+			require.NotEmpty(t, bifrostResp.Choices, "Should have choices")
+			
+			choice := bifrostResp.Choices[0]
+			
+			// Get tool calls from appropriate response type
+			var toolCalls []schemas.ChatAssistantMessageToolCall
+			if tt.isStream {
+				require.NotNil(t, choice.ChatStreamResponseChoice, "Stream should have delta")
+				require.NotNil(t, choice.ChatStreamResponseChoice.Delta, "Should have delta")
+				toolCalls = choice.ChatStreamResponseChoice.Delta.ToolCalls
+			} else {
+				require.NotNil(t, choice.ChatNonStreamResponseChoice, "Non-stream should have message")
+				require.NotNil(t, choice.ChatNonStreamResponseChoice.Message, "Should have message")
+				require.NotNil(t, choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage, "Should have assistant message")
+				toolCalls = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
+			}
+
+			// Critical: Tool call ID must contain embedded thought signature
+			require.Len(t, toolCalls, 1, "Should have exactly one tool call")
+			toolCall := toolCalls[0]
+			require.NotNil(t, toolCall.ID, "Tool call must have ID")
+			
+			// Verify thought signature is embedded in the ID (format: "call_id_ts_base64sig")
+			assert.Contains(t, *toolCall.ID, "_ts_", "Tool call ID must contain thought signature separator")
+			
+			// Verify we can extract the thought signature from the ID for round-trip
+			parts := strings.SplitN(*toolCall.ID, "_ts_", 2)
+			require.Len(t, parts, 2, "Should be able to split ID into base and signature")
+			assert.NotEmpty(t, parts[1], "Signature part should not be empty")
+			
+			// Verify reasoning details also contain the signature (backward compatibility)
+			var reasoningDetails []schemas.ChatReasoningDetails
+			if tt.isStream {
+				reasoningDetails = choice.ChatStreamResponseChoice.Delta.ReasoningDetails
+			} else {
+				reasoningDetails = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ReasoningDetails
+			}
+			
+			assert.NotEmpty(t, reasoningDetails, "Should have reasoning details")
+			foundEncrypted := false
+			for _, detail := range reasoningDetails {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Signature != nil {
+					foundEncrypted = true
+					break
+				}
+			}
+			assert.True(t, foundEncrypted, "Should have encrypted reasoning detail with signature")
+		})
+	}
+}
+
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
 func TestBifrostToGeminiToolConversion(t *testing.T) {
 	tests := []struct {

@@ -6,3 +6,5 @@
 - feat: add `GET /api/models/base` endpoint for listing distinct base model names with search/filter support
 - feat: base model selection in model limits UI when no provider is selected
 - fix: edit sheets now show live data instead of stale cached values
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage
+- fix: embedding thought signature in tool call id for valid tool calling cycle in gemini chat

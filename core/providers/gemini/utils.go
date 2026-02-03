@@ -1670,6 +1670,15 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						callID = *toolCall.ID
 					}
 
+					// Extract thought signature from CallID if embedded (matches responses.go pattern)
+					var thoughtSig string
+					if strings.Contains(callID, thoughtSignatureSeparator) {
+						parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+						if len(parts) == 2 {
+							thoughtSig = parts[1]
+						}
+					}
+
 					part := &Part{
 						FunctionCall: &FunctionCall{
 							ID:   callID,
@@ -1680,9 +1689,25 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 					// Store the mapping for later use in FunctionResponse
 					callIDToFunctionName[callID] = *toolCall.Function.Name
 
-					// check in reasoning details array for thought signature with id tool_call_<callID>
-					if len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
-						lookupID := fmt.Sprintf("tool_call_%s", callID)
+					// Decode thought signature if extracted from ID
+					if thoughtSig != "" {
+						decoded, err := base64.RawURLEncoding.DecodeString(thoughtSig)
+						if err == nil {
+							part.ThoughtSignature = decoded
+						}
+					}
+
+					// Also check in reasoning details array for thought signature (fallback)
+					if part.ThoughtSignature == nil && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
+						// Extract base ID for lookup (strip signature if present)
+						baseCallID := callID
+						if strings.Contains(callID, thoughtSignatureSeparator) {
+							splitParts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+							if len(splitParts) == 2 {
+								baseCallID = splitParts[0]
+							}
+						}
+						lookupID := fmt.Sprintf("tool_call_%s", baseCallID)
 						for _, reasoningDetail := range message.ChatAssistantMessage.ReasoningDetails {
 							if reasoningDetail.ID != nil && *reasoningDetail.ID == lookupID &&
 								reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeEncrypted &&

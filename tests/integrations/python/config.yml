@@ -94,9 +94,9 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.5-flash"
-    vision: "gemini-2.5-flash"
-    tools: "gemini-2.5-flash"
+    chat: "gemini-3-flash-preview"
+    vision: "gemini-3-flash-preview"
+    tools: "gemini-3-flash-preview"
     file: "gemini-2.5-flash"
     thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
@@ -105,7 +105,7 @@ providers:
     image_generation: "gemini-2.5-flash-image"
     image_edit: "gemini-3-pro-image-preview"
     imagen: "imagen-4.0-generate-001"
-    streaming: "gemini-2.5-flash"
+    streaming: "gemini-3-flash-preview"
     batch_create: "gemini-2.5-flash"
     batch_inline: "gemini-2.5-flash"
     batch_file_upload: "gemini-2.5-flash"
