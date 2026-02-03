@@ -24,6 +24,9 @@ import (
 // so IDs are intentionally omitted. Do not generate synthetic tool call IDs.
 func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
 	var ollamaMessages []OllamaMessage
+	// Map ToolCallID to function name for tool message correlation
+	// This allows us to convert Bifrost tool messages (which use ToolCallID) to Ollama format (which uses tool_name)
+	toolCallIDToName := make(map[string]string)
 
 	for _, msg := range messages {
 		ollamaMsg := OllamaMessage{
@@ -75,6 +78,10 @@ func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
 					}
 				}
 				realToolCalls = append(realToolCalls, tc)
+				// Map ToolCallID to function name for later tool message correlation
+				if tc.ID != nil && tc.Function.Name != nil {
+					toolCallIDToName[*tc.ID] = *tc.Function.Name
+				}
 			}
 			if len(realToolCalls) > 0 {
 				ollamaMsg.ToolCalls = convertToolCallsToOllama(realToolCalls)
@@ -87,12 +94,19 @@ func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
 
 		// Handle tool response messages - must set tool_name per Ollama semantics
 		// Ollama uses tool_name (function name) to correlate, not tool_call_id
-		// We ignore ToolCallID since Ollama doesn't support it
+		// If Name is not set, try to map from ToolCallID to function name
 		if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
 			if msg.Name != nil {
 				ollamaMsg.ToolName = msg.Name
+			} else if msg.ChatToolMessage.ToolCallID != nil {
+				// Try to map ToolCallID to function name from previous assistant messages
+				if functionName, found := toolCallIDToName[*msg.ChatToolMessage.ToolCallID]; found {
+					ollamaMsg.ToolName = &functionName
+				} else {
+					log.Printf("Error in Tool message without Name field and ToolCallID '%s' not found in previous tool calls - Ollama requires tool_name field", *msg.ChatToolMessage.ToolCallID)
+				}
 			} else {
-				log.Printf("Error in Tool message without Name field - Ollama requires tool_name field")
+				log.Printf("Error in Tool message without Name field or ToolCallID - Ollama requires tool_name field")
 			}
 		}
 
@@ -191,10 +205,11 @@ func convertMessagesFromOllama(messages []OllamaMessage) []schemas.ChatMessage {
 
 		// Handle tool response messages
 		// Ollama uses tool_name (function name) to correlate, not tool_call_id
-		// Since ToolCallID is optional in Bifrost, we don't set it for Ollama
+		// We set ToolCallID to the function name for Bifrost compatibility, even though Ollama doesn't use IDs
 		if msg.Role == "tool" && msg.ToolName != nil {
+			toolCallID := *msg.ToolName
 			bifrostMsg.ChatToolMessage = &schemas.ChatToolMessage{
-				// ToolCallID is intentionally not set - Ollama doesn't use tool call IDs
+				ToolCallID: &toolCallID, // Set to function name for compatibility
 			}
 			bifrostMsg.Name = msg.ToolName
 		}

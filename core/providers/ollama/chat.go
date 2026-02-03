@@ -3,6 +3,9 @@
 package ollama
 
 import (
+	"encoding/json"
+	"time"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -220,4 +223,256 @@ func (r *OllamaChatRequest) ToBifrostChatRequest() *schemas.BifrostChatRequest {
 	}
 
 	return bifrostReq
+}
+
+// ==================== RESPONSE CONVERTERS ====================
+
+// ToBifrostChatResponse converts an Ollama chat response to Bifrost format.
+func (r *OllamaChatResponse) ToBifrostChatResponse(model string) *schemas.BifrostChatResponse {
+	if r == nil {
+		return nil
+	}
+
+	// Parse timestamp
+	created := int(time.Now().Unix())
+	if r.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.CreatedAt); err == nil {
+			created = int(t.Unix())
+		}
+	}
+
+	response := &schemas.BifrostChatResponse{
+		Model:   model,
+		Created: created,
+		Object:  "chat.completion",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.Ollama,
+		},
+	}
+
+	// Build the choice
+	if r.Message != nil {
+		var toolCalls []schemas.ChatAssistantMessageToolCall
+		if len(r.Message.ToolCalls) > 0 {
+			for i, tc := range r.Message.ToolCalls {
+				args, _ := json.Marshal(tc.Function.Arguments)
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+					Index: uint16(i),
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr(tc.Function.Name), // Ollama doesn't provide IDs, use name
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &tc.Function.Name,
+						Arguments: string(args),
+					},
+				})
+			}
+		}
+
+		var assistantMessage *schemas.ChatAssistantMessage
+		if len(toolCalls) > 0 {
+			assistantMessage = &schemas.ChatAssistantMessage{
+				ToolCalls: toolCalls,
+			}
+		}
+
+		// Handle thinking content for non-streaming responses
+		// Store thinking in tool call ExtraContent (similar to how we preserve it in message conversion)
+		if r.Message.Thinking != nil && *r.Message.Thinking != "" {
+			if assistantMessage == nil {
+				assistantMessage = &schemas.ChatAssistantMessage{}
+			}
+			// If we have tool calls, store thinking in the first one's ExtraContent
+			// Otherwise, create a placeholder tool call to preserve thinking
+			if len(assistantMessage.ToolCalls) > 0 {
+				if assistantMessage.ToolCalls[0].ExtraContent == nil {
+					assistantMessage.ToolCalls[0].ExtraContent = make(map[string]interface{})
+				}
+				assistantMessage.ToolCalls[0].ExtraContent["ollama"] = map[string]interface{}{
+					"thinking": *r.Message.Thinking,
+				}
+			} else {
+				// Create placeholder tool call to preserve thinking
+				assistantMessage.ToolCalls = []schemas.ChatAssistantMessageToolCall{
+					{
+						Index: 0,
+						Type:  schemas.Ptr("function"),
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      schemas.Ptr("_thinking_placeholder"),
+							Arguments: "{}",
+						},
+						ExtraContent: map[string]interface{}{
+							"ollama": map[string]interface{}{
+								"thinking": *r.Message.Thinking,
+							},
+						},
+					},
+				}
+			}
+		}
+
+		choice := schemas.BifrostResponseChoice{
+			Index: 0,
+			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+				Message: &schemas.ChatMessage{
+					Role: schemas.ChatMessageRole(r.Message.Role),
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &r.Message.Content,
+					},
+					ChatAssistantMessage: assistantMessage,
+				},
+			},
+			FinishReason: r.mapFinishReason(),
+		}
+		response.Choices = []schemas.BifrostResponseChoice{choice}
+	}
+
+	// Map usage
+	response.Usage = r.toUsage()
+
+	return response
+}
+
+// mapFinishReason maps Ollama's done_reason to Bifrost format.
+func (r *OllamaChatResponse) mapFinishReason() *string {
+	if r.DoneReason == nil {
+		if r.Done {
+			return schemas.Ptr("stop")
+		}
+		return nil
+	}
+
+	switch *r.DoneReason {
+	case "stop":
+		return schemas.Ptr("stop")
+	case "length":
+		return schemas.Ptr("length")
+	case "load", "unload":
+		return schemas.Ptr("stop")
+	default:
+		return r.DoneReason
+	}
+}
+
+// toUsage converts Ollama usage info to Bifrost format.
+func (r *OllamaChatResponse) toUsage() *schemas.BifrostLLMUsage {
+	usage := &schemas.BifrostLLMUsage{}
+
+	if r.PromptEvalCount != nil {
+		usage.PromptTokens = *r.PromptEvalCount
+	}
+	if r.EvalCount != nil {
+		usage.CompletionTokens = *r.EvalCount
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+
+	return usage
+}
+
+// ToBifrostStreamResponse converts an Ollama streaming chunk to Bifrost format.
+func (r *OllamaStreamResponse) ToBifrostStreamResponse(chunkIndex int) (*schemas.BifrostChatResponse, bool) {
+	if r == nil {
+		return nil, false
+	}
+
+	response := &schemas.BifrostChatResponse{
+		Model:  r.Model,
+		Object: "chat.completion.chunk",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionStreamRequest,
+			Provider:    schemas.Ollama,
+			ChunkIndex:  chunkIndex,
+		},
+	}
+
+	// Parse timestamp
+	if r.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, r.CreatedAt); err == nil {
+			response.Created = int(t.Unix())
+		}
+	}
+
+	// Build delta content
+	if r.Message != nil {
+		var toolCalls []schemas.ChatAssistantMessageToolCall
+		if len(r.Message.ToolCalls) > 0 {
+			for i, tc := range r.Message.ToolCalls {
+				args, _ := json.Marshal(tc.Function.Arguments)
+				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+					Index: uint16(i),
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr(tc.Function.Name),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name:      &tc.Function.Name,
+						Arguments: string(args),
+					},
+				})
+			}
+		}
+
+		delta := &schemas.ChatStreamResponseChoiceDelta{}
+
+		if r.Message.Role != "" {
+			role := string(r.Message.Role)
+			delta.Role = &role
+		}
+
+		if r.Message.Content != "" {
+			delta.Content = &r.Message.Content
+		}
+
+		// Handle thinking content (for thinking-specific models)
+		// Ollama may send thinking incrementally in streaming chunks, similar to content
+		if r.Message.Thinking != nil && *r.Message.Thinking != "" {
+			delta.Reasoning = r.Message.Thinking
+		}
+
+		if len(toolCalls) > 0 {
+			delta.ToolCalls = toolCalls
+		}
+
+		// Always create a choice if we have any delta content (content, thinking, tool calls, or role)
+		hasDelta := delta.Role != nil || delta.Content != nil || delta.Reasoning != nil || len(delta.ToolCalls) > 0
+		if hasDelta {
+			choice := schemas.BifrostResponseChoice{
+				Index: 0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: delta,
+				},
+			}
+
+			// Set finish reason on final chunk
+			if r.Done {
+				if r.DoneReason != nil {
+					switch *r.DoneReason {
+					case "stop":
+						choice.FinishReason = schemas.Ptr("stop")
+					case "length":
+						choice.FinishReason = schemas.Ptr("length")
+					default:
+						choice.FinishReason = schemas.Ptr("stop")
+					}
+				} else {
+					choice.FinishReason = schemas.Ptr("stop")
+				}
+			}
+
+			response.Choices = []schemas.BifrostResponseChoice{choice}
+		}
+	}
+
+	// Add usage on final chunk
+	if r.Done {
+		usage := &schemas.BifrostLLMUsage{}
+		if r.PromptEvalCount != nil {
+			usage.PromptTokens = *r.PromptEvalCount
+		}
+		if r.EvalCount != nil {
+			usage.CompletionTokens = *r.EvalCount
+		}
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		response.Usage = usage
+	}
+
+	return response, r.Done
 }

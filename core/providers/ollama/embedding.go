@@ -3,6 +3,9 @@
 package ollama
 
 import (
+	"encoding/json"
+	"fmt"
+
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -18,9 +21,10 @@ func ToOllamaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Olla
 	// Handle input - Bifrost uses EmbeddingInput type
 	if bifrostReq.Input != nil {
 		if bifrostReq.Input.Text != nil {
-			ollamaReq.Input = *bifrostReq.Input.Text
+			s := *bifrostReq.Input.Text
+			ollamaReq.Input = OllamaEmbeddingInput{Text: &s}
 		} else if bifrostReq.Input.Texts != nil {
-			ollamaReq.Input = bifrostReq.Input.Texts
+			ollamaReq.Input = OllamaEmbeddingInput{Texts: bifrostReq.Input.Texts}
 		}
 	}
 
@@ -53,66 +57,72 @@ func ToOllamaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Olla
 	return ollamaReq
 }
 
-// ToBifrostEmbeddingRequest converts an Ollama embedding request to Bifrost format.
-// This is used for passthrough/reverse conversion scenarios.
-func (r *OllamaEmbeddingRequest) ToBifrostEmbeddingRequest() *schemas.BifrostEmbeddingRequest {
+func (in *OllamaEmbeddingInput) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		in.Text = &s
+		in.Texts = nil
+		return nil
+	}
+
+	var ss []string
+	if err := json.Unmarshal(b, &ss); err == nil {
+		in.Text = nil
+		in.Texts = ss
+		return nil
+	}
+
+	return fmt.Errorf("ollama embedding input must be string or []string")
+}
+
+func (in OllamaEmbeddingInput) MarshalJSON() ([]byte, error) {
+	if in.Text != nil {
+		return json.Marshal(*in.Text)
+	}
+	return json.Marshal(in.Texts)
+}
+
+// ==================== RESPONSE CONVERTERS ====================
+
+// ToBifrostEmbeddingResponse converts an Ollama embedding response to Bifrost format.
+func (r *OllamaEmbeddingResponse) ToBifrostEmbeddingResponse(model string) *schemas.BifrostEmbeddingResponse {
 	if r == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(r.Model, schemas.Ollama)
-
-	bifrostReq := &schemas.BifrostEmbeddingRequest{
-		Provider: provider,
-		Model:    model,
+	response := &schemas.BifrostEmbeddingResponse{
+		Model:  model,
+		Object: "list",
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.EmbeddingRequest,
+			Provider:    schemas.Ollama,
+		},
 	}
 
-	// Convert input to EmbeddingInput
-	if r.Input != nil {
-		input := &schemas.EmbeddingInput{}
-		converted := false
-		switch v := r.Input.(type) {
-		case string:
-			input.Text = &v
-			converted = true
-		case []string:
-			input.Texts = v
-			converted = true
-		case []interface{}:
-			ss := make([]string, 0, len(v))
-			for _, it := range v {
-				s, ok := it.(string)
-				if !ok {
-					converted = false
-					break
-				}
-				ss = append(ss, s)
-			}
-			if len(ss) > 0 {
-				input.Texts = ss
-				converted = true
-			}
+	// Convert embeddings to Bifrost format
+	for i, embedding := range r.Embeddings {
+		// Convert []float64 to []float32
+		embeddingFloat32 := make([]float32, len(embedding))
+		for j, v := range embedding {
+			embeddingFloat32[j] = float32(v)
 		}
-		if converted {
-			bifrostReq.Input = input
+
+		response.Data = append(response.Data, schemas.EmbeddingData{
+			Object: "embedding",
+			Embedding: schemas.EmbeddingStruct{
+				EmbeddingArray: embeddingFloat32,
+			},
+			Index: i,
+		})
+	}
+
+	// Convert usage
+	if r.PromptEvalCount != nil {
+		response.Usage = &schemas.BifrostLLMUsage{
+			PromptTokens: *r.PromptEvalCount,
+			TotalTokens:  *r.PromptEvalCount,
 		}
 	}
 
-	// Map Ollama-specific options back to extra params
-	if r.Truncate != nil || r.KeepAlive != nil || (r.Options != nil && r.Options.NumCtx != nil) {
-		bifrostReq.Params = &schemas.EmbeddingParameters{
-			ExtraParams: make(map[string]interface{}),
-		}
-		if r.Truncate != nil {
-			bifrostReq.Params.ExtraParams["truncate"] = *r.Truncate
-		}
-		if r.KeepAlive != nil {
-			bifrostReq.Params.ExtraParams["keep_alive"] = *r.KeepAlive
-		}
-		if r.Options != nil && r.Options.NumCtx != nil {
-			bifrostReq.Params.ExtraParams["num_ctx"] = *r.Options.NumCtx
-		}
-	}
-
-	return bifrostReq
+	return response
 }

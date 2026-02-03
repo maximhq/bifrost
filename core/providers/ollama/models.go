@@ -65,3 +65,45 @@ func (m *OllamaModel) GetModelInfo() map[string]interface{} {
 
 	return info
 }
+
+// ==================== RESPONSE CONVERTERS ====================
+
+// ToBifrostListModelsResponse converts an Ollama list models response to Bifrost format.
+func (r *OllamaListModelsResponse) ToBifrostListModelsResponse(providerName schemas.ModelProvider, configuredModels []string) *schemas.BifrostListModelsResponse {
+	if r == nil {
+		return nil
+	}
+
+	response := &schemas.BifrostListModelsResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ListModelsRequest,
+			Provider:    providerName,
+		},
+	}
+
+	// Create a set of configured models for quick lookup
+	configuredSet := make(map[string]bool)
+	for _, m := range configuredModels {
+		configuredSet[m] = true
+	}
+
+	for _, model := range r.Models {
+		// Filter models if configuredModels is non-empty
+		if len(configuredModels) > 0 && !configuredSet[model.Name] {
+			continue
+		}
+
+		created := model.ModifiedAt.Unix()
+		ownedBy := "ollama"
+
+		bifrostModel := schemas.Model{
+			ID:      model.Name,
+			Created: &created,
+			OwnedBy: &ownedBy,
+		}
+
+		response.Data = append(response.Data, bifrostModel)
+	}
+
+	return response
+}
