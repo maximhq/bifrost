@@ -106,6 +106,7 @@
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
+                  "providers/supported-providers/replicate",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/xai"

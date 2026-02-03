@@ -142,6 +142,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.HuggingFace,
 		schemas.Nebius,
 		schemas.XAI,
+		schemas.Replicate,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -394,6 +395,18 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Replicate:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+				ReplicateKeyConfig: &schemas.ReplicateKeyConfig{
+					SigningSecret: schemas.NewEnvVar("env.REPLICATE_SIGNING_SECRET"),
+				},
 			},
 		}, nil
 	default:
@@ -671,6 +684,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Replicate:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
@@ -1250,6 +1276,34 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ImageVariation:        false, // XAI does not support image variation
 			ImageVariationStream:  false, // XAI does not support streaming image variation
 			ListModels:            true,
+		},
+	},
+	{
+		Provider:             schemas.Replicate,
+		ChatModel:            "openai/gpt-4.1-mini",
+		TextModel:            "openai/gpt-4.1-mini",
+		ImageGenerationModel: "black-forest-labs/flux-dev",
+		Scenarios: TestScenarios{
+			TextCompletion:        false, // Not typical
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+			AutomaticFunctionCall: true,
+			ImageURL:              true,
+			ImageBase64:           true,
+			MultipleImages:        true,
+			CompleteEnd2End:       true,
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         false, // Not supported
+			TranscriptionStream:   false, // Not supported
+			Embedding:             false, // Not supported
+			ListModels:            true,
+			ImageGeneration:       true,
+			ImageGenerationStream: false,
 		},
 	},
 }

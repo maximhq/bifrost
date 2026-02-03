@@ -176,6 +176,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddReplicateDeploymentsJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddReplicateSigningSecretColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1780,13 +1786,14 @@ func migrationAddConfigHashColumn(ctx context.Context, db *gorm.DB) error {
 					if key.ConfigHash == "" {
 						// Convert to schemas.Key and generate hash
 						schemaKey := schemas.Key{
-							Name:             key.Name,
-							Value:            key.Value,
-							Models:           key.Models,
-							Weight:           getWeight(key.Weight),
-							AzureKeyConfig:   key.AzureKeyConfig,
-							VertexKeyConfig:  key.VertexKeyConfig,
-							BedrockKeyConfig: key.BedrockKeyConfig,
+							Name:               key.Name,
+							Value:              key.Value,
+							Models:             key.Models,
+							Weight:             getWeight(key.Weight),
+							AzureKeyConfig:     key.AzureKeyConfig,
+							VertexKeyConfig:    key.VertexKeyConfig,
+							BedrockKeyConfig:   key.BedrockKeyConfig,
+							ReplicateKeyConfig: key.ReplicateKeyConfig,
 						}
 						hash, err := GenerateKeyHash(schemaKey)
 						if err != nil {
@@ -3193,6 +3200,66 @@ func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) 
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running mcp client config oauth migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddReplicateDeploymentsJSONColumn adds the replicate_deployments_json column to the key table
+func migrationAddReplicateDeploymentsJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_replicate_deployments_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "replicate_deployments_json") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "replicate_deployments_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running replicate deployments JSON migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddReplicateSigningSecretColumn adds the replicate_signing_secret column to the key table
+func migrationAddReplicateSigningSecretColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_replicate_signing_secret_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "replicate_signing_secret") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "replicate_signing_secret"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableKey{}, "replicate_signing_secret"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running replicate signing secret migration: %s", err.Error())
 	}
 	return nil
 }
