@@ -108,7 +108,12 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	fi
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
-	@cd ui && npm run dev &
+	@if [ -n "$(DISABLE_PROFILER)" ]; then \
+		echo "$(CYAN)DevProfiler disabled for testing$(NC)"; \
+		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+	else \
+		cd ui && npm run dev & \
+	fi
 	@sleep 3
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@$(MAKE) setup-workspace >/dev/null
@@ -1173,6 +1178,13 @@ install-playwright: ## Install Playwright test dependencies
 		npx playwright install --with-deps chromium; \
 	fi
 	@echo "$(GREEN)Playwright is ready$(NC)"
+
+build-test-plugin: ## Build test plugin for E2E tests (copies to tmp/bifrost-test-plugin.so)
+	@echo "$(GREEN)Building test plugin for E2E tests...$(NC)"
+	@cd examples/plugins/hello-world && make dev
+	@mkdir -p tmp
+	@cp examples/plugins/hello-world/build/hello-world.so tmp/bifrost-test-plugin.so
+	@echo "$(GREEN)✓ Test plugin ready at tmp/bifrost-test-plugin.so$(NC)"
 
 run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=providers|virtual-keys])
 	@echo "$(GREEN)Running Playwright E2E tests...$(NC)"

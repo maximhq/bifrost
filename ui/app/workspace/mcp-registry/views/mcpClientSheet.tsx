@@ -1,9 +1,10 @@
 "use client";
 
+import { Fragment } from "react";
 import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
@@ -523,124 +524,121 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													const isExpanded = expandedTools.has(tool.name);
 
 													return (
-														<Collapsible key={index} open={isExpanded} onOpenChange={() => toggleToolExpanded(tool.name)} asChild>
-															<>
-																<TableRow className="group">
-																	<TableCell className="p-2">
-																		<CollapsibleTrigger asChild>
-																			<button
-																				type="button"
-																				className="hover:bg-muted flex h-8 w-8 items-center justify-center rounded-md transition-colors"
-																			>
-																				{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-																			</button>
-																		</CollapsibleTrigger>
-																	</TableCell>
-																	<TableCell className="max-w-[300px]">
-																		<div className="min-w-0">
-																			<div className="text-foreground truncate text-sm font-medium">{tool.name}</div>
-																			{tool.description && (
-																				<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
-																			)}
-																		</div>
-																	</TableCell>
-																	<TableCell className="text-center">
-																		<FormField
-																			control={form.control}
-																			name="tools_to_execute"
-																			render={() => (
-																				<FormItem>
-																					<FormControl>
-																						<Switch
-																							size="md"
-																							checked={isToolEnabled}
-																							onCheckedChange={(checked) => handleToolToggle(tool.name, checked)}
-																						/>
-																					</FormControl>
-																				</FormItem>
-																			)}
-																		/>
-																	</TableCell>
-																	<TableCell className="text-center">
-																		<FormField
-																			control={form.control}
-																			name="tools_to_auto_execute"
-																			render={() => (
-																				<FormItem>
-																					<FormControl>
-																						<Switch
-																							size="md"
-																							checked={isAutoExecuteEnabled}
-																							disabled={!isToolEnabled}
-																							onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
-																						/>
-																					</FormControl>
-																				</FormItem>
-																			)}
-																		/>
-																	</TableCell>
-																	<TableCell className="text-center">
-																		<FormField
-																			control={form.control}
-																			name="tool_pricing"
-																			render={({ field }) => (
-																				<FormItem>
-																					<FormControl>
-																						<Input
-																							type="number"
-																							step="0.000001"
-																							min="0"
-																							placeholder="0.00"
-																							className="h-8 w-24"
-																							disabled={!isToolEnabled}
-																							value={field.value?.[tool.name] ?? ""}
-																							onChange={(e) => {
-																								const value = e.target.value === "" ? undefined : parseFloat(e.target.value);
-																								const newPricing = { ...field.value };
-																								if (value === undefined || isNaN(value)) {
-																									delete newPricing[tool.name];
-																								} else {
-																									newPricing[tool.name] = value;
-																								}
-																								field.onChange(newPricing);
-																							}}
-																						/>
-																					</FormControl>
-																				</FormItem>
-																			)}
-																		/>
-																	</TableCell>
-																</TableRow>
-																<CollapsibleContent asChild>
-																	<tr>
-																		<td colSpan={5} className="p-0">
-																			<div className="bg-muted/30 border-t px-4 py-3">
-																				<div className="text-muted-foreground mb-2 text-xs font-medium">Parameters Schema</div>
-																				{tool.parameters ? (
-																					<CodeEditor
-																						className="z-0 w-full rounded-md border"
-																						shouldAdjustInitialHeight={true}
-																						maxHeight={300}
-																						wrap={true}
-																						code={JSON.stringify(tool.parameters, null, 2)}
-																						lang="json"
-																						readonly={true}
-																						options={{
-																							scrollBeyondLastLine: false,
-																							collapsibleBlocks: true,
-																							lineNumbers: "off",
-																							alwaysConsumeMouseWheel: false,
+														<Fragment key={index}>
+															<TableRow className="group">
+																<TableCell className="p-2">
+																	<button
+																		type="button"
+																		className="hover:bg-muted flex h-8 w-8 items-center justify-center rounded-md transition-colors"
+																		onClick={() => toggleToolExpanded(tool.name)}
+																	>
+																		{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+																	</button>
+																</TableCell>
+																<TableCell className="max-w-[300px]">
+																	<div className="min-w-0">
+																		<div className="text-foreground truncate text-sm font-medium">{tool.name}</div>
+																		{tool.description && (
+																			<p className="text-muted-foreground mt-0.5 truncate text-xs">{tool.description}</p>
+																		)}
+																	</div>
+																</TableCell>
+																<TableCell className="text-center">
+																	<FormField
+																		control={form.control}
+																		name="tools_to_execute"
+																		render={() => (
+																			<FormItem>
+																				<FormControl>
+																					<Switch
+																						size="md"
+																						checked={isToolEnabled}
+																						onCheckedChange={(checked) => handleToolToggle(tool.name, checked)}
+																					/>
+																				</FormControl>
+																			</FormItem>
+																		)}
+																	/>
+																</TableCell>
+																<TableCell className="text-center">
+																	<FormField
+																		control={form.control}
+																		name="tools_to_auto_execute"
+																		render={() => (
+																			<FormItem>
+																				<FormControl>
+																					<Switch
+																						size="md"
+																						checked={isAutoExecuteEnabled}
+																						disabled={!isToolEnabled}
+																						onCheckedChange={(checked) => handleAutoExecuteToggle(tool.name, checked)}
+																					/>
+																				</FormControl>
+																			</FormItem>
+																		)}
+																	/>
+																</TableCell>
+																<TableCell className="text-center">
+																	<FormField
+																		control={form.control}
+																		name="tool_pricing"
+																		render={({ field }) => (
+																			<FormItem>
+																				<FormControl>
+																					<Input
+																						type="number"
+																						step="0.000001"
+																						min="0"
+																						placeholder="0.00"
+																						className="h-8 w-24"
+																						disabled={!isToolEnabled}
+																						value={field.value?.[tool.name] ?? ""}
+																						onChange={(e) => {
+																							const value = e.target.value === "" ? undefined : parseFloat(e.target.value);
+																							const newPricing = { ...field.value };
+																							if (value === undefined || isNaN(value)) {
+																								delete newPricing[tool.name];
+																							} else {
+																								newPricing[tool.name] = value;
+																							}
+																							field.onChange(newPricing);
 																						}}
 																					/>
-																				) : (
-																					<div className="text-muted-foreground text-sm">No parameters defined</div>
-																				)}
-																			</div>
-																		</td>
-																	</tr>
-																</CollapsibleContent>
-															</>
-														</Collapsible>
+																				</FormControl>
+																			</FormItem>
+																		)}
+																	/>
+																</TableCell>
+															</TableRow>
+															{isExpanded && (
+																<tr>
+																	<td colSpan={5} className="p-0">
+																		<div className="bg-muted/30 border-b px-4 py-3">
+																			<div className="text-muted-foreground mb-2 text-xs font-medium">Parameters Schema</div>
+																			{tool.parameters ? (
+																				<CodeEditor
+																					className="z-0 w-full rounded-sm border"
+																					shouldAdjustInitialHeight={true}
+																					maxHeight={300}
+																					wrap={true}
+																					code={JSON.stringify(tool.parameters, null, 2)}
+																					lang="json"
+																					readonly={true}
+																					options={{
+																						scrollBeyondLastLine: false,
+																						collapsibleBlocks: true,
+																						lineNumbers: "off",
+																						alwaysConsumeMouseWheel: false,
+																					}}
+																				/>
+																			) : (
+																				<div className="text-muted-foreground text-sm">No parameters defined</div>
+																			)}
+																		</div>
+																	</td>
+																</tr>
+															)}
+														</Fragment>
 													);
 												})}
 											</TableBody>
