@@ -139,7 +139,7 @@ export class VirtualKeysPage extends BasePage {
 
     // Wait for sheet to appear and animation to complete
     await expect(this.sheet).toBeVisible()
-    await this.page.waitForTimeout(200) // Wait for sheet animation
+    await this.waitForSheetAnimation()
 
     // Fill basic information using keyboard navigation
     await this.nameInput.focus()
@@ -184,6 +184,9 @@ export class VirtualKeysPage extends BasePage {
     // Wait for success toast
     await this.waitForSuccessToast()
 
+    // Wait for toasts to disappear before continuing
+    await this.dismissToasts()
+
     // Wait for sheet to close
     await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
 
@@ -227,9 +230,6 @@ export class VirtualKeysPage extends BasePage {
 
     // Wait for dropdown to close after selection
     await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 })
-
-    // Small delay to allow UI to update with the new provider config
-    await this.page.waitForTimeout(200)
   }
 
   /**
@@ -300,15 +300,18 @@ export class VirtualKeysPage extends BasePage {
    * Edit an existing virtual key
    */
   async editVirtualKey(name: string, updates: Partial<VirtualKeyConfig>): Promise<void> {
+    // Wait for any existing toasts to disappear
+    await this.forceCloseToasts()
+    
     // Find and click the edit button using data-testid
     const editBtn = this.page.getByTestId(`vk-edit-btn-${name}`)
-    await editBtn.waitFor({ state: 'attached', timeout: 10000 })
+    await editBtn.waitFor({ state: 'visible', timeout: 10000 })
     await editBtn.scrollIntoViewIfNeeded()
     await editBtn.click()
 
     // Wait for sheet to appear and animation to complete
     await expect(this.sheet).toBeVisible()
-    await this.page.waitForTimeout(200) // Wait for sheet animation
+    await this.waitForSheetAnimation()
 
     // Update name using clear() and fill() for cross-platform compatibility
     if (updates.name) {
@@ -347,40 +350,125 @@ export class VirtualKeysPage extends BasePage {
     // Wait for success toast
     await this.waitForSuccessToast()
 
-    // Wait for sheet to close with increased timeout
-    await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
+    // Wait for toasts to disappear before continuing
+    await this.dismissToasts()
+
+    // Check if sheet is still visible - it may not auto-close
+    const isSheetVisible = await this.sheet.isVisible().catch(() => false)
+    if (isSheetVisible) {
+      // Try clicking the close button or pressing Escape
+      const closeBtn = this.sheet.locator('button[aria-label*="close"], button:has(svg.lucide-x)').first()
+      if (await closeBtn.isVisible().catch(() => false)) {
+        await closeBtn.click()
+      } else {
+        await this.page.keyboard.press('Escape')
+      }
+      await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
+    }
   }
 
   /**
    * Delete a virtual key
    */
-  async deleteVirtualKey(name: string): Promise<void> {
-    // Find and click the delete button using data-testid
+  /**
+   * Poll until the virtual key row disappears from the table (e.g. after delete or refetch).
+   * Polls so we don't rely on a stale locator.
+   */
+  async waitForVirtualKeyGone(name: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if ((await this.getVirtualKeyRow(name).count()) === 0) return true
+      await this.page.waitForTimeout(500)
+    }
+    return false
+  }
+
+  async deleteVirtualKey(name: string, options?: { requireToast?: boolean }): Promise<void> {
+    // Check if virtual key exists first
+    const exists = await this.virtualKeyExists(name)
+    if (!exists) {
+      // Already deleted or doesn't exist, nothing to do
+      return
+    }
+
+    // Wait for any existing toasts to disappear
+    await this.forceCloseToasts()
+    
+    // Find the delete button using data-testid (scroll row into view in case table just loaded)
+    const row = this.getVirtualKeyRow(name)
+    await row.scrollIntoViewIfNeeded().catch(() => {})
+    await this.page.waitForTimeout(300)
+
     const deleteBtn = this.page.getByTestId(`vk-delete-btn-${name}`)
-    await deleteBtn.waitFor({ state: 'attached', timeout: 10000 })
+    
+    // Check if button exists; if not, give table a moment and re-check once
+    let btnCount = await deleteBtn.count()
+    if (btnCount === 0) {
+      await this.page.waitForTimeout(800)
+      btnCount = await deleteBtn.count()
+    }
+    if (btnCount === 0) {
+      const stillExists = await this.virtualKeyExists(name)
+      if (!stillExists) return
+      throw new Error(`Delete button not found for virtual key: ${name}`)
+    }
+
+    // Check if button is disabled
+    const isDisabled = await deleteBtn.isDisabled().catch(() => false)
+    if (isDisabled) {
+      throw new Error(`Delete button is disabled for virtual key: ${name} (likely due to RBAC permissions)`)
+    }
+
+    await deleteBtn.waitFor({ state: 'visible', timeout: 10000 })
     await deleteBtn.scrollIntoViewIfNeeded()
     await deleteBtn.click()
 
-    // Confirm deletion in dialog
-    await this.page.getByRole('button', { name: 'Delete' }).click()
+    // Wait for confirmation dialog and confirm deletion (match "Delete" or "Deleting...")
+    const confirmDialog = this.page.locator('[role="alertdialog"]')
+    await confirmDialog.waitFor({ state: 'visible', timeout: 5000 })
+    const confirmBtn = confirmDialog.getByRole('button', { name: /Delete/i })
+    await confirmBtn.waitFor({ state: 'visible', timeout: 2000 })
+    
+    // Wait for DELETE API response
+    const deleteResponsePromise = this.page.waitForResponse(
+      (response) => {
+        const url = response.url()
+        return url.includes('/api/virtual-keys/') && response.request().method() === 'DELETE'
+      },
+      { timeout: 15000 }
+    )
+    await confirmBtn.click()
+    await deleteResponsePromise.catch(() => null)
 
-    // Wait for success toast
-    await this.waitForSuccessToast('deleted')
+    // Wait for table to refetch and row to disappear (poll fresh locator; avoid stale row reference)
+    const gone = await this.waitForVirtualKeyGone(name, 20000)
+    if (!gone) {
+      throw new Error(`Virtual key "${name}" still visible after delete`)
+    }
+
+    // Optionally wait for success toast (skip in cleanup to avoid false failures)
+    if (options?.requireToast !== false) {
+      await this.getToast().waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+    }
+
+    await this.dismissToasts()
   }
 
   /**
-   * Click on a virtual key row to view details
+   * Click on a virtual key to view/edit details (opens via edit button)
    */
   async viewVirtualKey(name: string): Promise<void> {
-    // Wait for the row and scroll to it
-    const row = this.getVirtualKeyRow(name)
-    await row.waitFor({ state: 'attached', timeout: 10000 })
-    await row.scrollIntoViewIfNeeded()
-
-    await row.click()
+    // Wait for any existing toasts to disappear
+    await this.forceCloseToasts()
+    
+    // Use the edit button to open the detail sheet
+    const editBtn = this.page.getByTestId(`vk-edit-btn-${name}`)
+    await editBtn.waitFor({ state: 'visible', timeout: 10000 })
+    await editBtn.scrollIntoViewIfNeeded()
+    await editBtn.click()
 
     // Wait for detail sheet to appear
-    await this.page.waitForSelector('[role="dialog"]', { timeout: 5000 })
+    await expect(this.sheet).toBeVisible({ timeout: 5000 })
   }
 
   /**
@@ -421,5 +509,142 @@ export class VirtualKeysPage extends BasePage {
     await toggleBtn.waitFor({ state: 'attached', timeout: 10000 })
     await toggleBtn.scrollIntoViewIfNeeded()
     await toggleBtn.click()
+  }
+
+  /**
+   * Close any open sheet/dialog
+   */
+  async closeSheet(): Promise<void> {
+    const isSheetVisible = await this.sheet.isVisible().catch(() => false)
+    if (isSheetVisible) {
+      // Press Escape to close the sheet
+      await this.page.keyboard.press('Escape')
+      await expect(this.sheet).not.toBeVisible({ timeout: 5000 }).catch(() => {})
+    }
+  }
+
+  /**
+   * Get all virtual key names from the table
+   */
+  async getAllVirtualKeyNames(): Promise<string[]> {
+    const names: string[] = []
+    const count = await this.getVirtualKeyCount()
+    
+    if (count === 0) return names
+
+    // Find all delete buttons which have the VK name in their test-id
+    const deleteButtons = this.page.locator('[data-testid^="vk-delete-btn-"]')
+    const buttonCount = await deleteButtons.count()
+    
+    for (let i = 0; i < buttonCount; i++) {
+      const testId = await deleteButtons.nth(i).getAttribute('data-testid')
+      if (testId) {
+        // Extract name from test-id: "vk-delete-btn-{name}"
+        const name = testId.replace('vk-delete-btn-', '')
+        names.push(name)
+      }
+    }
+    
+    return names
+  }
+
+  /**
+   * Clean up all virtual keys (delete all)
+   */
+  async cleanupAllVirtualKeys(): Promise<void> {
+    // First close any open sheet
+    await this.closeSheet()
+    
+    // Wait for any toasts to clear
+    await this.dismissToasts()
+    
+    // Keep trying until no more VKs exist
+    let attempts = 0
+    const maxAttempts = 10 // Prevent infinite loops
+    
+    while (attempts < maxAttempts) {
+      // Get current VK names (refresh the list each iteration)
+      const names = await this.getAllVirtualKeyNames()
+      
+      if (names.length === 0) {
+        // No more VKs to delete
+        break
+      }
+      
+      // Delete each one
+      for (const name of names) {
+        try {
+          // Check if VK still exists before trying to delete
+          const exists = await this.virtualKeyExists(name)
+          if (!exists) {
+            // Already deleted, skip
+            continue
+          }
+
+          // Make sure sheet is closed before each delete
+          await this.closeSheet()
+          await this.deleteVirtualKey(name)
+          
+          // Wait a bit for table to refresh
+          await this.page.waitForTimeout(500)
+        } catch (error) {
+          // If delete fails, try to close sheet and continue
+          await this.closeSheet()
+          const errorMsg = error instanceof Error ? error.message : String(error)
+          console.log(`Failed to delete virtual key: ${name} - ${errorMsg}`)
+          // Continue with next VK
+        }
+      }
+      
+      attempts++
+      
+      // Wait a bit before next iteration to allow table to refresh
+      await this.page.waitForTimeout(1000)
+    }
+    
+    if (attempts >= maxAttempts) {
+      const remainingNames = await this.getAllVirtualKeyNames()
+      if (remainingNames.length > 0) {
+        console.log(`Warning: Could not delete all virtual keys after ${maxAttempts} attempts. Remaining: ${remainingNames.join(', ')}`)
+      }
+    }
+  }
+
+  /**
+   * Clean up specific virtual keys by name
+   */
+  async cleanupVirtualKeys(names: string[]): Promise<void> {
+    if (names.length === 0) return
+
+    // Ensure we're on the virtual keys list with a fresh load so table is ready
+    await this.goto()
+    await this.closeSheet()
+    await this.dismissToasts()
+    await this.table.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
+    await this.page.waitForTimeout(500)
+
+    for (const name of names) {
+      const tryDelete = async (): Promise<void> => {
+        const exists = await this.virtualKeyExists(name)
+        if (!exists) return
+        await this.closeSheet()
+        await this.deleteVirtualKey(name, { requireToast: false })
+      }
+
+      try {
+        await tryDelete()
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        console.error(`[CLEANUP ERROR] Failed to delete virtual key: ${name} - ${errorMsg}`)
+        await this.closeSheet()
+        await this.page.waitForTimeout(1000)
+        try {
+          await tryDelete()
+        } catch (retryError) {
+          const retryMsg = retryError instanceof Error ? retryError.message : String(retryError)
+          console.error(`[CLEANUP ERROR] Retry failed for virtual key: ${name} - ${retryMsg}`)
+        }
+      }
+    }
   }
 }

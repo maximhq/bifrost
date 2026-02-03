@@ -232,6 +232,7 @@ export default function DashboardPage() {
 				<ChartCard
 					title="Request Volume"
 					loading={loadingHistogram}
+					testId="chart-log-volume"
 					headerActions={
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
@@ -260,6 +261,7 @@ export default function DashboardPage() {
 				<ChartCard
 					title="Token Usage"
 					loading={loadingTokens}
+					testId="chart-token-usage"
 					headerActions={
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
@@ -288,6 +290,7 @@ export default function DashboardPage() {
 				<ChartCard
 					title="Cost"
 					loading={loadingCost}
+					testId="chart-cost"
 					headerActions={
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
@@ -329,6 +332,7 @@ export default function DashboardPage() {
 				<ChartCard
 					title="Model Usage"
 					loading={loadingModels}
+					testId="chart-model-usage"
 					headerActions={
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">

@@ -282,8 +282,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 				<div className="space-y-4 px-4">
 					<div className="space-y-2">
-						<Label>Name</Label>
+						<Label htmlFor="client-name">Name</Label>
 						<Input
+							id="client-name"
+							data-testid="client-name-input"
 							value={form.name}
 							onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleChange("name", e.target.value)}
 							placeholder="Server name"
@@ -294,13 +296,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 					<div className="w-full space-y-2">
 						<Label>Connection Type</Label>
 						<Select value={form.connection_type} onValueChange={(value: MCPConnectionType) => handleChange("connection_type", value)}>
-							<SelectTrigger className="w-full">
+							<SelectTrigger className="w-full" data-testid="connection-type-select">
 								<SelectValue placeholder="Select connection type" />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="http">HTTP (Streamable)</SelectItem>
-								<SelectItem value="sse">Server-Sent Events (SSE)</SelectItem>
-								<SelectItem value="stdio">STDIO</SelectItem>
+								<SelectItem value="http" data-testid="connection-type-http">HTTP (Streamable)</SelectItem>
+								<SelectItem value="sse" data-testid="connection-type-sse">Server-Sent Events (SSE)</SelectItem>
+								<SelectItem value="stdio" data-testid="connection-type-stdio">STDIO</SelectItem>
 							</SelectContent>
 						</Select>
 					</div>
@@ -309,6 +311,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						<Label htmlFor="code-mode">Code Mode Server</Label>
 						<Switch
 							id="code-mode"
+							data-testid="code-mode-switch"
 							checked={form.is_code_mode_client || false}
 							onCheckedChange={(checked) => handleChange("is_code_mode_client", checked)}
 						/>
@@ -343,13 +346,13 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							<div className="w-full space-y-2">
 								<Label>Authentication Type</Label>
 								<Select value={form.auth_type} onValueChange={(value: MCPAuthType) => handleChange("auth_type", value)}>
-									<SelectTrigger className="w-full">
+									<SelectTrigger className="w-full" data-testid="auth-type-select">
 										<SelectValue placeholder="Select authentication type" />
 									</SelectTrigger>
 									<SelectContent>
-										<SelectItem value="none">None</SelectItem>
-										<SelectItem value="headers">Headers</SelectItem>
-										<SelectItem value="oauth">OAuth 2.0</SelectItem>
+										<SelectItem value="none" data-testid="auth-type-none">None</SelectItem>
+										<SelectItem value="headers" data-testid="auth-type-headers">Headers</SelectItem>
+										<SelectItem value="oauth" data-testid="auth-type-oauth">OAuth 2.0</SelectItem>
 									</SelectContent>
 								</Select>
 							</div>
@@ -378,11 +381,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									</TooltipProvider>
 								</div>
 
-								<EnvVarInput
-									value={form.connection_string}
-									onChange={handleConnectionStringChange}
-									placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
-								/>
+							<EnvVarInput
+								value={form.connection_string}
+								onChange={handleConnectionStringChange}
+								placeholder="http://your-mcp-server:3000 or env.MCP_SERVER_URL"
+								data-testid="connection-url-input"
+							/>
 							</div>
 							{form.auth_type === "headers" && (
 								<div className="space-y-2">
@@ -498,6 +502,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									value={form.stdio_config?.command || ""}
 									onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleStdioConfigChange("command", e.target.value)}
 									placeholder="node, python, /path/to/executable"
+									data-testid="stdio-command-input"
 								/>
 							</div>
 							<div className="space-y-2">
@@ -506,6 +511,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									value={argsText}
 									onChange={(e: React.ChangeEvent<HTMLInputElement>) => setArgsText(e.target.value)}
 									placeholder="--port, 3000, --config, config.json"
+									data-testid="stdio-args-input"
 								/>
 							</div>
 							<div className="space-y-2">
@@ -514,6 +520,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 									value={envsText}
 									onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEnvsText(e.target.value)}
 									placeholder="API_KEY, DATABASE_URL"
+									data-testid="stdio-envs-input"
 								/>
 							</div>
 						</>
@@ -522,7 +529,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 				{/* Form Footer */}
 				<div className="dark:bg-card border-border bg-white px-4 py-6">
 					<div className="flex justify-end gap-2">
-						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading}>
+						<Button type="button" variant="outline" onClick={onClose} disabled={isLoading} data-testid="cancel-client-btn">
 							Cancel
 						</Button>
 						<TooltipProvider>
@@ -533,6 +540,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											onClick={handleSubmit}
 											disabled={!validator.isValid() || isLoading || !hasCreateMCPClientAccess}
 											isLoading={isLoading}
+											data-testid="save-client-btn"
 										>
 											Create
 										</Button>

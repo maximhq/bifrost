@@ -47,19 +47,83 @@ export class BasePage {
   }
 
   /**
-   * Dismiss all visible toasts
+   * Wait for all toasts to disappear
+   */
+  async waitForToastsToDisappear(timeout = 5000): Promise<void> {
+    const toasts = this.page.locator('[data-sonner-toast]')
+    try {
+      // Wait for all toasts to be detached from DOM
+      await toasts.first().waitFor({ state: 'detached', timeout }).catch(() => {
+        // If no toasts exist, that's fine
+      })
+      // Also check if count is 0
+      const count = await toasts.count()
+      if (count > 0) {
+        // Wait for toasts to be hidden
+        await expect(toasts.first()).not.toBeVisible({ timeout: 3000 }).catch(() => {})
+      }
+    } catch {
+      // No toasts present, which is fine
+    }
+  }
+
+  /**
+   * Wait for a sheet/dialog to be fully visible (animation complete)
+   */
+  async waitForSheetAnimation(): Promise<void> {
+    // Wait for any sheet transition to complete by checking for stable state
+    await this.page.waitForFunction(() => {
+      const sheet = document.querySelector('[role="dialog"]')
+      if (!sheet) return true
+      const style = window.getComputedStyle(sheet)
+      return style.opacity === '1' && style.transform === 'none'
+    }, { timeout: 2000 }).catch(() => {})
+  }
+
+  /**
+   * Wait for element state to change (useful for toggles)
+   */
+  async waitForStateChange(locator: Locator, attribute: string, expectedValue: string, timeout = 5000): Promise<void> {
+    await expect(locator).toHaveAttribute(attribute, expectedValue, { timeout })
+  }
+
+  /**
+   * Wait for URL to contain a specific parameter
+   */
+  async waitForUrlParam(param: string, value: string, timeout = 5000): Promise<void> {
+    await expect(this.page).toHaveURL(new RegExp(`${param}=${value}`), { timeout })
+  }
+
+  /**
+   * Wait for charts/data to load after page navigation
+   */
+  async waitForChartsToLoad(): Promise<void> {
+    // Wait for network to be idle (data fetching complete)
+    await this.page.waitForLoadState('networkidle')
+    // Wait for any loading skeletons to disappear
+    const skeletons = this.page.locator('[data-testid="skeleton"], .skeleton, [data-loading="true"]')
+    if (await skeletons.count() > 0) {
+      await skeletons.first().waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {})
+    }
+  }
+
+  /**
+   * Dismiss all visible toasts by waiting for them to disappear
    */
   async dismissToasts(): Promise<void> {
-    const toasts = this.page.locator('[data-sonner-toast]')
-    const count = await toasts.count()
-    for (let i = 0; i < count; i++) {
-      try {
-        await toasts.first().click()
-        await this.page.waitForTimeout(100)
-      } catch {
-        // Toast may have already disappeared
-      }
-    }
+    // Just wait for toasts to auto-dismiss
+    await this.waitForToastsToDisappear()
+  }
+  
+  /**
+   * Force dismiss all toasts by clicking away and waiting
+   */
+  async forceCloseToasts(): Promise<void> {
+    // Click somewhere neutral to potentially dismiss toasts
+    await this.page.locator('body').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {})
+    
+    // Wait for toasts to auto-dismiss (they typically auto-dismiss after 4-5 seconds)
+    await this.waitForToastsToDisappear(8000)
   }
 
   /**

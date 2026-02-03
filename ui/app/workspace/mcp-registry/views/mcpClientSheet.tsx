@@ -522,9 +522,9 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 														(currentAutoExecute?.includes(tool.name) && isToolEnabled);
 													const isExpanded = expandedTools.has(tool.name);
 
-													return (
-														<Collapsible key={index} open={isExpanded} onOpenChange={() => toggleToolExpanded(tool.name)} asChild>
-															<>
+												return (
+													<Collapsible key={index} open={isExpanded} onOpenChange={() => toggleToolExpanded(tool.name)}>
+														<>
 																<TableRow className="group">
 																	<TableCell className="p-2">
 																		<CollapsibleTrigger asChild>
