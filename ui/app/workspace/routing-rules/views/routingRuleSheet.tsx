@@ -191,7 +191,7 @@ export function RoutingRuleSheet({
 			model: data.model,
 			fallbacks: validFallbacks,
 			scope: data.scope,
-			scope_id: data.scope_id || undefined,
+			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
 			priority: data.priority,
 			enabled: data.enabled,
 			query: query,

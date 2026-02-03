@@ -1303,6 +1303,7 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 		}).
 		Preload("MCPConfigs").
 		Preload("MCPConfigs.MCPClient").
+		Order("created_at ASC").
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
@@ -1812,7 +1813,7 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 		query = query.Where("customer_id = ?", customerID)
 	}
 	var teams []tables.TableTeam
-	if err := query.Find(&teams).Error; err != nil {
+	if err := query.Order("created_at ASC").Find(&teams).Error; err != nil {
 		return nil, err
 	}
 	return teams, nil
@@ -1900,7 +1901,7 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 // GetCustomers retrieves all customers from the database.
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
-	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Find(&customers).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Order("created_at ASC").Find(&customers).Error; err != nil {
 		return nil, err
 	}
 	return customers, nil
@@ -1992,7 +1993,7 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 // GetRateLimits retrieves all rate limits from the database.
 func (s *RDBConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error) {
 	var rateLimits []tables.TableRateLimit
-	if err := s.db.WithContext(ctx).Find(&rateLimits).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("created_at ASC").Find(&rateLimits).Error; err != nil {
 		return nil, err
 	}
 	return rateLimits, nil
@@ -2057,7 +2058,7 @@ func (s *RDBConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*tab
 // GetBudgets retrieves all budgets from the database.
 func (s *RDBConfigStore) GetBudgets(ctx context.Context) ([]tables.TableBudget, error) {
 	var budgets []tables.TableBudget
-	if err := s.db.WithContext(ctx).Find(&budgets).Error; err != nil {
+	if err := s.db.WithContext(ctx).Order("created_at ASC").Find(&budgets).Error; err != nil {
 		return nil, err
 	}
 	return budgets, nil

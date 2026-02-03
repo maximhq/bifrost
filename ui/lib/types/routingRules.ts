@@ -25,8 +25,8 @@ export interface RoutingRule {
 export interface CreateRoutingRuleRequest {
 	name: string;
 	description?: string;
-	cel_expression: string;
-	provider: string;
+	cel_expression?: string;
+	provider?: string;
 	model?: string;
 	fallbacks?: string[];
 	scope: string;

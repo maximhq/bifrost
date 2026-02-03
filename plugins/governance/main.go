@@ -335,24 +335,9 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		if !ok || virtualKey == nil || !virtualKey.IsActive {
 			return nil, nil
 		}
-		// Add MCP tools
-		headers, err := p.addMCPIncludeTools(nil, virtualKey)
-		if err != nil {
-			p.logger.Error("failed to add MCP include tools: %v", err)
-			return nil, nil
-		}
-		for header, value := range headers {
-			req.Headers[header] = value
-		}
-		// Load balance provider
-		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
-		if err != nil {
-			return nil, err
-		}
-		needsMarshal = true
 	}
 
-	// Apply routing rules only if we have rules or matched decision
+	//1. Apply routing rules only if we have rules or matched decision
 	var routingDecision *RoutingDecision
 	if hasRoutingRules {
 		var err error
@@ -364,6 +349,25 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		if routingDecision != nil {
 			needsMarshal = true
 		}
+	}
+
+	// Process virtual key if provided
+	if virtualKey != nil {
+		//2. Load balance provider
+		payload, err = p.loadBalanceProvider(ctx, req, payload, virtualKey)
+		if err != nil {
+			return nil, err
+		}
+		//3. Add MCP tools
+		headers, err := p.addMCPIncludeTools(nil, virtualKey)
+		if err != nil {
+			p.logger.Error("failed to add MCP include tools: %v", err)
+			return nil, nil
+		}
+		for header, value := range headers {
+			req.Headers[header] = value
+		}
+		needsMarshal = true
 	}
 
 	// Only marshal if something changed (VK processing or routing decision matched)
@@ -626,7 +630,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		RequestType:              requestType,
 		Headers:                  req.Headers,
 		QueryParams:              req.Query,
-		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, nil, nil, nil),
+		BudgetAndRateLimitStatus: p.store.GetBudgetAndRateLimitStatus(ctx, model, provider, virtualKey, nil, nil, nil),
 	}
 
 	p.logger.Debug("[HTTPTransport] Built routing context: provider=%s, model=%s, requestType=%s, vk=%v, headerCount=%d, paramCount=%d",

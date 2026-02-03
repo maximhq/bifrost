@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -145,6 +146,8 @@ type UpdateRoutingRuleRequest struct {
 	Fallbacks     []string       `json:"fallbacks,omitempty"`
 	Query         map[string]any `json:"query,omitempty"`
 	Priority      *int           `json:"priority,omitempty"`
+	Scope         *string        `json:"scope,omitempty"`
+	ScopeID       *string        `json:"scope_id,omitempty"`
 }
 
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
@@ -275,6 +278,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		for _, vk := range data.VirtualKeys {
 			virtualKeys = append(virtualKeys, vk)
 		}
+		sort.Slice(virtualKeys, func(i, j int) bool {
+			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
+		})
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
@@ -2499,6 +2505,20 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Fallbacks != nil {
 		rule.ParsedFallbacks = req.Fallbacks
+	}
+	if req.Scope != nil && *req.Scope != "" {
+		rule.Scope = *req.Scope
+	}
+	if req.ScopeID != nil {
+		rule.ScopeID = req.ScopeID
+	}
+
+	// If scope is global, ensure scope_id is nil
+	if rule.Scope == "global" {
+		rule.ScopeID = nil
+	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
+		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
 	}
 
 	// Update in database

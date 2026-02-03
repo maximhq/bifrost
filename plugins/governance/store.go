@@ -126,7 +126,7 @@ type GovernanceStore interface {
 	// Routing Rules CEL caching
 	GetRoutingProgram(rule *configstoreTables.TableRoutingRule) (cel.Program, error)
 	// Budget and rate limit status queries for routing with baseline support
-	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	// Routing Rules CRUD
 	HasRoutingRules(ctx context.Context) bool
 	GetAllRoutingRules() []*configstoreTables.TableRoutingRule
@@ -350,6 +350,13 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		}
 		providersList = append(providersList, &clone)
 		return true // continue iteration
+	})
+	// Sort slice fields by CreatedAt so responses are sent in consistent order
+	sort.Slice(modelConfigsList, func(i, j int) bool {
+		return modelConfigsList[i].CreatedAt.Before(modelConfigsList[j].CreatedAt)
+	})
+	sort.Slice(providersList, func(i, j int) bool {
+		return providersList[i].CreatedAt.Before(providersList[j].CreatedAt)
 	})
 	return &GovernanceData{
 		VirtualKeys:  virtualKeys,
@@ -2720,7 +2727,7 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableR
 
 // GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
 // Accounts for baseline usage from remote nodes when calculating percentages
-func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
 	// Prevent nil pointer dereferences
 	if budgetBaselines == nil {
 		budgetBaselines = map[string]float64{}
@@ -2845,7 +2852,7 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 		}
 	}
 
-	// Check provider-specific rate limits and budgets
+	// Check global provider-specific rate limits and budgets
 	providerValue, ok := gs.providers.Load(string(provider))
 	if ok && providerValue != nil {
 		if providerTable, ok := providerValue.(*configstoreTables.TableProvider); ok && providerTable != nil {
@@ -2898,6 +2905,63 @@ func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context,
 		}
 	}
 
+	// Check virtual key level provider-specific rate limits and budgets
+	if vk != nil {
+		if vk.ProviderConfigs != nil {
+			for _, pc := range vk.ProviderConfigs {
+				if pc.Provider == string(provider) {
+					// Get rate limit status
+					if pc.RateLimit != nil {
+						// Look up canonical rate limit from gs.rateLimits
+						if rateLimitValue, ok := gs.rateLimits.Load(pc.RateLimit.ID); ok && rateLimitValue != nil {
+							if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+								tokensBaseline, exists := tokenBaselines[rateLimit.ID]
+								if !exists {
+									tokensBaseline = 0
+								}
+								requestsBaseline, exists := requestBaselines[rateLimit.ID]
+								if !exists {
+									requestsBaseline = 0
+								}
+								// Calculate token percent used
+								if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+									tokenPercent := float64(rateLimit.TokenCurrentUsage+tokensBaseline) / float64(*rateLimit.TokenMaxLimit) * 100
+									if tokenPercent > result.RateLimitTokenPercentUsed {
+										result.RateLimitTokenPercentUsed = tokenPercent
+									}
+								}
+								// Calculate request percent used
+								if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+									requestPercent := float64(rateLimit.RequestCurrentUsage+requestsBaseline) / float64(*rateLimit.RequestMaxLimit) * 100
+									if requestPercent > result.RateLimitRequestPercentUsed {
+										result.RateLimitRequestPercentUsed = requestPercent
+									}
+								}
+							}
+						}
+					}
+					// Get budget status
+					if pc.BudgetID != nil {
+						if budgetValue, ok := gs.budgets.Load(*pc.BudgetID); ok && budgetValue != nil {
+							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+								baseline, exists := budgetBaselines[budget.ID]
+								if !exists {
+									baseline = 0
+								}
+								if budget.MaxLimit > 0 {
+									budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+									if budgetPercent > result.BudgetPercentUsed {
+										result.BudgetPercentUsed = budgetPercent
+									}
+								}
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
 	return result
 }
 
@@ -2907,7 +2971,33 @@ func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(rule *configstoreTable
 		return fmt.Errorf("routing rule cannot be nil")
 	}
 
-	// Build cache key
+	// First, remove the rule from ALL scopes (in case it was moved from one scope to another)
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+
+		// Filter out the rule if it exists in this scope
+		newRules := make([]*configstoreTables.TableRoutingRule, 0, len(rules))
+		for _, r := range rules {
+			if r.ID != rule.ID {
+				newRules = append(newRules, r)
+			}
+		}
+
+		// Update the scope with the filtered rules
+		if len(newRules) != len(rules) {
+			if len(newRules) == 0 {
+				gs.routingRules.Delete(key)
+			} else {
+				gs.routingRules.Store(key, newRules)
+			}
+		}
+		return true
+	})
+
+	// Build cache key for the new scope
 	var key string
 	if rule.Scope == "global" {
 		key = "global:"
@@ -2927,19 +3017,8 @@ func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(rule *configstoreTable
 		}
 	}
 
-	// Check if rule already exists and update or add
-	found := false
-	for i, r := range rules {
-		if r.ID == rule.ID {
-			rules[i] = rule
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		rules = append(rules, rule)
-	}
+	// Add the rule to the new scope
+	rules = append(rules, rule)
 
 	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority)
 	sort.Slice(rules, func(i, j int) bool {
