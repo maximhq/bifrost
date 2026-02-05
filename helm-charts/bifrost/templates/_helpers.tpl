@@ -33,6 +33,11 @@ app.kubernetes.io/name: {{ include "bifrost.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{- define "bifrost.serverSelectorLabels" -}}
+{{ include "bifrost.selectorLabels" . }}
+app.kubernetes.io/component: server
+{{- end }}
+
 {{- define "bifrost.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "bifrost.fullname" .) .Values.serviceAccount.name }}

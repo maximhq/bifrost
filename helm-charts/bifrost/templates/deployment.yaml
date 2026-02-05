@@ -25,7 +25,7 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "bifrost.selectorLabels" . | nindent 6 }}
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -35,6 +35,7 @@ spec:
         {{- end }}
       labels:
         {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
